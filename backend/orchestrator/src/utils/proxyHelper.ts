@@ -1,27 +1,40 @@
+import axios, { AxiosRequestHeaders } from 'axios';
 import { Request, Response } from 'express';
-import axios from 'axios';
 
-
-export const proxyRequest = async (req: Request, res: Response, target: string) => {
-  //const url = `${target}${req.originalUrl}`; // ✅ assemble full target URL
-  //const url = `${target}${req.originalUrl.replace(/^\/api\/users/, '')}`;
-  console.log(`[PROXY] → ${target}`);            // ✅ log it for debugging
+export const proxyRequest = async (
+  req: Request,
+  res: Response,
+  serviceBaseUrl: string
+) => {
+  const method = req.method.toUpperCase();
+  const targetUrl = `${serviceBaseUrl}${req.url}`;
+  console.log(`[proxy] ${method} → ${targetUrl}`);
 
   try {
-    const response = await fetch(target, {
-  method: req.method,
-  headers: {
-    'Content-Type': 'application/json',
-    Authorization: req.headers.authorization || '',
-  },
-  body: ['GET', 'HEAD'].includes(req.method || '') ? undefined : JSON.stringify(req.body),
-});
+    const axiosOptions: any = {
+      method,
+      url: targetUrl,
+      headers: { ...req.headers } as AxiosRequestHeaders,
+      params: req.query,
+      timeout: 5000,
+    };
 
+    // 🛑 Only send body on POST/PUT/PATCH
+    if (!['GET', 'HEAD', 'DELETE'].includes(method)) {
+      axiosOptions.data = req.body;
+    }
 
-    const data = await response.text();
-    res.status(response.status).send(data);
-  } catch (err) {
-    console.error('[PROXY ERROR]', err);
-    res.status(500).send({ error: 'Proxy request failed.' });
+    const response = await axios(axiosOptions);
+    res.status(response.status).send(response.data);
+  } catch (err: any) {
+    const status = err.response?.status || 500;
+    const message =
+      err.response?.data?.error ||
+      err.response?.data ||
+      err.message ||
+      'Unknown proxy error';
+
+    console.error(`[proxy error] ${method} ${targetUrl} → ${status}: ${message}`);
+    res.status(status).json({ error: message });
   }
 };

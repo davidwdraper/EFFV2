@@ -1,0 +1,97 @@
+services:
+  mongo:
+    image: mongo
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  orchestrator:
+    build: ./backend/orchestrator
+    container_name: orchestrator
+    ports:
+      - "6000:6000"
+    env_file:
+      - ./backend/orchestrator/.env
+    depends_on:
+      - auth
+      - users
+      - acts
+      - places
+      - events
+      - logs
+      - mongo
+
+  orchestrator-core:
+    build: ./backend/orchestrator-core
+    container_name: orchestrator-core
+    ports:
+      - "5100:5100"
+    env_file:
+      - ./backend/orchestrator-core/.env
+    depends_on:
+      - mongo
+
+  auth:
+    build: ./backend/services/auth
+    container_name: auth
+    ports:
+      - "4000:4000"
+    env_file:
+      - ./backend/services/auth/.env
+    depends_on:
+      - mongo
+
+  users:
+    build: ./backend/services/user
+    container_name: users
+    ports:
+      - "4001:4001"
+    env_file:
+      - ./backend/services/user/.env
+    depends_on:
+      - mongo
+
+  acts:
+    build: ./backend/services/act
+    container_name: acts
+    ports:
+      - "4002:4002"
+    env_file:
+      - ./backend/services/act/.env
+    depends_on:
+      - mongo
+
+  places:
+    build: ./backend/services/place
+    container_name: places
+    ports:
+      - "4003:4003"
+    env_file:
+      - ./backend/services/place/.env
+    depends_on:
+      - mongo
+
+  events:
+    build: ./backend/services/event
+    container_name: events
+    ports:
+      - "4004:4004"
+    env_file:
+      - ./backend/services/event/.env
+    depends_on:
+      - mongo
+
+  logs:
+    build: ./backend/services/log
+    container_name: logs
+    ports:
+      - "4005:4005"
+    env_file:
+      - ./backend/services/log/.env
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:

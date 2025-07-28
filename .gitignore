@@ -1,0 +1,19 @@
+# Node
+node_modules/
+dist/
+.env
+.env.*
+
+# Logs
+logs/
+*.log
+
+# VS Code
+.vscode/
+
+# OS junk
+.DS_Store
+
+# Docker
+*.local
+docker-compose.override.yml

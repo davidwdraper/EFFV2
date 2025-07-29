@@ -3,7 +3,7 @@ import { proxyRequest } from '../utils/proxyHelper';
 import authenticate from '../middleware/authenticate';
 
 const router = express.Router();
-const SERVICE_URL = process.env.LOG_SERVICE_URL || 'http://localhost:4006';
+const SERVICE_URL = process.env.IMAGE_SERVICE_URL || 'http://localhost:4005';
 
 router.use(authenticate);
 router.all('*', (req, res) => proxyRequest(req, res, SERVICE_URL));

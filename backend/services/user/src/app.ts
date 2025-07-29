@@ -1,11 +1,11 @@
 // src/app.ts
 import express from 'express';
 import './db';
-import userActRoutes from './routes/userActRoutes';
+import userRoutes from './routes/userRoutes';
 
 const app = express();
 
 app.use(express.json());
-app.use('/useracts', userActRoutes);
+app.use('/users', userRoutes);
 
 export default app;

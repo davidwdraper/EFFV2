@@ -1,7 +1,9 @@
 #!/bin/bash
 
 cd "$(dirname "$0")"
-trap 'echo "🛑 Caught Ctrl-C. Cleaning up..."; pkill -f ts-node-dev; pkill -f node; exit 1' INT
+
+# ✅ Trap Ctrl-C and only kill this process group
+trap 'echo "🛑 Caught Ctrl-C. Cleaning up..."; kill 0; exit 0' INT
 
 MODE=$1
 
@@ -24,9 +26,9 @@ if [ "$MODE" == "docker" ]; then
   echo "🛳️  Starting in DOCKER mode..."
   docker-compose --env-file .env.docker up --build
 
-elif [ "$MODE" == "local" ]; then
-  echo "🧹 Killing any processes using service ports from .env.local..."
-  grep _PORT .env.local | cut -d '=' -f2 | xargs -I {} lsof -ti :{} | xargs kill -9 2>/dev/null
+elif [ "$MODE" == "dev" ]; then
+  echo "🧹 Killing any processes using service ports from .env.dev..."
+  grep _PORT .env.dev | cut -d '=' -f2 | xargs -I {} lsof -ti :{} | xargs kill -9 2>/dev/null
 
   echo "💻 Starting available services with concurrently..."
 
@@ -39,7 +41,7 @@ elif [ "$MODE" == "local" ]; then
     [ "$service" == "orchestrator-core" ] && path="backend/orchestrator-core"
 
     if [ -d "$path" ]; then
-      COMMANDS+=("cd $path && NODE_ENV=local yarn dev")
+      COMMANDS+=("cd $path && NODE_ENV=dev yarn dev")
       NAMES+=("$service")
     else
       echo "⚠️  Skipping missing service: $service"
@@ -53,6 +55,6 @@ elif [ "$MODE" == "local" ]; then
     "${COMMANDS[@]}"
 
 else
-  echo "❌ Invalid mode. Usage: ./run.sh [local|docker]"
+  echo "❌ Invalid mode. Usage: ./run.sh [dev|docker]"
   exit 1
 fi

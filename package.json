@@ -12,7 +12,7 @@
     "concurrently": "^8.0.0"
   },
   "scripts": {
-    "dev": "./run.sh local",
+    "dev": "./run.sh dev",
     "docker": "./run.sh docker"
   }
 }

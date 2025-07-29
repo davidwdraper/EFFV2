@@ -1,17 +1,17 @@
 import dotenv from 'dotenv';
 import path from 'path';
 
-// Determine current environment
-const env = process.env.NODE_ENV || 'development';
-
-// Load the correct .env file based on NODE_ENV
-const envPath = path.resolve(__dirname, `../../../.env.${env}`);
+// ✅ Replace with absolute path to project root
+const env = process.env.NODE_ENV || 'dev';
+const envPath = path.resolve(__dirname, '../../../.env.' + env);
 dotenv.config({ path: envPath });
 
-// Export orchestrator-specific and shared config values
+console.log(`[Orchestrator config] loading env from: ${envPath}`);
+console.log(`[Orchestrator config] ORCHESTRATOR_PORT is: ${process.env.ORCHESTRATOR_PORT}`);
+
 export const config = {
   env,
-  port: parseInt(process.env.ORCHESTRATOR_PORT || '4000', 10),
-  logLevel: process.env.LOG_LEVEL || 'info',
+  port: parseInt(process.env.ORCHESTRATOR_PORT || '8888', 10),
   jwtSecret: process.env.JWT_SECRET || '2468',
+  logLevel: process.env.LOG_LEVEL || 'info',
 };

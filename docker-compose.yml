@@ -1,97 +1,139 @@
+version: '3.8'
+
 services:
   mongo:
-    image: mongo
+    image: mongo:6
     container_name: mongo
     ports:
       - "27017:27017"
     volumes:
-      - mongo_data:/data/db
+      - mongo-data:/data/db
 
   orchestrator:
     build: ./backend/orchestrator
     container_name: orchestrator
     ports:
-      - "6000:6000"
-    env_file:
-      - ./backend/orchestrator/.env
+      - "${ORCHESTRATOR_PORT}:4000"
+    env_file: .env.docker
     depends_on:
-      - auth
-      - users
-      - acts
-      - places
-      - events
-      - logs
-      - mongo
+      - user-service
+      - auth-service
+    networks:
+      - eff-net
 
-  orchestrator-core:
-    build: ./backend/orchestrator-core
-    container_name: orchestrator-core
-    ports:
-      - "5100:5100"
-    env_file:
-      - ./backend/orchestrator-core/.env
-    depends_on:
-      - mongo
-
-  auth:
-    build: ./backend/services/auth
-    container_name: auth
-    ports:
-      - "4000:4000"
-    env_file:
-      - ./backend/services/auth/.env
-    depends_on:
-      - mongo
-
-  users:
+  user-service:
     build: ./backend/services/user
-    container_name: users
+    container_name: user-service
     ports:
-      - "4001:4001"
-    env_file:
-      - ./backend/services/user/.env
+      - "${USER_PORT}:4001"
+    env_file: .env.docker
     depends_on:
       - mongo
+    networks:
+      - eff-net
 
-  acts:
+  act-service:
     build: ./backend/services/act
-    container_name: acts
+    container_name: act-service
     ports:
-      - "4002:4002"
-    env_file:
-      - ./backend/services/act/.env
+      - "${ACT_PORT}:4002"
+    env_file: .env.docker
     depends_on:
       - mongo
+    networks:
+      - eff-net
 
-  places:
-    build: ./backend/services/place
-    container_name: places
-    ports:
-      - "4003:4003"
-    env_file:
-      - ./backend/services/place/.env
-    depends_on:
-      - mongo
-
-  events:
+  event-service:
     build: ./backend/services/event
-    container_name: events
+    container_name: event-service
     ports:
-      - "4004:4004"
-    env_file:
-      - ./backend/services/event/.env
+      - "${EVENT_PORT}:4003"
+    env_file: .env.docker
     depends_on:
       - mongo
+    networks:
+      - eff-net
 
-  logs:
-    build: ./backend/services/log
-    container_name: logs
+  place-service:
+    build: ./backend/services/place
+    container_name: place-service
     ports:
-      - "4005:4005"
-    env_file:
-      - ./backend/services/log/.env
+      - "${PLACE_PORT}:4004"
+    env_file: .env.docker
     depends_on:
       - mongo
+    networks:
+      - eff-net
+
+  image-service:
+    build: ./backend/services/image
+    container_name: image-service
+    ports:
+      - "${IMAGE_PORT}:4005"
+    env_file: .env.docker
+    depends_on:
+      - mongo
+    networks:
+      - eff-net
+
+  log-service:
+    build: ./backend/services/log
+    container_name: log-service
+    ports:
+      - "${LOG_PORT}:4006"
+    env_file: .env.docker
+    depends_on:
+      - mongo
+    networks:
+      - eff-net
+
+  auth-service:
+    build: ./backend/services/auth
+    container_name: auth-service
+    ports:
+      - "${AUTH_PORT}:4007"
+    env_file: .env.docker
+    depends_on:
+      - user-service
+    networks:
+      - eff-net
+
+  eventact-service:
+    build: ./backend/services/eventact
+    container_name: eventact-service
+    ports:
+      - "${EVENTACT_PORT}:4008"
+    env_file: .env.docker
+    depends_on:
+      - mongo
+    networks:
+      - eff-net
+
+  eventplace-service:
+    build: ./backend/services/eventplace
+    container_name: eventplace-service
+    ports:
+      - "${EVENTPLACE_PORT}:4009"
+    env_file: .env.docker
+    depends_on:
+      - mongo
+    networks:
+      - eff-net
+
+  useract-service:
+    build: ./backend/services/useract
+    container_name: useract-service
+    ports:
+      - "${USERACT_PORT}:4010"
+    env_file: .env.docker
+    depends_on:
+      - mongo
+    networks:
+      - eff-net
 
 volumes:
-  mongo_data:
+  mongo-data:
+
+networks:
+  eff-net:
+    driver: bridge

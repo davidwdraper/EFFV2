@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import bcrypt from 'bcrypt';
 import { config } from '../config';
+import { AuthPayload } from '../types/AuthPayload';
 
 export const signup = async (req: Request, res: Response) => {
   try {
@@ -31,14 +32,15 @@ export const login = async (req: Request, res: Response) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const token = jwt.sign(
-      {
-        eMailAddr: user.eMailAddr,
-        userType: user.userType,
-      },
-      config.jwtSecret,
-      { expiresIn: '24h' }
-    );
+    const payload: AuthPayload = {
+      _id: user._id,
+      userType: user.userType,
+      firstname: user.firstname,
+      lastname: user.lastname,
+      eMailAddr: user.eMailAddr
+    };
+
+    const token = jwt.sign(payload, config.jwtSecret, { expiresIn: '24h' });
 
     res.json({ token });
   } catch (err: any) {

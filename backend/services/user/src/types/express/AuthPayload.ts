@@ -1,7 +1,7 @@
 export interface AuthPayload {
-  userId: string;
+  _id: string;             // ✅ replace userId with _id to reflect Mongoose doc ID
   userType: number;
-  lastname: string;
   firstname: string;
+  lastname: string;
   eMailAddr: string;
 }

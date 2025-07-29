@@ -7,7 +7,11 @@ export const proxyRequest = async (
   serviceBaseUrl: string
 ) => {
   const method = req.method.toUpperCase();
-  const targetUrl = `${serviceBaseUrl}${req.url}`;
+
+  // 🪓 Strip the mount path (/Users) from the URL
+  const forwardedPath = req.originalUrl.replace(/^\/Users/, '') || '/';
+  const targetUrl = `${serviceBaseUrl}${forwardedPath}`;
+
   console.log(`[proxy] ${method} → ${targetUrl}`);
 
   try {
@@ -16,13 +20,12 @@ export const proxyRequest = async (
       url: targetUrl,
       headers: {
         ...(req.headers as AxiosRequestHeaders),
-        host: undefined, // strip host header which breaks some proxies
+        host: undefined,
       },
       params: req.query,
       timeout: 5000,
     };
 
-    // ✅ Only attach body for methods that support it
     if (['POST', 'PUT', 'PATCH'].includes(method)) {
       axiosOptions.data = req.body;
     }

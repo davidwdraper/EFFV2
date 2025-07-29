@@ -1,10 +1,9 @@
+// index.ts
 import app from './src/app';
-import dotenv from 'dotenv';
+import { config } from './src/config';
 
-dotenv.config();
-
-const PORT = process.env.PORT || 4009;
+const PORT = process.env.EVENTPLACE_PORT || config.port || 4009;
 
 app.listen(PORT, () => {
-  console.log(`eventplace service running on port ${PORT}`);
+  console.log(`EventPlace service running on port ${PORT}`);
 });

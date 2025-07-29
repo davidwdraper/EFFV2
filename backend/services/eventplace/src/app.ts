@@ -1,11 +1,11 @@
+// src/app.ts
 import express from 'express';
+import './db'; // triggers MongoDB connection
 import eventPlaceRoutes from './routes/eventPlaceRoutes';
-import bodyParser from 'body-parser';
-import './db'; // database connection
 
 const app = express();
 
-app.use(bodyParser.json());
+app.use(express.json());
 app.use('/eventplaces', eventPlaceRoutes);
 
 export default app;

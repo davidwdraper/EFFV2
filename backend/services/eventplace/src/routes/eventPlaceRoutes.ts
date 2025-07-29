@@ -1,3 +1,4 @@
+// src/routes/eventPlaceRoutes.ts
 import express from 'express';
 import {
   getEventPlacesForEvent,

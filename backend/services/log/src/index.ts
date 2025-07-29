@@ -1,16 +1,14 @@
 import express from 'express';
 import mongoose from 'mongoose';
-import dotenv from 'dotenv';
-import logRoutes from './routes/logRoutes';
+import { config } from './config';
 
-dotenv.config();
 const app = express();
-app.use(express.json());
-app.use('/logs', logRoutes);
 
-mongoose.connect(process.env.MONGO_URI!)
-  .then(() => {
-    app.listen(process.env.PORT, () =>
-      console.log(`Log service listening on port ${process.env.PORT}`)
-    );
-  }).catch(console.error);
+mongoose
+  .connect(config.mongoUri)
+  .then(() => console.log('[MongoDB] connected'))
+  .catch((err) => console.error('[MongoDB] connection error:', err));
+
+app.listen(config.port, () => {
+  console.log(`Log running on port ${config.port}`);
+});

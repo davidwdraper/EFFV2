@@ -1,12 +1,15 @@
+// src/models/EventPlace.ts
 import mongoose from 'mongoose';
 
 const eventPlaceSchema = new mongoose.Schema({
   eventId: { type: String, required: true },
   placeId: { type: String, required: true },
   dateCreated: { type: Date, required: true },
-  createUserId: { type: String, required: true },
-}, { versionKey: false });
+  userId: { type: String, required: true }
+}, { _id: false });
 
 eventPlaceSchema.index({ eventId: 1, placeId: 1 }, { unique: true });
 
-export const EventPlace = mongoose.model('EventPlace', eventPlaceSchema);
+const EventPlaceModel = mongoose.model('EventPlace', eventPlaceSchema);
+
+export default EventPlaceModel;

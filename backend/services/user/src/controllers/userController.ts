@@ -1,68 +1,63 @@
-/// <reference path="../types/express/index.d.ts" />
+import { Request, Response } from 'express';
+import { UserModel } from '../models/User';
+import { IUser } from '../models/IUser';
 
-import express from 'express';
-import { Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
-import UserModel from '../models/User';
-import { dateNow } from '../misc/utils/dateUtils';
-import { newId } from '../misc/utils/idUtils';
-import { sendError, sendSuccess } from '../misc/utils/response';
-
-// Define the expected shape of req.body
-interface CreateUserBody {
-  userType: number;
-  firstname: string;
-  lastname: string;
-  middlename?: string;
-  eMailAddr: string;
-  imageIds?: string[];
-}
-
-export const createUser = async (
-  req: express.Request<unknown, unknown, CreateUserBody>,
-  res: Response
-) => {
+export const createUser = async (req: Request, res: Response) => {
   try {
-    const creatorId = req.user?.userId;
-
-    console.log("req.user: ", req.user);
-    console.log("req.body: ", req.body);
-
-    if (!creatorId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
     const {
-      userType,
+      eMailAddr,
+      password,
       firstname,
       lastname,
       middlename,
-      eMailAddr,
-      imageIds,
+      userType = 1,
     } = req.body;
 
-    const createdAt = dateNow();
+    // 🔍 Check if email already exists
+    const existing = await UserModel.findOne({ eMailAddr });
+    if (existing) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
 
-    const userData = {
-      dateCreated: createdAt,
-      dateLastUpdated: createdAt,
-      userStatus: 0,
-      userType,
-      userEntryId: creatorId,
-      userOwnerId: creatorId,
+    const now = new Date();
+
+    // 📦 Build user data
+    const userData: Partial<IUser> = {
+      eMailAddr,
+      password,
       firstname,
       lastname,
       middlename,
-      eMailAddr,
-      imageIds: Array.isArray(imageIds) ? imageIds.slice(0, 10) : [],
+      userType,
+      userStatus: 0,
+      dateCreated: now,
+      dateLastUpdated: now,
+      imageIds: [],
     };
 
+    // 🧾 Save user (hashing + ID assignment handled by schema)
     const user = new UserModel(userData);
     await user.save();
 
-    return sendSuccess(res, user);
+    return res.status(201).json({ id: user._id });
   } catch (err: any) {
-    console.error('User creation failed:', err.message);
-    return sendError(res, err.message)
+    console.error('[UserService] createUser error:', err);
+    return res.status(500).json({ error: 'Failed to create user' });
   }
 };
+
+export const getUserByEmail = async (req: Request, res: Response) => {
+  try {
+    const user = await UserModel.findOne({ eMailAddr: req.params.eMailAddr }).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(user);
+  } catch (err: any) {
+    console.error('[UserService] getUserByEmail error:', err.message);
+    return res.status(500).json({ error: 'Failed to retrieve user' });
+  }
+};
+

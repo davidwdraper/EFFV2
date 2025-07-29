@@ -5,7 +5,10 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["**/*.ts"]
+  "include": ["index.ts", "src/**/*"]
 }

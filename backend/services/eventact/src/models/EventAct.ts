@@ -1,12 +1,14 @@
+// src/models/EventAct.ts
 import mongoose from 'mongoose';
 
 const eventActSchema = new mongoose.Schema({
   eventId: { type: String, required: true },
   actId: { type: String, required: true },
-  dateCreated: { type: Date, required: true },
-  createUserId: { type: String, required: true },
-}, { versionKey: false });
+  dateCreated: { type: Date, required: true }
+}, { _id: false });
 
 eventActSchema.index({ eventId: 1, actId: 1 }, { unique: true });
 
-export const EventAct = mongoose.model('EventAct', eventActSchema);
+const EventActModel = mongoose.model('EventAct', eventActSchema);
+
+export default EventActModel;

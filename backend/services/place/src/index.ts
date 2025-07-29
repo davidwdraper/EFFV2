@@ -1,16 +1,14 @@
 import express from 'express';
 import mongoose from 'mongoose';
-import dotenv from 'dotenv';
-import placeRoutes from './routes/placeRoutes';
+import { config } from './config';
 
-dotenv.config();
 const app = express();
-app.use(express.json());
-app.use('/places', placeRoutes);
 
-mongoose.connect(process.env.MONGO_URI!)
-  .then(() => {
-    app.listen(process.env.PORT, () =>
-      console.log(`Place service listening on port ${process.env.PORT}`)
-    );
-  }).catch(console.error);
+mongoose
+  .connect(config.mongoUri)
+  .then(() => console.log('[MongoDB] connected'))
+  .catch((err) => console.error('[MongoDB] connection error:', err));
+
+app.listen(config.port, () => {
+  console.log(`Place running on port ${config.port}`);
+});

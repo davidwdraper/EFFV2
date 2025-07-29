@@ -14,13 +14,16 @@ export const proxyRequest = async (
     const axiosOptions: any = {
       method,
       url: targetUrl,
-      headers: { ...req.headers } as AxiosRequestHeaders,
+      headers: {
+        ...(req.headers as AxiosRequestHeaders),
+        host: undefined, // strip host header which breaks some proxies
+      },
       params: req.query,
       timeout: 5000,
     };
 
-    // 🛑 Only send body on POST/PUT/PATCH
-    if (!['GET', 'HEAD', 'DELETE'].includes(method)) {
+    // ✅ Only attach body for methods that support it
+    if (['POST', 'PUT', 'PATCH'].includes(method)) {
       axiosOptions.data = req.body;
     }
 

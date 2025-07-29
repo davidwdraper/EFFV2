@@ -1,26 +1,14 @@
 import express from 'express';
+import { proxyRequest } from '../utils/proxyHelper';
+
 const router = express.Router();
 
-// GET all users
-router.get('/', (req, res) => {
-  res.status(200).json({ data: [], message: 'Successfully fetched users (stub)' });
-});
+// Use environment variable or fallback to Docker service name
+const SERVICE_URL = process.env.USER_SERVICE_URL || 'http://user-service:4001';
 
-// CREATE a new user
-router.post('/', (req, res) => {
-  res.status(201).json({ message: 'User created (stub)', user: req.body });
-});
+console.log(`[orchestrator-core:userRoutes] Proxying to ${SERVICE_URL}`);
 
-// UPDATE a user
-router.put('/:id', (req, res) => {
-  const { id } = req.params;
-  res.status(200).json({ message: 'User ' + id + ' updated (stub)', updatedFields: req.body });
-});
-
-// DELETE a user
-router.delete('/:id', (req, res) => {
-  const { id } = req.params;
-  res.status(200).json({ message: 'User ' + id + ' deleted (stub)' });
-});
+// Forward all /Users requests to userService
+router.all('*', (req, res) => proxyRequest(req, res, SERVICE_URL));
 
 export default router;

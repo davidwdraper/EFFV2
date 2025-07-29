@@ -3,8 +3,9 @@
     "target": "ES6",
     "module": "CommonJS",
     "esModuleInterop": true,
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "strict": true
-  }
+    "strict": true,
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": ["index.ts", "src/**/*.ts"]
 }

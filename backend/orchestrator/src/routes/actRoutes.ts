@@ -6,13 +6,29 @@ import { JWT_SECRET } from '../routes/shared/env'; // adjust path if needed
 const router = express.Router();
 const SERVICE_URL = process.env.ACT_SERVICE_URL || 'http://localhost:4002';
 
-// Injected auth middleware
-const authenticate = createAuthenticateMiddleware(JWT_SECRET);
+let authenticate: express.RequestHandler;
+
+// 🛡️ Safe middleware injection
+try {
+  authenticate = createAuthenticateMiddleware(JWT_SECRET);
+} catch (err) {
+  console.error('[actRoutes] Failed to initialize authentication middleware:', err);
+  authenticate = (_req, res, _next) => {
+    res.status(500).json({ error: 'Authentication system misconfigured' });
+  };
+}
 
 // 🔒 Protect all Act requests
 router.use(authenticate);
 
 // 🔁 Proxy to Act service
-router.all('*', (req, res) => proxyRequest(req, res, SERVICE_URL));
+router.all('*', (req, res) => {
+  try {
+    proxyRequest(req, res, SERVICE_URL);
+  } catch (err) {
+    console.error('[actRoutes] Proxy error:', err);
+    res.status(500).json({ error: 'Internal proxy error' });
+  }
+});
 
 export default router;

@@ -1,14 +1,24 @@
 import express from 'express';
 import { proxyRequest } from '../utils/proxyHelper';
 import { createAuthenticateMiddleware } from '../middleware/authenticate';
-import { JWT_SECRET } from '../routes/shared/env'; // adjust path if using aliases or different structure
+import { JWT_SECRET } from '../routes/shared/env'; // adjust path if needed
 
 const router = express.Router();
 
 const SERVICE_URL = process.env.USER_SERVICE_URL || 'http://localhost:4001';
 
-// Create the middleware with the injected secret
-const authenticate = createAuthenticateMiddleware(JWT_SECRET);
+let authenticate: express.RequestHandler;
+
+// 🛡️ Safe middleware injection
+try {
+  authenticate = createAuthenticateMiddleware(JWT_SECRET);
+} catch (err) {
+  console.error('[userRoutes] Failed to initialize authentication middleware:', err);
+  // Middleware that fails all protected requests
+  authenticate = (_req, res, _next) => {
+    res.status(500).json({ error: 'Authentication system misconfigured' });
+  };
+}
 
 // 🔒 Only protect PUT and DELETE
 router.use((req, res, next) => {
@@ -20,6 +30,13 @@ router.use((req, res, next) => {
 });
 
 // 🔁 Forward all requests to user service
-router.all('*', (req, res) => proxyRequest(req, res, SERVICE_URL));
+router.all('*', (req, res) => {
+  try {
+    proxyRequest(req, res, SERVICE_URL);
+  } catch (err) {
+    console.error('[userRoutes] Proxy error:', err);
+    res.status(500).json({ error: 'Internal proxy error' });
+  }
+});
 
 export default router;

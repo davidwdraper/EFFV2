@@ -1,12 +1,17 @@
 import mongoose from 'mongoose';
 
-const logSchema = new mongoose.Schema({
-  endpoint: String,
-  method: String,
-  userId: { type: String, default: 'anonymous' },
-  timestamp: { type: Date, default: Date.now },
-  payload: mongoose.Schema.Types.Mixed
+const LogSchema = new mongoose.Schema({
+  logType: { type: Number, required: true },
+  logSeverity: { type: Number, required: true },
+  message: { type: String, required: true },
+  path: { type: String },
+  userId: { type: String },
+  entityId: { type: String },
+  entityName: { type: String },
+  service: { type: String },
+  sourceFile: { type: String },
+  sourceLine: { type: Number },
+  timeCreated: { type: Date, required: true },
 });
 
-const Log = mongoose.model('Log', logSchema);
-export default Log;
+export const LogModel = mongoose.model('Log', LogSchema);

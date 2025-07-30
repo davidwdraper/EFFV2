@@ -1,0 +1,14 @@
+{
+  logId: string;
+  logType: number;
+  logSeverity: number;
+  message: string;
+  path?: string;
+  userId?: string;
+  entityId?: string;
+  entityName?: string;
+  service?: string;
+  sourceFile?: string;
+  sourceLine?: number;
+  timeCreated: Date;
+}

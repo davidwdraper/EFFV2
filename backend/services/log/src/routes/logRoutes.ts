@@ -1,21 +1,17 @@
 import express from 'express';
-import Log from '../models/Log';
+import { LogModel } from '../models/Log';
 
 const router = express.Router();
 
 router.post('/', async (req, res) => {
   try {
-    const log = new Log(req.body);
-    await log.save();
-    res.status(201).send({ success: true });
+    const logEntry = new LogModel(req.body);
+    await logEntry.save();
+    res.status(201).json({ success: true });
   } catch (err) {
-    res.status(500).send({ error: 'Failed to save log', details: err });
+    console.error('[LogService] Failed to save log:', err);
+    res.status(500).json({ error: 'Failed to save log' });
   }
-});
-
-router.get('/', async (req, res) => {
-  const logs = await Log.find().sort({ timestamp: -1 }).limit(100);
-  res.send(logs);
 });
 
 export default router;

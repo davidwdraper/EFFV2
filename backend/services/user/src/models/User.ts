@@ -9,7 +9,6 @@ function arrayLimit(val: string[]) {
 
 const userSchema = new Schema<IUser>(
   {
-    _id: { type: String, required: true },
     dateCreated: { type: Date, required: true },
     dateLastUpdated: { type: Date, required: true },
     userStatus: { type: Number, required: true, default: 0 },

@@ -4,10 +4,18 @@ import authenticate from '../middleware/authenticate';
 
 const router = express.Router();
 
-// NOTE: This must match your docker-compose service name
 const SERVICE_URL = process.env.USER_SERVICE_URL || 'http://localhost:4001';
 
-router.use(authenticate);
+// 🔒 Only protect PUT and DELETE
+router.use((req, res, next) => {
+  const needsAuth = ['PUT', 'DELETE'].includes(req.method.toUpperCase());
+  if (needsAuth) {
+    return authenticate(req, res, next);
+  }
+  next(); // skip auth for GET and POST
+});
+
+// 🔁 Forward all requests to user service
 router.all('*', (req, res) => proxyRequest(req, res, SERVICE_URL));
 
 export default router;

@@ -1,46 +1,52 @@
-import axios, { AxiosRequestHeaders } from 'axios';
+import axios from 'axios';
 import { Request, Response } from 'express';
 
-export const proxyRequest = async (
-  req: Request,
-  res: Response,
-  serviceBaseUrl: string
-) => {
-  const method = req.method.toUpperCase();
-
-  // 🪓 Strip the mount path (/Users) from the URL
-  const forwardedPath = req.originalUrl.replace(/^\/Users/, '') || '/';
-  const targetUrl = `${serviceBaseUrl}${forwardedPath}`;
-
-  console.log(`[proxy] ${method} → ${targetUrl}`);
-
+/**
+ * Proxies an incoming request to a target service URL.
+ * Forwards method, headers (selectively), and body if applicable.
+ */
+export async function proxyRequest(req: Request, res: Response, serviceUrl: string) {
   try {
-    const axiosOptions: any = {
-      method,
-      url: targetUrl,
-      headers: {
-        ...(req.headers as AxiosRequestHeaders),
-        host: undefined,
-      },
-      params: req.query,
-      timeout: 5000,
-    };
+    const targetUrl = `${serviceUrl}${req.originalUrl}`;
+    const method = req.method.toLowerCase();
 
-    if (['POST', 'PUT', 'PATCH'].includes(method)) {
-      axiosOptions.data = req.body;
+    console.log(`[orchestrator] [proxy] ${req.method} → ${targetUrl}`);
+    if (['POST', 'PUT', 'PATCH'].includes(req.method.toUpperCase())) {
+      console.log('[proxy] body:', req.body);
     }
 
-    const response = await axios(axiosOptions);
-    res.status(response.status).send(response.data);
+    // ✅ Forward only safe headers
+    const { authorization, cookie } = req.headers;
+    const headers: Record<string, any> = {
+      authorization,
+      cookie,
+      'Content-Type': 'application/json',
+    };
+
+    // ✅ Build axios request
+    const response = await axios({
+      method,
+      url: targetUrl,
+      headers,
+      data: ['POST', 'PUT', 'PATCH'].includes(req.method.toUpperCase())
+        ? req.body
+        : undefined,
+      timeout: 5000,
+    });
+
+    // ✅ Forward response back to caller
+    res.status(response.status).set(response.headers).send(response.data);
+
   } catch (err: any) {
     const status = err.response?.status || 500;
-    const message =
-      err.response?.data?.error ||
-      err.response?.data ||
-      err.message ||
-      'Unknown proxy error';
+    const message = err.message || 'Unknown error';
 
-    console.error(`[proxy error] ${method} ${targetUrl} → ${status}: ${message}`);
-    res.status(status).json({ error: message });
+    console.error(`[orchestrator] [proxy error] ${req.method} ${serviceUrl}${req.originalUrl} → ${status}: ${message}`);
+
+    if (err.response?.data) {
+      res.status(status).send(err.response.data);
+    } else {
+      res.status(status).json({ error: message });
+    }
   }
-};
+}

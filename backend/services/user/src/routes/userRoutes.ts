@@ -3,13 +3,13 @@ import { UserModel } from '../models/User';
 import { authenticate } from '../middleware/authenticate';
 import {
   createUser,
-  getUserByEmail,
+  getUserByEmail
 } from '../controllers/userController';
 
 const router = express.Router();
 
-// 🛡️ POST - Create a user (authenticated)
-router.post('/', authenticate, createUser);
+// 🛡️ POST - Create a user (anonymous/public)
+router.post('/', createUser);
 
 // 🔍 GET - Get user by email (public)
 router.get('/email/:eMailAddr', getUserByEmail);
@@ -37,7 +37,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ✏️ PUT - Update user by ID (authenticated)
+// ✏️ PUT - Update user by ID (protected)
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const user = await UserModel.findByIdAndUpdate(req.params.id, req.body, { new: true });
@@ -49,7 +49,7 @@ router.put('/:id', authenticate, async (req, res) => {
   }
 });
 
-// ❌ DELETE - Delete user by ID (authenticated)
+// ❌ DELETE - Delete user by ID (protected)
 router.delete('/:id', authenticate, async (req, res) => {
   try {
     const result = await UserModel.findByIdAndDelete(req.params.id);

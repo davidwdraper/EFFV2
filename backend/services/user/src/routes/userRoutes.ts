@@ -3,42 +3,62 @@ import { UserModel } from '../models/User';
 import { authenticate } from '../middleware/authenticate';
 import {
   createUser,
-  getUserByEmail
+  getUserByEmail,
 } from '../controllers/userController';
 
 const router = express.Router();
 
-// 🛡️ Create a user (authenticated)
+// 🛡️ POST - Create a user (authenticated)
 router.post('/', authenticate, createUser);
 
-// 🔍 Get user by email – must come before /:id to avoid being shadowed
+// 🔍 GET - Get user by email (public)
 router.get('/email/:eMailAddr', getUserByEmail);
 
-// 📋 Get all users
+// 📋 GET - Get all users (public)
 router.get('/', async (req, res) => {
-  const users = await UserModel.find();
-  res.send(users);
+  try {
+    const users = await UserModel.find();
+    res.status(200).json(users);
+  } catch (err) {
+    console.error('[User] GET / - Error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// 📄 Get user by ID
+// 📄 GET - Get user by ID (public)
 router.get('/:id', async (req, res) => {
-  const user = await UserModel.findById(req.params.id);
-  if (!user) return res.status(404).send({ error: 'Not found' });
-  res.send(user);
+  try {
+    const user = await UserModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.status(200).json(user);
+  } catch (err) {
+    console.error('[User] GET /:id - Error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// ✏️ Update user by ID
-router.put('/:id', async (req, res) => {
-  const user = await UserModel.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  if (!user) return res.status(404).send({ error: 'Not found' });
-  res.send(user);
+// ✏️ PUT - Update user by ID (authenticated)
+router.put('/:id', authenticate, async (req, res) => {
+  try {
+    const user = await UserModel.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.status(200).json(user);
+  } catch (err) {
+    console.error('[User] PUT /:id - Error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// ❌ Delete user by ID
-router.delete('/:id', async (req, res) => {
-  const result = await UserModel.findByIdAndDelete(req.params.id);
-  if (!result) return res.status(404).send({ error: 'Not found' });
-  res.send({ success: true });
+// ❌ DELETE - Delete user by ID (authenticated)
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    const result = await UserModel.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'User not found' });
+    res.status(200).json({ success: true });
+  } catch (err) {
+    console.error('[User] DELETE /:id - Error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 export default router;

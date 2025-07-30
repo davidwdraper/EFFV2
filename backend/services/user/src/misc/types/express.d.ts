@@ -9,7 +9,7 @@ declare global {
 }
 
 export interface AuthPayload {
-  userId: string;
+  _id: string;
   userType: number;
   firstname: string;
   lastname: string;

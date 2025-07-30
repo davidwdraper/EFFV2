@@ -4,10 +4,14 @@ import { Request } from 'express';
 
 const NODE_ENV = process.env.NODE_ENV || 'dev';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
-const LOG_SERVICE_URL = process.env.LOG_SERVICE_URL || 'http://localhost:4006/logs';
+const LOG_SERVICE_URL = process.env.LOG_SERVICE_URL || 'http://localhost:4006/log';
 
-const levelMap = { error: 0, warn: 1, info: 2, debug: 3 };
-const currentLevel = levelMap[LOG_LEVEL.toLowerCase()] ?? 2;
+const levelMap: Record<string, number> = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  debug: 3
+};const currentLevel = levelMap[LOG_LEVEL.toLowerCase()] ?? 2;
 
 function getCallerLocation(): { service?: string; file?: string; line?: number } {
   const err = new Error();
@@ -60,11 +64,15 @@ export const logger = {
         sourceLine: line,
         timeCreated: new Date().toISOString(),
       });
-    } catch (err) {
-      if (NODE_ENV !== 'production') {
-        console.warn('[logger] Failed to send log:', err.message);
-      }
+    } catch (err: unknown) {
+  if (NODE_ENV === 'dev') {
+    if (err instanceof Error) {
+      console.warn('[logger] Failed to send log:', err.message);
+    } else {
+      console.warn('[logger] Failed to send log:', err);
     }
+  }
+}
   },
 
   error(msg: string, meta?: Record<string, any>) {

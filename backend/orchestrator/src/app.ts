@@ -6,6 +6,7 @@ import userRoutes from './routes/userRoutes';
 import actRoutes from './routes/actRoutes';
 import eventRoutes from './routes/eventRoutes';
 import placeRoutes from './routes/placeRoutes';
+import imageRoutes from './routes/imageRoutes';
 import logRoutes from './routes/logRoutes';
 import router from './routes/userRoutes';
 

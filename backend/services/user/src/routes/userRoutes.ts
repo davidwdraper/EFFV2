@@ -2,6 +2,7 @@ import express from 'express';
 import { UserModel } from '../models/User';
 import { createAuthenticateMiddleware } from '../middleware/authenticate';
 import { JWT_SECRET } from './shared/env'; // adjust path if needed
+import { logger } from '@shared/utils/logger';
 import {
   createUser,
   getUserByEmail
@@ -32,6 +33,7 @@ router.get('/', async (req, res) => {
 // 📄 GET - Get user by ID (public)
 router.get('/:id', async (req, res) => {
   try {
+    logger.debug("[User] GET/id: " + req.params.id);
     const user = await UserModel.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.status(200).json(user);

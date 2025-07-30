@@ -2,14 +2,15 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "commonjs",
-    "baseUrl": ".", // ROOT of backend
+    "baseUrl": ".", // <- very important
+    "typeRoots": ["./shared/types", "./node_modules/@types"],
     "paths": {
-      "@shared/*": ["shared/*"] // Resolves to backend/shared/*
+      "@shared/*": ["shared/*"] // <- must match layout
     },
     "moduleResolution": "node",
     "esModuleInterop": true,
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["**/*.ts"]
+  "include": ["services/**/*.ts", "shared/**/*.ts"]
 }

@@ -1,7 +1,6 @@
 // src/app.ts
 import express from 'express';
 import dotenv from 'dotenv';
-import authenticate from './middleware/authenticate';
 import userRoutes from './routes/userRoutes';
 import actRoutes from './routes/actRoutes';
 import eventRoutes from './routes/eventRoutes';

@@ -1,6 +1,9 @@
 import { Request, Response } from 'express';
 import { UserModel } from '../models/User';
 import { IUser } from '../models/IUser';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+import path from 'path';
 
 export const createUser = async (req: Request, res: Response) => {
   try {
@@ -18,6 +21,13 @@ export const createUser = async (req: Request, res: Response) => {
     if (existing) {
       return res.status(409).json({ error: 'Email already registered' });
     }
+
+    const currentEnv = process.env.NODE_ENV || 'dev';
+    //const envPath = path.resolve(process.cwd(), `.env.${currentEnv}`);
+    const envPath = path.resolve(__dirname, '../../../../../.env.' + currentEnv);
+    dotenv.config({ path: envPath });
+
+    console.log(`[User env] Loaded environment: ${currentEnv} from ${envPath}`);
 
     const now = new Date();
 
@@ -39,7 +49,34 @@ export const createUser = async (req: Request, res: Response) => {
     const user = new UserModel(userData);
     await user.save();
 
-    return res.status(201).json({ id: user._id });
+    // 🔐 Create JWT
+    const JWT_SECRET = process.env.JWT_SECRET || '2468';
+    console.log("[jwt.sign] JWT_SECRET: ", JWT_SECRET);
+
+    const token = jwt.sign(
+      {
+        _id: user._id.toString(),
+        firstname: user.firstname,
+        lastname: user.lastname,
+        eMailAddr: user.eMailAddr,
+        userType: user.userType,
+      },
+      JWT_SECRET,
+      { expiresIn: '100h' }
+    );
+
+    // ✅ Return user + token
+    return res.status(201).json({
+      user: {
+        _id: user._id,
+        firstname: user.firstname,
+        lastname: user.lastname,
+        middlename: user.middlename,
+        eMailAddr: user.eMailAddr,
+        userType: user.userType,
+      },
+      token,
+    });
   } catch (err: any) {
     console.error('[UserService] createUser error:', err);
     return res.status(500).json({ error: 'Failed to create user' });

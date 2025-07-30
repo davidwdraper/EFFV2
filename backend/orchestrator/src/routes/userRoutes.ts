@@ -1,10 +1,14 @@
 import express from 'express';
 import { proxyRequest } from '../utils/proxyHelper';
-import authenticate from '../middleware/authenticate';
+import { createAuthenticateMiddleware } from '../middleware/authenticate';
+import { JWT_SECRET } from '../routes/shared/env'; // adjust path if using aliases or different structure
 
 const router = express.Router();
 
 const SERVICE_URL = process.env.USER_SERVICE_URL || 'http://localhost:4001';
+
+// Create the middleware with the injected secret
+const authenticate = createAuthenticateMiddleware(JWT_SECRET);
 
 // 🔒 Only protect PUT and DELETE
 router.use((req, res, next) => {

@@ -1,12 +1,16 @@
 import express from 'express';
 import { UserModel } from '../models/User';
-import { authenticate } from '../middleware/authenticate';
+import { createAuthenticateMiddleware } from '../middleware/authenticate';
+import { JWT_SECRET } from './shared/env'; // adjust path if needed
 import {
   createUser,
   getUserByEmail
 } from '../controllers/userController';
 
 const router = express.Router();
+
+// Inject JWT_SECRET into middleware
+const authenticate = createAuthenticateMiddleware(JWT_SECRET);
 
 // 🛡️ POST - Create a user (anonymous/public)
 router.post('/', createUser);

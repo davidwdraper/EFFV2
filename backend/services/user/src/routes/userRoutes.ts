@@ -34,6 +34,8 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     logger.debug("[User] GET/id: " + req.params.id);
+    console.log("[User] GET/id: ", req.params.id);
+
     const user = await UserModel.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.status(200).json(user);

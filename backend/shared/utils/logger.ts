@@ -1,4 +1,4 @@
-// File: services/shared/utils/logger.ts
+// File: shared/utils/logger.ts
 import axios from 'axios';
 import { Request } from 'express';
 
@@ -6,20 +6,38 @@ const NODE_ENV = process.env.NODE_ENV || 'dev';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 const LOG_SERVICE_URL = process.env.LOG_SERVICE_URL || 'http://localhost:4006/log';
 
+console.warn('[logger] 🧪 This is the real logger.ts being loaded');
+
 const levelMap: Record<string, number> = {
   error: 0,
   warn: 1,
   info: 2,
   debug: 3
-};const currentLevel = levelMap[LOG_LEVEL.toLowerCase()] ?? 2;
+};
+
+const currentLevel = levelMap[LOG_LEVEL.toLowerCase()] ?? 2;
 
 function getCallerLocation(): { service?: string; file?: string; line?: number } {
   const err = new Error();
   const stack = err.stack?.split('\n') || [];
-  const callerLine = stack[3] || '';
-  const match = callerLine.match(/\((.*):(\d+):(\d+)\)/);
 
-  if (!match) return {};
+  // Find first stack line outside logger.ts and node_modules
+  const callerLine = stack.find(line =>
+    line.includes('/services/') &&
+    line.includes('.ts') &&
+    !line.includes('node_modules')
+  );
+
+  if (!callerLine) {
+    console.warn('[logger] No matching caller line found');
+    return {};
+  }
+
+  const match = callerLine.match(/at\s+(.*):(\d+):(\d+)/);
+  if (!match) {
+    console.warn('[logger] Regex failed to extract location from:', callerLine);
+    return {};
+  }
 
   const fullPath = match[1];
   const line = parseInt(match[2], 10);
@@ -43,15 +61,12 @@ function extractLogContext(req: Request): Record<string, any> {
 }
 
 export const logger = {
-  async log(type: 'error' | 'warn' | 'info' | 'debug', message: string, meta: Record<string, any> = {}) {
-    const level = levelMap[type];
-    if (level > currentLevel) return;
+async log(type: 'error' | 'warn' | 'info' | 'debug', message: string, meta: Record<string, any> = {}) {
+  const level = levelMap[type];
+  console.warn(`[logger] log() called with type="${type}" | level=${level} | currentLevel=${currentLevel}`); // ✅ Add this
+  if (level > currentLevel) return;
 
-    const { service, file, line } = getCallerLocation();
-
-    if (NODE_ENV !== 'production') {
-      console[type](`[${type.toUpperCase()}]`, message, { ...meta, service, file, line });
-    }
+  const { service, file, line } = getCallerLocation();
 
     try {
       await axios.post(LOG_SERVICE_URL, {
@@ -65,14 +80,15 @@ export const logger = {
         timeCreated: new Date().toISOString(),
       });
     } catch (err: unknown) {
-  if (NODE_ENV === 'dev') {
-    if (err instanceof Error) {
-      console.warn('[logger] Failed to send log:', err.message);
-    } else {
-      console.warn('[logger] Failed to send log:', err);
+      if (NODE_ENV === 'dev') {
+        if (err instanceof Error) {
+          // TODO: write to filesystem
+          console.warn('[logger] Failed to send log:', err.message);
+        } else {
+          console.warn('[logger] Failed to send log:', err);
+        }
+      }
     }
-  }
-}
   },
 
   error(msg: string, meta?: Record<string, any>) {

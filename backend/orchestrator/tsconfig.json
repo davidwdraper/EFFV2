@@ -1,12 +1,8 @@
 {
-  "extends": "../tsconfig.json",
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "rootDir": "../", // <- expand root to allow shared/
+    "rootDir": ".",
     "outDir": "./dist"
   },
-  "include": [
-    "index.ts",
-    "src/**/*.ts",
-    "../shared/**/*.ts" // <- allow shared code to be compiled
-  ]
+  "include": ["index.ts", "src/**/*.ts"]
 }

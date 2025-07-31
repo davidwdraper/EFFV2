@@ -2,15 +2,15 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "commonjs",
-    "baseUrl": ".", // <- very important
-    "typeRoots": ["./shared/types", "./node_modules/@types"],
+    "rootDir": ".",
+    "outDir": "dist",
+    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["shared/*"] // <- must match layout
+      "@shared/*": ["shared/*"]
     },
-    "moduleResolution": "node",
     "esModuleInterop": true,
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["services/**/*.ts", "shared/**/*.ts"]
+  "include": ["**/*.ts"]
 }

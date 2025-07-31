@@ -37,11 +37,9 @@ elif [ "$MODE" == "dev" ]; then
 
   for service in "${SERVICES[@]}"; do
     path="backend/services/$service"
-    [ "$service" == "orchestrator" ] && path="backend/orchestrator"
-    [ "$service" == "orchestrator-core" ] && path="backend/orchestrator-core"
 
     if [ -d "$path" ]; then
-      COMMANDS+=("cd $path && NODE_ENV=dev yarn dev")
+      COMMANDS+=("cd $path && NODE_ENV=dev dotenv -e ../../../.env.dev -- yarn dev")
       NAMES+=("$service")
     else
       echo "⚠️  Skipping missing service: $service"

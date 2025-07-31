@@ -1,7 +1,7 @@
 import express from 'express';
 import { proxyRequest } from '../utils/proxyHelper';
 import { createAuthenticateMiddleware } from '../middleware/authenticate';
-import { JWT_SECRET } from '../routes/shared/env'; // adjust path as needed
+import { JWT_SECRET } from './shared/env'; // adjust path as needed
 
 const router = express.Router();
 const SERVICE_URL = process.env.IMAGE_SERVICE_URL || 'http://localhost:4005';

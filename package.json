@@ -8,11 +8,23 @@
     "backend/orchestrator-core"
   ],
   "devDependencies": {
+    "@types/axios": "^0.14.4",
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
-    "concurrently": "^8.0.0"
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.0.0",
+    "concurrently": "^8.0.0",
+    "dotenv-cli": "^10.0.0"
   },
   "scripts": {
     "dev": "./run.sh dev",
     "docker": "./run.sh docker"
+  },
+  "dependencies": {
+    "axios": "^1.11.0",
+    "bcrypt": "^6.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2"
   }
 }

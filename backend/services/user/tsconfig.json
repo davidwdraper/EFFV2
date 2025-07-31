@@ -1,8 +1,9 @@
 {
-  "extends": "../../../tsconfig.json",
+  "extends": "../tsconfig.json",
   "compilerOptions": {
-    "rootDir": ".",
-    "outDir": "dist"
+    "typeRoots": ["../../node_modules/@types", "../../shared/types"],
+    "rootDir": "..",
+    "outDir": "../dist/user"
   },
-  "include": ["index.ts", "src/**/*.ts"]
+  "include": ["index.ts", "src/**/*"]
 }

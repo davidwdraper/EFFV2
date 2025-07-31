@@ -1,9 +1,9 @@
-'use client';
-import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
-import { getPlace } from '../../services/placeService';
-import { useAuth } from '../../utils/auth';
-import { Place } from '../../../shared/interfaces/Place';
+"use client";
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+import { getPlace } from "../../services/placeService";
+import { useAuth } from "../../utils/auth";
+import { Place } from "../../../shared/interfaces/Place";
 
 export default function PlaceDetail() {
   const { id } = useParams();
@@ -16,16 +16,21 @@ export default function PlaceDetail() {
 
   if (!place) return <p>Loading...</p>;
 
-  const canEdit = currentUser && (isAdmin || currentUser.userId === place.userOwnerId);
+  const canEdit =
+    currentUser && (isAdmin || currentUser._id === place.userOwnerId);
 
   return (
     <main>
       <h1>{place.name}</h1>
-      <p>{place.addr1}, {place.city}, {place.state}, {place.zip}</p>
+      <p>
+        {place.addr1}, {place.city}, {place.state}, {place.zip}
+      </p>
       <p>Email: {place.eMailAddr}</p>
-      <div style={{ height: '300px', width: '100%', background: '#ccc' }}>
+      <div style={{ height: "300px", width: "100%", background: "#ccc" }}>
         {/* Replace with actual Google Map later */}
-        <p>Map placeholder: ({place.lat}, {place.lng})</p>
+        <p>
+          Map placeholder: ({place.lat}, {place.lng})
+        </p>
       </div>
       {canEdit && (
         <div>

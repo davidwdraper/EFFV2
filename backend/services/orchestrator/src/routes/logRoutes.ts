@@ -1,18 +1,18 @@
 import express from 'express';
 import { proxyRequest } from '../utils/proxyHelper';
 import { createAuthenticateMiddleware } from '../middleware/authenticate';
-import { JWT_SECRET } from '../routes/shared/env'; // adjust if needed
+import { JWT_SECRET } from './shared/env'; // adjust path as needed
 
 const router = express.Router();
-const SERVICE_URL = process.env.EVENT_SERVICE_URL || 'http://localhost:4003';
+const SERVICE_URL = process.env.LOG_SERVICE_URL || 'http://localhost:4006';
 
-// Inject JWT secret into auth middleware
+// 🔒 Inject the shared JWT secret
 const authenticate = createAuthenticateMiddleware(JWT_SECRET);
 
-// 🔒 Apply auth to all Event routes
+// 🔐 Apply authentication to all log routes
 router.use(authenticate);
 
-// 🔁 Proxy all Event service traffic
+// 🔁 Proxy all log service requests
 router.all('*', (req, res) => proxyRequest(req, res, SERVICE_URL));
 
 export default router;

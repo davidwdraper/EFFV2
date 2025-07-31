@@ -1,13 +1,14 @@
 import jwt from 'jsonwebtoken';
 import { AuthPayload } from '../types/express/AuthPayload';
-import { Request, Response, NextFunction } from 'express';
+import { Response, NextFunction } from 'express';
+import { TypedRequest } from '@shared/types/TypedRequest';
 
 export const createAuthenticateMiddleware = (jwtSecret: string) => {
   if (!jwtSecret) {
     throw new Error('[Auth] JWT_SECRET is required');
   }
 
-  return (req: Request, res: Response, next: NextFunction) => {
+  return (req: TypedRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
     const token = authHeader?.split(' ')[1];
 
@@ -36,7 +37,7 @@ export const createAuthenticateMiddleware = (jwtSecret: string) => {
           firstname: decoded.firstname as string,
           lastname: decoded.lastname as string,
           eMailAddr: decoded.eMailAddr as string,
-        } as AuthPayload;
+        };
         return next();
       } else {
         console.warn('[Auth] Token payload missing required fields');

@@ -34,7 +34,7 @@ export default function ActDetail() {
 
   if (!act) return <p>Loading...</p>;
 
-  const canEdit = currentUser && (isAdmin || currentUser.userId === act.userOwnerId);
+  const canEdit = currentUser && (isAdmin || currentUser._id === act.userOwnerId);
 
   const handleRemove = async (userId: string) => {
     await deleteUserAct(act.actId, userId);

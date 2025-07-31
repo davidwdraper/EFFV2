@@ -40,7 +40,7 @@ export default function EventDetail() {
   if (!event) return <p>Loading...</p>;
 
   const canEdit =
-    currentUser && (isAdmin || currentUser.userId === event.userOwnerId);
+    currentUser && (isAdmin || currentUser._id === event.userOwnerId);
 
   const handleRemove = async (actId: string) => {
     await deleteEventAct(event.eventId, actId);

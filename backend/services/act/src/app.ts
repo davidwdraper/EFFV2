@@ -1,13 +1,11 @@
-// src/app.ts
 import express from 'express';
-import './db'; // triggers MongoDB connection
-import actRoutes from './routes/actRoutes'; // ✅ Import your routes
+import '@shared/types/express'; // 👈 Add this line
+import './db';
+import actRoutes from './routes/actRoutes';
 
 const app = express();
 
 app.use(express.json());
-
-// ✅ Mount your routes under /acts
 app.use('/acts', actRoutes);
 
 export default app;

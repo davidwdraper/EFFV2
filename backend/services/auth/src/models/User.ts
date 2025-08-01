@@ -3,13 +3,13 @@ import mongoose, { Document, Model, Schema } from 'mongoose';
 import bcrypt from 'bcrypt';
 
 export interface IUser extends Document {
-  email: string;
+  eMailAddr: string;
   password: string;
   comparePassword(candidate: string): Promise<boolean>;
 }
 
 const UserSchema = new Schema<IUser>({
-  email: { type: String, unique: true, required: true },
+  eMailAddr: { type: String, unique: true, required: true },
   password: { type: String, required: true },
 });
 

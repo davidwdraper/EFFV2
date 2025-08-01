@@ -3,7 +3,9 @@ import { logger } from '@shared/utils/logger';
 import { authenticate } from '@shared/middleware/authenticate';
 import { dateNowIso } from '@shared/utils/dateUtils';
 import Act from '../models/Act';
-import { IAct } from '@shared/interfaces/IAct';
+import { IAct } from '@shared/interfaces/Act/IAct';
+import { INewAct } from '@shared/interfaces/Act/INewAct';
+import { IActUpdate } from '@shared/interfaces/Act/IActUpdate';
 
 const router = express.Router();
 
@@ -12,15 +14,9 @@ const router = express.Router();
  */
 router.post('/', authenticate, async (req, res) => {
   try {
-    const {
-      actType,
-      name,
-      eMailAddr,
-      userOwnerId,
-      imageIds,
-    } = req.body as Partial<Omit<IAct, '_id'>>;
+    const { actType, name, eMailAddr } = req.body as INewAct;
 
-    const userCreateId = req.user?.userId;
+    const userCreateId = req.user?._id;
     if (!userCreateId) return res.status(401).send({ error: 'Unauthorized' });
 
     if (!Array.isArray(actType) || actType.length === 0)
@@ -37,8 +33,8 @@ router.post('/', authenticate, async (req, res) => {
       name,
       eMailAddr,
       userCreateId,
-      userOwnerId: userOwnerId || userCreateId,
-      imageIds: Array.isArray(imageIds) ? imageIds.slice(0, 10) : [],
+      userOwnerId: userCreateId,
+      imageIds: [], // Will be updated later if needed
     });
 
     await act.save();
@@ -52,11 +48,11 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 /**
- * GET /acts — Public, return all acts
+ * GET /acts — Public
  */
 router.get('/', async (_req, res) => {
   try {
-    const acts = await Act.find().lean();
+    const acts: IAct[] = await Act.find().lean();
     res.send(acts);
   } catch (err) {
     logger.error('[ActService] GET /acts failed', {
@@ -67,11 +63,11 @@ router.get('/', async (_req, res) => {
 });
 
 /**
- * GET /acts/:id — Public, return act by ID
+ * GET /acts/:id — Public
  */
 router.get('/:id', async (req, res) => {
   try {
-    const act = await Act.findById(req.params.id).lean();
+    const act: IAct | null = await Act.findById(req.params.id).lean();
     if (!act) return res.status(404).send({ error: 'Not found' });
     res.send(act);
   } catch (err) {
@@ -91,16 +87,21 @@ router.put('/:id', authenticate, async (req, res) => {
     const act = await Act.findById(req.params.id);
     if (!act) return res.status(404).send({ error: 'Not found' });
 
-    if (act.userOwnerId !== req.user?.userId) {
+    if (act.userOwnerId !== req.user?._id) {
       return res.status(403).send({ error: 'Forbidden: Not the owner' });
     }
 
     const updates = {
-      ...req.body,
+      ...(req.body as IActUpdate),
       dateLastUpdated: dateNowIso(),
     };
 
-    const updatedAct = await Act.findByIdAndUpdate(req.params.id, updates, { new: true }).lean();
+    const updatedAct: IAct | null = await Act.findByIdAndUpdate(
+      req.params.id,
+      updates,
+      { new: true }
+    ).lean();
+
     res.send(updatedAct);
   } catch (err) {
     logger.error('[ActService] PUT /acts/:id failed', {
@@ -119,7 +120,7 @@ router.delete('/:id', authenticate, async (req, res) => {
     const act = await Act.findById(req.params.id);
     if (!act) return res.status(404).send({ error: 'Not found' });
 
-    if (act.userOwnerId !== req.user?.userId) {
+    if (act.userOwnerId !== req.user?._id) {
       return res.status(403).send({ error: 'Forbidden: Not the owner' });
     }
 

@@ -21,7 +21,7 @@ export const createAuthenticateMiddleware = (jwtSecret: string) => {
 
       // Optional: Inject user info for downstream use
       req.headers['x-user-type'] = decoded.userType?.toString();
-      req.headers['x-user-email'] = decoded.email;
+      req.headers['x-user-email'] = decoded.eMailAddr;
 
       next();
     } catch (err) {

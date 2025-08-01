@@ -16,7 +16,7 @@ export const createUser = async (req: Request, res: Response) => {
       userType = 1,
     } = req.body;
 
-    // 🔍 Check if email already exists
+    // 🔍 Check if eMailAddr already exists
     const existing = await UserModel.findOne({ eMailAddr });
     if (existing) {
       return res.status(409).json({ error: 'Email already registered' });

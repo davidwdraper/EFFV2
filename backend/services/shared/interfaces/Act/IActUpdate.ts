@@ -5,6 +5,7 @@ export interface IActUpdate {
   name?: string;
   eMailAddr?: string;
   userOwnerId?: string;
+  homeTown?: string;
   actStatus?: number;
   imageIds?: string[];
 }

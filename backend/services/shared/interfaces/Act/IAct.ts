@@ -13,6 +13,7 @@ export interface IAct {
 
   name: string;
   eMailAddr?: string;
+  homeTown: string;
 
   imageIds?: string[];         // max 10
 }

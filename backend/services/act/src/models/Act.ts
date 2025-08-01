@@ -17,9 +17,11 @@ const actSchema = new Schema<ActDocument>({
   userOwnerId: { type: String, required: true },
   name: { type: String, required: true },
   eMailAddr: { type: String },
+  homeTown: { type: String, required: true },
   imageIds: { type: [String], default: [] },
 });
 
+actSchema.index({ name: 1, homeTown: 1 }, { unique: true });
 const Act = mongoose.model<ActDocument>('Act', actSchema);
 
 export default Act;

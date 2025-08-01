@@ -3,6 +3,7 @@
 export interface INewAct {
   actType: number[];           // required
   name: string;                // required
+  homeTown: string;            // required
 
   eMailAddr?: string;
 }

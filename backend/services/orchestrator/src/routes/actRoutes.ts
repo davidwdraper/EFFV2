@@ -24,6 +24,7 @@ router.use(authenticate);
 // 🔁 Proxy to Act service
 router.all('*', (req, res) => {
   try {
+    console.log("proxyRequest: ", SERVICE_URL);
     proxyRequest(req, res, SERVICE_URL);
   } catch (err) {
     console.error('[actRoutes] Proxy error:', err);

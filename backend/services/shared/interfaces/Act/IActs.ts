@@ -1,6 +1,6 @@
-// shared/interfaces/Act.ts
-export interface Act {
-  actId: string;
+// shared/interfaces/IAct.ts
+export interface IAct {
+  _id: string;
   dateCreated: string;           // ISO string
   dateLastUpdated: string;       // ISO string
 

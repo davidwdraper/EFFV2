@@ -1,5 +1,5 @@
-export interface Place {
-  placeId: string;               // GUID (PK)
+export interface IPlace {
+  _id: string;               // GUID (PK)
   dateCreated: string;          // ISO date
   dateLastUpdated: string;      // ISO date
   status: number;               // e.g., 0 = active

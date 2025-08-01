@@ -1,51 +1,57 @@
-import jwt from 'jsonwebtoken';
-import { AuthPayload } from '../types/express/AuthPayload';
-import { Response, NextFunction } from 'express';
-import { TypedRequest } from '@shared/types/TypedRequest';
+// src/routes/actRoutes.ts
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import Act from '../models/Act';
+import { logger } from '@shared/utils/logger';
+import { authenticate } from '@shared/middleware/authenticate';
+import { dateNowIso } from '@shared/utils/dateUtils';
 
-export const createAuthenticateMiddleware = (jwtSecret: string) => {
-  if (!jwtSecret) {
-    throw new Error('[Auth] JWT_SECRET is required');
-  }
+const router = express.Router();
 
-  return (req: TypedRequest, res: Response, next: NextFunction) => {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.split(' ')[1];
+// Apply authentication middleware to all routes
+router.use(authenticate);
 
-    if (!token) {
-      console.warn('[Auth] Missing token');
-      return res.status(401).json({ error: 'Missing token' });
+// CREATE Act
+router.post('/', async (req, res) => {
+  try {
+    const {
+      actType,
+      name,
+      eMailAddr,
+      userOwnerId,
+      imageIds,
+    } = req.body;
+
+    const userCreateId = req.user?.userId;
+    if (!userCreateId) {
+      return res.status(401).send({ error: 'Unauthorized: Missing or invalid user token' });
     }
 
-    try {
-      const decoded = jwt.verify(token, jwtSecret);
-      console.log('[Auth] Token verified:', decoded);
-
-      // Basic structural validation
-      if (
-        typeof decoded === 'object' &&
-        decoded &&
-        '_id' in decoded &&
-        'userType' in decoded &&
-        'lastname' in decoded &&
-        'firstname' in decoded &&
-        'eMailAddr' in decoded
-      ) {
-        req.user = {
-          _id: decoded._id as string,
-          userType: decoded.userType as number,
-          firstname: decoded.firstname as string,
-          lastname: decoded.lastname as string,
-          eMailAddr: decoded.eMailAddr as string,
-        };
-        return next();
-      } else {
-        console.warn('[Auth] Token payload missing required fields');
-        return res.status(401).json({ error: 'Malformed token payload' });
-      }
-    } catch (err) {
-      console.error('[Auth] Token verification failed:', err);
-      return res.status(401).json({ error: 'Invalid or expired token' });
+    // Basic validation
+    if (!Array.isArray(actType) || actType.length === 0) {
+      return res.status(400).send({ error: 'actType must be a non-empty array' });
     }
-  };
-};
+    if (!name) {
+      return res.status(400).send({ error: 'name is required' });
+    }
+
+    const now = dateNowIso();
+
+    const act = new Act({
+      actId: uuidv4(),
+      dateCreated: now,
+      dateLastUpdated: now,
+      actStatus: 0,
+      actType,
+      name,
+      eMailAddr,
+      userCreateId,
+      userOwnerId: userOwnerId || userCreateId,
+      imageIds: Array.isArray(imageIds) ? imageIds.slice(0, 10) : [],
+    });
+
+    await act.save();
+    res.status(201).send(act);
+  } catch (err) {
+    logger.error('[ActService] POST /acts failed', {
+      err

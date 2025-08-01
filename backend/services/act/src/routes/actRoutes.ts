@@ -1,35 +1,137 @@
 import express from 'express';
+import { logger } from '@shared/utils/logger';
+import { authenticate } from '@shared/middleware/authenticate';
+import { dateNowIso } from '@shared/utils/dateUtils';
 import Act from '../models/Act';
+import { IAct } from '@shared/interfaces/IAct';
 
 const router = express.Router();
 
-router.post('/', async (req, res) => {
-  const act = new Act(req.body);
-  await act.save();
-  res.status(201).send(act);
+/**
+ * POST /acts — Create Act (auth required)
+ */
+router.post('/', authenticate, async (req, res) => {
+  try {
+    const {
+      actType,
+      name,
+      eMailAddr,
+      userOwnerId,
+      imageIds,
+    } = req.body as Partial<Omit<IAct, '_id'>>;
+
+    const userCreateId = req.user?.userId;
+    if (!userCreateId) return res.status(401).send({ error: 'Unauthorized' });
+
+    if (!Array.isArray(actType) || actType.length === 0)
+      return res.status(400).send({ error: 'actType must be a non-empty array' });
+    if (!name) return res.status(400).send({ error: 'name is required' });
+
+    const now = dateNowIso();
+
+    const act = new Act({
+      dateCreated: now,
+      dateLastUpdated: now,
+      actStatus: 0,
+      actType,
+      name,
+      eMailAddr,
+      userCreateId,
+      userOwnerId: userOwnerId || userCreateId,
+      imageIds: Array.isArray(imageIds) ? imageIds.slice(0, 10) : [],
+    });
+
+    await act.save();
+    res.status(201).send(act.toObject());
+  } catch (err) {
+    logger.error('[ActService] POST /acts failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    res.status(500).send({ error: 'Failed to create Act' });
+  }
 });
 
-router.get('/', async (req, res) => {
-  const acts = await Act.find();
-  res.send(acts);
+/**
+ * GET /acts — Public, return all acts
+ */
+router.get('/', async (_req, res) => {
+  try {
+    const acts = await Act.find().lean();
+    res.send(acts);
+  } catch (err) {
+    logger.error('[ActService] GET /acts failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    res.status(500).send({ error: 'Failed to fetch Acts' });
+  }
 });
 
+/**
+ * GET /acts/:id — Public, return act by ID
+ */
 router.get('/:id', async (req, res) => {
-  const act = await Act.findById(req.params.id);
-  if (!act) return res.status(404).send({ error: 'Not found' });
-  res.send(act);
+  try {
+    const act = await Act.findById(req.params.id).lean();
+    if (!act) return res.status(404).send({ error: 'Not found' });
+    res.send(act);
+  } catch (err) {
+    logger.error('[ActService] GET /acts/:id failed', {
+      error: err instanceof Error ? err.message : String(err),
+      actId: req.params.id,
+    });
+    res.status(500).send({ error: 'Failed to fetch Act' });
+  }
 });
 
-router.put('/:id', async (req, res) => {
-  const act = await Act.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  if (!act) return res.status(404).send({ error: 'Not found' });
-  res.send(act);
+/**
+ * PUT /acts/:id — Update Act (auth + ownership required)
+ */
+router.put('/:id', authenticate, async (req, res) => {
+  try {
+    const act = await Act.findById(req.params.id);
+    if (!act) return res.status(404).send({ error: 'Not found' });
+
+    if (act.userOwnerId !== req.user?.userId) {
+      return res.status(403).send({ error: 'Forbidden: Not the owner' });
+    }
+
+    const updates = {
+      ...req.body,
+      dateLastUpdated: dateNowIso(),
+    };
+
+    const updatedAct = await Act.findByIdAndUpdate(req.params.id, updates, { new: true }).lean();
+    res.send(updatedAct);
+  } catch (err) {
+    logger.error('[ActService] PUT /acts/:id failed', {
+      error: err instanceof Error ? err.message : String(err),
+      actId: req.params.id,
+    });
+    res.status(500).send({ error: 'Failed to update Act' });
+  }
 });
 
-router.delete('/:id', async (req, res) => {
-  const result = await Act.findByIdAndDelete(req.params.id);
-  if (!result) return res.status(404).send({ error: 'Not found' });
-  res.send({ success: true });
+/**
+ * DELETE /acts/:id — Delete Act (auth + ownership required)
+ */
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    const act = await Act.findById(req.params.id);
+    if (!act) return res.status(404).send({ error: 'Not found' });
+
+    if (act.userOwnerId !== req.user?.userId) {
+      return res.status(403).send({ error: 'Forbidden: Not the owner' });
+    }
+
+    await Act.findByIdAndDelete(req.params.id);
+    res.send({ success: true });
+  } catch (err) {
+    logger.error('[ActService] DELETE /acts/:id failed', {
+      error: err instanceof Error ? err.message : String(err),
+      actId: req.params.id,
+    });
+    res.status(500).send({ error: 'Failed to delete Act' });
+  }
 });
 
 export default router;

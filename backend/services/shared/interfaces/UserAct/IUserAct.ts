@@ -1,6 +1,6 @@
-// shared/interfaces/UserAct.ts
-export interface UserAct {
-  actId: string;
+// shared/interfaces/IUserAct.ts
+export interface IUserAct {
+  _id: string;
   userId: string;
   createUserId: string;
   dateCreated: string;     // ISO string

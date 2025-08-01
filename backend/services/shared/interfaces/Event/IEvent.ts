@@ -1,6 +1,6 @@
 // shared/interfaces/Event.ts
-export interface Event {
-  eventId: string;
+export interface IEvent {
+  _id: string;
   dateCreated: string;           // ISO string
   dateLastUpdated: string;       // ISO string
 

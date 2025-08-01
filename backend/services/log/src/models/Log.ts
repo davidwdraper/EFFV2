@@ -1,17 +1,21 @@
-import mongoose from 'mongoose';
+// models/Log.ts
 
-const LogSchema = new mongoose.Schema({
+import mongoose, { Schema, Document } from "mongoose";
+import { ILogFields } from "@shared/interfaces/Log/ILog";
+
+export interface LogDocument extends ILogFields, Document {}
+
+const logSchema = new Schema<LogDocument>({
   logType: { type: Number, required: true },
   logSeverity: { type: Number, required: true },
   message: { type: String, required: true },
   path: { type: String },
   userId: { type: String },
-  entityId: { type: String },
   entityName: { type: String },
-  service: { type: String },
-  sourceFile: { type: String },
-  sourceLine: { type: Number },
-  timeCreated: { type: Date, required: true },
+  entityId: { type: String },
+  timeCreated: { type: String, required: true }, // ISO string for frontend compatibility
 });
 
-export const LogModel = mongoose.model('Log', LogSchema);
+const Log = mongoose.model<LogDocument>("Log", logSchema);
+
+export default Log;

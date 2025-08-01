@@ -1,12 +1,16 @@
+// src/db.ts
 import mongoose from 'mongoose';
 import { config } from './config';
+import { logger } from '@shared/utils/logger';
 
-export const connectToDB = async () => {
+export const connectDB = async () => {
   try {
     await mongoose.connect(config.mongoUri);
-    console.log('[MongoDB] connected');
+    logger.info('[MongoDB-image] Connected');
   } catch (err) {
-    console.error('[MongoDB] connection error:', err);
-    process.exit(1);
+    logger.error('[MongoDB-image] Connection error', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    process.exit(1); // Optional: fail-fast on DB error
   }
 };

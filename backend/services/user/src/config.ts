@@ -11,8 +11,8 @@ dotenv.config({ path: envPath });
 // Export service-specific and shared config values
 export const config = {
   env,
-  port: parseInt(process.env.ACT_PORT || '4001', 10),
-  mongoUri: process.env.ACT_MONGO_URI || 'mongodb://localhost:27017/eff_user_db',
+  port: parseInt(process.env.USER_PORT || '4001', 10),
+  mongoUri: process.env.USER_MONGO_URI || 'mongodb://localhost:27017/eff_user_db',
   jwtSecret: process.env.JWT_SECRET || '2468',
   logLevel: process.env.LOG_LEVEL || 'info',
 };

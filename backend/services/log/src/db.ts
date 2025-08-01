@@ -1,8 +1,16 @@
 // src/db.ts
 import mongoose from 'mongoose';
 import { config } from './config';
+import { logger } from '@shared/utils/logger';
 
-mongoose
-  .connect(config.mongoUri)
-  .then(() => console.log('[MongoDB] connected'))
-  .catch((err) => console.error('[MongoDB] connection error:', err));
+export const connectDB = async () => {
+  try {
+    await mongoose.connect(config.mongoUri);
+    logger.info('[MongoDB-log] Connected');
+  } catch (err) {
+    logger.error('[MongoDB-log] Connection error', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    process.exit(1); // Optional: fail-fast on DB error
+  }
+};

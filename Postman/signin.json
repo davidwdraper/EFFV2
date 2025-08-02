@@ -1,0 +1,67 @@
+{
+  "info": {
+    "name": "EFF Auth Signup",
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "description": "Signup users for EFF via auth service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Signup - Andrew Draper",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"firstname\": \"Andrew\",\n  \"lastname\": \"Draper\",\n  \"eMailAddr\": \"andrew@google.com\",\n  \"password\": \"password123\",\n  \"userType\": 2\n}"
+        },
+        "url": {
+          "raw": "http://localhost:4000/signup",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "4000",
+          "path": ["signup"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Signup - Emma Sanchez",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"firstname\": \"Emma\",\n  \"lastname\": \"Sanchez\",\n  \"eMailAddr\": \"emma@health.org\",\n  \"password\": \"trustno1\",\n  \"userType\": 1\n}"
+        },
+        "url": {
+          "raw": "http://localhost:4000/signup",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "4000",
+          "path": ["signup"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Signup - Rome Walker",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"firstname\": \"Rome\",\n  \"lastname\": \"Walker\",\n  \"eMailAddr\": \"rome@fbi.gov\",\n  \"password\": \"deepcover\",\n  \"userType\": 3\n}"
+        },
+        "url": {
+          "raw": "http://localhost:4000/signup",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "4000",
+          "path": ["signup"]
+        }
+      },
+      "response": []
+    }
+  ]
+}

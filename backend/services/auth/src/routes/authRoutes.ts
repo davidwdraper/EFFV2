@@ -1,10 +1,15 @@
 // src/routes/authRoutes.ts
-import express from 'express';
-import { login, signup } from '../controllers/authController';
+import express from "express";
+import { signup, login } from "../controllers/authController";
+import { logger } from "@shared/utils/logger";
 
 const router = express.Router();
 
-router.post('/login', login);
-router.post('/signup', signup);
+logger.debug("authService: authRoutes initialized", {
+  routes: ["/auth/signup", "/auth/login"],
+});
+
+router.post("/signup", signup);
+router.post("/login", login);
 
 export default router;

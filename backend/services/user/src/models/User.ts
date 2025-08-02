@@ -1,7 +1,8 @@
-import mongoose, { Schema } from 'mongoose';
-import bcrypt from 'bcrypt';
-import { IUser } from './IUser';
-import { string } from 'joi';
+import mongoose, { Schema } from "mongoose";
+import bcrypt from "bcrypt";
+import { IUser } from "./IUser";
+
+const SALT_ROUNDS = 10;
 
 function arrayLimit(val: string[]) {
   return val.length <= 10;
@@ -22,7 +23,7 @@ const userSchema = new Schema<IUser>(
     password: { type: String, required: true },
     imageIds: {
       type: [String],
-      validate: [arrayLimit, '{PATH} exceeds the limit of 10'],
+      validate: [arrayLimit, "{PATH} exceeds the limit of 10"],
       default: [],
     },
   },
@@ -30,23 +31,27 @@ const userSchema = new Schema<IUser>(
 );
 
 // 🔐 Hash password before save
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
-  this.password = await bcrypt.hash(this.password, 10);
+userSchema.pre("save", async function (next) {
+  if (!this.isModified("password")) return next();
+  this.password = await bcrypt.hash(this.password, SALT_ROUNDS);
   next();
 });
 
-// 🧠 Assign _id to entry/owner IDs post-save if not set
-userSchema.post('save', async function (doc) {
+// 🧠 Assign IDs post-save safely (no middleware loop)
+userSchema.post("save", async function (doc) {
   const id = doc._id.toString();
 
   if (!doc.userEntryId || !doc.userOwnerId) {
-    doc.userEntryId = id;
-    doc.userOwnerId = id;
-    doc.dateLastUpdated = new Date();
-    await doc.save(); // triggers no re-hash due to password check
+    await UserModel.updateOne(
+      { _id: id },
+      {
+        userEntryId: id,
+        userOwnerId: id,
+        dateLastUpdated: new Date(),
+      }
+    );
   }
 });
 
-// 📦 Create and export model with IUser type
-export const UserModel = mongoose.model<IUser>('User', userSchema);
+// 📦 Create and export model
+export const UserModel = mongoose.model<IUser>("User", userSchema);

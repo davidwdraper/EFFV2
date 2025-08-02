@@ -1,18 +1,17 @@
 // routes/logRoutes.ts
 
 import express from "express";
-import { authenticate } from "@shared/middleware/authenticate";
 import { dateNowIso } from "@shared/utils/dateUtils";
 import Log from "../models/Log";
 import { ILogFields } from "@shared/interfaces/Log/ILog";
-//import { logger } from "@shared/utils/logger";
+import { logger } from "@shared/utils/logger";
 
 const router = express.Router();
 
 /**
- * POST /logs — Create log (auth required)
+ * POST /logs — Create log (no auth required)
  */
-router.post("/", authenticate, async (req, res) => {
+router.post("/", async (req, res) => {
   try {
     if ("userId" in req.body) {
       return res.status(400).send({ error: "userId cannot be set manually" });
@@ -30,7 +29,6 @@ router.post("/", authenticate, async (req, res) => {
       sourceLine,
     } = req.body as Partial<ILogFields>;
 
-    // 🔐 Validation
     if (
       typeof logType !== "number" ||
       typeof logSeverity !== "number" ||
@@ -42,10 +40,9 @@ router.post("/", authenticate, async (req, res) => {
     }
 
     const timeCreated = dateNowIso();
-    const userId = req.user?._id;
+    const userId = (req as any).user?._id || undefined;
 
-    // 🧪 Log what we're saving
-    console.log("🪵 Creating log with payload:", {
+    console.debug("logService: creating log entry", {
       logType,
       logSeverity,
       message,
@@ -75,12 +72,11 @@ router.post("/", authenticate, async (req, res) => {
 
     await log.save();
     res.status(201).send(log.toObject());
-  } catch (err) {
-    console.error("[LogService] POST /logs failed", {
-      error: err instanceof Error ? err.message : String(err),
+  } catch (err: any) {
+    console.warn("[logService] Failed to create log:", {
+      error: err?.message || "unknown",
       fullError: err,
-      body: req.body,
-      user: req.user,
+      requestBody: req.body,
     });
 
     res.status(500).send({ error: "Failed to create log" });

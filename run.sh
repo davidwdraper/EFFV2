@@ -8,11 +8,11 @@ trap 'echo "🛑 Caught Ctrl-C. Cleaning up..."; kill 0; exit 0' INT
 MODE=$1
 
 SERVICES=(
+  log
   user
   act
   event
   place
-  log
   auth
   eventact
   eventplace

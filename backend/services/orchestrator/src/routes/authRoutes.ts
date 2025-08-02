@@ -5,7 +5,7 @@ import { logger } from "@shared/utils/logger";
 
 const router = express.Router();
 const AUTH_SERVICE_URL =
-  process.env.AUTH_SERVICE_URL || "http://localhost:4005";
+  process.env.AUTH_SERVICE_URL || "http://localhost:4007";
 
 logger.debug("orchestrator: authRoutes initialized", {
   routes: ["/auth/signup", "/auth/login"],

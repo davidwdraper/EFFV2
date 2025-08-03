@@ -5,5 +5,5 @@
     "rootDir": "..",
     "outDir": "../dist/user"
   },
-  "include": ["index.ts", "src/**/*"]
+  "include": ["index.ts", "src/**/*", "../shared/interfaces/User/IUser.ts"]
 }

@@ -1,6 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import bcrypt from "bcrypt";
-import { IUser } from "./IUser";
+import { IUser } from "@shared/interfaces/User/IUser";
 
 const SALT_ROUNDS = 10;
 
@@ -13,7 +13,7 @@ const userSchema = new Schema<IUser>(
     dateCreated: { type: Date, required: true },
     dateLastUpdated: { type: Date, required: true },
     userStatus: { type: Number, required: true, default: 0 },
-    userType: { type: Number, required: true },
+    userType: { type: Number, required: true, default: 0 },
     userEntryId: { type: String }, // populated post-save
     userOwnerId: { type: String }, // populated post-save
     lastname: { type: String, required: true },
@@ -32,8 +32,9 @@ const userSchema = new Schema<IUser>(
 
 // 🔐 Hash password before save
 userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
-  this.password = await bcrypt.hash(this.password, SALT_ROUNDS);
+  const user = this as IUser;
+  if (!user.isModified("password")) return next();
+  user.password = await bcrypt.hash(user.password, SALT_ROUNDS);
   next();
 });
 

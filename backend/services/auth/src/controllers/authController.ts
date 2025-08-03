@@ -5,31 +5,40 @@ import axios from "axios";
 import { generateToken } from "../utils/jwtUtils";
 import { logger } from "@shared/utils/logger";
 
-const ORCHESTRATOR_URL =
-  process.env.ORCHESTRATOR_URL || "http://localhost:4000";
+const ORCHESTRATOR__CORE_URL =
+  process.env.ORCHESTRATOR_CORE_URL || "http://localhost:4011";
 
 export const signup = async (req: Request, res: Response) => {
-  logger.debug("authService: POST /signup called", {
-    bodyKeys: Object.keys(req.body || {}),
-  });
+  logger.debug("authService: POST /signup called");
 
   try {
-    const { eMailAddr, password } = req.body;
+    const { eMailAddr, password, firstname, lastname } = req.body;
 
-    if (!eMailAddr || !password) {
-      logger.debug("authService: Missing eMailAddr or password", {});
-      return res.status(400).json({ error: "Missing eMailAddr or password" });
+    if (!eMailAddr || !password || !firstname || !lastname) {
+      logger.debug("authService: Missing required fields", {
+        eMailAddr: !!eMailAddr,
+        password: !!password,
+        firstname: !!firstname,
+        lastname: !!lastname,
+      });
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const path = `${ORCHESTRATOR__CORE_URL}/users`;
 
-    const response = await axios.post(`${ORCHESTRATOR_URL}/users`, {
+    logger.debug("authService: calling orch-core to create user", {
+      url: path,
+    });
+
+    const response = await axios.post(path, {
       eMailAddr,
       password: hashedPassword,
+      firstname,
+      lastname,
     });
 
     const user = response.data?.user || response.data;
-
     const token = generateToken(user);
 
     res.status(201).json({ token, user });
@@ -37,12 +46,10 @@ export const signup = async (req: Request, res: Response) => {
     logger.error("authService: Signup failed", {
       error: error?.response?.data || error.message,
     });
-    res
-      .status(500)
-      .json({
-        error: "Signup failed",
-        detail: error?.response?.data || error.message,
-      });
+    res.status(500).json({
+      error: "Signup failed",
+      detail: error?.response?.data || error.message,
+    });
   }
 };
 
@@ -59,13 +66,10 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Missing eMailAddr or password" });
     }
 
-    logger.debug("authService: Fetching user from orchestrator-core", {
-      url: `${ORCHESTRATOR_URL}/users/email/${eMailAddr}`,
-    });
+    const url = `${ORCHESTRATOR__CORE_URL}/users/email/${eMailAddr}`;
+    logger.debug("authService: Fetching user from orchestrator-core", { url });
 
-    const response = await axios.get(
-      `${ORCHESTRATOR_URL}/users/email/${eMailAddr}`
-    );
+    const response = await axios.get(url);
     const user = response.data?.user || response.data;
 
     if (!user?.password) {
@@ -91,11 +95,9 @@ export const login = async (req: Request, res: Response) => {
     logger.error("authService: Login failed", {
       error: error?.response?.data || error.message,
     });
-    res
-      .status(500)
-      .json({
-        error: "Login failed",
-        detail: error?.response?.data || error.message,
-      });
+    res.status(500).json({
+      error: "Login failed",
+      detail: error?.response?.data || error.message,
+    });
   }
 };

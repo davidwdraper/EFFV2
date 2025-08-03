@@ -8,6 +8,55 @@ import { getUserByEmail } from "../controllers/userController";
 const router = express.Router();
 const authenticate = createAuthenticateMiddleware(JWT_SECRET);
 
+// ✅ POST - Create a new user (used only by authService via orchestrator-core)
+router.post("/", async (req, res) => {
+  logger.debug("userService: POST /users called", { body: req.body });
+
+  try {
+    const { eMailAddr, password, firstname, lastname, middlename } = req.body;
+
+    if (!eMailAddr || !password || !firstname || !lastname) {
+      logger.debug("userService: POST /users missing required fields", {});
+      return res.status(400).json({ error: "Missing required user fields" });
+    }
+
+    // Check if user already exists
+    const existing = await UserModel.findOne({ eMailAddr });
+    if (existing) {
+      logger.debug("userService: User already exists", { eMailAddr });
+      return res.status(409).json({ error: "User already exists" });
+    }
+
+    const now = new Date();
+    const newUser = new UserModel({
+      eMailAddr,
+      password,
+      firstname,
+      lastname,
+      middlename,
+      dateCreated: now,
+      dateLastUpdated: now,
+      userStatus: 0,
+      userType: 0,
+      imageIds: [],
+    });
+
+    await newUser.save();
+
+    logger.info("userService: New user created", { userId: newUser._id });
+
+    res.status(201).json({
+      userId: newUser._id,
+      eMailAddr: newUser.eMailAddr,
+    });
+  } catch (err: any) {
+    logger.error("userService: POST /users failed", {
+      error: err.message,
+    });
+    res.status(500).json({ error: "Failed to create user" });
+  }
+});
+
 // 🔍 GET - Get user by email (used by authService only)
 router.get("/email/:eMailAddr", getUserByEmail);
 

@@ -19,8 +19,10 @@ export function getCallerInfo(depth = 2): CallerInfo | null {
     callerLine.match(/^at\s+(.*?)\s+\((.*):(\d+):(\d+)\)$/) ||
     callerLine.match(/^at\s+(.*):(\d+):(\d+)$/);
 
-  if (!fnMatch) return null;
-
+  if (!fnMatch) {
+    console.error("getCallerInfo !fnMatch - returning null");
+    return null;
+  }
   if (fnMatch.length === 5) {
     return {
       functionName: fnMatch[1],
@@ -37,5 +39,6 @@ export function getCallerInfo(depth = 2): CallerInfo | null {
     };
   }
 
+  console.error("getCallerInfo returning null");
   return null;
 }

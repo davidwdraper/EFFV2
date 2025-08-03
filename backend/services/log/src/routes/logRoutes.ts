@@ -42,20 +42,6 @@ router.post("/", async (req, res) => {
     const timeCreated = dateNowIso();
     const userId = (req as any).user?._id || undefined;
 
-    console.debug("logService: creating log entry", {
-      logType,
-      logSeverity,
-      message,
-      path,
-      entityId,
-      entityName,
-      service,
-      sourceFile,
-      sourceLine,
-      userId,
-      timeCreated,
-    });
-
     const log = new Log({
       logType,
       logSeverity,

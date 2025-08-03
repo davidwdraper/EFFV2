@@ -8,8 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔗 Route bindings — no index.ts
-app.use("/users", userProxyRoutes);
 app.use("/users/composite", coreCompositeRoutes);
+app.use("/users", userProxyRoutes);
 
 export { app };

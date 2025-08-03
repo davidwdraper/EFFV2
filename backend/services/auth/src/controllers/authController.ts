@@ -5,14 +5,17 @@ import axios from "axios";
 import { generateToken } from "../utils/jwtUtils";
 import { logger } from "@shared/utils/logger";
 
-const ORCHESTRATOR__CORE_URL =
+const ORCHESTRATOR_CORE_URL =
   process.env.ORCHESTRATOR_CORE_URL || "http://localhost:4011";
 
 export const signup = async (req: Request, res: Response) => {
   logger.debug("authService: POST /signup called");
 
   try {
-    const { eMailAddr, password, firstname, lastname } = req.body;
+    const eMailAddr = (req.body.eMailAddr || "").trim();
+    const firstname = (req.body.firstname || "").trim();
+    const lastname = (req.body.lastname || "").trim();
+    const password = req.body.password;
 
     if (!eMailAddr || !password || !firstname || !lastname) {
       logger.debug("authService: Missing required fields", {
@@ -25,8 +28,8 @@ export const signup = async (req: Request, res: Response) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const path = `${ORCHESTRATOR__CORE_URL}/users`;
 
+    const path = `${ORCHESTRATOR_CORE_URL}/users`;
     logger.debug("authService: calling orch-core to create user", {
       url: path,
     });
@@ -39,9 +42,11 @@ export const signup = async (req: Request, res: Response) => {
     });
 
     const user = response.data?.user || response.data;
-    const token = generateToken(user);
+    const { password: _pw, ...safeUser } = user;
 
-    res.status(201).json({ token, user });
+    const token = generateToken(safeUser);
+
+    res.status(201).json({ token, user: safeUser });
   } catch (error: any) {
     logger.error("authService: Signup failed", {
       error: error?.response?.data || error.message,
@@ -59,38 +64,41 @@ export const login = async (req: Request, res: Response) => {
   });
 
   try {
-    const { eMailAddr, password } = req.body;
+    const eMailAddr = (req.body.eMailAddr || "").trim();
+    const password = req.body.password;
 
     if (!eMailAddr || !password) {
       logger.debug("authService: Missing eMailAddr or password", {});
       return res.status(400).json({ error: "Missing eMailAddr or password" });
     }
 
-    const url = `${ORCHESTRATOR__CORE_URL}/users/email/${eMailAddr}`;
+    const url = `${ORCHESTRATOR_CORE_URL}/users/email/${encodeURIComponent(
+      eMailAddr
+    )}`;
     logger.debug("authService: Fetching user from orchestrator-core", { url });
 
     const response = await axios.get(url);
     const user = response.data?.user || response.data;
 
     if (!user?.password) {
-      logger.debug("authService: User not found or missing password field", {});
+      logger.debug("authService: User not found or missing password", {});
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
     const passwordMatch = await bcrypt.compare(password, user.password);
-
     if (!passwordMatch) {
       logger.debug("authService: Password mismatch", {});
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    logger.debug("authService: User authenticated, generating token", {
-      userId: user.userId,
+    const { password: _pw, ...safeUser } = user;
+    const token = generateToken(safeUser);
+
+    logger.debug("authService: User authenticated, token issued", {
+      userId: user._id || user.userId,
     });
 
-    const token = generateToken(user);
-
-    res.status(200).json({ token, user });
+    res.status(200).json({ token, user: safeUser });
   } catch (error: any) {
     logger.error("authService: Login failed", {
       error: error?.response?.data || error.message,

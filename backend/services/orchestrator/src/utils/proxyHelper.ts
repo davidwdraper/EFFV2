@@ -1,23 +1,34 @@
-// orchestrator/src/utils/proxyHelper.ts
 import axios from "axios";
 import { Request, Response } from "express";
 import { logger } from "@shared/utils/logger";
 
 /**
  * Proxies an incoming request to a target service URL.
- * Forwards method, headers (selectively), and body if applicable.
+ * Automatically forwards method, headers, and body (when applicable).
+ * Optionally strips a URL prefix from the incoming request path.
  */
 export async function proxyRequest(
   req: Request,
   res: Response,
-  serviceUrl: string
+  serviceUrl: string,
+  options?: {
+    stripPrefix?: string;
+  }
 ) {
-  const targetUrl = `${serviceUrl}${req.originalUrl}`;
   const method = req.method.toUpperCase();
+
+  let forwardedPath = req.originalUrl;
+  if (options?.stripPrefix && forwardedPath.startsWith(options.stripPrefix)) {
+    forwardedPath = forwardedPath.substring(options.stripPrefix.length);
+  }
+
+  const targetUrl = `${serviceUrl}${forwardedPath}`;
 
   logger.debug("orchestrator: proxyRequest called", {
     method,
+    originalUrl: req.originalUrl,
     targetUrl,
+    stripPrefix: options?.stripPrefix,
     hasBody: ["POST", "PUT", "PATCH"].includes(method),
     headers: {
       hasAuthorization: Boolean(req.headers.authorization),

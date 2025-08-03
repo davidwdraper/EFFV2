@@ -31,4 +31,29 @@ router.post("/", async (req, res) => {
   }
 });
 
+// Get user by email (for login)
+router.get("/email/:eMailAddr", async (req, res) => {
+  const eMailAddr = req.params.eMailAddr;
+
+  const targetUrl = `${USER_SERVICE_URL}/users/email/${encodeURIComponent(
+    eMailAddr
+  )}`;
+  logger.debug("orchestrator-core: GET /users/email proxy called", {
+    targetUrl,
+  });
+
+  try {
+    const response = await axios.get(targetUrl);
+    res.status(response.status).json(response.data);
+  } catch (err: any) {
+    logger.error("orchestrator-core: Failed to proxy GET /users/email", {
+      error: err?.response?.data || err.message,
+    });
+    res.status(500).json({
+      error: "Failed to fetch user by email",
+      detail: err?.response?.data || err.message,
+    });
+  }
+});
+
 export default router;

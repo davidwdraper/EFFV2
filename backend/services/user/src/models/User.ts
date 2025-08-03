@@ -1,8 +1,5 @@
 import mongoose, { Schema } from "mongoose";
-import bcrypt from "bcrypt";
 import { IUser } from "@shared/interfaces/User/IUser";
-
-const SALT_ROUNDS = 10;
 
 function arrayLimit(val: string[]) {
   return val.length <= 10;
@@ -30,15 +27,9 @@ const userSchema = new Schema<IUser>(
   { timestamps: false }
 );
 
-// 🔐 Hash password before save
-userSchema.pre("save", async function (next) {
-  const user = this as IUser;
-  if (!user.isModified("password")) return next();
-  user.password = await bcrypt.hash(user.password, SALT_ROUNDS);
-  next();
-});
+// ❌ REMOVE PASSWORD HASHING — already hashed upstream
+// If you later add a frontend signup flow, consider reinstating this with a flag.
 
-// 🧠 Assign IDs post-save safely (no middleware loop)
 userSchema.post("save", async function (doc) {
   const id = doc._id.toString();
 
@@ -54,5 +45,4 @@ userSchema.post("save", async function (doc) {
   }
 });
 
-// 📦 Create and export model
 export const UserModel = mongoose.model<IUser>("User", userSchema);

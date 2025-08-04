@@ -1,4 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import '../utils/auth_storage.dart';
 
 class CreateAccountPage extends StatefulWidget {
   const CreateAccountPage({super.key});
@@ -27,15 +30,59 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
     super.dispose();
   }
 
-  void _handleCreate() {
-    if (_formKey.currentState!.validate()) {
-      // TODO: Hook up backend call
-      debugPrint('Creating user: ${_firstnameController.text} ${_lastnameController.text}');
-    }
-  }
-
   void _handleCancel() {
     Navigator.of(context).pop();
+  }
+
+  Future<void> _handleCreate() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    final url = Uri.parse("http://localhost:4000/auth/signup"); // adjust for your orchestrator
+    final body = {
+      "firstname": _firstnameController.text.trim(),
+      "middlename": _middlenameController.text.trim(),
+      "lastname": _lastnameController.text.trim(),
+      "eMailAddr": _emailController.text.trim(),
+      "password": _passwordController.text,
+    };
+
+    try {
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode == 201) {
+        final data = jsonDecode(response.body);
+        final token = data['token'];
+
+        if (token != null) {
+          await AuthStorage.saveToken(token);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Account created!')),
+            );
+            Navigator.of(context).pop();
+          }
+        } else {
+          throw Exception("Token missing in response");
+        }
+      } else {
+        final message = jsonDecode(response.body)['message'] ?? 'Failed to create account.';
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $message')),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Exception: ${e.toString()}')),
+        );
+      }
+    }
   }
 
   @override

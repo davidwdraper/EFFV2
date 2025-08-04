@@ -19,6 +19,17 @@ logger.debug("orchestrator: app.ts initializing", {
   PORT: process.env.PORT,
 });
 
+import cors from "cors";
+
+// Add this near the top, before any routes:
+app.use(
+  cors({
+    origin: "*", // Allow all (use a specific origin in production)
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
 app.use(express.json());
 
 // Routes

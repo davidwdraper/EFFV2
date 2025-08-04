@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../widgets/scaffold_wrapper.dart';
 
 class CreateAccountPage extends StatefulWidget {
   const CreateAccountPage({super.key});
@@ -52,7 +53,11 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Account created!')),
         );
-        Navigator.of(context).pop(); // return to previous screen
+
+        // ✅ Update display name in logo bar
+        await context.read<AuthProvider>().checkToken();
+
+        Navigator.of(context).pop();
       }
     } catch (e) {
       if (context.mounted) {
@@ -65,9 +70,9 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Create Account")),
-      body: Padding(
+    return ScaffoldWrapper(
+      title: "Create Account",
+      child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Form(
           key: _formKey,

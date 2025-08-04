@@ -48,6 +48,9 @@ router.post("/", async (req, res) => {
     res.status(201).json({
       userId: newUser._id,
       eMailAddr: newUser.eMailAddr,
+      firstname: newUser.firstname,
+      middlename: newUser.middlename,
+      lastname: newUser.lastname,
     });
   } catch (err: any) {
     logger.error("userService: POST /users failed", {

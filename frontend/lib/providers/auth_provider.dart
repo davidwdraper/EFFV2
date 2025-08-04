@@ -21,10 +21,7 @@ class AuthProvider extends ChangeNotifier {
     final storedToken = await AuthStorage.getToken();
     if (storedToken != null) {
       _token = storedToken;
-      _userId = _extractUserIdFromToken(storedToken);
-      if (_userId != null) {
-        await _fetchUserDisplayName();
-      }
+      _decodeAndSetUserFromToken(storedToken);
       notifyListeners();
     }
   }
@@ -33,10 +30,7 @@ class AuthProvider extends ChangeNotifier {
     final storedToken = await AuthStorage.getToken();
     if (storedToken != null) {
       _token = storedToken;
-      _userId = _extractUserIdFromToken(storedToken);
-      if (_userId != null) {
-        await _fetchUserDisplayName();
-      }
+      _decodeAndSetUserFromToken(storedToken);
       notifyListeners();
     } else {
       await logout();
@@ -53,9 +47,8 @@ class AuthProvider extends ChangeNotifier {
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
       _token = data['token'];
-      _userId = _extractUserIdFromToken(_token!);
       await AuthStorage.saveToken(_token!);
-      await _fetchUserDisplayName();
+      _decodeAndSetUserFromToken(_token!);
       notifyListeners();
     } else {
       throw Exception(jsonDecode(response.body)['message'] ?? 'Login failed');
@@ -72,9 +65,8 @@ class AuthProvider extends ChangeNotifier {
     if (response.statusCode == 201) {
       final data = jsonDecode(response.body);
       _token = data['token'];
-      _userId = _extractUserIdFromToken(_token!);
       await AuthStorage.saveToken(_token!);
-      await _fetchUserDisplayName();
+      _decodeAndSetUserFromToken(_token!);
       notifyListeners();
     } else {
       throw Exception(jsonDecode(response.body)['message'] ?? 'Signup failed');
@@ -89,39 +81,21 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  String? _extractUserIdFromToken(String token) {
+  void _decodeAndSetUserFromToken(String token) {
     try {
       final parts = token.split('.');
-      if (parts.length != 3) return null;
+      if (parts.length != 3) return;
+
       final payload = utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
       final data = jsonDecode(payload);
-      return data['_id'];
+
+      _userId = data['_id'];
+      final firstname = data['firstname'] ?? '';
+      final middlename = data['middlename'] ?? '';
+      final lastname = data['lastname'] ?? '';
+      _userDisplayName = "$firstname $middlename $lastname".replaceAll(RegExp(r'\s+'), ' ').trim();
     } catch (e) {
       debugPrint("Token decode error: $e");
-      return null;
-    }
-  }
-
-  Future<void> _fetchUserDisplayName() async {
-    if (_userId == null || _token == null) return;
-
-    try {
-      final response = await http.get(
-        Uri.parse("http://localhost:4000/users/$_userId"),
-        headers: {
-          'Authorization': 'Bearer $_token',
-          'Content-Type': 'application/json',
-        },
-      );
-      if (response.statusCode == 200) {
-        final user = jsonDecode(response.body);
-        _userDisplayName = "${user['firstname']} ${user['lastname']}";
-      } else {
-        _userDisplayName = null;
-        debugPrint("Failed to fetch user details");
-      }
-    } catch (e) {
-      debugPrint("Error fetching user info: $e");
     }
   }
 }

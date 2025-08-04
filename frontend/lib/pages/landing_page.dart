@@ -9,9 +9,19 @@ class LandingPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: Colors.grey[100],
       body: SafeArea(
-        child: const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-          child: LogoMenuBar(),
+        child: Center(
+          child: Container(
+            color: Colors.white, // Left and right white borders
+            constraints: const BoxConstraints(maxWidth: 600),
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0), // Inner padding
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LogoMenuBar(),
+                // Add additional landing content here
+              ],
+            ),
+          ),
         ),
       ),
     );

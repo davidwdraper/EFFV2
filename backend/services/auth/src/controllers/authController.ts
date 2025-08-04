@@ -14,14 +14,16 @@ export const signup = async (req: Request, res: Response) => {
   try {
     const eMailAddr = (req.body.eMailAddr || "").trim();
     const firstname = (req.body.firstname || "").trim();
+    const middlename = (req.body.middlename || "").trim();
     const lastname = (req.body.lastname || "").trim();
     const password = req.body.password;
 
-    if (!eMailAddr || !password || !firstname || !lastname) {
+    if (!eMailAddr || !password || !firstname || !middlename || !lastname) {
       logger.debug("authService: Missing required fields", {
         eMailAddr: !!eMailAddr,
         password: !!password,
         firstname: !!firstname,
+        middlename: !!middlename,
         lastname: !!lastname,
       });
       return res.status(400).json({ error: "Missing required fields" });
@@ -38,12 +40,14 @@ export const signup = async (req: Request, res: Response) => {
       eMailAddr,
       password: hashedPassword,
       firstname,
+      middlename,
       lastname,
     });
 
     const user = response.data?.user || response.data;
     const { password: _pw, ...safeUser } = user;
 
+    logger.debug("[Auth] signup safeUser: ", { safeUser });
     const token = generateToken(safeUser);
 
     res.status(201).json({ token, user: safeUser });
@@ -68,7 +72,7 @@ export const login = async (req: Request, res: Response) => {
     const password = req.body.password;
 
     if (!eMailAddr || !password) {
-      logger.debug("authService: Missing eMailAddr or password", {});
+      logger.debug("authService: Missing eMailAddr or password");
       return res.status(400).json({ error: "Missing eMailAddr or password" });
     }
 
@@ -81,13 +85,13 @@ export const login = async (req: Request, res: Response) => {
     const user = response.data?.user || response.data;
 
     if (!user?.password) {
-      logger.debug("authService: User not found or missing password", {});
+      logger.debug("authService: User not found or missing password");
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
     const passwordMatch = await bcrypt.compare(password, user.password);
     if (!passwordMatch) {
-      logger.debug("authService: Password mismatch", {});
+      logger.debug("authService: Password mismatch");
       return res.status(401).json({ error: "Invalid email or password" });
     }
 

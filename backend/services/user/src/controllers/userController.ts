@@ -2,6 +2,15 @@ import { Request, Response } from "express";
 import { UserModel } from "../models/User";
 import { logger } from "@shared/utils/logger";
 
+// 🔐 Helper: Return only safe user fields (no password)
+const getSafeUser = (user: any) => ({
+  _id: user._id,
+  eMailAddr: user.eMailAddr,
+  firstname: user.firstname,
+  middlename: user.middlename,
+  lastname: user.lastname,
+});
+
 // 🔍 GET user by email — used by authService during login
 export const getUserByEmail = async (req: Request, res: Response) => {
   const eMailAddr = req.params.eMailAddr;
@@ -19,7 +28,7 @@ export const getUserByEmail = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    res.json(user);
+    res.json(getSafeUser(user));
   } catch (err: any) {
     logger.error("userService: getUserByEmail failed", {
       eMailAddr,

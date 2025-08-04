@@ -20,6 +20,9 @@ class LogoMenuBar extends StatelessWidget {
         break;
       case 'logout':
         await authProvider.logout();
+        if (context.mounted) {
+          Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+        }
         break;
       case 'create':
         if (!authProvider.isAuthenticated) {

@@ -7,10 +7,12 @@ class AuthProvider extends ChangeNotifier {
   String? _token;
   String? _userId;
   String? _userDisplayName;
+  Map<String, dynamic>? _user;
 
   String? get token => _token;
   String? get userId => _userId;
   String? get userDisplayName => _userDisplayName;
+  Map<String, dynamic>? get user => _user;
   bool get isAuthenticated => _token != null;
 
   AuthProvider() {
@@ -77,6 +79,7 @@ class AuthProvider extends ChangeNotifier {
     _token = null;
     _userId = null;
     _userDisplayName = null;
+    _user = null;
     await AuthStorage.clearToken();
     notifyListeners();
   }
@@ -86,14 +89,18 @@ class AuthProvider extends ChangeNotifier {
       final parts = token.split('.');
       if (parts.length != 3) return;
 
-      final payload = utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
+      final payload =
+          utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
       final data = jsonDecode(payload);
 
+      _user = data;
       _userId = data['_id'];
       final firstname = data['firstname'] ?? '';
       final middlename = data['middlename'] ?? '';
       final lastname = data['lastname'] ?? '';
-      _userDisplayName = "$firstname $middlename $lastname".replaceAll(RegExp(r'\s+'), ' ').trim();
+      _userDisplayName = "$firstname $middlename $lastname"
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
     } catch (e) {
       debugPrint("Token decode error: $e");
     }

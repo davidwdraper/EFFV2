@@ -8,7 +8,25 @@ class UserProfilePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final userName = context.watch<AuthProvider>().userDisplayName ?? 'User';
+    final authProvider = context.watch<AuthProvider>();
+
+    // ✅ Auto-redirect to landing page if logged out
+    if (!authProvider.isAuthenticated) {
+      // Prevent double-redirects
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+      });
+    }
+
+    final user = authProvider.user;
+    final emailController =
+        TextEditingController(text: user?['eMailAddr'] ?? '');
+    final firstController =
+        TextEditingController(text: user?['firstname'] ?? '');
+    final middleController =
+        TextEditingController(text: user?['middlename'] ?? '');
+    final lastController = TextEditingController(text: user?['lastname'] ?? '');
+    final userName = authProvider.userDisplayName ?? 'User';
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
@@ -25,59 +43,112 @@ class UserProfilePage extends StatelessWidget {
                 ),
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    child: ListView(
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    child: Card(
+                      elevation: 2,
+                      color: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: ListView(
                           children: [
-                            const CircleAvatar(
-                              radius: 40,
-                              backgroundImage: AssetImage('assets/default_avatar.png'),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                const CircleAvatar(
+                                  radius: 40,
+                                  backgroundImage:
+                                      AssetImage('assets/default_avatar.png'),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Text(
+                                    userName,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .headlineSmall,
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: Text(
-                                userName,
-                                style: Theme.of(context).textTheme.headlineSmall,
-                              ),
+                            const SizedBox(height: 24),
+                            _buildEditableField(
+                                label: 'Email', controller: emailController),
+                            _buildEditableField(
+                                label: 'First Name',
+                                controller: firstController),
+                            _buildEditableField(
+                                label: 'Middle Name',
+                                controller: middleController),
+                            _buildEditableField(
+                                label: 'Last Name', controller: lastController),
+                            const SizedBox(height: 24),
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 12,
+                              children: [
+                                TextButton.icon(
+                                  onPressed: () {},
+                                  icon: const Icon(Icons.add_photo_alternate),
+                                  label: const Text('Add Image'),
+                                ),
+                                TextButton.icon(
+                                  onPressed: () {},
+                                  icon: const Icon(Icons.delete_forever),
+                                  label: const Text('Delete Image'),
+                                ),
+                                ElevatedButton.icon(
+                                  onPressed: () {
+                                    // TODO: Wire update logic here
+                                  },
+                                  icon: const Icon(Icons.update),
+                                  label: const Text('Update'),
+                                ),
+                                TextButton.icon(
+                                  onPressed: () {},
+                                  icon: const Icon(Icons.group_add),
+                                  label: const Text('Add User to Act'),
+                                ),
+                                TextButton.icon(
+                                  onPressed: () {
+                                    Navigator.of(context).pop();
+                                  },
+                                  icon: const Icon(Icons.close),
+                                  label: const Text('Close'),
+                                ),
+                              ],
                             ),
                           ],
                         ),
-                        const SizedBox(height: 32),
-                        Wrap(
-                          spacing: 12,
-                          runSpacing: 12,
-                          children: [
-                            ElevatedButton.icon(
-                              onPressed: () {}, // To be wired
-                              icon: const Icon(Icons.add_photo_alternate),
-                              label: const Text('Add Image'),
-                            ),
-                            ElevatedButton.icon(
-                              onPressed: () {}, // To be wired
-                              icon: const Icon(Icons.delete_forever),
-                              label: const Text('Delete Image'),
-                            ),
-                            ElevatedButton.icon(
-                              onPressed: () {}, // To be wired
-                              icon: const Icon(Icons.update),
-                              label: const Text('Update'),
-                            ),
-                            ElevatedButton.icon(
-                              onPressed: () {}, // To be wired
-                              icon: const Icon(Icons.group_add),
-                              label: const Text('Add User to Act'),
-                            ),
-                          ],
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEditableField({
+    required String label,
+    required TextEditingController controller,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: TextFormField(
+        controller: controller,
+        readOnly: false,
+        decoration: InputDecoration(
+          labelText: label,
+          filled: true,
+          fillColor: Colors.white,
+          border: const OutlineInputBorder(),
         ),
       ),
     );

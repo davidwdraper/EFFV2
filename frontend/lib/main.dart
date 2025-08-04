@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'pages/landing_page.dart';
+import 'providers/auth_provider.dart'; // 👈 You'll create this next
 
 void main() {
-  runApp(const EffApp());
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => AuthProvider()..checkToken(),
+      child: const EffApp(),
+    ),
+  );
 }
 
 class EffApp extends StatelessWidget {

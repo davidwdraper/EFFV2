@@ -6,7 +6,10 @@ import { logger } from "@shared/utils/logger";
 export const getUserByEmail = async (req: Request, res: Response) => {
   const eMailAddr = req.params.eMailAddr;
 
-  logger.debug("userService: getUserByEmail called", { eMailAddr });
+  logger.debug(
+    `userService: getUserByEmail called. eMailAddr: ${eMailAddr}`,
+    {}
+  );
 
   try {
     const user = await UserModel.findOne({ eMailAddr });

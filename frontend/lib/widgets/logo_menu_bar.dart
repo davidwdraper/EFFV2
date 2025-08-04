@@ -1,46 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../pages/create_account_page.dart';
-import '../utils/auth_storage.dart';
+import '../pages/login_page.dart';
+import '../providers/auth_provider.dart';
 
-class LogoMenuBar extends StatefulWidget {
+class LogoMenuBar extends StatelessWidget {
   const LogoMenuBar({super.key});
 
-  @override
-  State<LogoMenuBar> createState() => _LogoMenuBarState();
-}
+  void _handleMenuSelection(BuildContext context, String value) async {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
 
-class _LogoMenuBarState extends State<LogoMenuBar> {
-  bool isAuthenticated = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkToken();
-  }
-
-  Future<void> _checkToken() async {
-    final token = await AuthStorage.getToken();
-    setState(() {
-      isAuthenticated = token != null;
-    });
-  }
-
-  void _handleMenuSelection(String value) async {
     switch (value) {
       case 'login':
-        debugPrint("Login tapped");
+        await Navigator.of(context)
+            .push(MaterialPageRoute(builder: (context) => const LoginPage()));
+        await authProvider.checkToken();
         break;
       case 'logout':
-        await AuthStorage.clearToken();
-        setState(() {
-          isAuthenticated = false;
-        });
+        await authProvider.logout();
         break;
       case 'create':
-        if (!isAuthenticated) {
-          Navigator.of(context).push(
-            MaterialPageRoute(builder: (context) => const CreateAccountPage()),
-          );
+        if (!authProvider.isAuthenticated) {
+          await Navigator.of(context)
+              .push(MaterialPageRoute(builder: (context) => const CreateAccountPage()));
+          await authProvider.checkToken();
         }
         break;
       case 'acts':
@@ -56,6 +39,10 @@ class _LogoMenuBarState extends State<LogoMenuBar> {
 
   @override
   Widget build(BuildContext context) {
+    final authProvider = Provider.of<AuthProvider>(context);
+    final isAuthenticated = authProvider.isAuthenticated;
+    final userDisplayName = authProvider.userDisplayName;
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -65,9 +52,17 @@ class _LogoMenuBarState extends State<LogoMenuBar> {
           fit: BoxFit.contain,
         ),
         const Spacer(),
+        if (isAuthenticated && userDisplayName != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 12.0, right: 8.0),
+            child: Text(
+              userDisplayName,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
         PopupMenuButton<String>(
           icon: const Icon(Icons.menu, size: 32),
-          onSelected: _handleMenuSelection,
+          onSelected: (value) => _handleMenuSelection(context, value),
           itemBuilder: (BuildContext context) => [
             PopupMenuItem(
               value: isAuthenticated ? 'logout' : 'login',

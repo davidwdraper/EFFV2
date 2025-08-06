@@ -17,3 +17,76 @@ logs/
 # Docker
 *.local
 docker-compose.override.yml
+
+# Flutter/Dart/Pub related
+.dart_tool/
+.packages
+.pub-cache/
+build/
+flutter_*.png
+generated_plugin_registrant.dart
+
+# Web-related
+web/.dart_tool/
+web/build/
+
+# iOS
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/ServiceDefinitions.json
+ios/Runner.xcworkspace/
+ios/Pods/
+ios/Podfile.lock
+ios/.symlinks/
+ios/Flutter/App.framework
+ios/Flutter/engine/
+
+# Android
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/local.properties
+*.iml
+
+# Windows
+windows/runner/Debug/
+windows/runner/Release/
+windows/runner/*.vcxproj.user
+
+# macOS
+macos/Flutter/GeneratedPluginRegistrant.swift
+macos/Flutter/ephemeral/
+macos/Pods/
+macos/Podfile.lock
+
+# Linux
+linux/flutter/ephemeral/
+
+# IntelliJ related
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+# Others
+*.log
+*.lock
+*.tmp
+*.temp
+*.bak
+*.swp
+*.DS_Store
+*.class
+*.jar
+
+# Environment config
+.env
+.env.*
+
+# Firebase (if you're using it)
+ios/Runner/GoogleService-Info.plist
+android/app/go
+

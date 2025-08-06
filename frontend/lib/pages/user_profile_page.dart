@@ -12,7 +12,6 @@ class UserProfilePage extends StatelessWidget {
 
     // ✅ Auto-redirect to landing page if logged out
     if (!authProvider.isAuthenticated) {
-      // Prevent double-redirects
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
       });
@@ -76,15 +75,25 @@ class UserProfilePage extends StatelessWidget {
                             ),
                             const SizedBox(height: 24),
                             _buildEditableField(
-                                label: 'Email', controller: emailController),
+                              context: context,
+                              label: 'Email',
+                              controller: emailController,
+                            ),
                             _buildEditableField(
-                                label: 'First Name',
-                                controller: firstController),
+                              context: context,
+                              label: 'First Name',
+                              controller: firstController,
+                            ),
                             _buildEditableField(
-                                label: 'Middle Name',
-                                controller: middleController),
+                              context: context,
+                              label: 'Middle Name',
+                              controller: middleController,
+                            ),
                             _buildEditableField(
-                                label: 'Last Name', controller: lastController),
+                              context: context,
+                              label: 'Last Name',
+                              controller: lastController,
+                            ),
                             const SizedBox(height: 24),
                             Wrap(
                               spacing: 12,
@@ -136,19 +145,35 @@ class UserProfilePage extends StatelessWidget {
   }
 
   Widget _buildEditableField({
+    required BuildContext context,
     required String label,
     required TextEditingController controller,
   }) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: TextFormField(
         controller: controller,
         readOnly: false,
         decoration: InputDecoration(
           labelText: label,
+          labelStyle: const TextStyle(fontWeight: FontWeight.w500),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
           filled: true,
-          fillColor: Colors.white,
-          border: const OutlineInputBorder(),
+          fillColor: Colors.grey[50],
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Colors.grey),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Colors.grey),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide:
+                BorderSide(color: Theme.of(context).primaryColor, width: 2),
+          ),
         ),
       ),
     );

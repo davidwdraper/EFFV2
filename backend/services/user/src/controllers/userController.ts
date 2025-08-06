@@ -31,11 +31,11 @@ export const getUserByEmailWithPassword = async (
       return res.status(404).json({ error: "User not found" });
     }
 
-    res.json({
-      _id: user._id,
-      eMailAddr: user.eMailAddr,
-      password: user.password, // ⚠️ safe only internally
-    });
+    // Get safe user fields and add the password for internal use
+    const safeUser = getSafeUser(user);
+    (safeUser as any).password = user.password;
+
+    res.json(safeUser);
   } catch (err: any) {
     logger.error("getUserByEmailWithPassword failed", {
       eMailAddr,

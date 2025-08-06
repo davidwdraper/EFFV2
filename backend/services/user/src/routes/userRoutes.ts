@@ -4,6 +4,7 @@ import { createAuthenticateMiddleware } from "@shared/middleware/authenticate";
 import { JWT_SECRET } from "@shared/utils/env";
 import { logger } from "@shared/utils/logger";
 import { getUserByEmail } from "../controllers/userController";
+import { getUserByEmailWithPassword } from "../controllers/userController";
 
 const router = express.Router();
 const authenticate = createAuthenticateMiddleware(JWT_SECRET);
@@ -60,6 +61,23 @@ router.post("/", async (req, res) => {
   }
 });
 
+// 🔍 GET - Get user by email (used by authService only)
+router.get("/private/email/:eMailAddr", getUserByEmailWithPassword);
+
+// 🔍 GET - Get user by email
+router.get("/email/:eMailAddr", getUserByEmail);
+
+// 📋 GET - Get all users (public)
+router.get("/", async (req, res) => {
+  logger.debug("userService: GET /users - Fetching all users", {});
+  try {
+    const users = await UserModel.find();
+    res.status(200).json(users);
+  } catch (err: any) {
+    logger.error("userService: GET /users failed", { error: err.message });
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 // 🔍 GET - Get user by email (used by authService only)
 router.get("/email/:eMailAddr", getUserByEmail);
 

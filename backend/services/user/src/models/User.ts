@@ -16,7 +16,7 @@ const userSchema = new Schema<IUser>(
     lastname: { type: String, required: true },
     middlename: { type: String },
     firstname: { type: String, required: true },
-    eMailAddr: { type: String, required: true, unique: true },
+    eMailAddr: { type: String, required: true, unique: true, index: true },
     password: { type: String, required: true },
     imageIds: {
       type: [String],

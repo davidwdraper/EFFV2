@@ -76,7 +76,7 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Missing eMailAddr or password" });
     }
 
-    const url = `${ORCHESTRATOR_CORE_URL}/users/email/${encodeURIComponent(
+    const url = `${ORCHESTRATOR_CORE_URL}/users/private/email/${encodeURIComponent(
       eMailAddr
     )}`;
     logger.debug("authService: Fetching user from orchestrator-core", { url });

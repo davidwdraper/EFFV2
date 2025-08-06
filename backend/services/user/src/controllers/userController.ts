@@ -12,6 +12,40 @@ const getSafeUser = (user: any) => ({
 });
 
 // 🔍 GET user by email — used by authService during login
+export const getUserByEmailWithPassword = async (
+  req: Request,
+  res: Response
+) => {
+  const eMailAddr = req.params.eMailAddr;
+
+  logger.debug(
+    `userService: getUserByEmailWithPassword called. eMailAddr: ${eMailAddr}`,
+    {}
+  );
+
+  try {
+    const user = await UserModel.findOne({ eMailAddr });
+
+    if (!user) {
+      logger.debug("userService: User not found", { eMailAddr });
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({
+      _id: user._id,
+      eMailAddr: user.eMailAddr,
+      password: user.password, // ⚠️ safe only internally
+    });
+  } catch (err: any) {
+    logger.error("getUserByEmailWithPassword failed", {
+      eMailAddr,
+      error: err.message || "Unknown error",
+    });
+    return res.status(500).json({ error: "Failed to retrieve user" });
+  }
+};
+
+// 🔍 GET user by email
 export const getUserByEmail = async (req: Request, res: Response) => {
   const eMailAddr = req.params.eMailAddr;
 

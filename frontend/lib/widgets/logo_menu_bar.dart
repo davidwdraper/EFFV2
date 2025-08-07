@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../pages/create_account_page.dart';
 import '../pages/login_page.dart';
 import '../pages/user_profile_page.dart';
@@ -8,113 +9,127 @@ import '../providers/auth_provider.dart';
 class LogoMenuBar extends StatelessWidget {
   const LogoMenuBar({super.key});
 
-  void _handleMenuSelection(BuildContext context, String value) async {
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+  void _onMenuSelect(BuildContext context, String value) async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
 
     switch (value) {
       case 'login':
-        await Navigator.of(context).push(
-          MaterialPageRoute(builder: (context) => const LoginPage()),
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const LoginPage()),
         );
-        await authProvider.checkToken();
+        await auth.checkToken();
         break;
+
       case 'logout':
-        await authProvider.logout();
+        await auth.logout();
         if (context.mounted) {
-          Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+          Navigator.pushNamedAndRemoveUntil(context, '/', (_) => false);
         }
         break;
+
       case 'create':
-        if (!authProvider.isAuthenticated) {
-          await Navigator.of(context).push(
-            MaterialPageRoute(builder: (context) => const CreateAccountPage()),
+        if (!auth.isAuthenticated) {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const CreateAccountPage()),
           );
-          await authProvider.checkToken();
+          await auth.checkToken();
         }
         break;
+
       case 'acts':
-        debugPrint("Acts tapped");
+        Navigator.pushNamed(context, '/acts');
         break;
+
       case 'profile':
-        Navigator.of(context).push(
+        Navigator.push(
+          context,
           MaterialPageRoute(builder: (_) => const UserProfilePage()),
         );
         break;
+
       default:
-        debugPrint('Selected: $value');
+        debugPrint('Unhandled menu value: $value');
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final authProvider = context.watch<AuthProvider>();
-    final isAuthenticated = authProvider.isAuthenticated;
-    final userDisplayName = authProvider.userDisplayName;
-
-    final displayName = isAuthenticated && userDisplayName != null
-        ? userDisplayName
-        : "Hello Anonymous User";
+    final auth = context.watch<AuthProvider>();
+    final userName = auth.isAuthenticated
+        ? auth.userDisplayName ?? 'User'
+        : 'Hello Anonymous User';
 
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 600),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Image.asset(
-              'assets/logo.png',
-              height: 64,
-              fit: BoxFit.contain,
-            ),
+            Image.asset('assets/logo.png', height: 64, fit: BoxFit.contain),
             Row(
               children: [
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: Align(
-                    alignment: Alignment.center,
-                    child: Text(
-                      displayName,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(userName,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
                 ),
-                PopupMenuButton<String>(
-                  icon: const Icon(Icons.menu, size: 32),
-                  onSelected: (value) => _handleMenuSelection(context, value),
-                  itemBuilder: (BuildContext context) => [
-                    PopupMenuItem(
-                      value: isAuthenticated ? 'logout' : 'login',
-                      child: Text(isAuthenticated ? 'Logout' : 'Login'),
-                    ),
-                    PopupMenuItem(
-                      value: 'create',
-                      enabled: !isAuthenticated,
-                      child: Text(
-                        'Create Account',
-                        style: TextStyle(
-                          color: isAuthenticated ? Colors.grey : null,
-                        ),
-                      ),
-                    ),
-                    const PopupMenuItem(value: 'acts', child: Text('Acts')),
-                    PopupMenuItem(
-                      value: 'profile',
-                      enabled: isAuthenticated,
-                      child: Text(
-                        'Profile',
-                        style: TextStyle(
-                          color: isAuthenticated ? null : Colors.grey,
-                        ),
-                      ),
-                    ),
-                  ],
+                MenuOptions(
+                  isAuthenticated: auth.isAuthenticated,
+                  onSelected: (value) => _onMenuSelect(context, value),
                 ),
               ],
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class MenuOptions extends StatelessWidget {
+  final bool isAuthenticated;
+  final void Function(String) onSelected;
+
+  const MenuOptions({
+    super.key,
+    required this.isAuthenticated,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      icon: const Icon(Icons.menu, size: 32),
+      onSelected: onSelected,
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: isAuthenticated ? 'logout' : 'login',
+          child: Text(isAuthenticated ? 'Logout' : 'Login'),
+        ),
+        PopupMenuItem(
+          value: 'create',
+          enabled: !isAuthenticated,
+          child: Text(
+            'Create Account',
+            style: TextStyle(
+              color: isAuthenticated ? Colors.grey : null,
+            ),
+          ),
+        ),
+        const PopupMenuItem(value: 'acts', child: Text('Acts')),
+        PopupMenuItem(
+          value: 'profile',
+          enabled: isAuthenticated,
+          child: Text(
+            'Profile',
+            style: TextStyle(
+              color: isAuthenticated ? null : Colors.grey,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import 'pages/landing_page.dart';
-import 'providers/auth_provider.dart'; // 👈 You'll create this next
+import 'pages/acts_page.dart'; // ✅ Add this
+import 'providers/auth_provider.dart';
 
 void main() {
   runApp(
@@ -24,7 +26,12 @@ class EffApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      home: const LandingPage(),
+      initialRoute: '/',
+      routes: {
+        '/': (context) => const LandingPage(),
+        '/acts': (context) => const ActsPage(), // ✅ Register Acts route
+        // Add others like '/profile', '/login' as needed
+      },
     );
   }
 }

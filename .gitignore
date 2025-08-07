@@ -1,24 +1,4 @@
-# Node
-node_modules/
-dist/
-.env
-.env.*
-
-# Logs
-logs/
-*.log
-
-# VS Code
-.vscode/
-
-# OS junk
-.DS_Store
-
-# Docker
-*.local
-docker-compose.override.yml
-
-# Flutter/Dart/Pub related
+# --- FLUTTER / DART ---
 .dart_tool/
 .packages
 .pub-cache/
@@ -26,67 +6,61 @@ build/
 flutter_*.png
 generated_plugin_registrant.dart
 
-# Web-related
-web/.dart_tool/
-web/build/
+# --- ENV FILES ---
+.env
+.env.*
 
-# iOS
-ios/Flutter/Flutter.framework
-ios/Flutter/Flutter.podspec
-ios/Flutter/Generated.xcconfig
-ios/ServiceDefinitions.json
-ios/Runner.xcworkspace/
-ios/Pods/
-ios/Podfile.lock
-ios/.symlinks/
-ios/Flutter/App.framework
-ios/Flutter/engine/
+# --- LOG FILES ---
+logs/
+*.log
 
-# Android
-android/.gradle/
-android/app/debug/
-android/app/profile/
-android/app/release/
-android/local.properties
+# --- IDEs ---
+.vscode/
+.idea/
 *.iml
 
-# Windows
-windows/runner/Debug/
-windows/runner/Release/
-windows/runner/*.vcxproj.user
+# --- OS / SYSTEM FILES ---
+.DS_Store
+*.swp
+*.tmp
+*.temp
+*.bak
 
-# macOS
-macos/Flutter/GeneratedPluginRegistrant.swift
+# --- ANDROID ---
+android/.gradle/
+android/app/build/
+android/local.properties
+*.keystore
+
+# --- IOS ---
+ios/Flutter/
+ios/.symlinks/
+ios/Pods/
+ios/Runner.xcworkspace/
+ios/Podfile.lock
+ios/ServiceDefinitions.json
+
+# --- MACOS ---
 macos/Flutter/ephemeral/
 macos/Pods/
 macos/Podfile.lock
 
-# Linux
+# --- WINDOWS ---
+windows/runner/Debug/
+windows/runner/Release/
+windows/runner/*.vcxproj.user
+
+# --- LINUX ---
 linux/flutter/ephemeral/
 
-# IntelliJ related
-.idea/
-*.iml
+# --- WEB ---
+web/.dart_tool/
+web/build/
 
-# VS Code
-.vscode/
+# --- DOCKER ---
+*.local
+docker-compose.override.yml
 
-# Others
-*.log
-*.lock
-*.tmp
-*.temp
-*.bak
-*.swp
-*.DS_Store
-*.class
-*.jar
-
-# Environment config
-.env
-.env.*
-
-# Firebase (if you're using it)
+# --- FIREBASE (OPTIONAL) ---
 ios/Runner/GoogleService-Info.plist
-android/app/go
-
+android/app/google-services.json

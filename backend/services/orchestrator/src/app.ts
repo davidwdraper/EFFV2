@@ -13,6 +13,7 @@ import eventRoutes from "./routes/eventRoutes";
 import placeRoutes from "./routes/placeRoutes";
 import imageRoutes from "./routes/imageRoutes";
 import logRoutes from "./routes/logRoutes";
+import townRoutes from "./routes/townRoutes"; // ✅ NEW
 
 dotenv.config();
 const app = express();
@@ -26,7 +27,7 @@ logger.debug("orchestrator: app.ts initializing", {
 app.use(
   cors({
     origin: "*", // tighten in production
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
@@ -38,13 +39,16 @@ app.use(express.json());
 app.get("/", (_req, res) => res.send("Orchestrator is up"));
 
 // 🔒 Auth gate AFTER health, BEFORE other routes
+// Allow anonymous GET/HEAD to /acts/search and /towns/typeahead (any prefix).
 app.use(
   authGate(authenticate, {
-    publicGetPaths: [
-      "/acts/hometowns",
-      "/acts/hometowns/near",
-      // "/acts", // uncomment if you want list-acts public
-      "/", // health stays public even if moved later
+    publicGetPaths: ["/"], // keep health public even if reordered
+    publicGetRegexes: [
+      /\/acts\/search$/, // e.g. /acts/search, /api/acts/search
+      /\/towns\/typeahead$/, // e.g. /towns/typeahead, /v1/towns/typeahead
+      // (optional legacy) keep these only if the frontend still calls them:
+      // /\/acts\/hometowns$/,
+      // /\/acts\/hometowns\/near$/,
     ],
   })
 );
@@ -57,5 +61,6 @@ app.use("/events", eventRoutes);
 app.use("/places", placeRoutes);
 app.use("/logs", logRoutes);
 app.use("/images", imageRoutes);
+app.use("/towns", townRoutes); // ✅ NEW
 
 export default app;

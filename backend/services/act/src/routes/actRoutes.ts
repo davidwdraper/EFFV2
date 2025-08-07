@@ -1,332 +1,271 @@
-import express from "express";
-import axios from "axios";
-import csvParser from "csv-parser";
-import { logger } from "@shared/utils/logger";
-import { authenticate } from "@shared/middleware/authenticate";
-import { dateNowIso } from "@shared/utils/dateUtils";
+// src/routes/actRoutes.ts
+import express, { Request, Response } from "express";
+import { Types } from "mongoose";
 import Act from "../models/Act";
 import Town from "../models/Town";
-import { IAct } from "@shared/interfaces/Act/IAct";
-import { INewAct } from "@shared/interfaces/Act/INewAct";
-import { IActUpdate } from "@shared/interfaces/Act/IActUpdate";
 
 const router = express.Router();
 
-/**
- * POST /acts — Create Act (auth required)
- */
-router.post("/", authenticate, async (req, res) => {
-  try {
-    const { actType, name, eMailAddr, homeTown } = req.body as INewAct;
+// ---- config ----
+const DEFAULT_RADIUS_MILES = Number(process.env.ACT_RADIUS_SEARCH ?? "50");
 
-    const userCreateId = req.user?._id;
-    if (!userCreateId) return res.status(401).send({ error: "Unauthorized" });
-
-    if (!Array.isArray(actType) || actType.length === 0)
-      return res
-        .status(400)
-        .send({ error: "actType must be a non-empty array" });
-    if (!name) return res.status(400).send({ error: "name is required" });
-
-    const now = dateNowIso();
-
-    const act = new Act({
-      dateCreated: now,
-      dateLastUpdated: now,
-      actStatus: 0,
-      actType,
-      name,
-      eMailAddr,
-      homeTown,
-      userCreateId,
-      userOwnerId: userCreateId,
-      imageIds: [],
-    });
-
-    await act.save();
-    res.status(201).send(act.toObject());
-  } catch (err) {
-    if (
-      err instanceof Error &&
-      typeof (err as any).code === "number" &&
-      (err as any).code === 11000
-    ) {
-      return res.status(409).send({
-        error: "An Act with that name already exists in this homeTown.",
-      });
-    }
-    logger.error("[ActService] POST /acts failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    res.status(500).send({ error: "Failed to create Act" });
-  }
-});
-
-/**
- * GET /acts — Public
- */
-router.get("/", async (_req, res) => {
-  try {
-    const acts: IAct[] = await Act.find().lean();
-    res.send(acts);
-  } catch (err) {
-    logger.error("[ActService] GET /acts failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    res.status(500).send({ error: "Failed to fetch Acts" });
-  }
-});
-
-/**
- * GET /acts/townload — Admin-only: Load towns from CSV to Mongo (with GeoJSON)
- */
-router.get("/townload", authenticate, async (req, res) => {
-  try {
-    if (!req.user || (req.user.userType ?? 0) < 3) {
-      return res.status(403).send({ error: "Admin access only" });
-    }
-
-    const csvUrl = "https://simplemaps.com/static/data/us-cities/uscities.csv";
-    const response = await axios.get(csvUrl, { responseType: "stream" });
-
-    const towns: {
-      name: string;
-      state: string;
-      lat: number;
-      lng: number;
-      loc: { type: "Point"; coordinates: [number, number] };
-    }[] = [];
-
-    const parser = response.data.pipe(csvParser());
-
-    for await (const row of parser) {
-      if (!row.city || !row.state_id || !row.lat || !row.lng) continue;
-      const lat = parseFloat(row.lat);
-      const lng = parseFloat(row.lng);
-      towns.push({
-        name: row.city,
-        state: row.state_id,
-        lat,
-        lng,
-        loc: { type: "Point", coordinates: [lng, lat] }, // [lng, lat]
-      });
-    }
-
-    await Town.deleteMany({});
-    await Town.insertMany(towns);
-
-    res.send({ success: true, count: towns.length });
-  } catch (err) {
-    logger.error("[ActService] GET /acts/townload failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    res.status(500).send({ error: "Failed to download towns" });
-  }
-});
-
-/**
- * GET /acts/hometowns — Public: DB-powered suggestions
- * Query: q (>=3 chars), state=2-letter optional, limit (default 10, max 25)
- */
+// ---- helpers ----
+const toNum = (v: unknown): number | null => {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+const milesToMeters = (miles: number) => miles * 1609.34;
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-router.get("/hometowns", async (req, res) => {
-  try {
-    const rawQ = (req.query.q as string | undefined)?.trim() ?? "";
-    const state = (req.query.state as string | undefined)?.trim().toUpperCase();
+async function resolveTownFields(input: {
+  homeTown?: string;
+  townId?: string;
+}) {
+  let townDoc: any | null = null;
 
-    const limitParam = Number.parseInt(req.query.limit as string, 10);
-    const limit = Number.isFinite(limitParam) ? Math.min(limitParam, 25) : 10;
-
-    if (rawQ.length < 3) return res.json([]);
-
-    const starts = new RegExp("^" + escapeRegex(rawQ), "i");
-    const contains = new RegExp(escapeRegex(rawQ), "i");
-
-    const filter: any = { $or: [{ name: starts }, { name: contains }] };
-    if (state && /^[A-Z]{2}$/.test(state)) filter.state = state;
-
-    const towns = await Town.find(filter, {
-      _id: 0,
-      name: 1,
-      state: 1,
-      lat: 1,
-      lng: 1,
-    })
-      .limit(limit)
-      .sort({ name: 1 })
-      .lean();
-
-    const results = towns.map((t) => ({
-      label: `${t.name}, ${t.state}`,
-      name: t.name,
-      state: t.state,
-      lat: t.lat,
-      lng: t.lng,
-    }));
-
-    res.json(results);
-  } catch (err) {
-    logger.error("[ActService] GET /acts/hometowns failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    res.status(500).send({ error: "Failed to fetch hometowns" });
+  if (input.townId && Types.ObjectId.isValid(input.townId)) {
+    townDoc = await Town.findById(input.townId).lean();
+  } else if (input.homeTown) {
+    // Expect "City, ST"
+    const parts = input.homeTown.split(",").map((s) => s.trim());
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      throw new Error(
+        'homeTown must be formatted as "City, ST" (e.g., "Austin, TX").'
+      );
+    }
+    const [city, state] = parts;
+    townDoc = await Town.findOne({ name: city, state }).lean();
   }
-});
+
+  if (!townDoc) throw new Error("Hometown not found in Town collection");
+
+  return {
+    homeTown: `${townDoc.name}, ${townDoc.state}`,
+    homeTownId: townDoc._id,
+    homeTownLoc: {
+      type: "Point",
+      coordinates: [townDoc.lng, townDoc.lat] as [number, number], // [lng, lat]
+    },
+  };
+}
 
 /**
- * GET /acts/hometowns/near — Public radius search
- * Query: lat, lng (required); radiusMi (optional, default ACT_RADIUS_SEARCH or 50); limit (default 50, max 200)
+ * ---- SEARCH: GET /acts/search ----
+ * Query:
+ *   lat (required): number
+ *   lng (required): number
+ *   q   (optional): string (prefix on name, case-insensitive)
+ *   limit (optional): number (default 20, max 50)
+ *   miles (optional): number (override ACT_RADIUS_SEARCH for this call)
  */
-const toNum = (v: any, fallback: number) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-};
-const MI_TO_M = 1609.344;
-
-router.get("/hometowns/near", async (req, res) => {
+router.get("/search", async (req: Request, res: Response) => {
   try {
-    const lat = Number(req.query.lat);
-    const lng = Number(req.query.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    const lat = toNum(req.query.lat);
+    const lng = toNum(req.query.lng);
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const limitRaw = toNum(req.query.limit);
+    const milesRaw = toNum(req.query.miles);
+
+    if (lat === null || lng === null) {
       return res
         .status(400)
-        .send({ error: "lat and lng are required numbers" });
+        .json({ error: "lat and lng are required numeric query parameters" });
     }
 
-    const defaultRadius = toNum(process.env.ACT_RADIUS_SEARCH, 50);
-    const radiusMi = toNum(req.query.radiusMi, defaultRadius);
-    const limit = Math.min(toNum(req.query.limit, 50), 200);
-    const maxDistance = radiusMi * MI_TO_M;
+    const limit = Math.min(Math.max(limitRaw ?? 20, 1), 50);
+    const radiusMiles = milesRaw ?? DEFAULT_RADIUS_MILES;
+    const maxDistance = milesToMeters(radiusMiles);
 
-    logger.debug("[ActService] hometowns/near", {
-      lat,
-      lng,
-      defaultRadius,
-      radiusMi,
-      limit,
-    });
-
-    const results = await Town.aggregate([
+    const pipeline: any[] = [
       {
         $geoNear: {
           near: { type: "Point", coordinates: [lng, lat] },
           distanceField: "distanceMeters",
-          spherical: true,
           maxDistance,
-          key: "loc",
+          spherical: true,
+          key: "homeTownLoc",
         },
       },
+      ...(q
+        ? [
+            {
+              $match: { name: { $regex: `^${escapeRegex(q)}`, $options: "i" } },
+            },
+          ]
+        : []),
       {
         $project: {
+          id: "$_id",
           _id: 0,
           name: 1,
-          state: 1,
-          lat: 1,
-          lng: 1,
-          distanceMi: { $divide: ["$distanceMeters", MI_TO_M] },
+          eMailAddr: 1,
+          homeTown: 1,
+          homeTownId: 1,
+          imageIds: 1,
+          distanceMeters: 1,
         },
       },
       { $limit: limit },
-    ]);
+    ];
 
-    const shaped = results.map((t: any) => ({
-      label: `${t.name}, ${t.state} (${t.distanceMi.toFixed(1)} mi)`,
-      name: t.name,
-      state: t.state,
-      lat: t.lat,
-      lng: t.lng,
-      distanceMi: t.distanceMi,
-    }));
+    const results = await Act.aggregate(pipeline).exec();
 
-    res.json(shaped);
-  } catch (err) {
-    logger.error("[ActService] GET /acts/hometowns/near failed", {
-      error: err instanceof Error ? err.message : String(err),
+    return res.status(200).json({
+      radiusMiles,
+      count: results.length,
+      data: results,
     });
-    res.status(500).send({ error: "Failed to search towns by radius" });
+  } catch (err: any) {
+    console.error("[acts/search] error:", err);
+    return res.status(500).json({
+      error: "Failed to search acts",
+      detail: err?.message ?? String(err),
+    });
   }
 });
 
 /**
- * GET /acts/:id — Public (guard to only match ObjectId)
+ * ---- LIST: GET /acts ----
+ * Optional:
+ *   q        (prefix on name)
+ *   homeTown (exact "City, ST")
+ *   limit    (<=100)
  */
-router.get("/:id([0-9a-fA-F]{24})", async (req, res) => {
+router.get("/", async (req: Request, res: Response) => {
   try {
-    const act: IAct | null = await Act.findById(req.params.id).lean();
-    if (!act) return res.status(404).send({ error: "Not found" });
-    res.send(act);
-  } catch (err) {
-    logger.error("[ActService] GET /acts/:id failed", {
-      error: err instanceof Error ? err.message : String(err),
-      actId: req.params.id,
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const homeTown =
+      typeof req.query.homeTown === "string" ? req.query.homeTown.trim() : "";
+    const limit = Math.min(Math.max(toNum(req.query.limit) ?? 50, 1), 100);
+
+    const filter: any = {};
+    if (q) filter.name = { $regex: `^${escapeRegex(q)}`, $options: "i" };
+    if (homeTown) filter.homeTown = homeTown;
+
+    const items = await Act.find(filter).limit(limit).lean();
+    return res.status(200).json({ count: items.length, data: items });
+  } catch (err: any) {
+    console.error("[acts/list] error:", err);
+    return res.status(500).json({
+      error: "Failed to fetch acts",
+      detail: err?.message ?? String(err),
     });
-    res.status(500).send({ error: "Failed to fetch Act" });
+  }
+});
+
+/** ---- GET ONE: GET /acts/:id ---- */
+router.get("/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid id" });
+
+    const act = await Act.findById(id).lean();
+    if (!act) return res.status(404).json({ error: "Act not found" });
+
+    return res.status(200).json({ act });
+  } catch (err: any) {
+    console.error("[acts/get] error:", err);
+    return res.status(500).json({
+      error: "Failed to fetch act",
+      detail: err?.message ?? String(err),
+    });
   }
 });
 
 /**
- * PUT /acts/:id — Update Act (auth + ownership required)
+ * ---- CREATE: POST /acts ----
+ * Accepts homeTown ("City, ST") OR townId; resolves & denormalizes geo.
  */
-router.put("/:id", authenticate, async (req, res) => {
+router.post("/", async (req: Request, res: Response) => {
   try {
-    const act = await Act.findById(req.params.id);
-    if (!act) return res.status(404).send({ error: "Not found" });
+    const base = req.body ?? {};
 
-    if (act.userOwnerId !== req.user?._id) {
-      return res.status(403).send({ error: "Forbidden: Not the owner" });
+    // Ensure date fields exist if your client isn't sending them
+    base.dateCreated = base.dateCreated ?? new Date().toISOString();
+    base.dateLastUpdated = new Date().toISOString();
+
+    const town = await resolveTownFields({
+      homeTown: base.homeTown,
+      townId: base.townId,
+    });
+    const created = await Act.create({ ...base, ...town });
+
+    return res.status(201).json({ message: "Act created", act: created });
+  } catch (err: any) {
+    if (err?.code === 11000) {
+      return res
+        .status(409)
+        .json({ error: "Duplicate Act (name + hometown must be unique)" });
     }
+    console.error("[acts/create] error:", err);
+    return res
+      .status(400)
+      .json({ error: err?.message ?? "Failed to create Act" });
+  }
+});
 
-    const updates = {
-      ...(req.body as IActUpdate),
-      dateLastUpdated: dateNowIso(),
-    };
+/**
+ * ---- UPDATE: PUT /acts/:id ----
+ * If homeTown/townId changes, re-resolve town and update geo fields.
+ * Always refresh dateLastUpdated.
+ */
+router.put("/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid id" });
 
-    const updatedAct: IAct | null = await Act.findByIdAndUpdate(
-      req.params.id,
-      updates,
-      { new: true }
-    ).lean();
+    const patch = { ...(req.body ?? {}) };
+    patch.dateLastUpdated = new Date().toISOString();
 
-    res.send(updatedAct);
-  } catch (err) {
-    if (
-      err instanceof Error &&
-      typeof (err as any).code === "number" &&
-      (err as any).code === 11000
-    ) {
-      return res.status(409).send({
-        error: "An Act with that name already exists in this homeTown.",
+    if (patch.homeTown || patch.townId) {
+      const townPatch = await resolveTownFields({
+        homeTown: patch.homeTown,
+        townId: patch.townId,
       });
+      Object.assign(patch, townPatch);
     }
-    logger.error("[ActService] PUT /acts/:id failed", {
-      error: err instanceof Error ? err.message : String(err),
-      actId: req.params.id,
-    });
-    res.status(500).send({ error: "Failed to update Act" });
+
+    const updated = await Act.findByIdAndUpdate(id, patch, {
+      new: true,
+    }).lean();
+    if (!updated) return res.status(404).json({ error: "Act not found" });
+
+    return res.status(200).json({ message: "Act updated", act: updated });
+  } catch (err: any) {
+    if (err?.code === 11000) {
+      return res
+        .status(409)
+        .json({ error: "Duplicate Act (name + hometown must be unique)" });
+    }
+    console.error("[acts/update] error:", err);
+    return res
+      .status(400)
+      .json({ error: err?.message ?? "Failed to update Act" });
   }
 });
 
-/**
- * DELETE /acts/:id — Delete Act (auth + ownership required)
- */
-router.delete("/:id", authenticate, async (req, res) => {
+/** ---- DELETE: DELETE /acts/:id ---- */
+router.delete("/:id", async (req: Request, res: Response) => {
   try {
-    const act = await Act.findById(req.params.id);
-    if (!act) return res.status(404).send({ error: "Not found" });
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid id" });
 
-    if (act.userOwnerId !== req.user?._id) {
-      return res.status(403).send({ error: "Forbidden: Not the owner" });
-    }
+    const deleted = await Act.findByIdAndDelete(id).lean();
+    if (!deleted) return res.status(404).json({ error: "Act not found" });
 
-    await Act.findByIdAndDelete(req.params.id);
-    res.send({ success: true });
-  } catch (err) {
-    logger.error("[ActService] DELETE /acts/:id failed", {
-      error: err instanceof Error ? err.message : String(err),
-      actId: req.params.id,
-    });
-    res.status(500).send({ error: "Failed to delete Act" });
+    return res.status(200).json({ message: "Act deleted" });
+  } catch (err: any) {
+    console.error("[acts/delete] error:", err);
+    return res
+      .status(500)
+      .json({
+        error: "Failed to delete Act",
+        detail: err?.message ?? String(err),
+      });
   }
 });
 

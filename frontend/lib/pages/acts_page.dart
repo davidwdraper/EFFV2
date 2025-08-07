@@ -6,6 +6,60 @@ import 'package:http/http.dart' as http;
 import '../widgets/page_wrapper.dart';
 import '../widgets/rounded_card.dart';
 
+/// ---------- Models (top-level) ----------
+class TownOption {
+  final String label; // "Austin, TX"
+  final double lat;
+  final double lng;
+  final String townId;
+
+  TownOption({
+    required this.label,
+    required this.lat,
+    required this.lng,
+    required this.townId,
+  });
+
+  factory TownOption.fromJson(Map<String, dynamic> j) {
+    return TownOption(
+      label: (j['label'] as String?) ??
+          '${j['name'] as String}, ${j['state'] as String}',
+      lat: (j['lat'] as num).toDouble(),
+      lng: (j['lng'] as num).toDouble(),
+      townId: j['townId']?.toString() ?? j['_id']?.toString() ?? '',
+    );
+  }
+
+  @override
+  String toString() => label;
+}
+
+class ActOption {
+  final String id;
+  final String name;
+  final String homeTown;
+  final double distanceMeters;
+
+  ActOption({
+    required this.id,
+    required this.name,
+    required this.homeTown,
+    required this.distanceMeters,
+  });
+
+  factory ActOption.fromJson(Map<String, dynamic> j) {
+    return ActOption(
+      id: (j['id'] ?? j['_id'] ?? '').toString(),
+      name: (j['name'] ?? '').toString(),
+      homeTown: (j['homeTown'] ?? '').toString(),
+      distanceMeters: (j['distanceMeters'] is num)
+          ? (j['distanceMeters'] as num).toDouble()
+          : 0.0,
+    );
+  }
+}
+
+/// ---------- Page ----------
 class ActsPage extends StatefulWidget {
   const ActsPage({super.key});
 
@@ -17,48 +71,60 @@ class _ActsPageState extends State<ActsPage> {
   final TextEditingController _hometownController = TextEditingController();
   final TextEditingController _actSearchController = TextEditingController();
 
-  String? _selectedHometown;
+  TownOption? _selectedTown;
 
-  // Backend base (orchestrator). Override with --dart-define if needed.
+  // Backend base (orchestrator). Override with:
+  // flutter run --dart-define=EFF_API_BASE=http://localhost:4000
   static const String _apiBase = String.fromEnvironment(
     'EFF_API_BASE',
     defaultValue: 'http://localhost:4000',
   );
 
-  final List<String> allActs = [
-    'Stormbringer',
-    'Neon Rain',
-    'Velvet Vultures',
-    'The Night Owls',
-  ];
+  // -------- API calls --------
+  Future<List<TownOption>> _fetchHometowns(String pattern) async {
+    final q = pattern.trim();
+    if (q.length < 3) return [];
+    final uri = Uri.parse('$_apiBase/towns/typeahead')
+        .replace(queryParameters: {'q': q});
 
-  List<String> _filterActs(String pattern) {
-    return allActs
-        .where((act) => act.toLowerCase().contains(pattern.toLowerCase()))
-        .toList();
+    try {
+      final res = await http.get(uri);
+      if (res.statusCode != 200) return [];
+      final body = jsonDecode(res.body);
+      // Accept either { data: [] } or [] directly
+      final list = (body is Map && body['data'] is List) ? body['data'] : body;
+      if (list is! List) return [];
+      return list.map<TownOption>((e) => TownOption.fromJson(e)).toList();
+    } catch (e) {
+      debugPrint('hometown fetch error: $e');
+      return [];
+    }
   }
 
-  Future<List<String>> _fetchHometowns(String pattern) async {
-    if (pattern.trim().length < 3) return [];
-    final uri = Uri.parse('$_apiBase/acts/hometowns').replace(queryParameters: {
-      'q': pattern.trim(),
-      'limit': '10',
+  Future<List<ActOption>> _fetchActsForTown({
+    required TownOption town,
+    required String pattern,
+    int limit = 20,
+  }) async {
+    final q = pattern.trim();
+    if (q.length < 3) return [];
+    final uri = Uri.parse('$_apiBase/acts/search').replace(queryParameters: {
+      'lat': town.lat.toString(),
+      'lng': town.lng.toString(),
+      'q': q,
+      'limit': limit.toString(),
     });
 
     try {
       final res = await http.get(uri);
       if (res.statusCode != 200) return [];
-      final List data = jsonDecode(res.body) as List;
-
-      // Backend returns objects: { label, name, state, lat, lng }
-      return data
-          .map((e) =>
-              (e['label'] as String?) ??
-              '${e['name'] as String}, ${e['state'] as String}')
-          .cast<String>()
+      final body = jsonDecode(res.body);
+      final data = (body is Map && body['data'] is List) ? body['data'] : [];
+      return (data as List)
+          .map<ActOption>((e) => ActOption.fromJson(e as Map<String, dynamic>))
           .toList();
     } catch (e) {
-      debugPrint('hometown fetch error: $e');
+      debugPrint('act search error: $e');
       return [];
     }
   }
@@ -89,17 +155,22 @@ class _ActsPageState extends State<ActsPage> {
                 ),
                 const SizedBox(height: 24),
 
-                // ✅ Hometown selector (now backed by API)
-                TypeAheadField<String>(
+                // ---------- Hometown selector ----------
+                TypeAheadField<TownOption>(
                   controller: _hometownController,
-                  suggestionsCallback: (pattern) => _fetchHometowns(pattern),
-                  itemBuilder: (context, String suggestion) {
-                    return ListTile(title: Text(suggestion));
+                  suggestionsCallback: _fetchHometowns,
+                  itemBuilder: (context, TownOption suggestion) {
+                    return ListTile(
+                      title: Text(suggestion.label),
+                      subtitle: Text(
+                          'lat: ${suggestion.lat}, lng: ${suggestion.lng}'),
+                    );
                   },
-                  onSelected: (String selection) {
+                  onSelected: (TownOption selection) {
                     setState(() {
-                      _hometownController.text = selection;
-                      _selectedHometown = selection;
+                      _selectedTown = selection;
+                      _hometownController.text = selection.label;
+                      _actSearchController.clear();
                     });
                   },
                   builder: (context, controller, focusNode) {
@@ -107,7 +178,7 @@ class _ActsPageState extends State<ActsPage> {
                       controller: controller,
                       focusNode: focusNode,
                       decoration: const InputDecoration(
-                        labelText: 'Hometown (Searches out 50 miles)',
+                        labelText: 'Hometown (searches within radius)',
                         border: OutlineInputBorder(),
                         contentPadding:
                             EdgeInsets.symmetric(horizontal: 12, vertical: 14),
@@ -117,42 +188,50 @@ class _ActsPageState extends State<ActsPage> {
                   emptyBuilder: (context) => const Padding(
                     padding: EdgeInsets.all(8),
                     child: Text(
-                      'No towns found. Keep typing (3+ characters)...',
+                      'No towns found. Keep typing (3+ characters)…',
                       style: TextStyle(fontSize: 14),
                     ),
                   ),
                 ),
+
                 const SizedBox(height: 16),
 
-                // ✅ Act name search only appears after Hometown is selected
-                if (_selectedHometown != null)
-                  TypeAheadField<String>(
+                // ---------- Act typeahead (after hometown) ----------
+                if (_selectedTown != null)
+                  TypeAheadField<ActOption>(
                     controller: _actSearchController,
                     suggestionsCallback: (pattern) async {
-                      if (pattern.length < 3) return [];
-                      return _filterActs(pattern);
+                      return _fetchActsForTown(
+                        town: _selectedTown!,
+                        pattern: pattern,
+                        limit: 20,
+                      );
                     },
-                    itemBuilder: (context, String suggestion) {
+                    itemBuilder: (context, ActOption suggestion) {
+                      final miles = (suggestion.distanceMeters / 1609.34);
                       return ListTile(
-                        title: Text(suggestion),
+                        title: Text(suggestion.name),
+                        subtitle: Text(
+                          '${suggestion.homeTown} • ${miles.toStringAsFixed(1)} mi',
+                        ),
                         onTap: () {
+                          // TODO: Navigate to Act detail/form with suggestion.id
                           debugPrint(
-                              'Selected Act: $suggestion @ $_selectedHometown');
-                          // TODO: Navigate to Act Form
+                              'Selected Act: ${suggestion.name} (${suggestion.id}) @ ${_selectedTown!.label}');
                         },
                       );
                     },
-                    onSelected: (String selection) {
+                    onSelected: (ActOption selection) {
+                      // Same as onTap above, kept for clarity.
                       debugPrint(
-                          'User selected act: $selection (home: $_selectedHometown)');
-                      // TODO: Navigate to Act Form
+                          'User selected act: ${selection.name} (${selection.id})');
                     },
                     builder: (context, controller, focusNode) {
                       return TextField(
                         controller: controller,
                         focusNode: focusNode,
                         decoration: const InputDecoration(
-                          labelText: 'Search Act Name',
+                          labelText: 'Search Act Name (3+ chars)',
                           border: OutlineInputBorder(),
                           contentPadding: EdgeInsets.symmetric(
                               horizontal: 12, vertical: 14),
@@ -165,15 +244,16 @@ class _ActsPageState extends State<ActsPage> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Text(
-                            'No Acts Found!',
-                            style: TextStyle(fontSize: 16),
-                          ),
+                          const Text('No Acts Found!',
+                              style: TextStyle(fontSize: 16)),
                           TextButton.icon(
                             onPressed: () {
+                              final name = _actSearchController.text.trim();
+                              if (name.isEmpty || _selectedTown == null) return;
+                              // TODO: Navigate to "Create Act" form with prefilled
+                              // name + hometown (townId & label).
                               debugPrint(
-                                  'User wants to add: ${_actSearchController.text}');
-                              // TODO: Trigger Add New Act logic
+                                  'User wants to add: "$name" in ${_selectedTown!.label}');
                             },
                             icon: const Icon(Icons.add),
                             label: const Text('Add'),

@@ -5,34 +5,8 @@ import 'package:http/http.dart' as http;
 
 import '../widgets/page_wrapper.dart';
 import '../widgets/rounded_card.dart';
-
-/// ---------- Models (top-level) ----------
-class TownOption {
-  final String label; // "Austin, TX"
-  final double lat;
-  final double lng;
-  final String townId;
-
-  TownOption({
-    required this.label,
-    required this.lat,
-    required this.lng,
-    required this.townId,
-  });
-
-  factory TownOption.fromJson(Map<String, dynamic> j) {
-    return TownOption(
-      label: (j['label'] as String?) ??
-          '${j['name'] as String}, ${j['state'] as String}',
-      lat: (j['lat'] as num).toDouble(),
-      lng: (j['lng'] as num).toDouble(),
-      townId: j['townId']?.toString() ?? j['_id']?.toString() ?? '',
-    );
-  }
-
-  @override
-  String toString() => label;
-}
+import '../models/town_option.dart'; // shared TownOption
+import 'act_form_page.dart'; // for ActFormPage + ActFormArgs
 
 class ActOption {
   final String id;
@@ -59,9 +33,9 @@ class ActOption {
   }
 }
 
-/// ---------- Page ----------
 class ActsPage extends StatefulWidget {
-  const ActsPage({super.key});
+  final String apiBase; // e.g. http://localhost:4000
+  const ActsPage({super.key, required this.apiBase});
 
   @override
   State<ActsPage> createState() => _ActsPageState();
@@ -73,28 +47,30 @@ class _ActsPageState extends State<ActsPage> {
 
   TownOption? _selectedTown;
 
-  // Backend base (orchestrator). Override with:
-  // flutter run --dart-define=EFF_API_BASE=http://localhost:4000
-  static const String _apiBase = String.fromEnvironment(
-    'EFF_API_BASE',
-    defaultValue: 'http://localhost:4000',
-  );
+  @override
+  void dispose() {
+    _hometownController.dispose();
+    _actSearchController.dispose();
+    super.dispose();
+  }
 
-  // -------- API calls --------
+  // ---------- API calls ----------
   Future<List<TownOption>> _fetchHometowns(String pattern) async {
     final q = pattern.trim();
     if (q.length < 3) return [];
-    final uri = Uri.parse('$_apiBase/towns/typeahead')
-        .replace(queryParameters: {'q': q});
+    final uri = Uri.parse('${widget.apiBase}/towns/typeahead')
+        .replace(queryParameters: {'q': q, 'limit': '20'});
 
     try {
       final res = await http.get(uri);
       if (res.statusCode != 200) return [];
       final body = jsonDecode(res.body);
-      // Accept either { data: [] } or [] directly
       final list = (body is Map && body['data'] is List) ? body['data'] : body;
       if (list is! List) return [];
-      return list.map<TownOption>((e) => TownOption.fromJson(e)).toList();
+      return list
+          .map<TownOption>(
+              (e) => TownOption.fromJson(e as Map<String, dynamic>))
+          .toList();
     } catch (e) {
       debugPrint('hometown fetch error: $e');
       return [];
@@ -108,12 +84,14 @@ class _ActsPageState extends State<ActsPage> {
   }) async {
     final q = pattern.trim();
     if (q.length < 3) return [];
-    final uri = Uri.parse('$_apiBase/acts/search').replace(queryParameters: {
-      'lat': town.lat.toString(),
-      'lng': town.lng.toString(),
-      'q': q,
-      'limit': limit.toString(),
-    });
+    final uri = Uri.parse('${widget.apiBase}/acts/search').replace(
+      queryParameters: {
+        'lat': town.lat.toString(),
+        'lng': town.lng.toString(),
+        'q': q,
+        'limit': limit.toString(),
+      },
+    );
 
     try {
       final res = await http.get(uri);
@@ -129,11 +107,31 @@ class _ActsPageState extends State<ActsPage> {
     }
   }
 
-  @override
-  void dispose() {
-    _hometownController.dispose();
-    _actSearchController.dispose();
-    super.dispose();
+  // ---------- Navigation ----------
+  Future<void> _goToCreateAct() async {
+    final name = _actSearchController.text.trim();
+    final town = _selectedTown;
+    if (name.isEmpty || town == null) return;
+
+    final createdId = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => ActFormPage(
+          args: ActFormArgs(
+            apiBase: widget.apiBase,
+            town: town,
+            initialName: name,
+          ),
+        ),
+      ),
+    );
+
+    if (createdId != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Act created')),
+      );
+      _actSearchController.clear();
+      setState(() {}); // if you later add a results list to refresh
+    }
   }
 
   @override
@@ -145,7 +143,8 @@ class _ActsPageState extends State<ActsPage> {
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment:
+                  CrossAxisAlignment.start, // ← keep left alignment
               mainAxisSize: MainAxisSize.min,
               children: [
                 const Text(
@@ -155,10 +154,22 @@ class _ActsPageState extends State<ActsPage> {
                 ),
                 const SizedBox(height: 24),
 
-                // ---------- Hometown selector ----------
+                // ---------- Hometown selector (TypeAhead) ----------
                 TypeAheadField<TownOption>(
                   controller: _hometownController,
                   suggestionsCallback: _fetchHometowns,
+                  debounceDuration: const Duration(milliseconds: 200),
+                  // v5 custom dropdown styling:
+                  decorationBuilder: (context, child) {
+                    return Material(
+                      type: MaterialType.card,
+                      elevation: 4,
+                      borderRadius: BorderRadius.circular(8),
+                      child: child,
+                    );
+                  },
+                  constraints: const BoxConstraints(maxHeight: 280),
+                  offset: const Offset(0, 8),
                   itemBuilder: (context, TownOption suggestion) {
                     return ListTile(
                       title: Text(suggestion.label),
@@ -174,17 +185,34 @@ class _ActsPageState extends State<ActsPage> {
                     });
                   },
                   builder: (context, controller, focusNode) {
+                    // Editable text field for hometown search
                     return TextField(
                       controller: controller,
                       focusNode: focusNode,
                       decoration: const InputDecoration(
                         labelText: 'Hometown (searches within radius)',
                         border: OutlineInputBorder(),
-                        contentPadding:
-                            EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 14,
+                        ),
                       ),
                     );
                   },
+                  loadingBuilder: (context) => const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        SizedBox(width: 12),
+                        Text('Searching…'),
+                      ],
+                    ),
+                  ),
                   emptyBuilder: (context) => const Padding(
                     padding: EdgeInsets.all(8),
                     child: Text(
@@ -192,23 +220,38 @@ class _ActsPageState extends State<ActsPage> {
                       style: TextStyle(fontSize: 14),
                     ),
                   ),
+                  errorBuilder: (context, error) => Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text('Error: $error',
+                        style: const TextStyle(color: Colors.red)),
+                  ),
                 ),
 
                 const SizedBox(height: 16),
 
-                // ---------- Act typeahead (after hometown) ----------
+                // ---------- Act typeahead (only AFTER a hometown is selected) ----------
                 if (_selectedTown != null)
                   TypeAheadField<ActOption>(
                     controller: _actSearchController,
-                    suggestionsCallback: (pattern) async {
-                      return _fetchActsForTown(
-                        town: _selectedTown!,
-                        pattern: pattern,
-                        limit: 20,
+                    suggestionsCallback: (pattern) => _fetchActsForTown(
+                      town: _selectedTown!,
+                      pattern: pattern,
+                      limit: 20,
+                    ),
+                    debounceDuration: const Duration(milliseconds: 200),
+                    // v5 custom dropdown styling:
+                    decorationBuilder: (context, child) {
+                      return Material(
+                        type: MaterialType.card,
+                        elevation: 4,
+                        borderRadius: BorderRadius.circular(8),
+                        child: child,
                       );
                     },
+                    constraints: const BoxConstraints(maxHeight: 280),
+                    offset: const Offset(0, 8),
                     itemBuilder: (context, ActOption suggestion) {
-                      final miles = (suggestion.distanceMeters / 1609.34);
+                      final miles = suggestion.distanceMeters / 1609.34;
                       return ListTile(
                         title: Text(suggestion.name),
                         subtitle: Text(
@@ -217,14 +260,14 @@ class _ActsPageState extends State<ActsPage> {
                         onTap: () {
                           // TODO: Navigate to Act detail/form with suggestion.id
                           debugPrint(
-                              'Selected Act: ${suggestion.name} (${suggestion.id}) @ ${_selectedTown!.label}');
+                              'Selected Act: ${suggestion.name} (${suggestion.id})');
                         },
                       );
                     },
                     onSelected: (ActOption selection) {
-                      // Same as onTap above, kept for clarity.
                       debugPrint(
                           'User selected act: ${selection.name} (${selection.id})');
+                      // TODO: Navigate to Act detail/form with selection.id
                     },
                     builder: (context, controller, focusNode) {
                       return TextField(
@@ -247,19 +290,31 @@ class _ActsPageState extends State<ActsPage> {
                           const Text('No Acts Found!',
                               style: TextStyle(fontSize: 16)),
                           TextButton.icon(
-                            onPressed: () {
-                              final name = _actSearchController.text.trim();
-                              if (name.isEmpty || _selectedTown == null) return;
-                              // TODO: Navigate to "Create Act" form with prefilled
-                              // name + hometown (townId & label).
-                              debugPrint(
-                                  'User wants to add: "$name" in ${_selectedTown!.label}');
-                            },
+                            onPressed: _goToCreateAct,
                             icon: const Icon(Icons.add),
                             label: const Text('Add'),
                           ),
                         ],
                       ),
+                    ),
+                    loadingBuilder: (context) => const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            height: 18,
+                            width: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(width: 12),
+                          Text('Searching…'),
+                        ],
+                      ),
+                    ),
+                    errorBuilder: (context, error) => Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text('Error: $error',
+                          style: const TextStyle(color: Colors.red)),
                     ),
                   ),
               ],

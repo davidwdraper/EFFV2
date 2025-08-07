@@ -2,8 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'pages/landing_page.dart';
-import 'pages/acts_page.dart'; // ✅ Add this
+import 'pages/acts_page.dart';
+import 'pages/act_form_page.dart'; // ✅ for ActFormPage + ActFormArgs
 import 'providers/auth_provider.dart';
+
+// Use: flutter run --dart-define=EFF_API_BASE=http://localhost:4000
+const String kApiBase = String.fromEnvironment(
+  'EFF_API_BASE',
+  defaultValue: 'http://localhost:4000',
+);
 
 void main() {
   runApp(
@@ -29,8 +36,14 @@ class EffApp extends StatelessWidget {
       initialRoute: '/',
       routes: {
         '/': (context) => const LandingPage(),
-        '/acts': (context) => const ActsPage(), // ✅ Register Acts route
-        // Add others like '/profile', '/login' as needed
+        // ✅ Pass apiBase into ActsPage
+        '/acts': (context) => ActsPage(apiBase: kApiBase),
+        // ✅ Named route for the create form (expects ActFormArgs)
+        '/act/create': (context) {
+          final args =
+              ModalRoute.of(context)!.settings.arguments as ActFormArgs;
+          return ActFormPage(args: args);
+        },
       },
     );
   }

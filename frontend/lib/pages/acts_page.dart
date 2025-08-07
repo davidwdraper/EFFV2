@@ -14,6 +14,8 @@ class _ActsPageState extends State<ActsPage> {
   final TextEditingController _hometownController = TextEditingController();
   final TextEditingController _actSearchController = TextEditingController();
 
+  String? _selectedHometown;
+
   final List<String> hometowns = [
     'Austin, TX',
     'New York, NY',
@@ -69,6 +71,7 @@ class _ActsPageState extends State<ActsPage> {
                   onSelected: (String selection) {
                     setState(() {
                       _hometownController.text = selection;
+                      _selectedHometown = selection;
                     });
                   },
                   builder: (context, controller, focusNode) {
@@ -86,61 +89,62 @@ class _ActsPageState extends State<ActsPage> {
                 ),
                 const SizedBox(height: 16),
 
-                // ✅ Act name TypeAhead
-                TypeAheadField<String>(
-                  controller: _actSearchController,
-                  suggestionsCallback: (pattern) async {
-                    if (pattern.length < 3) return [];
-                    return _filterActs(pattern);
-                  },
-                  itemBuilder: (context, String suggestion) {
-                    return ListTile(
-                      title: Text(suggestion),
-                      onTap: () {
-                        debugPrint('Selected Act: $suggestion');
-                        // TODO: Navigate to Act Form
-                      },
-                    );
-                  },
-                  onSelected: (String selection) {
-                    debugPrint('User selected act: $selection');
-                    // TODO: Navigate to Act Form
-                  },
-                  builder: (context, controller, focusNode) {
-                    return TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      decoration: const InputDecoration(
-                        labelText: 'Search Act Name',
-                        border: OutlineInputBorder(),
-                        contentPadding:
-                            EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                // ✅ Act name search only appears after Hometown is selected
+                if (_selectedHometown != null)
+                  TypeAheadField<String>(
+                    controller: _actSearchController,
+                    suggestionsCallback: (pattern) async {
+                      if (pattern.length < 3) return [];
+                      return _filterActs(pattern);
+                    },
+                    itemBuilder: (context, String suggestion) {
+                      return ListTile(
+                        title: Text(suggestion),
+                        onTap: () {
+                          debugPrint('Selected Act: $suggestion');
+                          // TODO: Navigate to Act Form
+                        },
+                      );
+                    },
+                    onSelected: (String selection) {
+                      debugPrint('User selected act: $selection');
+                      // TODO: Navigate to Act Form
+                    },
+                    builder: (context, controller, focusNode) {
+                      return TextField(
+                        controller: controller,
+                        focusNode: focusNode,
+                        decoration: const InputDecoration(
+                          labelText: 'Search Act Name',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 14),
+                        ),
+                      );
+                    },
+                    emptyBuilder: (context) => Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'No Acts Found!',
+                            style: TextStyle(fontSize: 16),
+                          ),
+                          TextButton.icon(
+                            onPressed: () {
+                              debugPrint(
+                                  'User wants to add: ${_actSearchController.text}');
+                              // TODO: Trigger Add New Act logic
+                            },
+                            icon: const Icon(Icons.add),
+                            label: const Text('Add'),
+                          ),
+                        ],
                       ),
-                    );
-                  },
-                  emptyBuilder: (context) => Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'No Acts Found!',
-                          style: TextStyle(fontSize: 16),
-                        ),
-                        TextButton.icon(
-                          onPressed: () {
-                            debugPrint(
-                                'User wants to add: ${_actSearchController.text}');
-                            // TODO: Trigger Add New Act logic
-                          },
-                          icon: const Icon(Icons.add),
-                          label: const Text('Add'),
-                        ),
-                      ],
                     ),
                   ),
-                ),
               ],
             ),
           ),

@@ -1,65 +1,58 @@
-import jwt from "jsonwebtoken";
+// backend/services/shared/middleware/authenticate.ts
 import { Request, Response, NextFunction } from "express";
-import { AuthPayload } from "@shared/types/AuthPayload";
-import { logger } from "@shared/utils/logger";
+import jwt, { JwtPayload } from "jsonwebtoken";
 
-// Factory function to create middleware with a given secret
-export const createAuthenticateMiddleware = (jwtSecret: string) => {
-  logger.debug("In createAuthenticateMiddleware");
+/** What we expect to live on req.user */
+export interface AuthUser extends JwtPayload {
+  _id: string;
+  userType?: number;
+  eMailAddr?: string;
+  firstname?: string;
+  middlename?: string;
+  lastname?: string;
+}
 
-  if (!jwtSecret) {
-    logger.error("Missing JWT_SECRET");
-    throw new Error("[Auth] JWT_SECRET is required");
+/** Module augmentation: add `user` to Express.Request */
+declare module "express-serve-static-core" {
+  interface Request {
+    user?: AuthUser;
+  }
+}
+
+export function authenticate(req: Request, res: Response, next: NextFunction) {
+  const auth = req.headers.authorization;
+
+  if (!auth || !auth.startsWith("Bearer ")) {
+    return res
+      .status(401)
+      .send({ error: "Missing or malformed Authorization header" });
   }
 
-  return (req: Request, res: Response, next: NextFunction) => {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.split(" ")[1];
+  const token = auth.slice(7).trim();
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    return res
+      .status(500)
+      .send({ error: "Server misconfigured: JWT_SECRET is not set" });
+  }
 
-    if (!token) {
-      console.warn("[Auth] Missing token");
-      logger.error("Missing token");
-      return res.status(401).json({ error: "Missing token" });
+  try {
+    const decoded = jwt.verify(token, secret);
+
+    // Ensure we only accept object payloads, never strings
+    if (typeof decoded !== "object" || decoded === null) {
+      return res.status(401).send({ error: "Invalid token payload" });
     }
 
-    try {
-      const decoded = jwt.verify(token, jwtSecret);
-      console.log("[Auth] Token verified:", decoded);
-
-      if (
-        typeof decoded === "object" &&
-        decoded &&
-        "_id" in decoded &&
-        "userType" in decoded &&
-        "firstname" in decoded &&
-        "lastname" in decoded &&
-        "eMailAddr" in decoded
-      ) {
-        req.user = {
-          _id: decoded._id as string,
-          userType: decoded.userType as number,
-          firstname: decoded.firstname as string,
-          middlename: decoded.middlename as string,
-          lastname: decoded.lastname as string,
-          eMailAddr: decoded.eMailAddr as string,
-        } as AuthPayload;
-        return next();
-      } else {
-        console.warn("[Auth] Token payload missing required fields");
-        return res.status(401).json({ error: "Malformed token payload" });
-      }
-    } catch (err) {
-      console.error("[Auth] Token verification failed:", err);
-      return res.status(401).json({ error: "Invalid or expired token" });
+    // Minimal sanity: require an _id
+    const payload = decoded as Partial<AuthUser>;
+    if (!payload._id) {
+      return res.status(401).send({ error: "Invalid token: missing _id" });
     }
-  };
-};
 
-// Default shared middleware using env var
-const jwtSecret = process.env.JWT_SECRET || "";
-if (jwtSecret == "") {
-  logger.error("jwtSecret NOT DEFINED");
-} else {
-  logger.debug(`jwtSecret: ${jwtSecret}`);
+    req.user = payload as AuthUser;
+    return next();
+  } catch (_err) {
+    return res.status(401).send({ error: "Invalid or expired token" });
+  }
 }
-export const authenticate = createAuthenticateMiddleware(jwtSecret);

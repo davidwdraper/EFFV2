@@ -10,10 +10,12 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # HTTP requests
+  http: ^1.2.0
+
   # UI + App Essentials
   cupertino_icons: ^1.0.6
   provider: ^6.1.5
-  http: ^1.4.0
 
   # Secure storage for JWTs or user data
   flutter_secure_storage: ^9.2.4

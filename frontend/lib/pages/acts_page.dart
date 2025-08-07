@@ -1,5 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
+import 'package:http/http.dart' as http;
+
 import '../widgets/page_wrapper.dart';
 import '../widgets/rounded_card.dart';
 
@@ -16,12 +19,11 @@ class _ActsPageState extends State<ActsPage> {
 
   String? _selectedHometown;
 
-  final List<String> hometowns = [
-    'Austin, TX',
-    'New York, NY',
-    'New Smyrna Beach',
-    'Chicago, IL',
-  ];
+  // Backend base (orchestrator). Override with --dart-define if needed.
+  static const String _apiBase = String.fromEnvironment(
+    'EFF_API_BASE',
+    defaultValue: 'http://localhost:4000',
+  );
 
   final List<String> allActs = [
     'Stormbringer',
@@ -34,6 +36,38 @@ class _ActsPageState extends State<ActsPage> {
     return allActs
         .where((act) => act.toLowerCase().contains(pattern.toLowerCase()))
         .toList();
+  }
+
+  Future<List<String>> _fetchHometowns(String pattern) async {
+    if (pattern.trim().length < 3) return [];
+    final uri = Uri.parse('$_apiBase/acts/hometowns').replace(queryParameters: {
+      'q': pattern.trim(),
+      'limit': '10',
+    });
+
+    try {
+      final res = await http.get(uri);
+      if (res.statusCode != 200) return [];
+      final List data = jsonDecode(res.body) as List;
+
+      // Backend returns objects: { label, name, state, lat, lng }
+      return data
+          .map((e) =>
+              (e['label'] as String?) ??
+              '${e['name'] as String}, ${e['state'] as String}')
+          .cast<String>()
+          .toList();
+    } catch (e) {
+      debugPrint('hometown fetch error: $e');
+      return [];
+    }
+  }
+
+  @override
+  void dispose() {
+    _hometownController.dispose();
+    _actSearchController.dispose();
+    super.dispose();
   }
 
   @override
@@ -55,16 +89,10 @@ class _ActsPageState extends State<ActsPage> {
                 ),
                 const SizedBox(height: 24),
 
-                // ✅ Hometown selector
+                // ✅ Hometown selector (now backed by API)
                 TypeAheadField<String>(
                   controller: _hometownController,
-                  suggestionsCallback: (pattern) async {
-                    if (pattern.length < 3) return [];
-                    return hometowns
-                        .where((town) =>
-                            town.toLowerCase().contains(pattern.toLowerCase()))
-                        .toList();
-                  },
+                  suggestionsCallback: (pattern) => _fetchHometowns(pattern),
                   itemBuilder: (context, String suggestion) {
                     return ListTile(title: Text(suggestion));
                   },
@@ -86,6 +114,13 @@ class _ActsPageState extends State<ActsPage> {
                       ),
                     );
                   },
+                  emptyBuilder: (context) => const Padding(
+                    padding: EdgeInsets.all(8),
+                    child: Text(
+                      'No towns found. Keep typing (3+ characters)...',
+                      style: TextStyle(fontSize: 14),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 16),
 
@@ -101,13 +136,15 @@ class _ActsPageState extends State<ActsPage> {
                       return ListTile(
                         title: Text(suggestion),
                         onTap: () {
-                          debugPrint('Selected Act: $suggestion');
+                          debugPrint(
+                              'Selected Act: $suggestion @ $_selectedHometown');
                           // TODO: Navigate to Act Form
                         },
                       );
                     },
                     onSelected: (String selection) {
-                      debugPrint('User selected act: $selection');
+                      debugPrint(
+                          'User selected act: $selection (home: $_selectedHometown)');
                       // TODO: Navigate to Act Form
                     },
                     builder: (context, controller, focusNode) {

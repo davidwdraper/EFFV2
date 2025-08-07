@@ -1,7 +1,10 @@
 // src/app.ts
 import express from "express";
 import dotenv from "dotenv";
+import cors from "cors";
 import { logger } from "@shared/utils/logger";
+import { authenticate } from "@shared/middleware/authenticate";
+import { authGate } from "./middleware/authGate";
 
 import authRoutes from "./routes/authRoutes";
 import userRoutes from "./routes/userRoutes";
@@ -19,18 +22,32 @@ logger.debug("orchestrator: app.ts initializing", {
   PORT: process.env.PORT,
 });
 
-import cors from "cors";
-
-// Add this near the top, before any routes:
+// CORS
 app.use(
   cors({
-    origin: "*", // Allow all (use a specific origin in production)
+    origin: "*", // tighten in production
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
+// Parsers
 app.use(express.json());
+
+// ✅ Public health route BEFORE auth gate
+app.get("/", (_req, res) => res.send("Orchestrator is up"));
+
+// 🔒 Auth gate AFTER health, BEFORE other routes
+app.use(
+  authGate(authenticate, {
+    publicGetPaths: [
+      "/acts/hometowns",
+      "/acts/hometowns/near",
+      // "/acts", // uncomment if you want list-acts public
+      "/", // health stays public even if moved later
+    ],
+  })
+);
 
 // Routes
 app.use("/auth", authRoutes);
@@ -40,10 +57,5 @@ app.use("/events", eventRoutes);
 app.use("/places", placeRoutes);
 app.use("/logs", logRoutes);
 app.use("/images", imageRoutes);
-
-// Optional sanity check
-app.get("/", (req, res) => {
-  res.send("Orchestrator is up");
-});
 
 export default app;

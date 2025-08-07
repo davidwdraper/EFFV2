@@ -1,7 +1,6 @@
 import express from "express";
 import axios from "axios";
 import csvParser from "csv-parser";
-import { Readable } from "stream";
 import { logger } from "@shared/utils/logger";
 import { authenticate } from "@shared/middleware/authenticate";
 import { dateNowIso } from "@shared/utils/dateUtils";
@@ -83,7 +82,7 @@ router.get("/", async (_req, res) => {
  */
 router.get("/townload", authenticate, async (req, res) => {
   try {
-    if (!req.user || req.user.userType < 3) {
+    if (!req.user || (req.user.userType ?? 0) < 3) {
       return res.status(403).send({ error: "Admin access only" });
     }
 
@@ -135,7 +134,9 @@ router.get("/hometowns", async (req, res) => {
   try {
     const rawQ = (req.query.q as string | undefined)?.trim() ?? "";
     const state = (req.query.state as string | undefined)?.trim().toUpperCase();
-    const limit = Math.min(parseInt(req.query.limit as string) || 10, 25);
+
+    const limitParam = Number.parseInt(req.query.limit as string, 10);
+    const limit = Number.isFinite(limitParam) ? Math.min(limitParam, 25) : 10;
 
     if (rawQ.length < 3) return res.json([]);
 
@@ -185,7 +186,6 @@ const MI_TO_M = 1609.344;
 
 router.get("/hometowns/near", async (req, res) => {
   try {
-    logger.debug("Entering hometowns/near");
     const lat = Number(req.query.lat);
     const lng = Number(req.query.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
@@ -198,6 +198,14 @@ router.get("/hometowns/near", async (req, res) => {
     const radiusMi = toNum(req.query.radiusMi, defaultRadius);
     const limit = Math.min(toNum(req.query.limit, 50), 200);
     const maxDistance = radiusMi * MI_TO_M;
+
+    logger.debug("[ActService] hometowns/near", {
+      lat,
+      lng,
+      defaultRadius,
+      radiusMi,
+      limit,
+    });
 
     const results = await Town.aggregate([
       {

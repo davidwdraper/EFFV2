@@ -12,7 +12,7 @@ class ActsPage extends StatefulWidget {
 
 class _ActsPageState extends State<ActsPage> {
   final TextEditingController _hometownController = TextEditingController();
-  final TextEditingController _searchController = TextEditingController();
+  final TextEditingController _actSearchController = TextEditingController();
 
   final List<String> hometowns = [
     'Austin, TX',
@@ -21,88 +21,127 @@ class _ActsPageState extends State<ActsPage> {
     'Chicago, IL',
   ];
 
+  final List<String> allActs = [
+    'Stormbringer',
+    'Neon Rain',
+    'Velvet Vultures',
+    'The Night Owls',
+  ];
+
+  List<String> _filterActs(String pattern) {
+    return allActs
+        .where((act) => act.toLowerCase().contains(pattern.toLowerCase()))
+        .toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     return PageWrapper(
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 600),
-          child: RoundedCard(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Acts',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 600),
+        child: RoundedCard(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Acts',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.left,
+                ),
+                const SizedBox(height: 24),
 
-                  /// ✅ Hometown selector with correct controller binding
-                  TypeAheadField<String>(
-                    controller: _hometownController,
-                    suggestionsCallback: (pattern) async {
-                      if (pattern.length < 3) return [];
-                      return hometowns
-                          .where((town) => town
-                              .toLowerCase()
-                              .contains(pattern.toLowerCase()))
-                          .toList();
-                    },
-                    itemBuilder: (context, String suggestion) {
-                      return ListTile(title: Text(suggestion));
-                    },
-                    onSelected: (String suggestion) {
-                      // This updates the controller used by the field itself
-                      _hometownController.text = suggestion;
-                    },
-                    builder: (context, controller, focusNode) {
-                      // Use the same controller that onSelected updates
-                      return TextField(
-                        controller: _hometownController,
-                        focusNode: focusNode,
-                        decoration: const InputDecoration(
-                          labelText: 'Hometown',
-                          border: OutlineInputBorder(),
-                          contentPadding: EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 14),
-                        ),
-                      );
-                    },
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  /// Act search field with Search button
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _searchController,
-                          decoration: const InputDecoration(
-                            labelText: 'Search Act Name',
-                            border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 14),
-                          ),
-                        ),
+                // ✅ Hometown selector
+                TypeAheadField<String>(
+                  controller: _hometownController,
+                  suggestionsCallback: (pattern) async {
+                    if (pattern.length < 3) return [];
+                    return hometowns
+                        .where((town) =>
+                            town.toLowerCase().contains(pattern.toLowerCase()))
+                        .toList();
+                  },
+                  itemBuilder: (context, String suggestion) {
+                    return ListTile(title: Text(suggestion));
+                  },
+                  onSelected: (String selection) {
+                    setState(() {
+                      _hometownController.text = selection;
+                    });
+                  },
+                  builder: (context, controller, focusNode) {
+                    return TextField(
+                      controller: controller,
+                      focusNode: focusNode,
+                      decoration: const InputDecoration(
+                        labelText: 'Hometown',
+                        border: OutlineInputBorder(),
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                       ),
-                      const SizedBox(width: 8),
-                      ElevatedButton.icon(
-                        onPressed: () {
-                          debugPrint(
-                              'Searching for: ${_searchController.text}');
-                          // TODO: Wire search or "add new" logic
-                        },
-                        icon: const Icon(Icons.search),
-                        label: const Text('Search'),
+                    );
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // ✅ Act name TypeAhead
+                TypeAheadField<String>(
+                  controller: _actSearchController,
+                  suggestionsCallback: (pattern) async {
+                    if (pattern.length < 3) return [];
+                    return _filterActs(pattern);
+                  },
+                  itemBuilder: (context, String suggestion) {
+                    return ListTile(
+                      title: Text(suggestion),
+                      onTap: () {
+                        debugPrint('Selected Act: $suggestion');
+                        // TODO: Navigate to Act Form
+                      },
+                    );
+                  },
+                  onSelected: (String selection) {
+                    debugPrint('User selected act: $selection');
+                    // TODO: Navigate to Act Form
+                  },
+                  builder: (context, controller, focusNode) {
+                    return TextField(
+                      controller: controller,
+                      focusNode: focusNode,
+                      decoration: const InputDecoration(
+                        labelText: 'Search Act Name',
+                        border: OutlineInputBorder(),
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                       ),
-                    ],
+                    );
+                  },
+                  emptyBuilder: (context) => Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'No Acts Found!',
+                          style: TextStyle(fontSize: 16),
+                        ),
+                        TextButton.icon(
+                          onPressed: () {
+                            debugPrint(
+                                'User wants to add: ${_actSearchController.text}');
+                            // TODO: Trigger Add New Act logic
+                          },
+                          icon: const Icon(Icons.add),
+                          label: const Text('Add'),
+                        ),
+                      ],
+                    ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

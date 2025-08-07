@@ -18,13 +18,17 @@ class PageWrapper extends StatelessWidget {
               child: LogoMenuBar(),
             ),
             Expanded(
-              child: SingleChildScrollView(
-                child: Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: child,
+              child: Stack(
+                children: [
+                  SingleChildScrollView(
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: child,
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ),
             ),
           ],

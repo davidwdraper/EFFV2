@@ -5,8 +5,10 @@ import 'package:http/http.dart' as http;
 
 import '../widgets/page_wrapper.dart';
 import '../widgets/rounded_card.dart';
+
 import '../models/town_option.dart'; // shared TownOption
-import 'act_form_page.dart'; // for ActFormPage + ActFormArgs
+import '../widgets/town_picker.dart'; // shared Town typeahead (v5)
+import 'act_form_page.dart'; // ActFormPage + ActFormArgs
 
 class ActOption {
   final String id;
@@ -54,29 +56,7 @@ class _ActsPageState extends State<ActsPage> {
     super.dispose();
   }
 
-  // ---------- API calls ----------
-  Future<List<TownOption>> _fetchHometowns(String pattern) async {
-    final q = pattern.trim();
-    if (q.length < 3) return [];
-    final uri = Uri.parse('${widget.apiBase}/towns/typeahead')
-        .replace(queryParameters: {'q': q, 'limit': '20'});
-
-    try {
-      final res = await http.get(uri);
-      if (res.statusCode != 200) return [];
-      final body = jsonDecode(res.body);
-      final list = (body is Map && body['data'] is List) ? body['data'] : body;
-      if (list is! List) return [];
-      return list
-          .map<TownOption>(
-              (e) => TownOption.fromJson(e as Map<String, dynamic>))
-          .toList();
-    } catch (e) {
-      debugPrint('hometown fetch error: $e');
-      return [];
-    }
-  }
-
+  // ---------- API: Acts search within radius ----------
   Future<List<ActOption>> _fetchActsForTown({
     required TownOption town,
     required String pattern,
@@ -107,7 +87,7 @@ class _ActsPageState extends State<ActsPage> {
     }
   }
 
-  // ---------- Navigation ----------
+  // ---------- Navigation: Create Act ----------
   Future<void> _goToCreateAct() async {
     final name = _actSearchController.text.trim();
     final town = _selectedTown;
@@ -130,7 +110,7 @@ class _ActsPageState extends State<ActsPage> {
         const SnackBar(content: Text('Act created')),
       );
       _actSearchController.clear();
-      setState(() {}); // if you later add a results list to refresh
+      setState(() {}); // hook for when you later show a results list
     }
   }
 
@@ -143,8 +123,7 @@ class _ActsPageState extends State<ActsPage> {
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
-              crossAxisAlignment:
-                  CrossAxisAlignment.start, // ← keep left alignment
+              crossAxisAlignment: CrossAxisAlignment.start, // keep left aligned
               mainAxisSize: MainAxisSize.min,
               children: [
                 const Text(
@@ -154,77 +133,17 @@ class _ActsPageState extends State<ActsPage> {
                 ),
                 const SizedBox(height: 24),
 
-                // ---------- Hometown selector (TypeAhead) ----------
-                TypeAheadField<TownOption>(
+                // ---------- Hometown (modular TypeAhead) ----------
+                TownPicker(
+                  apiBase: widget.apiBase,
                   controller: _hometownController,
-                  suggestionsCallback: _fetchHometowns,
-                  debounceDuration: const Duration(milliseconds: 200),
-                  // v5 custom dropdown styling:
-                  decorationBuilder: (context, child) {
-                    return Material(
-                      type: MaterialType.card,
-                      elevation: 4,
-                      borderRadius: BorderRadius.circular(8),
-                      child: child,
-                    );
-                  },
-                  constraints: const BoxConstraints(maxHeight: 280),
-                  offset: const Offset(0, 8),
-                  itemBuilder: (context, TownOption suggestion) {
-                    return ListTile(
-                      title: Text(suggestion.label),
-                      subtitle: Text(
-                          'lat: ${suggestion.lat}, lng: ${suggestion.lng}'),
-                    );
-                  },
-                  onSelected: (TownOption selection) {
+                  onSelected: (town) {
                     setState(() {
-                      _selectedTown = selection;
-                      _hometownController.text = selection.label;
+                      _selectedTown = town;
+                      _hometownController.text = town.label;
                       _actSearchController.clear();
                     });
                   },
-                  builder: (context, controller, focusNode) {
-                    // Editable text field for hometown search
-                    return TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      decoration: const InputDecoration(
-                        labelText: 'Hometown (searches within radius)',
-                        border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 14,
-                        ),
-                      ),
-                    );
-                  },
-                  loadingBuilder: (context) => const Padding(
-                    padding: EdgeInsets.all(12),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          height: 18,
-                          width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        SizedBox(width: 12),
-                        Text('Searching…'),
-                      ],
-                    ),
-                  ),
-                  emptyBuilder: (context) => const Padding(
-                    padding: EdgeInsets.all(8),
-                    child: Text(
-                      'No towns found. Keep typing (3+ characters)…',
-                      style: TextStyle(fontSize: 14),
-                    ),
-                  ),
-                  errorBuilder: (context, error) => Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text('Error: $error',
-                        style: const TextStyle(color: Colors.red)),
-                  ),
                 ),
 
                 const SizedBox(height: 16),
@@ -239,7 +158,8 @@ class _ActsPageState extends State<ActsPage> {
                       limit: 20,
                     ),
                     debounceDuration: const Duration(milliseconds: 200),
-                    // v5 custom dropdown styling:
+
+                    // v5 dropdown styling
                     decorationBuilder: (context, child) {
                       return Material(
                         type: MaterialType.card,
@@ -250,6 +170,7 @@ class _ActsPageState extends State<ActsPage> {
                     },
                     constraints: const BoxConstraints(maxHeight: 280),
                     offset: const Offset(0, 8),
+
                     itemBuilder: (context, ActOption suggestion) {
                       final miles = suggestion.distanceMeters / 1609.34;
                       return ListTile(
@@ -265,9 +186,10 @@ class _ActsPageState extends State<ActsPage> {
                       );
                     },
                     onSelected: (ActOption selection) {
+                      // Same as onTap; keep for clarity
                       debugPrint(
                           'User selected act: ${selection.name} (${selection.id})');
-                      // TODO: Navigate to Act detail/form with selection.id
+                      // TODO: Navigate to Act detail/form
                     },
                     builder: (context, controller, focusNode) {
                       return TextField(

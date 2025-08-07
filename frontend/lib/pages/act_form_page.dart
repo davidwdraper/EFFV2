@@ -2,9 +2,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-import '../models/town_option.dart'; // ✅ use shared TownOption
+import '../models/town_option.dart';
+import '../widgets/form_page_scaffold.dart';
+import '../widgets/form_section.dart';
+import '../widgets/submit_bar.dart';
 
-/// Route args so navigation is clean and type-safe
 class ActFormArgs {
   final String apiBase; // e.g. http://localhost:4000
   final TownOption town; // selected hometown
@@ -26,7 +28,7 @@ class _ActFormPageState extends State<ActFormPage> {
   late final TextEditingController _name;
   final TextEditingController _email = TextEditingController();
 
-  // Backend requires actType (array of numbers). Replace with your real list.
+  // Replace with canonical act types later
   final List<int> _availableActTypes = const [0, 1, 2, 3];
   final List<int> _selectedTypes = [];
 
@@ -79,7 +81,7 @@ class _ActFormPageState extends State<ActFormPage> {
         final createdId =
             (data['act']?['id'] ?? data['act']?['_id'] ?? '').toString();
         if (!mounted) return;
-        Navigator.of(context).pop(createdId); // return ID to caller
+        Navigator.of(context).pop(createdId);
         return;
       }
 
@@ -101,106 +103,87 @@ class _ActFormPageState extends State<ActFormPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Create Act")),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 600),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Form(
-              key: _formKey,
-              child: ListView(
-                children: [
-                  // Hometown (locked)
-                  TextFormField(
-                    readOnly: true,
-                    initialValue: widget.args.town.label,
-                    decoration: const InputDecoration(
-                      labelText: "Hometown",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-
-                  // Name
-                  TextFormField(
-                    controller: _name,
-                    decoration: const InputDecoration(
-                      labelText: "Act Name",
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) => (v == null || v.trim().isEmpty)
-                        ? "Name is required"
-                        : null,
-                  ),
-                  const SizedBox(height: 12),
-
-                  // Email (optional)
-                  TextFormField(
-                    controller: _email,
-                    decoration: const InputDecoration(
-                      labelText: "Email (optional)",
-                      border: OutlineInputBorder(),
-                    ),
-                    keyboardType: TextInputType.emailAddress,
-                  ),
-                  const SizedBox(height: 12),
-
-                  // Act Types
-                  const Text("Act Type (pick at least one)"),
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 8,
-                    children: _availableActTypes.map((t) {
-                      final selected = _selectedTypes.contains(t);
-                      return FilterChip(
-                        label: Text("Type $t"),
-                        selected: selected,
-                        onSelected: (on) {
-                          setState(() {
-                            if (on) {
-                              _selectedTypes.add(t);
-                            } else {
-                              _selectedTypes.remove(t);
-                            }
-                          });
-                        },
-                      );
-                    }).toList(),
-                  ),
-                  const SizedBox(height: 16),
-
-                  if (_error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Text(_error!,
-                          style: const TextStyle(color: Colors.red)),
-                    ),
-
-                  Row(
-                    children: [
-                      ElevatedButton(
-                        onPressed: _submitting ? null : _submit,
-                        child: _submitting
-                            ? const SizedBox(
-                                height: 18,
-                                width: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2))
-                            : const Text("Create"),
-                      ),
-                      const SizedBox(width: 12),
-                      TextButton(
-                        onPressed: _submitting
-                            ? null
-                            : () => Navigator.of(context).pop(),
-                        child: const Text("Cancel"),
-                      ),
-                    ],
-                  ),
-                ],
+      body: FormPageScaffold(
+        title: 'Create Act', // matches ActsPage typography & layout
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, // keep left aligned
+            children: [
+              // Hometown (locked, same input style as ActsPage)
+              const FormSection(label: 'Hometown', child: SizedBox.shrink()),
+              TextFormField(
+                readOnly: true,
+                initialValue: widget.args.town.label,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
+              const SizedBox(height: 12),
+
+              // Act Name
+              const FormSection(label: 'Act Name', child: SizedBox.shrink()),
+              TextFormField(
+                controller: _name,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                ),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? "Name is required" : null,
+              ),
+              const SizedBox(height: 12),
+
+              // Email (optional)
+              const FormSection(
+                  label: 'Email (optional)', child: SizedBox.shrink()),
+              TextFormField(
+                controller: _email,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Act Types
+              const FormSection(
+                  label: 'Act Type (pick at least one)',
+                  child: SizedBox.shrink()),
+              Wrap(
+                spacing: 8,
+                children: _availableActTypes.map((t) {
+                  final selected = _selectedTypes.contains(t);
+                  return FilterChip(
+                    label: Text("Type $t"),
+                    selected: selected,
+                    onSelected: (on) {
+                      setState(() {
+                        if (on) {
+                          _selectedTypes.add(t);
+                        } else {
+                          _selectedTypes.remove(t);
+                        }
+                      });
+                    },
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 16),
+
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child:
+                      Text(_error!, style: const TextStyle(color: Colors.red)),
+                ),
+
+              SubmitBar(
+                primaryLabel: 'Create',
+                onPrimary: _submit,
+                onCancel: () => Navigator.of(context).pop(),
+                loading: _submitting,
+              ),
+            ],
           ),
         ),
       ),

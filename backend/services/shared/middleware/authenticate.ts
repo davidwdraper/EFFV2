@@ -39,6 +39,7 @@ export const createAuthenticateMiddleware = (jwtSecret: string) => {
           _id: decoded._id as string,
           userType: decoded.userType as number,
           firstname: decoded.firstname as string,
+          middlename: decoded.middlename as string,
           lastname: decoded.lastname as string,
           eMailAddr: decoded.eMailAddr as string,
         } as AuthPayload;
@@ -56,4 +57,9 @@ export const createAuthenticateMiddleware = (jwtSecret: string) => {
 
 // Default shared middleware using env var
 const jwtSecret = process.env.JWT_SECRET || "";
+if (jwtSecret == "") {
+  logger.error("jwtSecret NOT DEFINED");
+} else {
+  logger.debug(`jwtSecret: ${jwtSecret}`);
+}
 export const authenticate = createAuthenticateMiddleware(jwtSecret);

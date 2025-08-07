@@ -1,12 +1,14 @@
-const jwt = require('jsonwebtoken');
+const jwt = require("jsonwebtoken");
 const token = jwt.sign(
   {
-    userType: 1,
-    lastname: "Sanchez",
-    firstname: "Emma",
-    eMailAddr: "emma@example.com"
+    _id: "68914aa6051a847002085924",
+    userType: 3,
+    lastname: "Chanley",
+    middlename: "C",
+    firstname: "Caren",
+    eMailAddr: "caren@gmail.com",
   },
-  "2468",  // Use exact secret from .env
+  "6969", // Use exact secret from .env
   { expiresIn: "100h" }
 );
-console.log(token);    
+console.log(token);

@@ -1,8 +1,12 @@
 import express from "express";
+import axios from "axios";
+import csvParser from "csv-parser";
+import { Readable } from "stream";
 import { logger } from "@shared/utils/logger";
 import { authenticate } from "@shared/middleware/authenticate";
 import { dateNowIso } from "@shared/utils/dateUtils";
 import Act from "../models/Act";
+import Town from "../models/Town";
 import { IAct } from "@shared/interfaces/Act/IAct";
 import { INewAct } from "@shared/interfaces/Act/INewAct";
 import { IActUpdate } from "@shared/interfaces/Act/IActUpdate";
@@ -37,7 +41,7 @@ router.post("/", authenticate, async (req, res) => {
       homeTown,
       userCreateId,
       userOwnerId: userCreateId,
-      imageIds: [], // Will be updated later if needed
+      imageIds: [],
     });
 
     await act.save();
@@ -71,6 +75,46 @@ router.get("/", async (_req, res) => {
       error: err instanceof Error ? err.message : String(err),
     });
     res.status(500).send({ error: "Failed to fetch Acts" });
+  }
+});
+
+/**
+ * GET /acts/townload — Admin-only: Load towns from CSV to Mongo
+ */
+router.get("/townload", authenticate, async (req, res) => {
+  try {
+    if (!req.user || req.user.userType < 3) {
+      return res.status(403).send({ error: "Admin access only" });
+    }
+
+    const csvUrl = "https://simplemaps.com/static/data/us-cities/uscities.csv";
+    const response = await axios.get(csvUrl, { responseType: "stream" });
+
+    const towns: { name: string; state: string; lat: number; lng: number }[] =
+      [];
+
+    const parser = response.data.pipe(csvParser());
+
+    for await (const row of parser) {
+      if (!row.city || !row.state_id || !row.lat || !row.lng) continue;
+
+      towns.push({
+        name: row.city,
+        state: row.state_id,
+        lat: parseFloat(row.lat),
+        lng: parseFloat(row.lng),
+      });
+    }
+
+    await Town.deleteMany({});
+    await Town.insertMany(towns);
+
+    res.send({ success: true, count: towns.length });
+  } catch (err) {
+    logger.error("[ActService] GET /acts/townload failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    res.status(500).send({ error: "Failed to download towns" });
   }
 });
 

@@ -76,7 +76,7 @@ class _ActsPageState extends State<ActsPage> {
                       controller: controller,
                       focusNode: focusNode,
                       decoration: const InputDecoration(
-                        labelText: 'Hometown',
+                        labelText: 'Hometown (Searches out 50 miles)',
                         border: OutlineInputBorder(),
                         contentPadding:
                             EdgeInsets.symmetric(horizontal: 12, vertical: 14),

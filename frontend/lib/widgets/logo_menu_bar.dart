@@ -61,6 +61,13 @@ class LogoMenuBar extends StatelessWidget {
         ? auth.userDisplayName ?? 'User'
         : 'Hello Anonymous User';
 
+    final theme = Theme.of(context);
+    // ✅ Pin the style so inherited text themes (e.g., bright red) don’t leak in.
+    final nameStyle = theme.textTheme.labelLarge?.copyWith(
+      color: theme.colorScheme.onSurface,
+      fontWeight: FontWeight.w600,
+    );
+
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 600),
@@ -70,10 +77,19 @@ class LogoMenuBar extends StatelessWidget {
             Image.asset('assets/logo.png', height: 64, fit: BoxFit.contain),
             Row(
               children: [
+                // Keep the username tidy and unbreakable
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Text(userName,
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 220),
+                    child: Text(
+                      userName,
+                      style: nameStyle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      softWrap: false,
+                    ),
+                  ),
                 ),
                 MenuOptions(
                   isAuthenticated: auth.isAuthenticated,

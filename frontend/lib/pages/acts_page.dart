@@ -3,15 +3,15 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
 import 'package:http/http.dart' as http;
-import 'package:provider/provider.dart'; // ✅ NEW
+import 'package:provider/provider.dart';
 
-import '../providers/auth_provider.dart'; // ✅ NEW
+import '../providers/auth_provider.dart';
 import '../widgets/scaffold_wrapper.dart';
 import '../widgets/rounded_card.dart';
 import '../models/town_option.dart';
 import '../widgets/town_picker.dart';
-import 'package:easy_fun_finder_flutter/pages/act_form_page.dart'
-    show ActFormPage, ActFormArgs;
+// Only need the args type; navigation uses a named route
+import '../pages/act_form_page.dart' show ActFormArgs;
 
 class ActOption {
   final String id;
@@ -94,24 +94,21 @@ class _ActsPageState extends State<ActsPage> {
     final town = _selectedTown;
     if (name.isEmpty || town == null) return;
 
-    final createdId = await Navigator.of(context).push<String>(
-      MaterialPageRoute(
-        builder: (_) => ActFormPage(
-          args: ActFormArgs(
-            apiBase: widget.apiBase,
-            town: town,
-            initialName: name,
-          ),
-        ),
+    // Use the named route wired in main.dart and pass the expected args
+    final created = await Navigator.of(context).pushNamed(
+      '/acts/new',
+      arguments: ActFormArgs(
+        prefillName: name,
+        prefillHomeTown: town.label,
       ),
     );
 
-    if (createdId != null && mounted) {
+    if (created == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Act created')),
       );
       _actSearchController.clear();
-      setState(() {});
+      setState(() {}); // trigger refresh if you later add a list below
     }
   }
 
@@ -184,6 +181,7 @@ class _ActsPageState extends State<ActsPage> {
                     onSelected: (ActOption selection) {
                       debugPrint(
                           'User selected act: ${selection.name} (${selection.id})');
+                      // TODO: Navigate to Act detail if/when implemented
                     },
                     builder: (context, controller, focusNode) {
                       return TextField(

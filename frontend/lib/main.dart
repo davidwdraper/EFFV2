@@ -38,10 +38,18 @@ class EffApp extends StatelessWidget {
         '/': (context) => const LandingPage(),
         // ✅ Pass apiBase into ActsPage
         '/acts': (context) => ActsPage(apiBase: kApiBase),
-        // ✅ Named route for the create form (expects ActFormArgs)
+
+        // ✅ New: preferred route
+        '/acts/new': (context) {
+          final args =
+              ModalRoute.of(context)?.settings.arguments as ActFormArgs?;
+          return ActFormPage(args: args);
+        },
+
+        // ✅ Back-compat: old route still works
         '/act/create': (context) {
           final args =
-              ModalRoute.of(context)!.settings.arguments as ActFormArgs;
+              ModalRoute.of(context)?.settings.arguments as ActFormArgs?;
           return ActFormPage(args: args);
         },
       },

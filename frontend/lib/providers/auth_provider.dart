@@ -9,7 +9,9 @@ class AuthProvider extends ChangeNotifier {
   String? _userDisplayName;
   Map<String, dynamic>? _user;
 
+  // ✅ Public getters
   String? get token => _token;
+  String? get jwtToken => _token; // <-- added for pages expecting `jwtToken`
   String? get userId => _userId;
   String? get userDisplayName => _userDisplayName;
   Map<String, dynamic>? get user => _user;

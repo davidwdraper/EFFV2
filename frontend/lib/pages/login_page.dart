@@ -30,6 +30,9 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
 
+    // Close the autofill context so iOS/Android password managers don’t bleed into next pages
+    TextInput.finishAutofillContext(shouldSave: true);
+
     setState(() {
       _isSubmitting = true;
       _errorMessage = null;
@@ -112,78 +115,92 @@ class _LoginPageState extends State<LoginPage> {
                 RoundedCard(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        "Login",
-                        style: TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 8),
-
-                      if (_errorMessage != null) ...[
-                        Text(_errorMessage!,
-                            style: const TextStyle(color: Colors.red)),
-                        const SizedBox(height: 8),
-                      ],
-
-                      // Email
-                      TextFormField(
-                        controller: _emailController,
-                        decoration: _decor(context, 'Email Address'),
-                        keyboardType: TextInputType.emailAddress,
-                        validator: (value) =>
-                            value == null || !value.contains('@')
-                                ? 'Enter valid email'
-                                : null,
-                        textInputAction: TextInputAction.next,
-                      ),
-                      const SizedBox(height: 6),
-
-                      // Password
-                      TextFormField(
-                        controller: _passwordController,
-                        decoration: _decor(context, 'Password'),
-                        obscureText: true,
-                        validator: (value) => value == null || value.length < 6
-                            ? 'Minimum 6 characters'
-                            : null,
-                        textInputAction: TextInputAction.done,
-                        onFieldSubmitted: (_) => _handleLogin(),
-                      ),
-                      const SizedBox(height: 8),
-
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: _handleForgotPassword,
-                          child: const Text("Forgot Password?"),
+                  child: AutofillGroup(
+                    // ✅ scope autofill to this card
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          "Login",
+                          style: TextStyle(
+                              fontSize: 20, fontWeight: FontWeight.bold),
                         ),
-                      ),
-                      const SizedBox(height: 10),
+                        const SizedBox(height: 8),
 
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          OutlinedButton(
-                            onPressed: _isSubmitting ? null : _handleCancel,
-                            child: const Text("Cancel"),
-                          ),
-                          ElevatedButton(
-                            onPressed: _isSubmitting ? null : _handleLogin,
-                            child: _isSubmitting
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  )
-                                : const Text("Login"),
-                          ),
+                        if (_errorMessage != null) ...[
+                          Text(_errorMessage!,
+                              style: const TextStyle(color: Colors.red)),
+                          const SizedBox(height: 8),
                         ],
-                      ),
-                    ],
+
+                        // Email
+                        TextFormField(
+                          controller: _emailController,
+                          decoration: _decor(context, 'Email Address'),
+                          keyboardType: TextInputType.emailAddress,
+                          validator: (value) =>
+                              value == null || !value.contains('@')
+                                  ? 'Enter valid email'
+                                  : null,
+                          textInputAction: TextInputAction.next,
+                          autofillHints: const [
+                            AutofillHints.username,
+                            AutofillHints.email,
+                          ], // ✅ tell managers what this is
+                        ),
+                        const SizedBox(height: 6),
+
+                        // Password
+                        TextFormField(
+                          controller: _passwordController,
+                          decoration: _decor(context, 'Password'),
+                          obscureText: true,
+                          enableSuggestions:
+                              false, // ✅ no suggestions for passwords
+                          autocorrect: false, // ✅ no autocorrect for passwords
+                          validator: (value) =>
+                              value == null || value.length < 6
+                                  ? 'Minimum 6 characters'
+                                  : null,
+                          textInputAction: TextInputAction.done,
+                          onFieldSubmitted: (_) => _handleLogin(),
+                          autofillHints: const [
+                            AutofillHints.password,
+                          ], // ✅ mark as password
+                        ),
+                        const SizedBox(height: 8),
+
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: _handleForgotPassword,
+                            child: const Text("Forgot Password?"),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            OutlinedButton(
+                              onPressed: _isSubmitting ? null : _handleCancel,
+                              child: const Text("Cancel"),
+                            ),
+                            ElevatedButton(
+                              onPressed: _isSubmitting ? null : _handleLogin,
+                              child: _isSubmitting
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Text("Login"),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],

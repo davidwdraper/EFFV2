@@ -1,11 +1,15 @@
-// src/middleware/authGate.ts
 import { Request, Response, NextFunction } from "express";
 
 type GateOpts = {
   /** Exact path matches (no querystring). Example: "/acts/hometowns" */
   publicGetPaths?: string[];
-  /** Regex matchers for paths. Example: [/^\/acts\/hometowns$/, /^\/acts\/hometowns\/near$/] */
+  /** Regex matchers for GET/HEAD paths */
   publicGetRegexes?: RegExp[];
+
+  /** Exact path matches for POST requests */
+  publicPostPaths?: string[];
+  /** Regex matchers for POST paths */
+  publicPostRegexes?: RegExp[];
 };
 
 function sanitizePath(url: string): string {
@@ -24,8 +28,10 @@ export function authGate(
   opts?: GateOpts
 ) {
   // Graceful defaults
-  const paths = opts?.publicGetPaths ?? [];
-  const regexes = opts?.publicGetRegexes ?? [];
+  const getPaths = opts?.publicGetPaths ?? [];
+  const getRegexes = opts?.publicGetRegexes ?? [];
+  const postPaths = opts?.publicPostPaths ?? [];
+  const postRegexes = opts?.publicPostRegexes ?? [];
 
   return function (req: Request, res: Response, next: NextFunction) {
     console.log("[gate]", req.method, req.originalUrl);
@@ -38,13 +44,20 @@ export function authGate(
     // Build normalized path (without query), using originalUrl if available
     const pathOnly = sanitizePath(req.originalUrl || req.url || "");
 
-    // Treat HEAD like GET for public route checks
-    const isReadable = method === "GET" || method === "HEAD";
-
-    // Allow anonymous GET/HEADs that match either list
+    // HEAD treated as GET for public checks
     if (
-      isReadable &&
-      (paths.includes(pathOnly) || regexes.some((rx) => rx.test(pathOnly)))
+      (method === "GET" || method === "HEAD") &&
+      (getPaths.includes(pathOnly) ||
+        getRegexes.some((rx) => rx.test(pathOnly)))
+    ) {
+      return next();
+    }
+
+    // Allow anonymous POSTs for whitelisted paths
+    if (
+      method === "POST" &&
+      (postPaths.includes(pathOnly) ||
+        postRegexes.some((rx) => rx.test(pathOnly)))
     ) {
       return next();
     }

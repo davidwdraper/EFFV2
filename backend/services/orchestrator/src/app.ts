@@ -1,4 +1,3 @@
-// src/app.ts
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -38,18 +37,17 @@ app.use(express.json());
 // ✅ Public health route BEFORE auth gate
 app.get("/", (_req, res) => res.send("Orchestrator is up"));
 
-// 🔒 Auth gate AFTER health, BEFORE other routes
-// Allow anonymous GET/HEAD to /acts/search and /towns/typeahead (any prefix).
+// 🔒 Auth gate AFTER health
 app.use(
   authGate(authenticate, {
-    publicGetPaths: ["/"], // keep health public even if reordered
+    publicGetPaths: ["/"], // health check remains public
     publicGetRegexes: [
-      /\/acts\/search$/, // e.g. /acts/search, /api/acts/search
-      /\/towns\/typeahead$/, // e.g. /towns/typeahead, /v1/towns/typeahead
-      // (optional legacy) keep these only if the frontend still calls them:
-      // /\/acts\/hometowns$/,
-      // /\/acts\/hometowns\/near$/,
+      /\/acts\/search$/, // e.g. /acts/search
+      /\/towns\/typeahead$/, // e.g. /towns/typeahead
     ],
+    publicPostPaths: ["/auth/login", "/auth/signup"],
+    // you could also do:
+    // publicPostRegexes: [/^\/auth\/(login|signup)$/]
   })
 );
 

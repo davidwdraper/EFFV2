@@ -1,7 +1,10 @@
+// lib/pages/create_account_page.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../providers/auth_provider.dart';
 import '../widgets/scaffold_wrapper.dart';
+import '../widgets/rounded_card.dart';
 
 class CreateAccountPage extends StatefulWidget {
   const CreateAccountPage({super.key});
@@ -29,9 +32,7 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
     super.dispose();
   }
 
-  void _handleCancel() {
-    Navigator.of(context).pop();
-  }
+  void _handleCancel() => Navigator.of(context).pop();
 
   Future<void> _handleCreate() async {
     if (!_formKey.currentState!.validate()) return;
@@ -46,74 +47,92 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
 
     try {
       await context.read<AuthProvider>().signupWithCredentials(body);
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Account created!')),
-        );
-
-        // ✅ Update display name in logo bar
-        await context.read<AuthProvider>().checkToken();
-
-        Navigator.of(context).pop();
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Account created!')),
+      );
+      await context.read<AuthProvider>().checkToken();
+      if (mounted) Navigator.of(context).pop();
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.toString()}')),
-        );
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: ${e.toString()}')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return ScaffoldWrapper(
-      title: "Create Account",
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Form(
-          key: _formKey,
-          child: ListView(
-            children: [
-              TextFormField(
-                controller: _firstnameController,
-                decoration: const InputDecoration(labelText: 'First Name'),
-                validator: (value) => value!.isEmpty ? 'Required' : null,
-              ),
-              TextFormField(
-                controller: _middlenameController,
-                decoration: const InputDecoration(labelText: 'Middle Name'),
-              ),
-              TextFormField(
-                controller: _lastnameController,
-                decoration: const InputDecoration(labelText: 'Last Name'),
-                validator: (value) => value!.isEmpty ? 'Required' : null,
-              ),
-              TextFormField(
-                controller: _emailController,
-                decoration: const InputDecoration(labelText: 'Email Address'),
-                keyboardType: TextInputType.emailAddress,
-                validator: (value) =>
-                    value!.isEmpty || !value.contains('@') ? 'Enter valid email' : null,
-              ),
-              TextFormField(
-                controller: _passwordController,
-                decoration: const InputDecoration(labelText: 'Password'),
-                obscureText: true,
-                validator: (value) =>
-                    value != null && value.length < 6 ? 'Minimum 6 characters' : null,
-              ),
-              const SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      title: null,
+      // 🔧 Tighten space outside the card to near-zero
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      child: Form(
+        key: _formKey,
+        child: ListView(
+          padding: EdgeInsets.zero, // ❌ remove ListView's default padding
+          children: [
+            RoundedCard(
+              // You can go even tighter per-card: padding: EdgeInsets.zero,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  ElevatedButton(onPressed: _handleCancel, child: const Text("Cancel")),
-                  ElevatedButton(onPressed: _handleCreate, child: const Text("Create")),
+                  const Text(
+                    'Create Account',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    controller: _firstnameController,
+                    decoration: const InputDecoration(labelText: 'First Name'),
+                    validator: (v) => v!.isEmpty ? 'Required' : null,
+                  ),
+                  const SizedBox(height: 6),
+                  TextFormField(
+                    controller: _middlenameController,
+                    decoration: const InputDecoration(labelText: 'Middle Name'),
+                  ),
+                  const SizedBox(height: 6),
+                  TextFormField(
+                    controller: _lastnameController,
+                    decoration: const InputDecoration(labelText: 'Last Name'),
+                    validator: (v) => v!.isEmpty ? 'Required' : null,
+                  ),
+                  const SizedBox(height: 6),
+                  TextFormField(
+                    controller: _emailController,
+                    decoration:
+                        const InputDecoration(labelText: 'Email Address'),
+                    keyboardType: TextInputType.emailAddress,
+                    validator: (v) => v!.isEmpty || !v.contains('@')
+                        ? 'Enter valid email'
+                        : null,
+                  ),
+                  const SizedBox(height: 6),
+                  TextFormField(
+                    controller: _passwordController,
+                    decoration: const InputDecoration(labelText: 'Password'),
+                    obscureText: true,
+                    validator: (v) => v != null && v.length < 6
+                        ? 'Minimum 6 characters'
+                        : null,
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      OutlinedButton(
+                          onPressed: _handleCancel,
+                          child: const Text("Cancel")),
+                      ElevatedButton(
+                          onPressed: _handleCreate,
+                          child: const Text("Create")),
+                    ],
+                  ),
                 ],
-              )
-            ],
-          ),
+              ),
+            ),
+          ],
         ),
       ),
     );

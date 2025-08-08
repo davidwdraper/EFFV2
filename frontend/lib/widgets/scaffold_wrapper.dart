@@ -1,39 +1,56 @@
+// lib/widgets/scaffold_wrapper.dart
 import 'package:flutter/material.dart';
 import 'logo_menu_bar.dart';
+import 'page_wrapper.dart';
 
 class ScaffoldWrapper extends StatelessWidget {
-  final String? title; // 👈 new
+  final String? title;
   final Widget child;
 
-  const ScaffoldWrapper({super.key, this.title, required this.child});
+  /// New: control the padding *around* your page content (outside the card).
+  /// Default is tight.
+  final EdgeInsetsGeometry contentPadding;
+
+  const ScaffoldWrapper({
+    super.key,
+    required this.child,
+    this.title,
+    this.contentPadding =
+        const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+  });
 
   @override
   Widget build(BuildContext context) {
+    final hasTitle = title != null && title!.trim().isNotEmpty;
+
     return Scaffold(
       backgroundColor: Colors.grey[100],
       body: SafeArea(
-        child: Center(
-          child: Container(
-            color: Colors.white, // white background on content
-            constraints: const BoxConstraints(maxWidth: 600),
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0), // inner padding
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const LogoMenuBar(),
-                if (title != null) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    title!,
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
-                  const Divider(),
-                ],
-                const SizedBox(height: 16),
-                Expanded(child: child),
-              ],
+        child: Column(
+          children: [
+            const LogoMenuBar(),
+            Expanded(
+              child: PageWrapper(
+                padding: contentPadding, // << use tight padding
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (hasTitle) ...[
+                      Text(
+                        title!,
+                        style: const TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    Expanded(child: child),
+                  ],
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

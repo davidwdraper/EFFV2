@@ -1,9 +1,10 @@
+// lib/pages/acts_page.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
 import 'package:http/http.dart' as http;
 
-import '../widgets/page_wrapper.dart';
+import '../widgets/scaffold_wrapper.dart';
 import '../widgets/rounded_card.dart';
 
 import '../models/town_option.dart'; // shared TownOption
@@ -110,28 +111,30 @@ class _ActsPageState extends State<ActsPage> {
         const SnackBar(content: Text('Act created')),
       );
       _actSearchController.clear();
-      setState(() {}); // hook for when you later show a results list
+      setState(() {}); // later: refresh results list
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return PageWrapper(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 600),
-        child: RoundedCard(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
+    return ScaffoldWrapper(
+      title: null, // in-card title only
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      child: ListView(
+        padding: EdgeInsets.zero, // remove default list padding
+        children: [
+          RoundedCard(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start, // keep left aligned
+              crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
                 const Text(
                   'Acts',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                   textAlign: TextAlign.left,
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 10),
 
                 // ---------- Hometown (modular TypeAhead) ----------
                 TownPicker(
@@ -146,7 +149,7 @@ class _ActsPageState extends State<ActsPage> {
                   },
                 ),
 
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
 
                 // ---------- Act typeahead (only AFTER a hometown is selected) ----------
                 if (_selectedTown != null)
@@ -242,7 +245,7 @@ class _ActsPageState extends State<ActsPage> {
               ],
             ),
           ),
-        ),
+        ],
       ),
     );
   }

@@ -1,9 +1,11 @@
+// lib/pages/act_form_page.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/town_option.dart';
-import '../widgets/form_page_scaffold.dart';
+import '../widgets/scaffold_wrapper.dart';
+import '../widgets/rounded_card.dart';
 import '../widgets/form_section.dart';
 import '../widgets/submit_bar.dart';
 
@@ -11,8 +13,11 @@ class ActFormArgs {
   final String apiBase; // e.g. http://localhost:4000
   final TownOption town; // selected hometown
   final String initialName; // typed Act name
-  ActFormArgs(
-      {required this.apiBase, required this.town, required this.initialName});
+  ActFormArgs({
+    required this.apiBase,
+    required this.town,
+    required this.initialName,
+  });
 }
 
 class ActFormPage extends StatefulWidget {
@@ -102,89 +107,108 @@ class _ActFormPageState extends State<ActFormPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: FormPageScaffold(
-        title: 'Create Act', // matches ActsPage typography & layout
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start, // keep left aligned
-            children: [
-              // Hometown (locked, same input style as ActsPage)
-              const FormSection(label: 'Hometown', child: SizedBox.shrink()),
-              TextFormField(
-                readOnly: true,
-                initialValue: widget.args.town.label,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
+    return ScaffoldWrapper(
+      title: null, // no outer title; we’ll render it inside the card
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      child: Form(
+        key: _formKey,
+        child: ListView(
+          padding: EdgeInsets.zero, // remove default ListView padding
+          children: [
+            RoundedCard(
+              // keep tight; set EdgeInsets.zero if you want even tighter
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Create Act',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
 
-              // Act Name
-              const FormSection(label: 'Act Name', child: SizedBox.shrink()),
-              TextFormField(
-                controller: _name,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                ),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? "Name is required" : null,
-              ),
-              const SizedBox(height: 12),
+                  // Hometown (locked)
+                  const FormSection(
+                      label: 'Hometown', child: SizedBox.shrink()),
+                  TextFormField(
+                    readOnly: true,
+                    initialValue: widget.args.town.label,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
 
-              // Email (optional)
-              const FormSection(
-                  label: 'Email (optional)', child: SizedBox.shrink()),
-              TextFormField(
-                controller: _email,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
+                  // Act Name
+                  const FormSection(
+                      label: 'Act Name', child: SizedBox.shrink()),
+                  TextFormField(
+                    controller: _name,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (v) => (v == null || v.trim().isEmpty)
+                        ? "Name is required"
+                        : null,
+                  ),
+                  const SizedBox(height: 10),
 
-              // Act Types
-              const FormSection(
-                  label: 'Act Type (pick at least one)',
-                  child: SizedBox.shrink()),
-              Wrap(
-                spacing: 8,
-                children: _availableActTypes.map((t) {
-                  final selected = _selectedTypes.contains(t);
-                  return FilterChip(
-                    label: Text("Type $t"),
-                    selected: selected,
-                    onSelected: (on) {
-                      setState(() {
-                        if (on) {
-                          _selectedTypes.add(t);
-                        } else {
-                          _selectedTypes.remove(t);
-                        }
-                      });
-                    },
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 16),
+                  // Email (optional)
+                  const FormSection(
+                      label: 'Email (optional)', child: SizedBox.shrink()),
+                  TextFormField(
+                    controller: _email,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
 
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child:
-                      Text(_error!, style: const TextStyle(color: Colors.red)),
-                ),
+                  // Act Types
+                  const FormSection(
+                    label: 'Act Type (pick at least one)',
+                    child: SizedBox.shrink(),
+                  ),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _availableActTypes.map((t) {
+                      final selected = _selectedTypes.contains(t);
+                      return FilterChip(
+                        label: Text("Type $t"),
+                        selected: selected,
+                        onSelected: (on) {
+                          setState(() {
+                            if (on) {
+                              _selectedTypes.add(t);
+                            } else {
+                              _selectedTypes.remove(t);
+                            }
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 12),
 
-              SubmitBar(
-                primaryLabel: 'Create',
-                onPrimary: _submit,
-                onCancel: () => Navigator.of(context).pop(),
-                loading: _submitting,
+                  if (_error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(_error!,
+                          style: const TextStyle(color: Colors.red)),
+                    ),
+
+                  SubmitBar(
+                    primaryLabel: 'Create',
+                    onPrimary: _submit,
+                    onCancel: () => Navigator.of(context).pop(),
+                    loading: _submitting,
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

@@ -9,7 +9,9 @@ import '../widgets/rounded_card.dart';
 
 import '../models/town_option.dart'; // shared TownOption
 import '../widgets/town_picker.dart'; // shared Town typeahead (v5)
-import 'act_form_page.dart'; // ActFormPage + ActFormArgs
+// lib/pages/acts_page.dart
+import 'package:easy_fun_finder_flutter/pages/act_form_page.dart'
+    show ActFormPage, ActFormArgs;
 
 class ActOption {
   final String id;

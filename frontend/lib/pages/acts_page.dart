@@ -3,13 +3,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
 import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart'; // ✅ NEW
 
+import '../providers/auth_provider.dart'; // ✅ NEW
 import '../widgets/scaffold_wrapper.dart';
 import '../widgets/rounded_card.dart';
-
-import '../models/town_option.dart'; // shared TownOption
-import '../widgets/town_picker.dart'; // shared Town typeahead (v5)
-// lib/pages/acts_page.dart
+import '../models/town_option.dart';
+import '../widgets/town_picker.dart';
 import 'package:easy_fun_finder_flutter/pages/act_form_page.dart'
     show ActFormPage, ActFormArgs;
 
@@ -39,7 +39,7 @@ class ActOption {
 }
 
 class ActsPage extends StatefulWidget {
-  final String apiBase; // e.g. http://localhost:4000
+  final String apiBase;
   const ActsPage({super.key, required this.apiBase});
 
   @override
@@ -59,7 +59,6 @@ class _ActsPageState extends State<ActsPage> {
     super.dispose();
   }
 
-  // ---------- API: Acts search within radius ----------
   Future<List<ActOption>> _fetchActsForTown({
     required TownOption town,
     required String pattern,
@@ -90,7 +89,6 @@ class _ActsPageState extends State<ActsPage> {
     }
   }
 
-  // ---------- Navigation: Create Act ----------
   Future<void> _goToCreateAct() async {
     final name = _actSearchController.text.trim();
     final town = _selectedTown;
@@ -113,17 +111,19 @@ class _ActsPageState extends State<ActsPage> {
         const SnackBar(content: Text('Act created')),
       );
       _actSearchController.clear();
-      setState(() {}); // later: refresh results list
+      setState(() {});
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>(); // ✅ check auth
+
     return ScaffoldWrapper(
-      title: null, // in-card title only
+      title: null,
       contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       child: ListView(
-        padding: EdgeInsets.zero, // remove default list padding
+        padding: EdgeInsets.zero,
         children: [
           RoundedCard(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -137,8 +137,6 @@ class _ActsPageState extends State<ActsPage> {
                   textAlign: TextAlign.left,
                 ),
                 const SizedBox(height: 10),
-
-                // ---------- Hometown (modular TypeAhead) ----------
                 TownPicker(
                   apiBase: widget.apiBase,
                   controller: _hometownController,
@@ -150,10 +148,7 @@ class _ActsPageState extends State<ActsPage> {
                     });
                   },
                 ),
-
                 const SizedBox(height: 12),
-
-                // ---------- Act typeahead (only AFTER a hometown is selected) ----------
                 if (_selectedTown != null)
                   TypeAheadField<ActOption>(
                     controller: _actSearchController,
@@ -163,8 +158,6 @@ class _ActsPageState extends State<ActsPage> {
                       limit: 20,
                     ),
                     debounceDuration: const Duration(milliseconds: 200),
-
-                    // v5 dropdown styling
                     decorationBuilder: (context, child) {
                       return Material(
                         type: MaterialType.card,
@@ -175,7 +168,6 @@ class _ActsPageState extends State<ActsPage> {
                     },
                     constraints: const BoxConstraints(maxHeight: 280),
                     offset: const Offset(0, 8),
-
                     itemBuilder: (context, ActOption suggestion) {
                       final miles = suggestion.distanceMeters / 1609.34;
                       return ListTile(
@@ -184,17 +176,14 @@ class _ActsPageState extends State<ActsPage> {
                           '${suggestion.homeTown} • ${miles.toStringAsFixed(1)} mi',
                         ),
                         onTap: () {
-                          // TODO: Navigate to Act detail/form with suggestion.id
                           debugPrint(
                               'Selected Act: ${suggestion.name} (${suggestion.id})');
                         },
                       );
                     },
                     onSelected: (ActOption selection) {
-                      // Same as onTap; keep for clarity
                       debugPrint(
                           'User selected act: ${selection.name} (${selection.id})');
-                      // TODO: Navigate to Act detail/form
                     },
                     builder: (context, controller, focusNode) {
                       return TextField(
@@ -216,11 +205,12 @@ class _ActsPageState extends State<ActsPage> {
                         children: [
                           const Text('No Acts Found!',
                               style: TextStyle(fontSize: 16)),
-                          TextButton.icon(
-                            onPressed: _goToCreateAct,
-                            icon: const Icon(Icons.add),
-                            label: const Text('Add'),
-                          ),
+                          if (auth.isAuthenticated) // ✅ Only show if logged in
+                            TextButton.icon(
+                              onPressed: _goToCreateAct,
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add'),
+                            ),
                         ],
                       ),
                     ),

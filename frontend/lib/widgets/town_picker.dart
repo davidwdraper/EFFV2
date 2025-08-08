@@ -17,7 +17,7 @@ class TownPicker extends StatelessWidget {
     required this.controller,
     required this.onSelected,
     this.initial,
-    this.label = 'Hometown (searches within radius)',
+    this.label = 'Hometown (... or nearest)',
   });
 
   Future<List<TownOption>> _fetch(String pattern) async {

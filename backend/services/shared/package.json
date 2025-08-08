@@ -1,0 +1,22 @@
+{
+  "name": "@eff/shared",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lru-cache": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/lru-cache": "^7.10.10"
+  }
+}

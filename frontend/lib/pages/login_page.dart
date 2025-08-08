@@ -61,6 +61,28 @@ class _LoginPageState extends State<LoginPage> {
 
   void _handleCancel() => Navigator.of(context).pop();
 
+  InputDecoration _decor(BuildContext context, String label) {
+    return InputDecoration(
+      labelText: label,
+      labelStyle: const TextStyle(fontWeight: FontWeight.w500),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      filled: true,
+      fillColor: Colors.grey[50],
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: Colors.grey),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: Colors.grey),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 2),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ScaffoldWrapper(
@@ -99,15 +121,17 @@ class _LoginPageState extends State<LoginPage> {
                             fontSize: 20, fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 8),
+
                       if (_errorMessage != null) ...[
                         Text(_errorMessage!,
                             style: const TextStyle(color: Colors.red)),
                         const SizedBox(height: 8),
                       ],
+
+                      // Email
                       TextFormField(
                         controller: _emailController,
-                        decoration:
-                            const InputDecoration(labelText: 'Email Address'),
+                        decoration: _decor(context, 'Email Address'),
                         keyboardType: TextInputType.emailAddress,
                         validator: (value) =>
                             value == null || !value.contains('@')
@@ -116,10 +140,11 @@ class _LoginPageState extends State<LoginPage> {
                         textInputAction: TextInputAction.next,
                       ),
                       const SizedBox(height: 6),
+
+                      // Password
                       TextFormField(
                         controller: _passwordController,
-                        decoration:
-                            const InputDecoration(labelText: 'Password'),
+                        decoration: _decor(context, 'Password'),
                         obscureText: true,
                         validator: (value) => value == null || value.length < 6
                             ? 'Minimum 6 characters'
@@ -128,6 +153,7 @@ class _LoginPageState extends State<LoginPage> {
                         onFieldSubmitted: (_) => _handleLogin(),
                       ),
                       const SizedBox(height: 8),
+
                       Align(
                         alignment: Alignment.centerRight,
                         child: TextButton(
@@ -136,6 +162,7 @@ class _LoginPageState extends State<LoginPage> {
                         ),
                       ),
                       const SizedBox(height: 10),
+
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [

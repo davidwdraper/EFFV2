@@ -1,17 +1,16 @@
+// lib/pages/act_form_page.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../widgets/scaffold_wrapper.dart';
 import '../widgets/rounded_card.dart';
-import '../widgets/act_images_lazy.dart';
-import '../widgets/ownership_info.dart'; // ✅ reuse the shared widget
+import '../widgets/ownership_info.dart';
+import '../widgets/submit_bar.dart';
 
 class ActFormPage extends StatefulWidget {
-  final String? actId; // nullable: new Acts won’t have one yet
+  final String? actId;
   final String? jwt;
-
-  // ✅ Prefill values (create flow or quick edit)
   final String? prefillName;
   final String? prefillHomeTown;
 
@@ -28,60 +27,59 @@ class ActFormPage extends StatefulWidget {
 }
 
 class _ActFormPageState extends State<ActFormPage> {
-  // ---- tweak this if you want to centralize config ----
   static const String _apiBase = 'http://localhost:4000';
 
   bool _loading = false;
   String? _error;
 
-  // Read-only labels
   String? _creatorName;
   String? _ownerName;
   String? _homeTownLabel;
 
-  // IDs for claim logic
   String? _createdById;
   String? _ownerId;
   String? _jwtUserId;
 
-  // Editable fields
   final _nameCtrl = TextEditingController();
   final _contactEmailCtrl = TextEditingController();
 
-  // Image selection for delete
-  final ValueNotifier<Set<String>> _selectedIds =
-      ValueNotifier<Set<String>>(<String>{});
+  final _formKey = GlobalKey<FormState>();
+  final _scrollController = ScrollController();
+
   static const double _bottomBarHeight = 64;
+
+  bool get _hasActId => widget.actId != null && widget.actId!.isNotEmpty;
+
+  // Enable when user owns OR created the act; allow when creating a new act (no actId yet).
+  bool get _canEdit {
+    if (!_hasActId) return true;
+    final uid = _normId(_jwtUserId);
+    if (uid.isEmpty) return false;
+    return uid == _normId(_ownerId) || uid == _normId(_createdById);
+  }
 
   @override
   void initState() {
     super.initState();
-
-    // ✅ Show prefill immediately (so create flow or slow networks still render)
     _nameCtrl.text = widget.prefillName ?? '';
     _homeTownLabel = widget.prefillHomeTown;
 
-    // Simple fallback: if your JWT is actually a user id, this enables claim logic.
-    // TODO: if it's a real JWT, decode here to extract sub/user id.
-    _jwtUserId = widget.jwt;
+    // Try to decode a real JWT to a user id; fallback to raw string.
+    _jwtUserId = _extractUserId(widget.jwt) ?? widget.jwt;
 
-    // Edit flow: fetch from server and overwrite with source of truth
-    if (_hasActId) {
-      _loadAct();
-    }
+    if (_hasActId) _loadAct();
   }
-
-  bool get _hasActId => widget.actId != null && widget.actId!.isNotEmpty;
 
   @override
   void dispose() {
     _nameCtrl.dispose();
     _contactEmailCtrl.dispose();
-    _selectedIds.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  // ------ tiny utils ------
+  // ---- helpers ---------------------------------------------------------------
+
   String _firstNonEmpty(List<dynamic> values) {
     for (final v in values) {
       final s = (v ?? '').toString().trim();
@@ -92,6 +90,8 @@ class _ActFormPageState extends State<ActFormPage> {
 
   String _joinNames(String a, String b) =>
       _firstNonEmpty(['$a $b'.trim(), a, b]);
+
+  String _normId(String? v) => (v ?? '').toString().trim();
 
   String? _getName(dynamic v) {
     if (v == null) return null;
@@ -121,6 +121,45 @@ class _ActFormPageState extends State<ActFormPage> {
     return null;
   }
 
+  /// Attempt to decode a JWT and pull a user id-ish field.
+  /// Looks for: sub, userId, uid, id, user.id, user_id
+  String? _extractUserId(String? token) {
+    if (token == null || token.isEmpty) return null;
+    if (!token.contains('.')) return null; // not a JWT
+    try {
+      final parts = token.split('.');
+      if (parts.length < 2) return null;
+      String b64 = parts[1].replaceAll('-', '+').replaceAll('_', '/');
+      // pad
+      while (b64.length % 4 != 0) {
+        b64 += '=';
+      }
+      final jsonStr = utf8.decode(base64.decode(b64));
+      final obj = json.decode(jsonStr);
+      if (obj is! Map) return null;
+
+      String pick(dynamic x) {
+        if (x == null) return '';
+        if (x is String) return x.trim();
+        if (x is num) return x.toString();
+        return '';
+      }
+
+      final candidates = <String>[
+        pick(obj['sub']),
+        pick(obj['userId']),
+        pick(obj['uid']),
+        pick(obj['id']),
+        obj['user'] is Map ? pick((obj['user'] as Map)['id']) : '',
+        pick(obj['user_id']),
+      ].where((e) => e.isNotEmpty).toList();
+
+      return candidates.isNotEmpty ? candidates.first : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Unwrap common envelopes from orchestrator/service responses.
   Map<String, dynamic> _unwrapActEnvelope(Map<String, dynamic> map) {
     Map<String, dynamic> cur = map;
@@ -129,7 +168,7 @@ class _ActFormPageState extends State<ActFormPage> {
         final k = cur.keys.first;
         final v = cur[k];
         if (v is Map) {
-          if (k == 'act' || k == 'data' || k == 'result' || k == 'item') {
+          if (['act', 'data', 'result', 'item'].contains(k)) {
             cur = Map<String, dynamic>.from(v);
             continue;
           }
@@ -144,7 +183,7 @@ class _ActFormPageState extends State<ActFormPage> {
   }
 
   void _normalizeAndMapAct(Map<String, dynamic> data) {
-    // ---- Creator ----
+    // Creator
     final creator =
         _firstNonEmpty([data['createdByName'], data['creatorName']]);
     _creatorName = _firstNonEmpty([
@@ -156,8 +195,6 @@ class _ActFormPageState extends State<ActFormPage> {
         _firstNonEmpty([data['creatorLast']]),
       ),
     ]);
-
-    // IDs used for claim logic
     _createdById = _firstNonEmpty([
       data['createdById'],
       data['createdBy'],
@@ -165,11 +202,8 @@ class _ActFormPageState extends State<ActFormPage> {
       data['creatorID'],
     ]);
 
-    // ---- Owner ----
-    final ownerDisp = _firstNonEmpty([
-      data['ownerName'],
-      data['ownedByName'], // <— include backend log key
-    ]);
+    // Owner
+    final ownerDisp = _firstNonEmpty([data['ownerName'], data['ownedByName']]);
     _ownerName = _firstNonEmpty([
       ownerDisp,
       _getName(data['owner']),
@@ -180,7 +214,6 @@ class _ActFormPageState extends State<ActFormPage> {
         _firstNonEmpty([data['ownerLast']]),
       ),
     ]);
-
     _ownerId = _firstNonEmpty([
       data['ownerId'],
       data['ownedBy'],
@@ -188,7 +221,7 @@ class _ActFormPageState extends State<ActFormPage> {
       data['ownerID'],
     ]);
 
-    // ---- Home Town (label-only) ----
+    // Home town
     _homeTownLabel = _firstNonEmpty([
       data['homeTownLabel'],
       data['homeTownName'],
@@ -200,278 +233,263 @@ class _ActFormPageState extends State<ActFormPage> {
       _getTownLabel(data['home']),
       _getTownLabel(data['town']),
       _getTownLabel({'city': data['city'], 'state': data['state']}),
-      widget.prefillHomeTown, // fallback to prefill
+      widget.prefillHomeTown,
     ]);
 
-    // ---- Editable fields ----
+    // Editable fields
     final actName = _firstNonEmpty([data['name']]);
     if (actName.isNotEmpty) _nameCtrl.text = actName;
-
     final email = _firstNonEmpty(
         [data['contactEmail'], data['eMailAddr'], data['email']]);
     _contactEmailCtrl.text = email;
 
-    // If you later decode JWT, set _jwtUserId there; keep fallback otherwise.
-    _jwtUserId ??= widget.jwt;
+    // Ensure _jwtUserId is decoded if possible (in case widget.jwt was null at init).
+    _jwtUserId ??= _extractUserId(widget.jwt) ?? widget.jwt;
   }
+
+  // ---- data -----------------------------------------------------------------
 
   Future<void> _loadAct() async {
     setState(() {
       _loading = true;
       _error = null;
     });
-
     try {
       final uri = Uri.parse('$_apiBase/acts/${widget.actId}');
-      final headers = <String, String>{
+      final headers = {
         'Content-Type': 'application/json',
-        if (widget.jwt != null && widget.jwt!.isNotEmpty)
+        if (widget.jwt?.isNotEmpty ?? false)
           'Authorization': 'Bearer ${widget.jwt}',
       };
       final res = await http.get(uri, headers: headers);
-
       if (res.statusCode != 200) {
         throw Exception('Failed to load act (${res.statusCode})');
       }
-
       final decoded = jsonDecode(res.body);
-      if (decoded is! Map) {
-        throw Exception('Unexpected response shape (not a Map)');
-      }
-
-      Map<String, dynamic> root =
-          Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>);
-
-      try {
-        debugPrint('Act payload keys: ${root.keys.toList()}');
-      } catch (_) {}
-
-      final actMap = _unwrapActEnvelope(root);
-
-      try {
-        debugPrint('Act (unwrapped) keys: ${actMap.keys.toList()}');
-      } catch (_) {}
-
+      if (decoded is! Map) throw Exception('Unexpected response shape');
+      final actMap = _unwrapActEnvelope(
+          Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>));
       _normalizeAndMapAct(actMap);
-
-      if (mounted) setState(() {});
+      setState(() {});
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
-      if (mounted) setState(() => _loading = false);
+      setState(() => _loading = false);
     }
   }
 
-  Future<void> _onAddPressed() async {
-    // TODO: open picker → upload → append to act.imageIds → refresh viewer
+  // ---- actions --------------------------------------------------------------
+
+  void _onCancelPressed() {
+    Navigator.of(context).maybePop();
   }
 
-  Future<void> _onDeletePressed() async {
-    final ids = _selectedIds.value.toList();
-    if (ids.isEmpty || !_hasActId) return;
-    // TODO: call backend to remove {ids} from this act's imageIds → refresh viewer
+  Future<void> _onSavePressed() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final payload = {
+      'name': _nameCtrl.text.trim(),
+      'eMailAddr': _contactEmailCtrl.text.trim().isNotEmpty
+          ? _contactEmailCtrl.text.trim()
+          : null,
+    };
+    try {
+      final headers = {
+        'Content-Type': 'application/json',
+        if (widget.jwt?.isNotEmpty ?? false)
+          'Authorization': 'Bearer ${widget.jwt}',
+      };
+      late final http.Response res;
+      if (_hasActId) {
+        res = await http.put(
+          Uri.parse('$_apiBase/acts/${widget.actId}'),
+          headers: headers,
+          body: jsonEncode(payload),
+        );
+      } else {
+        res = await http.post(
+          Uri.parse('$_apiBase/acts'),
+          headers: headers,
+          body: jsonEncode(payload),
+        );
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw Exception('Save failed (${res.statusCode})');
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      setState(() => _loading = false);
+    }
   }
 
   void _onClaimPressed() {
-    // TODO: implement claim handler (e.g., POST /acts/:id/claim)
     debugPrint('Claim pressed for actId=${widget.actId} by userId=$_jwtUserId');
   }
+
+  // ---- UI -------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
     return ScaffoldWrapper(
       title: null,
       contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-      child: Stack(
-        children: [
-          // ---------------- Main scrollable content ----------------
-          ListView(
-            padding: EdgeInsets.zero,
-            children: [
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text('Error: $_error',
-                      style: const TextStyle(color: Colors.red)),
-                ),
-
-              RoundedCard(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final maxW = constraints.maxWidth;
+          final screenH = MediaQuery.of(context).size.height;
+          return Center(
+            child: SizedBox(
+              width: maxW < 600 ? maxW : 600,
+              height: screenH,
+              child: RoundedCard(
+                padding: EdgeInsets.zero,
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // =================== Top Row ===================
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        // Left: static "Home Town" label + value
-                        Expanded(
-                          child: Row(
+                    Expanded(
+                      child: SingleChildScrollView(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                        child: Form(
+                          key: _formKey,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                'Home Town',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyMedium
-                                    ?.copyWith(color: Colors.black54),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  _homeTownLabel?.trim().isNotEmpty == true
-                                      ? _homeTownLabel!
-                                      : '—',
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context).textTheme.bodyMedium,
+                              if (_error != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: Text(
+                                    'Error: $_error',
+                                    style: const TextStyle(color: Colors.red),
+                                  ),
                                 ),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Expanded(
+                                    child: Row(
+                                      children: [
+                                        Text(
+                                          'Home Town',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(color: Colors.black54),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            _homeTownLabel?.trim().isNotEmpty ==
+                                                    true
+                                                ? _homeTownLabel!
+                                                : '—',
+                                            overflow: TextOverflow.ellipsis,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodyMedium,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  OwnershipInfo(
+                                    creatorName: _creatorName,
+                                    ownerName: _ownerName,
+                                    createdById: _createdById,
+                                    ownerId: _ownerId,
+                                    jwtUserId: _jwtUserId,
+                                    onClaim: _onClaimPressed,
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _nameCtrl,
+                                decoration: const InputDecoration(
+                                  labelText: 'Act Name',
+                                  border: OutlineInputBorder(),
+                                ),
+                                validator: (v) =>
+                                    (v == null || v.trim().isEmpty)
+                                        ? 'Act name is required'
+                                        : null,
+                              ),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _contactEmailCtrl,
+                                decoration: const InputDecoration(
+                                  labelText: 'Contact Email',
+                                  border: OutlineInputBorder(),
+                                ),
+                                keyboardType: TextInputType.emailAddress,
                               ),
                             ],
                           ),
                         ),
-                        const SizedBox(width: 12),
+                      ),
+                    ),
 
-                        // Right: Creator / Owner via shared OwnershipInfo widget (right-aligned via wrapper)
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: OwnershipInfo(
-                            creatorName: _creatorName,
-                            ownerName: _ownerName,
-                            createdById: _createdById,
-                            ownerId: _ownerId,
-                            jwtUserId: _jwtUserId,
-                            onClaim: _onClaimPressed,
+                    // --- Pinned bottom action area: translucent bg under, crisp buttons on top ---
+                    SizedBox(
+                      height: _bottomBarHeight,
+                      child: Stack(
+                        children: [
+                          // Translucent background layer INSIDE the card, preserving rounded bottom
+                          Positioned.fill(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(
+                                    0.08), // <<< adjust transparency here
+                                borderRadius: const BorderRadius.vertical(
+                                  bottom: Radius.circular(12),
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    // ========================================================
-
-                    // ---- Editable fields (prefilled; server may overwrite) ----
-                    TextField(
-                      controller: _nameCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Act Name',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    TextField(
-                      controller: _contactEmailCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Contact Email',
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: TextInputType.emailAddress,
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // ---- Image Viewer section right under Contact Email ----
-              RoundedCard(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text('Images',
-                            style: Theme.of(context).textTheme.titleMedium),
-                        if (_loading) ...[
-                          const SizedBox(width: 8),
-                          const SizedBox(
-                              height: 16,
-                              width: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2)),
+                          // Buttons row on TOP of the translucent layer (crisp edges)
+                          Positioned.fill(
+                            child: Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 12),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  // Place "Update Act" to the right of Cancel by flipping internal LTR to RTL.
+                                  Directionality(
+                                    textDirection: TextDirection.rtl,
+                                    child: SizedBox(
+                                      height: double.infinity,
+                                      child: SubmitBar(
+                                        primaryLabel: 'Update Act',
+                                        onPrimary: _loading || !_canEdit
+                                            ? null
+                                            : _onSavePressed,
+                                        onCancel:
+                                            _loading ? null : _onCancelPressed,
+                                        loading: _loading,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                         ],
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    if (_hasActId)
-                      ActImagesLazy(
-                        actId: widget.actId!, // safe due to _hasActId
-                        jwt: widget.jwt,
-                        pageSize: 12,
-                        showControls: true, // edit context → allow selection
-                        onSelectionChanged: (ids) =>
-                            _selectedIds.value = Set<String>.from(ids),
-                      )
-                    else
-                      Text(
-                        'Save this Act to start adding images.',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(color: Colors.black54),
-                      ),
-                  ],
-                ),
-              ),
-
-              // spacer so content isn't hidden by bottom bar
-              SizedBox(
-                height: _bottomBarHeight +
-                    MediaQuery.of(context).padding.bottom +
-                    16,
-              ),
-            ],
-          ),
-
-          // ---------------- Pinned semi-transparent bottom bar ----------------
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: SafeArea(
-              top: false,
-              child: Container(
-                height: _bottomBarHeight,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.35),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.2),
-                      blurRadius: 8,
-                      offset: const Offset(0, -2),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _hasActId ? _onAddPressed : null,
-                      icon: const Icon(Icons.add),
-                      label: const Text('Add'),
-                    ),
-                    const SizedBox(width: 8),
-                    ValueListenableBuilder<Set<String>>(
-                      valueListenable: _selectedIds,
-                      builder: (_, set, __) => FilledButton.icon(
-                        onPressed: (!_hasActId || set.isEmpty)
-                            ? null
-                            : _onDeletePressed,
-                        icon: const Icon(Icons.delete_outline),
-                        label: Text(
-                          set.isEmpty ? 'Delete' : 'Delete (${set.length})',
-                        ),
                       ),
                     ),
-                    const Spacer(),
-                    const Icon(Icons.swipe_up, size: 18, color: Colors.white70),
+                    // --- end pinned area ---
                   ],
                 ),
               ),
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }

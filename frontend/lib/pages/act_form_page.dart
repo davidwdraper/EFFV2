@@ -53,9 +53,11 @@ class _ActFormPageState extends State<ActFormPage> {
   // Enable when user owns OR created the act; allow when creating a new act (no actId yet).
   bool get _canEdit {
     if (!_hasActId) return true;
-    final uid = _normId(_jwtUserId);
+    final uid = _canon(_jwtUserId);
     if (uid.isEmpty) return false;
-    return uid == _normId(_ownerId) || uid == _normId(_createdById);
+    final owner = _canon(_ownerId);
+    final creator = _canon(_createdById);
+    return uid == owner || uid == creator;
   }
 
   @override
@@ -64,7 +66,7 @@ class _ActFormPageState extends State<ActFormPage> {
     _nameCtrl.text = widget.prefillName ?? '';
     _homeTownLabel = widget.prefillHomeTown;
 
-    // Try to decode a real JWT to a user id; fallback to raw string.
+    // Decode JWT → user id (supports `_id` and nested `user._id`) or fallback to raw string.
     _jwtUserId = _extractUserId(widget.jwt) ?? widget.jwt;
 
     if (_hasActId) _loadAct();
@@ -78,7 +80,7 @@ class _ActFormPageState extends State<ActFormPage> {
     super.dispose();
   }
 
-  // ---- helpers ---------------------------------------------------------------
+  // ---------------- helpers ----------------
 
   String _firstNonEmpty(List<dynamic> values) {
     for (final v in values) {
@@ -91,7 +93,14 @@ class _ActFormPageState extends State<ActFormPage> {
   String _joinNames(String a, String b) =>
       _firstNonEmpty(['$a $b'.trim(), a, b]);
 
-  String _normId(String? v) => (v ?? '').toString().trim();
+  String _canon(String? v) =>
+      (v ?? '').trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+  bool _looksLikeJwt(String? v) {
+    if (v == null) return false;
+    final parts = v.split('.');
+    return parts.length >= 3 && parts[0].isNotEmpty && parts[1].isNotEmpty;
+  }
 
   String? _getName(dynamic v) {
     if (v == null) return null;
@@ -106,72 +115,106 @@ class _ActFormPageState extends State<ActFormPage> {
     return null;
   }
 
-  String? _getTownLabel(dynamic v) {
+  /// Extract an ID from many shapes:
+  /// - String/num → string
+  /// - Map → check id, _id, uid, userId, user_id, value
+  String? _getId(dynamic v) {
     if (v == null) return null;
-    if (v is String && v.trim().isNotEmpty) return v.trim();
+    if (v is num) return v.toString();
+    if (v is String) return v.trim().isNotEmpty ? v.trim() : null;
     if (v is Map) {
-      final fromMap = _firstNonEmpty([
-        v['label'],
-        v['name'],
-        v['display'],
-        _joinNames(_firstNonEmpty([v['city']]), _firstNonEmpty([v['state']])),
-      ]);
-      return fromMap.isEmpty ? null : fromMap;
+      final m = v;
+      final candidates = [
+        m['_id'],
+        m['id'],
+        m['uid'],
+        m['userId'],
+        m['user_id'],
+        m['value'],
+      ];
+      for (final c in candidates) {
+        final pick = _getId(c);
+        if (pick != null && pick.isNotEmpty) return pick;
+      }
     }
     return null;
   }
 
-  /// Attempt to decode a JWT and pull a user id-ish field.
-  /// Looks for: sub, userId, uid, id, user.id, user_id
+  /// Try to decode a JWT and pull a plausible user id.
+  /// Includes `_id` and nested `user._id`. Tries url-safe and standard base64 with padding.
   String? _extractUserId(String? token) {
     if (token == null || token.isEmpty) return null;
-    if (!token.contains('.')) return null; // not a JWT
-    try {
-      final parts = token.split('.');
-      if (parts.length < 2) return null;
-      String b64 = parts[1].replaceAll('-', '+').replaceAll('_', '/');
-      // pad
-      while (b64.length % 4 != 0) {
-        b64 += '=';
+    final raw = token.startsWith('Bearer ') ? token.substring(7) : token;
+    if (!_looksLikeJwt(raw)) return null;
+    final parts = raw.split('.');
+    if (parts.length < 2) return null;
+    String payload = parts[1];
+
+    Map<String, dynamic>? _decode(String b64, {bool urlSafe = true}) {
+      try {
+        String s = b64;
+        if (urlSafe) {
+          s = s.replaceAll('-', '+').replaceAll('_', '/');
+        }
+        while (s.length % 4 != 0) {
+          s += '=';
+        }
+        final jsonStr = utf8.decode(base64.decode(s));
+        final obj = json.decode(jsonStr);
+        return (obj is Map<String, dynamic>) ? obj : null;
+      } catch (_) {
+        return null;
       }
-      final jsonStr = utf8.decode(base64.decode(b64));
-      final obj = json.decode(jsonStr);
-      if (obj is! Map) return null;
-
-      String pick(dynamic x) {
-        if (x == null) return '';
-        if (x is String) return x.trim();
-        if (x is num) return x.toString();
-        return '';
-      }
-
-      final candidates = <String>[
-        pick(obj['sub']),
-        pick(obj['userId']),
-        pick(obj['uid']),
-        pick(obj['id']),
-        obj['user'] is Map ? pick((obj['user'] as Map)['id']) : '',
-        pick(obj['user_id']),
-      ].where((e) => e.isNotEmpty).toList();
-
-      return candidates.isNotEmpty ? candidates.first : null;
-    } catch (_) {
-      return null;
     }
+
+    final obj =
+        _decode(payload, urlSafe: true) ?? _decode(payload, urlSafe: false);
+    if (obj == null) return null;
+
+    String pick(dynamic x) {
+      if (x == null) return '';
+      if (x is String) return x.trim();
+      if (x is num) return x.toString();
+      return '';
+    }
+
+    final userMap = (obj['user'] is Map) ? (obj['user'] as Map) : null;
+
+    final candidates = <String>[
+      pick(obj['_id']), // important for tokens shaped like yours
+      pick(obj['sub']),
+      pick(obj['userId']),
+      pick(obj['uid']),
+      pick(obj['id']),
+      if (userMap != null) pick(userMap['_id']),
+      if (userMap != null) pick(userMap['id']),
+      pick(obj['user_id']),
+    ].where((e) => e.isNotEmpty).toList();
+
+    return candidates.isNotEmpty ? candidates.first : null;
   }
 
-  /// Unwrap common envelopes from orchestrator/service responses.
+  String _getTownLabel(dynamic town) {
+    if (town == null) return '';
+    if (town is String) return town.trim();
+    if (town is Map) {
+      final city = (town['city'] ?? '').toString().trim();
+      final state = (town['state'] ?? '').toString().trim();
+      if (city.isNotEmpty && state.isNotEmpty) return '$city, $state';
+      return city.isNotEmpty ? city : state;
+    }
+    return '';
+  }
+
   Map<String, dynamic> _unwrapActEnvelope(Map<String, dynamic> map) {
     Map<String, dynamic> cur = map;
     for (int i = 0; i < 3; i++) {
       if (cur.length == 1) {
         final k = cur.keys.first;
         final v = cur[k];
-        if (v is Map) {
-          if (['act', 'data', 'result', 'item'].contains(k)) {
-            cur = Map<String, dynamic>.from(v);
-            continue;
-          }
+        if (v is Map && ['act', 'data', 'result', 'item'].contains(k)) {
+          cur = Map<String, dynamic>.from(v);
+          continue;
         }
       }
       break;
@@ -196,6 +239,11 @@ class _ActFormPageState extends State<ActFormPage> {
       ),
     ]);
     _createdById = _firstNonEmpty([
+      _getId(data['createdBy']),
+      _getId(data['creator']),
+      _getId(data['createdById']),
+      _getId(data['creatorId']),
+      _getId(data['creatorID']),
       data['createdById'],
       data['createdBy'],
       data['creatorId'],
@@ -215,6 +263,13 @@ class _ActFormPageState extends State<ActFormPage> {
       ),
     ]);
     _ownerId = _firstNonEmpty([
+      _getId(data['owner']),
+      _getId(data['userOwner']),
+      _getId(data['userOwnerIdObj']),
+      _getId(data['ownerId']),
+      _getId(data['ownedBy']),
+      _getId(data['userOwnerId']),
+      _getId(data['ownerID']),
       data['ownerId'],
       data['ownedBy'],
       data['userOwnerId'],
@@ -243,11 +298,18 @@ class _ActFormPageState extends State<ActFormPage> {
         [data['contactEmail'], data['eMailAddr'], data['email']]);
     _contactEmailCtrl.text = email;
 
-    // Ensure _jwtUserId is decoded if possible (in case widget.jwt was null at init).
+    // Ensure user id present (in case jwt set after init)
     _jwtUserId ??= _extractUserId(widget.jwt) ?? widget.jwt;
+
+    // LAST-RESORT MATCH: if jwt still looks like a token and it CONTAINS ownerId, adopt ownerId
+    if (_looksLikeJwt(_jwtUserId) &&
+        (_ownerId != null && _ownerId!.isNotEmpty) &&
+        (widget.jwt?.contains(_ownerId!) ?? false)) {
+      _jwtUserId = _ownerId;
+    }
   }
 
-  // ---- data -----------------------------------------------------------------
+  // ---------------- data ----------------
 
   Future<void> _loadAct() async {
     setState(() {
@@ -270,15 +332,16 @@ class _ActFormPageState extends State<ActFormPage> {
       final actMap = _unwrapActEnvelope(
           Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>));
       _normalizeAndMapAct(actMap);
-      setState(() {});
+
+      if (mounted) setState(() {});
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  // ---- actions --------------------------------------------------------------
+  // ---------------- actions ----------------
 
   void _onCancelPressed() {
     Navigator.of(context).maybePop();
@@ -324,15 +387,13 @@ class _ActFormPageState extends State<ActFormPage> {
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  void _onClaimPressed() {
-    debugPrint('Claim pressed for actId=${widget.actId} by userId=$_jwtUserId');
-  }
+  void _onClaimPressed() {}
 
-  // ---- UI -------------------------------------------------------------------
+  // ---------------- UI ----------------
 
   @override
   Widget build(BuildContext context) {
@@ -440,7 +501,6 @@ class _ActFormPageState extends State<ActFormPage> {
                       height: _bottomBarHeight,
                       child: Stack(
                         children: [
-                          // Translucent background layer INSIDE the card, preserving rounded bottom
                           Positioned.fill(
                             child: Container(
                               decoration: BoxDecoration(
@@ -452,7 +512,6 @@ class _ActFormPageState extends State<ActFormPage> {
                               ),
                             ),
                           ),
-                          // Buttons row on TOP of the translucent layer (crisp edges)
                           Positioned.fill(
                             child: Padding(
                               padding:
@@ -460,7 +519,7 @@ class _ActFormPageState extends State<ActFormPage> {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.end,
                                 children: [
-                                  // Place "Update Act" to the right of Cancel by flipping internal LTR to RTL.
+                                  // "Update Act" to the right of Cancel via RTL
                                   Directionality(
                                     textDirection: TextDirection.rtl,
                                     child: SizedBox(

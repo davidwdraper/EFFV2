@@ -1,84 +1,62 @@
-// lib/pages/act_form_page.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http;
 
-import '../providers/auth_provider.dart';
-import '../widgets/logo_menu_bar.dart';
-import '../widgets/page_wrapper.dart';
+import '../widgets/scaffold_wrapper.dart';
 import '../widgets/rounded_card.dart';
-import '../widgets/page_buttons_row.dart';
-import '../widgets/ownership_info.dart'; // ✅ NEW
-
-class ActFormArgs {
-  final String? actId; // signals edit mode
-  final String? prefillName;
-  final String? prefillHomeTown;
-  const ActFormArgs({this.actId, this.prefillName, this.prefillHomeTown});
-}
+import '../widgets/act_images_lazy.dart';
 
 class ActFormPage extends StatefulWidget {
-  const ActFormPage({super.key, this.args});
-  final ActFormArgs? args;
+  final String? actId; // nullable: new Acts won’t have one yet
+  final String? jwt;
+
+  // ✅ NEW: prefill values coming from navigation (create flow or quick edit)
+  final String? prefillName;
+  final String? prefillHomeTown;
+
+  const ActFormPage({
+    super.key,
+    this.actId,
+    this.jwt,
+    this.prefillName, // ✅
+    this.prefillHomeTown, // ✅
+  });
 
   @override
   State<ActFormPage> createState() => _ActFormPageState();
 }
 
 class _ActFormPageState extends State<ActFormPage> {
-  final _formKey = GlobalKey<FormState>();
+  // ---- tweak this if you want to centralize config ----
+  static const String _apiBase = 'http://localhost:4000';
 
-  final _nameCtrl = TextEditingController();
-  final _emailCtrl = TextEditingController();
-  final _homeTownCtrl = TextEditingController();
+  bool _loading = false;
+  String? _error;
 
-  // Hometown as read-only when provided/loaded
-  String? _prefilledHomeTown;
-
-  TownSuggestion? _selectedTown;
-  bool _submitting = false;
-
-  // Edit mode
-  bool _isUpdate = false;
-  String? _actId;
-
-  // Ownership display
+  // Read-only labels
   String? _creatorName;
   String? _ownerName;
-  String? _ownerId;
+  String? _homeTownLabel;
 
-  // Match main.dart
-  String get _apiBase => const String.fromEnvironment(
-        'EFF_API_BASE',
-        defaultValue: 'http://localhost:4000',
-      );
-  static const String _townsSuggestPath = '/towns/search';
+  // Editable fields
+  final _nameCtrl = TextEditingController();
+  final _contactEmailCtrl = TextEditingController();
+
+  // Image selection for delete
+  final ValueNotifier<Set<String>> _selectedIds =
+      ValueNotifier<Set<String>>(<String>{});
+  static const double _bottomBarHeight = 64;
 
   @override
   void initState() {
     super.initState();
-    final a = widget.args;
 
-    // Prefill name immediately
-    final prefillName = (a?.prefillName ?? '').trim();
-    if (prefillName.isNotEmpty) _nameCtrl.text = prefillName;
+    // ✅ Show prefill immediately (so create flow or slow networks still render)
+    _nameCtrl.text = widget.prefillName ?? '';
+    _homeTownLabel = widget.prefillHomeTown;
 
-    // Prefilled hometown (from search) shows as label
-    final prefillTown = (a?.prefillHomeTown ?? '').trim();
-    if (prefillTown.isNotEmpty) _prefilledHomeTown = prefillTown;
-
-    // Default ownership for create
-    final auth = context.read<AuthProvider>();
-    _creatorName = auth.userDisplayName;
-    _ownerName = auth.userDisplayName;
-    _ownerId = auth.userId;
-
-    // Edit mode if actId present — load existing record
-    if ((a?.actId ?? '').isNotEmpty) {
-      _isUpdate = true;
-      _actId = a!.actId;
+    // Edit flow: fetch from server and overwrite with source of truth
+    if (widget.actId != null && widget.actId!.isNotEmpty) {
       _loadAct();
     }
   }
@@ -86,174 +64,131 @@ class _ActFormPageState extends State<ActFormPage> {
   @override
   void dispose() {
     _nameCtrl.dispose();
-    _emailCtrl.dispose();
-    _homeTownCtrl.dispose();
+    _contactEmailCtrl.dispose();
+    _selectedIds.dispose();
     super.dispose();
   }
 
+  // ------ helpers to safely read fields with varying names ------
+  String _firstNonEmpty(List<dynamic> values) {
+    for (final v in values) {
+      final s = (v ?? '').toString().trim();
+      if (s.isNotEmpty) return s;
+    }
+    return '';
+  }
+
+  String _joinNames(String a, String b) =>
+      _firstNonEmpty(['$a $b'.trim(), a, b]);
+
+  void _mapActData(Map<String, dynamic> data) {
+    // Creator → prefer a flat display name, else build from nested fields
+    final creatorDisplay =
+        _firstNonEmpty([data['createdByName'], data['creatorName']]);
+    final creatorFirst =
+        _firstNonEmpty([data['creator']?['firstname'], data['creatorFirst']]);
+    final creatorLast =
+        _firstNonEmpty([data['creator']?['lastname'], data['creatorLast']]);
+    _creatorName =
+        _firstNonEmpty([creatorDisplay, _joinNames(creatorFirst, creatorLast)]);
+
+    // Owner → same idea
+    final ownerDisplay = _firstNonEmpty([data['ownerName']]);
+    final ownerFirst =
+        _firstNonEmpty([data['owner']?['firstname'], data['ownerFirst']]);
+    final ownerLast =
+        _firstNonEmpty([data['owner']?['lastname'], data['ownerLast']]);
+    _ownerName =
+        _firstNonEmpty([ownerDisplay, _joinNames(ownerFirst, ownerLast)]);
+
+    // Home Town label only (no input)
+    _homeTownLabel = _firstNonEmpty([
+      data['homeTownLabel'],
+      data['homeTown'], // many APIs use this
+      data['home_town'],
+      data['homeTownName'],
+      data['homeTownText'],
+      data['homeTownDisplay'],
+      // last-resort: combine nested
+      _joinNames(
+        _firstNonEmpty([data['home']?['city'], data['city']]),
+        _firstNonEmpty([data['home']?['state'], data['state']]),
+      ),
+    ]);
+
+    // Editable fields
+    final actName = _firstNonEmpty([data['name']]);
+    if (actName.isNotEmpty) _nameCtrl.text = actName;
+
+    final email = _firstNonEmpty(
+        [data['contactEmail'], data['eMailAddr'], data['email']]);
+    _contactEmailCtrl.text = email;
+  }
+
   Future<void> _loadAct() async {
-    if (_actId == null) return;
-    try {
-      final auth = context.read<AuthProvider>();
-      final uri = Uri.parse('$_apiBase/acts/$_actId');
-      final resp = await http.get(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          if (auth.token != null) 'Authorization': 'Bearer ${auth.token}',
-        },
-      );
-      if (resp.statusCode != 200) return;
-      final j = jsonDecode(resp.body);
-      final act = (j['act'] as Map?) ?? {};
-
-      _nameCtrl.text = (act['name'] ?? '').toString();
-      _emailCtrl.text = (act['eMailAddr'] ?? '').toString();
-      final ht = (act['homeTown'] ?? '').toString();
-      if (ht.isNotEmpty) _prefilledHomeTown = ht;
-
-      // Pull creator/owner names & ids (supports both naming variants)
-      _creatorName =
-          (act['createdByName'] ?? act['userCreateName'] ?? '').toString();
-      _ownerName =
-          (act['ownedByName'] ?? act['userOwnerName'] ?? '').toString();
-      _ownerId = (act['userOwnerId'] ?? '').toString();
-
-      if (mounted) setState(() {});
-    } catch (_) {
-      // soft fail; keep whatever is there
-    }
-  }
-
-  Future<List<TownSuggestion>> _fetchTownSuggestions(String query) async {
-    if (query.trim().length < 3) return const [];
-    final auth = context.read<AuthProvider>();
-    final uri = Uri.parse('$_apiBase$_townsSuggestPath')
-        .replace(queryParameters: {'q': query.trim(), 'limit': '10'});
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
 
     try {
-      final resp = await http.get(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          if (auth.token != null) 'Authorization': 'Bearer ${auth.token}',
-        },
-      );
-      if (resp.statusCode != 200) return const [];
-      final json = jsonDecode(resp.body);
-      final List list = (json['data'] as List?) ?? const [];
-      return list.map((e) => TownSuggestion.fromJson(e)).toList();
-    } catch (_) {
-      return const [];
-    }
-  }
+      final uri = Uri.parse('$_apiBase/acts/${widget.actId}');
+      final headers = <String, String>{
+        'Content-Type': 'application/json',
+        if (widget.jwt != null && widget.jwt!.isNotEmpty)
+          'Authorization': 'Bearer ${widget.jwt}',
+      };
+      final res = await http.get(uri, headers: headers);
 
-  Future<void> _submit() async {
-    final form = _formKey.currentState;
-    if (form == null) return;
-    if (!form.validate()) return;
-
-    setState(() => _submitting = true);
-    final auth = context.read<AuthProvider>();
-
-    final uid = auth.userId ?? auth.user?['_id'] ?? auth.user?['userId'];
-
-    // Build payload
-    final body = <String, dynamic>{
-      'name': _nameCtrl.text.trim(),
-      if (_emailCtrl.text.trim().isNotEmpty)
-        'eMailAddr': _emailCtrl.text.trim(),
-      if (_prefilledHomeTown != null && _prefilledHomeTown!.isNotEmpty)
-        'homeTown': _prefilledHomeTown
-      else if (_selectedTown != null)
-        'townId': _selectedTown!.id
-      else
-        'homeTown': _homeTownCtrl.text.trim(),
-      if (uid != null) 'userOwnerId': uid,
-      if (!_isUpdate && uid != null) 'userCreateId': uid,
-    };
-
-    final uri = _isUpdate
-        ? Uri.parse('$_apiBase/acts/$_actId')
-        : Uri.parse('$_apiBase/acts');
-
-    try {
-      final resp = await (_isUpdate
-          ? http.put(
-              uri,
-              headers: {
-                'Content-Type': 'application/json',
-                if (auth.token != null) 'Authorization': 'Bearer ${auth.token}',
-              },
-              body: jsonEncode(body),
-            )
-          : http.post(
-              uri,
-              headers: {
-                'Content-Type': 'application/json',
-                if (auth.token != null) 'Authorization': 'Bearer ${auth.token}',
-              },
-              body: jsonEncode(body),
-            ));
-
-      final ok = _isUpdate ? 200 : 201;
-      if (resp.statusCode == ok) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(_isUpdate ? 'Act updated ✅' : 'Act created ✅')),
-        );
-        Navigator.of(context).pop(true);
-      } else {
-        final msg = _safeErr(resp.body);
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('${_isUpdate ? "Update" : "Create"} failed: $msg')),
-        );
+      if (res.statusCode != 200) {
+        throw Exception('Failed to load act (${res.statusCode})');
       }
+
+      final data = jsonDecode(res.body);
+      if (data is Map<String, dynamic>) {
+        _mapActData(data);
+      } else if (data is Map) {
+        _mapActData(Map<String, dynamic>.from(data));
+      }
+      setState(() {});
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Network error: $e')),
-      );
+      setState(() => _error = e.toString());
     } finally {
-      if (mounted) setState(() => _submitting = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  String _safeErr(String body) {
-    try {
-      final j = jsonDecode(body);
-      return j['error']?.toString() ?? 'Unknown error';
-    } catch (_) {
-      return body;
-    }
+  Future<void> _onAddPressed() async {
+    // TODO: open picker → upload → append to act.imageIds → refresh viewer
   }
 
-  void _onClaim() {
-    // Placeholder for future wiring
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Claim requested (to be implemented)')),
-    );
+  Future<void> _onDeletePressed() async {
+    final ids = _selectedIds.value.toList();
+    if (ids.isEmpty || widget.actId == null) return;
+    // TODO: call backend to remove {ids} from this act's imageIds → refresh viewer
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return PageWrapper(
-      child: Column(
+  Widget _kv(String label, String? value) {
+    if (value == null || value.trim().isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const LogoMenuBar(),
-          const SizedBox(height: 12),
-          Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 600),
-              child: RoundedCard(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: _buildForm(context),
-                ),
-              ),
+          SizedBox(
+            width: 130,
+            child: Text(
+              label,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: Colors.black54),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: Theme.of(context).textTheme.bodyMedium,
             ),
           ),
         ],
@@ -261,275 +196,165 @@ class _ActFormPageState extends State<ActFormPage> {
     );
   }
 
-  Widget _buildForm(BuildContext context) {
-    final theme = Theme.of(context);
-    final currentUid = context.watch<AuthProvider>().userId;
+  @override
+  Widget build(BuildContext context) {
+    final hasActId = widget.actId != null && widget.actId!.isNotEmpty;
 
-    return Form(
-      key: _formKey,
-      child: Shortcuts(
-        shortcuts: <LogicalKeySet, Intent>{
-          LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
-          LogicalKeySet(LogicalKeyboardKey.numpadEnter): const ActivateIntent(),
-        },
-        child: Actions(
-          actions: <Type, Action<Intent>>{
-            ActivateIntent: CallbackAction<ActivateIntent>(
-              onInvoke: (intent) {
-                if (!_submitting) _submit();
-                return null;
-              },
-            ),
-          },
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return ScaffoldWrapper(
+      title: null,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      child: Stack(
+        children: [
+          // ---------------- Main scrollable content ----------------
+          ListView(
+            padding: EdgeInsets.zero,
             children: [
-              Text(_isUpdate ? 'Edit Act' : 'Create Act',
-                  style: theme.textTheme.titleLarge),
-              const SizedBox(height: 12),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text('Error: $_error',
+                      style: const TextStyle(color: Colors.red)),
+                ),
 
-              // ----- Hometown row + Ownership info (right) -----
-              if (_prefilledHomeTown != null &&
-                  _prefilledHomeTown!.isNotEmpty) ...[
-                Row(
+              RoundedCard(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Left: hometown label/value
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Hometown',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: theme.colorScheme.onSurface
-                                    .withOpacity(0.7),
-                                fontWeight: FontWeight.w500,
-                              )),
-                          const SizedBox(height: 2),
-                          Text(
-                            _prefilledHomeTown!,
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
+                    // ✅ No Act ID shown
+
+                    // ---- Read-only labels ----
+                    _kv('Creator Name', _creatorName),
+                    _kv('Owner Name', _ownerName),
+                    _kv('Home Town', _homeTownLabel),
+
+                    const SizedBox(height: 6),
+
+                    // ---- Editable fields (prefilled; server may overwrite) ----
+                    TextField(
+                      controller: _nameCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Act Name',
+                        border: OutlineInputBorder(),
                       ),
                     ),
-                    const SizedBox(width: 16),
-                    // Right: ownership info
-                    OwnershipInfo(
-                      creatorName: _creatorName,
-                      ownerName: _ownerName,
-                      showClaimButton: (_ownerId != null &&
-                          currentUid != null &&
-                          _ownerId != currentUid),
-                      onClaim: _onClaim,
+                    const SizedBox(height: 12),
+
+                    TextField(
+                      controller: _contactEmailCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Contact Email',
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.emailAddress,
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
-              ],
-
-              // ----- Act Name -----
-              TextFormField(
-                controller: _nameCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Act Name *',
-                  hintText: 'e.g., Stormbringer',
-                  border: OutlineInputBorder(),
-                ),
-                textInputAction: TextInputAction.next,
-                validator: (v) => (v == null || v.trim().isEmpty)
-                    ? 'Act name is required'
-                    : null,
-                autofillHints: const <String>[],
-                enableSuggestions: true,
-                autocorrect: true,
               ),
+
               const SizedBox(height: 12),
 
-              // ----- Email (optional) -----
-              TextFormField(
-                controller: _emailCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Contact Email (optional)',
-                  hintText: 'act@example.com',
-                  border: OutlineInputBorder(),
+              // ---- Image Viewer section right under Contact Email ----
+              RoundedCard(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text('Images',
+                            style: Theme.of(context).textTheme.titleMedium),
+                        if (_loading) ...[
+                          const SizedBox(width: 8),
+                          const SizedBox(
+                              height: 16,
+                              width: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2)),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    if (hasActId)
+                      ActImagesLazy(
+                        actId: widget.actId!, // safe due to hasActId
+                        jwt: widget.jwt,
+                        pageSize: 12,
+                        onSelectionChanged: (ids) =>
+                            _selectedIds.value = Set<String>.from(ids),
+                      )
+                    else
+                      Text(
+                        'Save this Act to start adding images.',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: Colors.black54),
+                      ),
+                  ],
                 ),
-                keyboardType: TextInputType.emailAddress,
-                textInputAction: TextInputAction.next,
-                autofillHints: const [AutofillHints.email],
               ),
-              const SizedBox(height: 12),
 
-              // ----- Editable Hometown (only if not prefilled) -----
-              if (_prefilledHomeTown == null ||
-                  _prefilledHomeTown!.isEmpty) ...[
-                _HometownAutocomplete(
-                  controller: _homeTownCtrl,
-                  fetcher: _fetchTownSuggestions,
-                  onSelected: (town) => _selectedTown = town,
-                  onTextChanged: () => _selectedTown = null,
-                ),
-                const SizedBox(height: 12),
-              ],
-
-              const SizedBox(height: 8),
-
-              // ----- Buttons (right-justified; dominant far right) -----
-              PageButtonsRow(
-                secondaryActions: [
-                  TextButton(
-                    onPressed: _submitting
-                        ? null
-                        : () => Navigator.of(context).maybePop(),
-                    child: const Text('Cancel'),
-                  ),
-                ],
-                primaryAction: ElevatedButton(
-                  onPressed: _submitting ? null : _submit,
-                  child: _submitting
-                      ? const SizedBox(
-                          height: 18,
-                          width: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Text(_isUpdate ? 'Update Act' : 'Create Act'),
-                ),
+              // spacer so content isn't hidden by bottom bar
+              SizedBox(
+                height: _bottomBarHeight +
+                    MediaQuery.of(context).padding.bottom +
+                    16,
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
 
-// --- Town Suggestion Model ---
-class TownSuggestion {
-  final String id;
-  final String name;
-  final String state;
-  final double? lat;
-  final double? lng;
-
-  TownSuggestion({
-    required this.id,
-    required this.name,
-    required this.state,
-    this.lat,
-    this.lng,
-  });
-
-  String get display => '$name, $state';
-
-  factory TownSuggestion.fromJson(Map<String, dynamic> j) {
-    return TownSuggestion(
-      id: (j['id'] ?? j['_id']).toString(),
-      name: (j['name'] ?? '').toString(),
-      state: (j['state'] ?? '').toString(),
-      lat: j['lat'] is num ? (j['lat'] as num).toDouble() : null,
-      lng: j['lng'] is num ? (j['lng'] as num).toDouble() : null,
-    );
-  }
-}
-
-// --- Autocomplete (uses stable FocusNode + dispose) ---
-class _HometownAutocomplete extends StatefulWidget {
-  final TextEditingController controller;
-  final Future<List<TownSuggestion>> Function(String) fetcher;
-  final void Function(TownSuggestion) onSelected;
-  final VoidCallback onTextChanged;
-
-  const _HometownAutocomplete({
-    required this.controller,
-    required this.fetcher,
-    required this.onSelected,
-    required this.onTextChanged,
-  });
-
-  @override
-  State<_HometownAutocomplete> createState() => _HometownAutocompleteState();
-}
-
-class _HometownAutocompleteState extends State<_HometownAutocomplete> {
-  final _focusNode = FocusNode();
-  List<TownSuggestion> _options = const [];
-
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return RawAutocomplete<TownSuggestion>(
-      textEditingController: widget.controller,
-      focusNode: _focusNode,
-      optionsBuilder: (TextEditingValue tev) async {
-        final q = tev.text;
-        if (q.trim().length < 3) return const [];
-        final results = await widget.fetcher(q);
-        _options = results;
-        return _options;
-      },
-      displayStringForOption: (opt) => opt.display,
-      onSelected: (opt) {
-        widget.controller.text = opt.display;
-        widget.onSelected(opt);
-      },
-      fieldViewBuilder: (context, textEditingController, focusNode, _) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextFormField(
-              controller: textEditingController,
-              focusNode: focusNode,
-              decoration: const InputDecoration(
-                labelText: 'Hometown *',
-                hintText: 'City, ST (or pick from suggestions)',
-                border: OutlineInputBorder(),
-              ),
-              textInputAction: TextInputAction.done,
-              validator: (v) => (v == null || v.trim().isEmpty)
-                  ? 'Hometown is required'
-                  : null,
-              onChanged: (_) => widget.onTextChanged(),
-              autofillHints: const <String>[],
-              enableSuggestions: true,
-              autocorrect: true,
-            ),
-          ],
-        );
-      },
-      optionsViewBuilder: (context, onSelected, options) {
-        final list = options.toList();
-        if (list.isEmpty) return const SizedBox.shrink();
-        return Align(
-          alignment: Alignment.topLeft,
-          child: Material(
-            elevation: 4,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 600, maxHeight: 240),
-              child: ListView.separated(
-                padding: EdgeInsets.zero,
-                itemCount: list.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (context, index) {
-                  final town = list[index];
-                  return ListTile(
-                    title: Text(town.display),
-                    onTap: () => onSelected(town),
-                  );
-                },
+          // ---------------- Pinned semi-transparent bottom bar ----------------
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SafeArea(
+              top: false,
+              child: Container(
+                height: _bottomBarHeight,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.35),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, -2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    FilledButton.icon(
+                      onPressed: hasActId ? _onAddPressed : null,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add'),
+                    ),
+                    const SizedBox(width: 8),
+                    ValueListenableBuilder<Set<String>>(
+                      valueListenable: _selectedIds,
+                      builder: (_, set, __) => FilledButton.icon(
+                        onPressed: (!hasActId || set.isEmpty)
+                            ? null
+                            : _onDeletePressed,
+                        icon: const Icon(Icons.delete_outline),
+                        label: Text(
+                          set.isEmpty ? 'Delete' : 'Delete (${set.length})',
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    const Icon(Icons.swipe_up, size: 18, color: Colors.white70),
+                  ],
+                ),
               ),
             ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }

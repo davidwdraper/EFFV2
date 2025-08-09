@@ -13,11 +13,17 @@ class LandingPage extends StatelessWidget {
           child: Container(
             color: Colors.white, // Left and right white borders
             constraints: const BoxConstraints(maxWidth: 600),
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0), // Inner padding
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
             child: const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 LogoMenuBar(),
+                SizedBox(height: 24),
+                Text(
+                  "Hi from EFF",
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                ),
                 // Add additional landing content here
               ],
             ),

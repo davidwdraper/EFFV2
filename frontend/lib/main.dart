@@ -1,57 +1,77 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'providers/auth_provider.dart';
 import 'pages/landing_page.dart';
 import 'pages/acts_page.dart';
-import 'providers/auth_provider.dart';
-import 'pages/act_form_page.dart' show ActFormPage, ActFormArgs;
-
-// Use: flutter run --dart-define=EFF_API_BASE=http://localhost:4000
-const String kApiBase = String.fromEnvironment(
-  'EFF_API_BASE',
-  defaultValue: 'http://localhost:4000',
-);
+import 'pages/act_form_page.dart';
 
 void main() {
   runApp(
     ChangeNotifierProvider(
-      create: (_) => AuthProvider()..checkToken(),
-      child: const EffApp(),
+      create: (_) => AuthProvider(), // loads token on init
+      child: const MyApp(),
     ),
   );
 }
 
-class EffApp extends StatelessWidget {
-  const EffApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  static const String kApiBase = 'http://localhost:4000';
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'EFF',
+      title: 'Easy Fun Finder',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-        useMaterial3: true,
-      ),
-      initialRoute: '/',
-      routes: {
-        '/': (context) => const LandingPage(),
-        // ✅ Pass apiBase into ActsPage
-        '/acts': (context) => ActsPage(apiBase: kApiBase),
+      home: const LandingPage(), // ✅ Start here
+      onGenerateRoute: (settings) {
+        switch (settings.name) {
+          case '/acts':
+            return MaterialPageRoute(
+              builder: (_) => ActsPage(apiBase: kApiBase),
+              settings: settings,
+            );
 
-        // ✅ New: preferred route
-        '/acts/new': (context) {
-          final args =
-              ModalRoute.of(context)?.settings.arguments as ActFormArgs?;
-          return ActFormPage(args: args);
-        },
+          case '/actForm':
+          case '/acts/new':
+            {
+              String? actId;
+              String? jwt;
+              String? prefillName;
+              String? prefillHomeTown;
 
-        // ✅ Back-compat: old route still works
-        '/act/create': (context) {
-          final args =
-              ModalRoute.of(context)?.settings.arguments as ActFormArgs?;
-          return ActFormPage(args: args);
-        },
+              final args = settings.arguments;
+              if (args is Map<String, dynamic>) {
+                actId = args['actId'] as String?;
+                jwt = args['jwt'] as String?;
+                prefillName = args['prefillName'] as String?;
+                prefillHomeTown = args['prefillHomeTown'] as String?;
+              }
+
+              return MaterialPageRoute(
+                builder: (_) => ActFormPage(
+                  actId: actId,
+                  jwt: jwt,
+                  prefillName: prefillName, // ✅ pass through
+                  prefillHomeTown: prefillHomeTown, // ✅ pass through
+                ),
+                settings: settings,
+              );
+            }
+
+          default:
+            return MaterialPageRoute(
+              builder: (_) => Scaffold(
+                appBar: AppBar(title: const Text('Not found')),
+                body: Center(
+                  child: Text('No route defined for ${settings.name}'),
+                ),
+              ),
+              settings: settings,
+            );
+        }
       },
     );
   }

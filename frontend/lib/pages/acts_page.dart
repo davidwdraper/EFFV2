@@ -10,8 +10,6 @@ import '../widgets/scaffold_wrapper.dart';
 import '../widgets/rounded_card.dart';
 import '../models/town_option.dart';
 import '../widgets/town_picker.dart';
-// Only need the args type; navigation uses a named route
-import '../pages/act_form_page.dart' show ActFormArgs;
 import '../pages/login_page.dart'; // ✅ for auth gate on Add/Edit
 
 class ActOption {
@@ -110,12 +108,14 @@ class _ActsPageState extends State<ActsPage> {
     final town = _selectedTown;
     if (name.isEmpty || town == null) return;
 
+    // ⬇️ Map-based arguments (no ActFormArgs)
     final created = await Navigator.of(context).pushNamed(
-      '/acts/new',
-      arguments: ActFormArgs(
-        prefillName: name,
-        prefillHomeTown: town.label,
-      ),
+      '/acts/new', // keep your existing route
+      arguments: {
+        'prefillName': name,
+        'prefillHomeTown': town.label,
+        'jwt': auth.jwt, // optional; ActFormPage can read it if needed
+      },
     );
 
     if (created == true && mounted) {
@@ -132,13 +132,15 @@ class _ActsPageState extends State<ActsPage> {
     final auth = context.read<AuthProvider>();
     if (!auth.isAuthenticated) return;
 
+    // ⬇️ Map-based arguments (no ActFormArgs)
     final updated = await Navigator.of(context).pushNamed(
-      '/acts/new', // same route, edit via args
-      arguments: ActFormArgs(
-        actId: act.id,
-        prefillName: act.name,
-        prefillHomeTown: act.homeTown,
-      ),
+      '/acts/new', // same route; ActFormPage can treat presence of actId as "edit"
+      arguments: {
+        'actId': act.id,
+        'prefillName': act.name,
+        'prefillHomeTown': act.homeTown,
+        'jwt': auth.jwt, // optional
+      },
     );
 
     if (updated == true && mounted) {

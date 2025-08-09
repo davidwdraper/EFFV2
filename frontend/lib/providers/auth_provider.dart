@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+
 import '../utils/auth_storage.dart';
 
 class AuthProvider extends ChangeNotifier {
@@ -9,13 +10,13 @@ class AuthProvider extends ChangeNotifier {
   String? _userDisplayName;
   Map<String, dynamic>? _user;
 
-  // ✅ Public getters
+  // ---- Public getters ----
   String? get token => _token;
-  String? get jwtToken => _token; // <-- added for pages expecting `jwtToken`
+  String? get jwt => _token; // alias, for pages expecting `jwt`
   String? get userId => _userId;
   String? get userDisplayName => _userDisplayName;
   Map<String, dynamic>? get user => _user;
-  bool get isAuthenticated => _token != null;
+  bool get isAuthenticated => _token != null && _token!.isNotEmpty;
 
   AuthProvider() {
     _init();
@@ -23,7 +24,7 @@ class AuthProvider extends ChangeNotifier {
 
   Future<void> _init() async {
     final storedToken = await AuthStorage.getToken();
-    if (storedToken != null) {
+    if (storedToken != null && storedToken.isNotEmpty) {
       _token = storedToken;
       _decodeAndSetUserFromToken(storedToken);
       notifyListeners();
@@ -32,7 +33,7 @@ class AuthProvider extends ChangeNotifier {
 
   Future<void> checkToken() async {
     final storedToken = await AuthStorage.getToken();
-    if (storedToken != null) {
+    if (storedToken != null && storedToken.isNotEmpty) {
       _token = storedToken;
       _decodeAndSetUserFromToken(storedToken);
       notifyListeners();
@@ -41,39 +42,51 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  // ---- Auth API calls ----
+  // Tip: consider moving the base URL to a config file/env
+  static const String _apiBase = 'http://localhost:4000';
+
   Future<void> loginWithCredentials(String email, String password) async {
-    final response = await http.post(
-      Uri.parse('http://localhost:4000/auth/login'),
+    final resp = await http.post(
+      Uri.parse('$_apiBase/auth/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'eMailAddr': email, 'password': password}),
     );
 
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      _token = data['token'];
-      await AuthStorage.saveToken(_token!);
-      _decodeAndSetUserFromToken(_token!);
+    if (resp.statusCode == 200) {
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final token = (data['token'] ?? '') as String;
+      if (token.isEmpty) throw Exception('No token returned from login');
+
+      _token = token;
+      await AuthStorage.saveToken(token);
+      _decodeAndSetUserFromToken(token);
       notifyListeners();
     } else {
-      throw Exception(jsonDecode(response.body)['message'] ?? 'Login failed');
+      final body = _safeJson(resp.body);
+      throw Exception(body['message'] ?? 'Login failed (${resp.statusCode})');
     }
   }
 
   Future<void> signupWithCredentials(Map<String, String> userDetails) async {
-    final response = await http.post(
-      Uri.parse('http://localhost:4000/auth/signup'),
+    final resp = await http.post(
+      Uri.parse('$_apiBase/auth/signup'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(userDetails),
     );
 
-    if (response.statusCode == 201) {
-      final data = jsonDecode(response.body);
-      _token = data['token'];
-      await AuthStorage.saveToken(_token!);
-      _decodeAndSetUserFromToken(_token!);
+    if (resp.statusCode == 201) {
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final token = (data['token'] ?? '') as String;
+      if (token.isEmpty) throw Exception('No token returned from signup');
+
+      _token = token;
+      await AuthStorage.saveToken(token);
+      _decodeAndSetUserFromToken(token);
       notifyListeners();
     } else {
-      throw Exception(jsonDecode(response.body)['message'] ?? 'Signup failed');
+      final body = _safeJson(resp.body);
+      throw Exception(body['message'] ?? 'Signup failed (${resp.statusCode})');
     }
   }
 
@@ -86,6 +99,7 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---- Helpers ----
   void _decodeAndSetUserFromToken(String token) {
     try {
       final parts = token.split('.');
@@ -93,18 +107,28 @@ class AuthProvider extends ChangeNotifier {
 
       final payload =
           utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
-      final data = jsonDecode(payload);
+      final data = jsonDecode(payload) as Map<String, dynamic>;
 
       _user = data;
-      _userId = data['_id'];
-      final firstname = data['firstname'] ?? '';
-      final middlename = data['middlename'] ?? '';
-      final lastname = data['lastname'] ?? '';
-      _userDisplayName = "$firstname $middlename $lastname"
+      _userId = (data['_id'] ?? data['id'])?.toString();
+
+      final firstname = (data['firstname'] ?? '').toString();
+      final middlename = (data['middlename'] ?? '').toString();
+      final lastname = (data['lastname'] ?? '').toString();
+      _userDisplayName = ('$firstname $middlename $lastname')
           .replaceAll(RegExp(r'\s+'), ' ')
           .trim();
     } catch (e) {
-      debugPrint("Token decode error: $e");
+      debugPrint('Token decode error: $e');
+    }
+  }
+
+  Map<String, dynamic> _safeJson(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    } catch (_) {
+      return <String, dynamic>{};
     }
   }
 }

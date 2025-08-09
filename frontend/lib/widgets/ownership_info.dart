@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 class OwnershipInfo extends StatelessWidget {
   final String? creatorName;
   final String? ownerName;
-  final bool showClaimButton;
+  final String? createdById;
+  final String? ownerId;
+  final String? jwtUserId;
   final VoidCallback? onClaim;
 
   /// Width reserved for the "Claim" button to keep text perfectly aligned
@@ -14,22 +16,25 @@ class OwnershipInfo extends StatelessWidget {
     super.key,
     required this.creatorName,
     required this.ownerName,
-    this.showClaimButton = false,
+    this.createdById,
+    this.ownerId,
+    this.jwtUserId,
     this.onClaim,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-
-    final labelStyle = theme.textTheme.labelSmall?.copyWith(
-      color: theme.colorScheme.onSurface.withOpacity(0.7),
-      fontWeight: FontWeight.w500,
-    );
-
     final valueStyle = theme.textTheme.bodySmall?.copyWith(
       fontWeight: FontWeight.w600,
     );
+
+    // Claim button logic:
+    final bool showClaim = (createdById != null &&
+        ownerId != null &&
+        jwtUserId != null &&
+        createdById == ownerId &&
+        jwtUserId != ownerId);
 
     // Real claim button
     final claimBtn = TextButton(
@@ -43,26 +48,20 @@ class OwnershipInfo extends StatelessWidget {
       child: const Text('Claim'),
     );
 
-    // Placeholder to keep alignment when no claim button
-    const claimSpacer = SizedBox(width: _claimSlotWidth);
-
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 260),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Creator
-          Text('Creator Name', style: labelStyle, textAlign: TextAlign.right),
-          // row reserves the same slot width as claim to align with owner row
+          // ---------- Creator Row ----------
           Row(
             mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              claimSpacer,
+              const SizedBox(width: _claimSlotWidth), // align with owner row
               Flexible(
                 child: Text(
-                  (creatorName?.trim().isNotEmpty == true) ? creatorName! : '—',
+                  'Creator: ${_display(creatorName)}',
                   style: valueStyle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -71,22 +70,23 @@ class OwnershipInfo extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 6),
 
-          // Owner
-          Text('Owner Name', style: labelStyle, textAlign: TextAlign.right),
+          const SizedBox(height: 4),
+
+          // ---------- Owner Row ----------
           Row(
             mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.end,
             children: [
               // Button slot on the LEFT of the owner's name
               SizedBox(
                 width: _claimSlotWidth,
-                child: showClaimButton ? claimBtn : const SizedBox.shrink(),
+                child: (showClaim && onClaim != null)
+                    ? claimBtn
+                    : const SizedBox.shrink(),
               ),
               Flexible(
                 child: Text(
-                  (ownerName?.trim().isNotEmpty == true) ? ownerName! : '—',
+                  'Owner: ${_display(ownerName)}',
                   style: valueStyle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -98,5 +98,10 @@ class OwnershipInfo extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  String _display(String? v) {
+    final s = v?.trim() ?? '';
+    return s.isEmpty ? '—' : s;
   }
 }

@@ -5,12 +5,13 @@ import 'package:http/http.dart' as http;
 import '../widgets/scaffold_wrapper.dart';
 import '../widgets/rounded_card.dart';
 import '../widgets/act_images_lazy.dart';
+import '../widgets/ownership_info.dart'; // ✅ reuse the shared widget
 
 class ActFormPage extends StatefulWidget {
   final String? actId; // nullable: new Acts won’t have one yet
   final String? jwt;
 
-  // ✅ NEW: prefill values coming from navigation (create flow or quick edit)
+  // ✅ Prefill values (create flow or quick edit)
   final String? prefillName;
   final String? prefillHomeTown;
 
@@ -18,8 +19,8 @@ class ActFormPage extends StatefulWidget {
     super.key,
     this.actId,
     this.jwt,
-    this.prefillName, // ✅
-    this.prefillHomeTown, // ✅
+    this.prefillName,
+    this.prefillHomeTown,
   });
 
   @override
@@ -56,10 +57,12 @@ class _ActFormPageState extends State<ActFormPage> {
     _homeTownLabel = widget.prefillHomeTown;
 
     // Edit flow: fetch from server and overwrite with source of truth
-    if (widget.actId != null && widget.actId!.isNotEmpty) {
+    if (_hasActId) {
       _loadAct();
     }
   }
+
+  bool get _hasActId => widget.actId != null && widget.actId!.isNotEmpty;
 
   @override
   void dispose() {
@@ -69,7 +72,7 @@ class _ActFormPageState extends State<ActFormPage> {
     super.dispose();
   }
 
-  // ------ helpers to safely read fields with varying names ------
+  // ------ tiny utils ------
   String _firstNonEmpty(List<dynamic> values) {
     for (final v in values) {
       final s = (v ?? '').toString().trim();
@@ -81,42 +84,99 @@ class _ActFormPageState extends State<ActFormPage> {
   String _joinNames(String a, String b) =>
       _firstNonEmpty(['$a $b'.trim(), a, b]);
 
-  void _mapActData(Map<String, dynamic> data) {
-    // Creator → prefer a flat display name, else build from nested fields
-    final creatorDisplay =
+  String? _getName(dynamic v) {
+    if (v == null) return null;
+    if (v is String && v.trim().isNotEmpty) return v.trim();
+    if (v is Map) {
+      final first =
+          _firstNonEmpty([v['firstname'], v['firstName'], v['first']]);
+      final last = _firstNonEmpty([v['lastname'], v['lastName'], v['last']]);
+      final full = _firstNonEmpty([v['name'], _joinNames(first, last)]);
+      return full.isEmpty ? null : full;
+    }
+    return null;
+  }
+
+  String? _getTownLabel(dynamic v) {
+    if (v == null) return null;
+    if (v is String && v.trim().isNotEmpty) return v.trim();
+    if (v is Map) {
+      final fromMap = _firstNonEmpty([
+        v['label'],
+        v['name'],
+        v['display'],
+        _joinNames(_firstNonEmpty([v['city']]), _firstNonEmpty([v['state']])),
+      ]);
+      return fromMap.isEmpty ? null : fromMap;
+    }
+    return null;
+  }
+
+  /// Unwrap common envelopes from orchestrator/service responses.
+  Map<String, dynamic> _unwrapActEnvelope(Map<String, dynamic> map) {
+    Map<String, dynamic> cur = map;
+    for (int i = 0; i < 3; i++) {
+      if (cur.length == 1) {
+        final k = cur.keys.first;
+        final v = cur[k];
+        if (v is Map) {
+          if (k == 'act' || k == 'data' || k == 'result' || k == 'item') {
+            cur = Map<String, dynamic>.from(v);
+            continue;
+          }
+        }
+      }
+      break;
+    }
+    if (cur.containsKey('act') && cur['act'] is Map) {
+      return Map<String, dynamic>.from(cur['act'] as Map);
+    }
+    return cur;
+  }
+
+  void _normalizeAndMapAct(Map<String, dynamic> data) {
+    // ---- Creator ----
+    final creator =
         _firstNonEmpty([data['createdByName'], data['creatorName']]);
-    final creatorFirst =
-        _firstNonEmpty([data['creator']?['firstname'], data['creatorFirst']]);
-    final creatorLast =
-        _firstNonEmpty([data['creator']?['lastname'], data['creatorLast']]);
-    _creatorName =
-        _firstNonEmpty([creatorDisplay, _joinNames(creatorFirst, creatorLast)]);
-
-    // Owner → same idea
-    final ownerDisplay = _firstNonEmpty([data['ownerName']]);
-    final ownerFirst =
-        _firstNonEmpty([data['owner']?['firstname'], data['ownerFirst']]);
-    final ownerLast =
-        _firstNonEmpty([data['owner']?['lastname'], data['ownerLast']]);
-    _ownerName =
-        _firstNonEmpty([ownerDisplay, _joinNames(ownerFirst, ownerLast)]);
-
-    // Home Town label only (no input)
-    _homeTownLabel = _firstNonEmpty([
-      data['homeTownLabel'],
-      data['homeTown'], // many APIs use this
-      data['home_town'],
-      data['homeTownName'],
-      data['homeTownText'],
-      data['homeTownDisplay'],
-      // last-resort: combine nested
+    _creatorName = _firstNonEmpty([
+      creator,
+      _getName(data['createdBy']),
+      _getName(data['creator']),
       _joinNames(
-        _firstNonEmpty([data['home']?['city'], data['city']]),
-        _firstNonEmpty([data['home']?['state'], data['state']]),
+        _firstNonEmpty([data['creatorFirst']]),
+        _firstNonEmpty([data['creatorLast']]),
       ),
     ]);
 
-    // Editable fields
+    // ---- Owner ----
+    final ownerDisp = _firstNonEmpty([data['ownerName']]);
+    _ownerName = _firstNonEmpty([
+      ownerDisp,
+      _getName(data['owner']),
+      _getName(data['userOwner']),
+      _getName(data['userOwnerIdObj']),
+      _joinNames(
+        _firstNonEmpty([data['ownerFirst']]),
+        _firstNonEmpty([data['ownerLast']]),
+      ),
+    ]);
+
+    // ---- Home Town (label-only) ----
+    _homeTownLabel = _firstNonEmpty([
+      data['homeTownLabel'],
+      data['homeTownName'],
+      data['homeTownText'],
+      data['homeTownDisplay'],
+      data['homeTown'],
+      data['home_town'],
+      _getTownLabel(data['homeTownObj']),
+      _getTownLabel(data['home']),
+      _getTownLabel(data['town']),
+      _getTownLabel({'city': data['city'], 'state': data['state']}),
+      widget.prefillHomeTown, // fallback to prefill
+    ]);
+
+    // ---- Editable fields ----
     final actName = _firstNonEmpty([data['name']]);
     if (actName.isNotEmpty) _nameCtrl.text = actName;
 
@@ -144,13 +204,27 @@ class _ActFormPageState extends State<ActFormPage> {
         throw Exception('Failed to load act (${res.statusCode})');
       }
 
-      final data = jsonDecode(res.body);
-      if (data is Map<String, dynamic>) {
-        _mapActData(data);
-      } else if (data is Map) {
-        _mapActData(Map<String, dynamic>.from(data));
+      final decoded = jsonDecode(res.body);
+      if (decoded is! Map) {
+        throw Exception('Unexpected response shape (not a Map)');
       }
-      setState(() {});
+
+      Map<String, dynamic> root =
+          Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>);
+
+      try {
+        debugPrint('Act payload keys: ${root.keys.toList()}');
+      } catch (_) {}
+
+      final actMap = _unwrapActEnvelope(root);
+
+      try {
+        debugPrint('Act (unwrapped) keys: ${actMap.keys.toList()}');
+      } catch (_) {}
+
+      _normalizeAndMapAct(actMap);
+
+      if (mounted) setState(() {});
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -164,42 +238,12 @@ class _ActFormPageState extends State<ActFormPage> {
 
   Future<void> _onDeletePressed() async {
     final ids = _selectedIds.value.toList();
-    if (ids.isEmpty || widget.actId == null) return;
+    if (ids.isEmpty || !_hasActId) return;
     // TODO: call backend to remove {ids} from this act's imageIds → refresh viewer
-  }
-
-  Widget _kv(String label, String? value) {
-    if (value == null || value.trim().isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 130,
-            child: Text(
-              label,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: Colors.black54),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final hasActId = widget.actId != null && widget.actId!.isNotEmpty;
-
     return ScaffoldWrapper(
       title: null,
       contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
@@ -222,14 +266,48 @@ class _ActFormPageState extends State<ActFormPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ✅ No Act ID shown
+                    // =================== Top Row ===================
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // Left: static "Home Town" label + value
+                        Expanded(
+                          child: Row(
+                            children: [
+                              Text(
+                                'Home Town',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(color: Colors.black54),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _homeTownLabel?.trim().isNotEmpty == true
+                                      ? _homeTownLabel!
+                                      : '—',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodyMedium,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
 
-                    // ---- Read-only labels ----
-                    _kv('Creator Name', _creatorName),
-                    _kv('Owner Name', _ownerName),
-                    _kv('Home Town', _homeTownLabel),
-
-                    const SizedBox(height: 6),
+                        // Right: Creator / Owner via shared OwnershipInfo widget (right-aligned via wrapper)
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: OwnershipInfo(
+                            creatorName: _creatorName,
+                            ownerName: _ownerName,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    // ========================================================
 
                     // ---- Editable fields (prefilled; server may overwrite) ----
                     TextField(
@@ -276,11 +354,12 @@ class _ActFormPageState extends State<ActFormPage> {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    if (hasActId)
+                    if (_hasActId)
                       ActImagesLazy(
-                        actId: widget.actId!, // safe due to hasActId
+                        actId: widget.actId!, // safe due to _hasActId
                         jwt: widget.jwt,
                         pageSize: 12,
+                        showControls: true, // edit context → allow selection
                         onSelectionChanged: (ids) =>
                             _selectedIds.value = Set<String>.from(ids),
                       )
@@ -329,7 +408,7 @@ class _ActFormPageState extends State<ActFormPage> {
                 child: Row(
                   children: [
                     FilledButton.icon(
-                      onPressed: hasActId ? _onAddPressed : null,
+                      onPressed: _hasActId ? _onAddPressed : null,
                       icon: const Icon(Icons.add),
                       label: const Text('Add'),
                     ),
@@ -337,7 +416,7 @@ class _ActFormPageState extends State<ActFormPage> {
                     ValueListenableBuilder<Set<String>>(
                       valueListenable: _selectedIds,
                       builder: (_, set, __) => FilledButton.icon(
-                        onPressed: (!hasActId || set.isEmpty)
+                        onPressed: (!_hasActId || set.isEmpty)
                             ? null
                             : _onDeletePressed,
                         icon: const Icon(Icons.delete_outline),

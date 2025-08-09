@@ -11,12 +11,16 @@ class ActImagesLazy extends StatefulWidget {
   /// Notifies parent whenever selection changes (IDs of selected images)
   final ValueChanged<Set<String>>? onSelectionChanged;
 
+  /// When true, checkboxes / selection are enabled; when false, read-only.
+  final bool showControls;
+
   const ActImagesLazy({
     super.key,
     required this.actId,
     this.jwt,
     this.pageSize = 12,
     this.onSelectionChanged,
+    this.showControls = false, // default keeps other screens unchanged
   });
 
   @override
@@ -52,8 +56,21 @@ class _ActImagesLazyState extends State<ActImagesLazy> {
         limit: widget.pageSize,
         jwt: widget.jwt,
       );
+
+      // Keep FIRST item as-is (primary). Sort the tail by createdAt desc.
+      final newItems = List<ImageDto>.from(page.items);
+      if (newItems.length > 1) {
+        final head = newItems.first;
+        final tail = newItems.sublist(1);
+        tail.sort((a, b) => _dateOf(b).compareTo(_dateOf(a))); // desc
+        newItems
+          ..clear()
+          ..add(head)
+          ..addAll(tail);
+      }
+
       setState(() {
-        _items.addAll(page.items);
+        _items.addAll(newItems);
         _skip += page.items.length;
         _hasMore = page.hasMore;
         _total = page.total;
@@ -65,7 +82,13 @@ class _ActImagesLazyState extends State<ActImagesLazy> {
     }
   }
 
+  /// Simple because ImageDto.createdAt is already DateTime
+  DateTime _dateOf(ImageDto img) {
+    return img.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
   void _toggleSelection(String id, bool? value) {
+    if (!widget.showControls) return; // ignore taps in read-only mode
     setState(() {
       if (value == true) {
         _selected.add(id);
@@ -109,11 +132,13 @@ class _ActImagesLazyState extends State<ActImagesLazy> {
             style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 12),
 
-        // Primary
+        // Primary (always first)
         ActImageItem(
           img: primary,
-          selected: _selected.contains(primary.id),
-          onChanged: (v) => _toggleSelection(primary.id, v),
+          selected: widget.showControls && _selected.contains(primary.id),
+          onChanged: widget.showControls
+              ? (v) => _toggleSelection(primary.id, v)
+              : null,
         ),
         const SizedBox(height: 12),
 
@@ -121,8 +146,9 @@ class _ActImagesLazyState extends State<ActImagesLazy> {
         for (final img in tail) ...[
           ActImageItem(
             img: img,
-            selected: _selected.contains(img.id),
-            onChanged: (v) => _toggleSelection(img.id, v),
+            selected: widget.showControls && _selected.contains(img.id),
+            onChanged:
+                widget.showControls ? (v) => _toggleSelection(img.id, v) : null,
           ),
           const SizedBox(height: 12),
         ],
@@ -137,7 +163,8 @@ class _ActImagesLazyState extends State<ActImagesLazy> {
                   ? const SizedBox(
                       height: 18,
                       width: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2))
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                   : const Text('Load more'),
             ),
           ),

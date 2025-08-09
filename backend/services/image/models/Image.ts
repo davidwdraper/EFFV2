@@ -1,22 +1,20 @@
-import mongoose from 'mongoose';
+// services/images/src/models/Image.ts
+import mongoose from "mongoose";
 
-const ImageSchema = new mongoose.Schema({
-  image: {
-    type: Buffer,
-    required: true,
+const ImageSchema = new mongoose.Schema(
+  {
+    image: { type: Buffer, required: true },
+    contentType: { type: String }, // optional but useful
+    originalFilename: { type: String }, // optional
+    creationDate: { type: Date, default: Date.now },
+    notes: { type: String },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
   },
-  creationDate: {
-    type: Date,
-    default: Date.now,
-  },
-  notes: {
-    type: String,
-  },
-  createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    ref: 'User',
-  },
-});
+  { timestamps: false }
+);
 
-export const ImageModel = mongoose.model('Image', ImageSchema);
+export const ImageModel = mongoose.model("Image", ImageSchema);

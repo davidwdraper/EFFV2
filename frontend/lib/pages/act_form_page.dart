@@ -1,7 +1,7 @@
 // lib/pages/act_form_page.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // ✅ for Shortcuts/Intents
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http;
 
@@ -10,6 +10,7 @@ import '../widgets/logo_menu_bar.dart';
 import '../widgets/page_wrapper.dart';
 import '../widgets/rounded_card.dart';
 import '../widgets/page_buttons_row.dart';
+import '../widgets/ownership_info.dart'; // ✅ NEW
 
 class ActFormArgs {
   final String? actId; // signals edit mode
@@ -33,22 +34,27 @@ class _ActFormPageState extends State<ActFormPage> {
   final _emailCtrl = TextEditingController();
   final _homeTownCtrl = TextEditingController();
 
-  // If hometown was provided from search or loaded, we treat it as read-only
+  // Hometown as read-only when provided/loaded
   String? _prefilledHomeTown;
 
-  TownSuggestion? _selectedTown; // used only when user can edit hometown
+  TownSuggestion? _selectedTown;
   bool _submitting = false;
 
   // Edit mode
   bool _isUpdate = false;
   String? _actId;
 
+  // Ownership display
+  String? _creatorName;
+  String? _ownerName;
+  String? _ownerId;
+
   // Match main.dart
   String get _apiBase => const String.fromEnvironment(
         'EFF_API_BASE',
         defaultValue: 'http://localhost:4000',
       );
-  static const String _townsSuggestPath = '/towns/search'; // ?q=&limit=10
+  static const String _townsSuggestPath = '/towns/search';
 
   @override
   void initState() {
@@ -59,9 +65,15 @@ class _ActFormPageState extends State<ActFormPage> {
     final prefillName = (a?.prefillName ?? '').trim();
     if (prefillName.isNotEmpty) _nameCtrl.text = prefillName;
 
-    // If passed a hometown from Acts search, lock it as a label
+    // Prefilled hometown (from search) shows as label
     final prefillTown = (a?.prefillHomeTown ?? '').trim();
     if (prefillTown.isNotEmpty) _prefilledHomeTown = prefillTown;
+
+    // Default ownership for create
+    final auth = context.read<AuthProvider>();
+    _creatorName = auth.userDisplayName;
+    _ownerName = auth.userDisplayName;
+    _ownerId = auth.userId;
 
     // Edit mode if actId present — load existing record
     if ((a?.actId ?? '').isNotEmpty) {
@@ -88,7 +100,7 @@ class _ActFormPageState extends State<ActFormPage> {
         uri,
         headers: {
           'Content-Type': 'application/json',
-          if (auth.jwtToken != null) 'Authorization': 'Bearer ${auth.jwtToken}',
+          if (auth.token != null) 'Authorization': 'Bearer ${auth.token}',
         },
       );
       if (resp.statusCode != 200) return;
@@ -99,6 +111,13 @@ class _ActFormPageState extends State<ActFormPage> {
       _emailCtrl.text = (act['eMailAddr'] ?? '').toString();
       final ht = (act['homeTown'] ?? '').toString();
       if (ht.isNotEmpty) _prefilledHomeTown = ht;
+
+      // Pull creator/owner names & ids (supports both naming variants)
+      _creatorName =
+          (act['createdByName'] ?? act['userCreateName'] ?? '').toString();
+      _ownerName =
+          (act['ownedByName'] ?? act['userOwnerName'] ?? '').toString();
+      _ownerId = (act['userOwnerId'] ?? '').toString();
 
       if (mounted) setState(() {});
     } catch (_) {
@@ -117,7 +136,7 @@ class _ActFormPageState extends State<ActFormPage> {
         uri,
         headers: {
           'Content-Type': 'application/json',
-          if (auth.jwtToken != null) 'Authorization': 'Bearer ${auth.jwtToken}',
+          if (auth.token != null) 'Authorization': 'Bearer ${auth.token}',
         },
       );
       if (resp.statusCode != 200) return const [];
@@ -137,14 +156,13 @@ class _ActFormPageState extends State<ActFormPage> {
     setState(() => _submitting = true);
     final auth = context.read<AuthProvider>();
 
-    final uid = auth.user?['_id'] ?? auth.user?['userId'];
+    final uid = auth.userId ?? auth.user?['_id'] ?? auth.user?['userId'];
 
     // Build payload
     final body = <String, dynamic>{
       'name': _nameCtrl.text.trim(),
       if (_emailCtrl.text.trim().isNotEmpty)
         'eMailAddr': _emailCtrl.text.trim(),
-      // Hometown: if prefilled, we send that label; else use townId or typed City, ST
       if (_prefilledHomeTown != null && _prefilledHomeTown!.isNotEmpty)
         'homeTown': _prefilledHomeTown
       else if (_selectedTown != null)
@@ -152,7 +170,7 @@ class _ActFormPageState extends State<ActFormPage> {
       else
         'homeTown': _homeTownCtrl.text.trim(),
       if (uid != null) 'userOwnerId': uid,
-      if (!_isUpdate && uid != null) 'userCreateId': uid, // only on create
+      if (!_isUpdate && uid != null) 'userCreateId': uid,
     };
 
     final uri = _isUpdate
@@ -165,8 +183,7 @@ class _ActFormPageState extends State<ActFormPage> {
               uri,
               headers: {
                 'Content-Type': 'application/json',
-                if (auth.jwtToken != null)
-                  'Authorization': 'Bearer ${auth.jwtToken}',
+                if (auth.token != null) 'Authorization': 'Bearer ${auth.token}',
               },
               body: jsonEncode(body),
             )
@@ -174,8 +191,7 @@ class _ActFormPageState extends State<ActFormPage> {
               uri,
               headers: {
                 'Content-Type': 'application/json',
-                if (auth.jwtToken != null)
-                  'Authorization': 'Bearer ${auth.jwtToken}',
+                if (auth.token != null) 'Authorization': 'Bearer ${auth.token}',
               },
               body: jsonEncode(body),
             ));
@@ -187,7 +203,7 @@ class _ActFormPageState extends State<ActFormPage> {
           SnackBar(
               content: Text(_isUpdate ? 'Act updated ✅' : 'Act created ✅')),
         );
-        Navigator.of(context).pop(true); // success
+        Navigator.of(context).pop(true);
       } else {
         final msg = _safeErr(resp.body);
         if (!mounted) return;
@@ -215,6 +231,13 @@ class _ActFormPageState extends State<ActFormPage> {
     }
   }
 
+  void _onClaim() {
+    // Placeholder for future wiring
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Claim requested (to be implemented)')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return PageWrapper(
@@ -240,11 +263,11 @@ class _ActFormPageState extends State<ActFormPage> {
 
   Widget _buildForm(BuildContext context) {
     final theme = Theme.of(context);
+    final currentUid = context.watch<AuthProvider>().userId;
 
     return Form(
       key: _formKey,
       child: Shortcuts(
-        // ✅ Make primary button the default (Enter/NumpadEnter)
         shortcuts: <LogicalKeySet, Intent>{
           LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
           LogicalKeySet(LogicalKeyboardKey.numpadEnter): const ActivateIntent(),
@@ -265,24 +288,46 @@ class _ActFormPageState extends State<ActFormPage> {
                   style: theme.textTheme.titleLarge),
               const SizedBox(height: 12),
 
-              // ----- Read-only Hometown label (when provided) -----
+              // ----- Hometown row + Ownership info (right) -----
               if (_prefilledHomeTown != null &&
                   _prefilledHomeTown!.isNotEmpty) ...[
-                Text(
-                  'Hometown',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurface.withOpacity(0.7),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  _prefilledHomeTown!,
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Left: hometown label/value
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Hometown',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.onSurface
+                                    .withOpacity(0.7),
+                                fontWeight: FontWeight.w500,
+                              )),
+                          const SizedBox(height: 2),
+                          Text(
+                            _prefilledHomeTown!,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    // Right: ownership info
+                    OwnershipInfo(
+                      creatorName: _creatorName,
+                      ownerName: _ownerName,
+                      showClaimButton: (_ownerId != null &&
+                          currentUid != null &&
+                          _ownerId != currentUid),
+                      onClaim: _onClaim,
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 16),
               ],
@@ -299,7 +344,6 @@ class _ActFormPageState extends State<ActFormPage> {
                 validator: (v) => (v == null || v.trim().isEmpty)
                     ? 'Act name is required'
                     : null,
-                // Keep password managers away from this field
                 autofillHints: const <String>[],
                 enableSuggestions: true,
                 autocorrect: true,
@@ -334,7 +378,7 @@ class _ActFormPageState extends State<ActFormPage> {
 
               const SizedBox(height: 8),
 
-              // ----- Buttons (right-justified; dominant on the far right) -----
+              // ----- Buttons (right-justified; dominant far right) -----
               PageButtonsRow(
                 secondaryActions: [
                   TextButton(
@@ -454,7 +498,6 @@ class _HometownAutocompleteState extends State<_HometownAutocomplete> {
                   ? 'Hometown is required'
                   : null,
               onChanged: (_) => widget.onTextChanged(),
-              // Keep password managers away from this field
               autofillHints: const <String>[],
               enableSuggestions: true,
               autocorrect: true,

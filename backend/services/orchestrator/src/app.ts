@@ -14,6 +14,9 @@ import imageRoutes from "./routes/imageRoutes";
 import logRoutes from "./routes/logRoutes";
 import townRoutes from "./routes/townRoutes"; // ✅ NEW
 
+// ✅ NEW: entity images (GET /acts/:id/images)
+import actImageRoutes from "./routes/actRoutes.images";
+
 dotenv.config();
 const app = express();
 
@@ -44,17 +47,24 @@ app.use(
     publicGetRegexes: [
       /\/acts\/search$/, // e.g. /acts/search
       /\/towns\/typeahead$/, // e.g. /towns/typeahead
+      /\/acts\/[^/]+\/images$/, // ✅ allow viewing entity images
+      /\/images\/[^/]+\/data$/, // ✅ raw image bytes
+      /\/images\/[^/]+$/, // ✅ image metadata DTO
     ],
     publicPostPaths: ["/auth/login", "/auth/signup"],
-    // you could also do:
-    // publicPostRegexes: [/^\/auth\/(login|signup)$/]
+    // If you want the client to batch image DTOs directly, also open this:
+    // publicPostRegexes: [/^\/images\/lookup$/],
   })
 );
 
 // Routes
 app.use("/auth", authRoutes);
 app.use("/users", userRoutes);
+
+// Mount /acts routes first, then the images sub-route (paths don't overlap)
 app.use("/acts", actRoutes);
+app.use("/acts", actImageRoutes); // ✅ exposes GET /acts/:id/images
+
 app.use("/events", eventRoutes);
 app.use("/places", placeRoutes);
 app.use("/logs", logRoutes);

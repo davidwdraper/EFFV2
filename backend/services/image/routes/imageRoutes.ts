@@ -1,35 +1,79 @@
-import express, { Request, Response, NextFunction } from 'express';
-import multer from 'multer';
-import { uploadImage, deleteImage } from '../controllers/imageController';
+import { Router, Request, Response } from "express";
+import mongoose from "mongoose";
+import { ImageModel } from "../models/Image";
 
-const router = express.Router();
+const router = Router();
 
-// Multer instance with 10MB limit
-const upload = multer({
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10 MB
-  },
+/**
+ * GET /images/:id/data
+ * Streams raw binary buffer.
+ */
+router.get("/:id/data", async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id))
+    return res.status(400).json({ error: "Invalid id" });
+
+  const img = await ImageModel.findById(id).lean();
+  if (!img || !img.image) return res.status(404).json({ error: "Not found" });
+
+  // You can try to detect mime if you stored it; default to octet-stream.
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  return res.send(img.image);
 });
 
-// Handle multer errors with a middleware wrapper
-const safeUpload = (req: Request, res: Response, next: NextFunction) => {
-  upload.single('image')(req, res, function (err) {
-    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'Image must be under 10MB' });
-    } else if (err) {
-      return res.status(500).json({ error: 'Unexpected upload error' });
-    }
-    if (!req.file) {
-      return res.status(400).json({ error: 'Image file is required' });
-    }
-    next();
+/**
+ * GET /images/:id
+ * Raw metadata (no enrichment). Orchestrator will map to DTO.
+ */
+router.get("/:id", async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id))
+    return res.status(400).json({ error: "Invalid id" });
+
+  const img = await ImageModel.findById(id)
+    .select("_id creationDate notes createdBy")
+    .lean();
+  if (!img) return res.status(404).json({ error: "Not found" });
+  return res.json({
+    id: img._id.toString(),
+    creationDate: img.creationDate,
+    notes: img.notes ?? null,
+    createdBy: img.createdBy?.toString() ?? null,
   });
-};
+});
 
-// POST /images — upload
-router.post('/', safeUpload, uploadImage);
+/**
+ * POST /images/lookup
+ * Body: { ids: string[] }
+ * Returns raw metadata array (no enrichment). Preserves input order.
+ */
+router.post("/lookup", async (req: Request, res: Response) => {
+  const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  if (!ids.length) return res.json([]);
 
-// DELETE /images/:id
-router.delete('/:id', deleteImage);
+  const validIds = ids
+    .filter((x) => mongoose.isValidObjectId(x))
+    .map((x) => new mongoose.Types.ObjectId(x));
+  if (!validIds.length) return res.json([]);
+
+  const docs = await ImageModel.find({ _id: { $in: validIds } })
+    .select("_id creationDate notes createdBy")
+    .lean();
+
+  const map = new Map<string, any>();
+  docs.forEach((d) =>
+    map.set(d._id.toString(), {
+      id: d._id.toString(),
+      creationDate: d.creationDate,
+      notes: d.notes ?? null,
+      createdBy: d.createdBy?.toString() ?? null,
+    })
+  );
+
+  // Preserve requested order; omit missing silently
+  const ordered = ids.map((x) => map.get(x)).filter(Boolean);
+  return res.json(ordered);
+});
 
 export default router;

@@ -98,6 +98,10 @@ export async function enrichWithUserNames<T extends BaseEntity>(
   const out = copy ? { ...(entity as any) } : (entity as any);
   out.createdByName = createdByName;
   out.ownedByName = ownedByName;
+
+  logger.debug(
+    `enrichWithUserNames - createdByName: ${out.createdByName}, ownedByName: ${out.ownedByName}`
+  );
   return out;
 }
 

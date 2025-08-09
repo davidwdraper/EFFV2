@@ -39,6 +39,11 @@ class _ActFormPageState extends State<ActFormPage> {
   String? _ownerName;
   String? _homeTownLabel;
 
+  // IDs for claim logic
+  String? _createdById;
+  String? _ownerId;
+  String? _jwtUserId;
+
   // Editable fields
   final _nameCtrl = TextEditingController();
   final _contactEmailCtrl = TextEditingController();
@@ -55,6 +60,10 @@ class _ActFormPageState extends State<ActFormPage> {
     // ✅ Show prefill immediately (so create flow or slow networks still render)
     _nameCtrl.text = widget.prefillName ?? '';
     _homeTownLabel = widget.prefillHomeTown;
+
+    // Simple fallback: if your JWT is actually a user id, this enables claim logic.
+    // TODO: if it's a real JWT, decode here to extract sub/user id.
+    _jwtUserId = widget.jwt;
 
     // Edit flow: fetch from server and overwrite with source of truth
     if (_hasActId) {
@@ -148,8 +157,19 @@ class _ActFormPageState extends State<ActFormPage> {
       ),
     ]);
 
+    // IDs used for claim logic
+    _createdById = _firstNonEmpty([
+      data['createdById'],
+      data['createdBy'],
+      data['creatorId'],
+      data['creatorID'],
+    ]);
+
     // ---- Owner ----
-    final ownerDisp = _firstNonEmpty([data['ownerName']]);
+    final ownerDisp = _firstNonEmpty([
+      data['ownerName'],
+      data['ownedByName'], // <— include backend log key
+    ]);
     _ownerName = _firstNonEmpty([
       ownerDisp,
       _getName(data['owner']),
@@ -159,6 +179,13 @@ class _ActFormPageState extends State<ActFormPage> {
         _firstNonEmpty([data['ownerFirst']]),
         _firstNonEmpty([data['ownerLast']]),
       ),
+    ]);
+
+    _ownerId = _firstNonEmpty([
+      data['ownerId'],
+      data['ownedBy'],
+      data['userOwnerId'],
+      data['ownerID'],
     ]);
 
     // ---- Home Town (label-only) ----
@@ -183,6 +210,9 @@ class _ActFormPageState extends State<ActFormPage> {
     final email = _firstNonEmpty(
         [data['contactEmail'], data['eMailAddr'], data['email']]);
     _contactEmailCtrl.text = email;
+
+    // If you later decode JWT, set _jwtUserId there; keep fallback otherwise.
+    _jwtUserId ??= widget.jwt;
   }
 
   Future<void> _loadAct() async {
@@ -240,6 +270,11 @@ class _ActFormPageState extends State<ActFormPage> {
     final ids = _selectedIds.value.toList();
     if (ids.isEmpty || !_hasActId) return;
     // TODO: call backend to remove {ids} from this act's imageIds → refresh viewer
+  }
+
+  void _onClaimPressed() {
+    // TODO: implement claim handler (e.g., POST /acts/:id/claim)
+    debugPrint('Claim pressed for actId=${widget.actId} by userId=$_jwtUserId');
   }
 
   @override
@@ -302,6 +337,10 @@ class _ActFormPageState extends State<ActFormPage> {
                           child: OwnershipInfo(
                             creatorName: _creatorName,
                             ownerName: _ownerName,
+                            createdById: _createdById,
+                            ownerId: _ownerId,
+                            jwtUserId: _jwtUserId,
+                            onClaim: _onClaimPressed,
                           ),
                         ),
                       ],

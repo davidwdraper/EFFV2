@@ -62,7 +62,7 @@ class LogoMenuBar extends StatelessWidget {
         : 'Hello Anonymous User';
 
     final theme = Theme.of(context);
-    // ✅ Pin the style so inherited text themes (e.g., bright red) don’t leak in.
+    // Pin style so inherited text themes don’t hijack it.
     final nameStyle = theme.textTheme.labelLarge?.copyWith(
       color: theme.colorScheme.onSurface,
       fontWeight: FontWeight.w600,
@@ -77,7 +77,6 @@ class LogoMenuBar extends StatelessWidget {
             Image.asset('assets/logo.png', height: 64, fit: BoxFit.contain),
             Row(
               children: [
-                // Keep the username tidy and unbreakable
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                   child: ConstrainedBox(
@@ -134,7 +133,17 @@ class MenuOptions extends StatelessWidget {
             ),
           ),
         ),
-        const PopupMenuItem(value: 'acts', child: Text('Acts')),
+        // ✅ Renamed and gated by auth
+        PopupMenuItem(
+          value: 'acts',
+          enabled: isAuthenticated,
+          child: Text(
+            'Acts',
+            style: TextStyle(
+              color: isAuthenticated ? null : Colors.grey,
+            ),
+          ),
+        ),
         PopupMenuItem(
           value: 'profile',
           enabled: isAuthenticated,

@@ -12,6 +12,7 @@ import '../models/town_option.dart';
 import '../widgets/town_picker.dart';
 // Only need the args type; navigation uses a named route
 import '../pages/act_form_page.dart' show ActFormArgs;
+import '../pages/login_page.dart'; // ✅ for auth gate on Add/Edit
 
 class ActOption {
   final String id;
@@ -89,12 +90,26 @@ class _ActsPageState extends State<ActsPage> {
     }
   }
 
+  Future<void> _ensureLoggedIn() async {
+    final auth = context.read<AuthProvider>();
+    if (!auth.isAuthenticated) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginPage()),
+      );
+      await auth.checkToken();
+    }
+  }
+
   Future<void> _goToCreateAct() async {
+    await _ensureLoggedIn();
+    final auth = context.read<AuthProvider>();
+    if (!auth.isAuthenticated) return;
+
     final name = _actSearchController.text.trim();
     final town = _selectedTown;
     if (name.isEmpty || town == null) return;
 
-    // Use the named route wired in main.dart and pass the expected args
     final created = await Navigator.of(context).pushNamed(
       '/acts/new',
       arguments: ActFormArgs(
@@ -108,13 +123,36 @@ class _ActsPageState extends State<ActsPage> {
         const SnackBar(content: Text('Act created')),
       );
       _actSearchController.clear();
-      setState(() {}); // trigger refresh if you later add a list below
+      setState(() {});
+    }
+  }
+
+  Future<void> _editAct(ActOption act) async {
+    await _ensureLoggedIn();
+    final auth = context.read<AuthProvider>();
+    if (!auth.isAuthenticated) return;
+
+    final updated = await Navigator.of(context).pushNamed(
+      '/acts/new', // same route, edit via args
+      arguments: ActFormArgs(
+        actId: act.id,
+        prefillName: act.name,
+        prefillHomeTown: act.homeTown,
+      ),
+    );
+
+    if (updated == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Act updated')),
+      );
+      setState(() {});
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final auth = context.watch<AuthProvider>(); // ✅ check auth
+    // just to rebuild when auth state changes (e.g., after login return)
+    context.watch<AuthProvider>();
 
     return ScaffoldWrapper(
       title: null,
@@ -172,16 +210,11 @@ class _ActsPageState extends State<ActsPage> {
                         subtitle: Text(
                           '${suggestion.homeTown} • ${miles.toStringAsFixed(1)} mi',
                         ),
-                        onTap: () {
-                          debugPrint(
-                              'Selected Act: ${suggestion.name} (${suggestion.id})');
-                        },
+                        onTap: () => _editAct(suggestion), // 👈 edit flow
                       );
                     },
                     onSelected: (ActOption selection) {
-                      debugPrint(
-                          'User selected act: ${selection.name} (${selection.id})');
-                      // TODO: Navigate to Act detail if/when implemented
+                      _editAct(selection); // also handle keyboard selection
                     },
                     builder: (context, controller, focusNode) {
                       return TextField(
@@ -195,6 +228,7 @@ class _ActsPageState extends State<ActsPage> {
                         ),
                       );
                     },
+                    // Always show Add; auth handled on click
                     emptyBuilder: (context) => Padding(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 8),
@@ -203,12 +237,11 @@ class _ActsPageState extends State<ActsPage> {
                         children: [
                           const Text('No Acts Found!',
                               style: TextStyle(fontSize: 16)),
-                          if (auth.isAuthenticated) // ✅ Only show if logged in
-                            TextButton.icon(
-                              onPressed: _goToCreateAct,
-                              icon: const Icon(Icons.add),
-                              label: const Text('Add'),
-                            ),
+                          TextButton.icon(
+                            onPressed: _goToCreateAct,
+                            icon: const Icon(Icons.add),
+                            label: const Text('Add'),
+                          ),
                         ],
                       ),
                     ),

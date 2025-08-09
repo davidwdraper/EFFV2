@@ -1,6 +1,7 @@
 // lib/pages/act_form_page.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // ✅ for Shortcuts/Intents
 import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http;
 
@@ -8,11 +9,13 @@ import '../providers/auth_provider.dart';
 import '../widgets/logo_menu_bar.dart';
 import '../widgets/page_wrapper.dart';
 import '../widgets/rounded_card.dart';
+import '../widgets/page_buttons_row.dart';
 
 class ActFormArgs {
+  final String? actId; // signals edit mode
   final String? prefillName;
   final String? prefillHomeTown;
-  const ActFormArgs({this.prefillName, this.prefillHomeTown});
+  const ActFormArgs({this.actId, this.prefillName, this.prefillHomeTown});
 }
 
 class ActFormPage extends StatefulWidget {
@@ -30,8 +33,15 @@ class _ActFormPageState extends State<ActFormPage> {
   final _emailCtrl = TextEditingController();
   final _homeTownCtrl = TextEditingController();
 
-  TownSuggestion? _selectedTown;
+  // If hometown was provided from search or loaded, we treat it as read-only
+  String? _prefilledHomeTown;
+
+  TownSuggestion? _selectedTown; // used only when user can edit hometown
   bool _submitting = false;
+
+  // Edit mode
+  bool _isUpdate = false;
+  String? _actId;
 
   // Match main.dart
   String get _apiBase => const String.fromEnvironment(
@@ -47,18 +57,17 @@ class _ActFormPageState extends State<ActFormPage> {
 
     // Prefill name immediately
     final prefillName = (a?.prefillName ?? '').trim();
-    if (prefillName.isNotEmpty) {
-      _nameCtrl.text = prefillName;
-    }
+    if (prefillName.isNotEmpty) _nameCtrl.text = prefillName;
 
-    // Prefill hometown AFTER first frame so RawAutocomplete/TextField doesn't overwrite it
+    // If passed a hometown from Acts search, lock it as a label
     final prefillTown = (a?.prefillHomeTown ?? '').trim();
-    if (prefillTown.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _homeTownCtrl.text = prefillTown;
-        setState(() {}); // ensure repaint with value present
-      });
+    if (prefillTown.isNotEmpty) _prefilledHomeTown = prefillTown;
+
+    // Edit mode if actId present — load existing record
+    if ((a?.actId ?? '').isNotEmpty) {
+      _isUpdate = true;
+      _actId = a!.actId;
+      _loadAct();
     }
   }
 
@@ -68,15 +77,40 @@ class _ActFormPageState extends State<ActFormPage> {
     _emailCtrl.dispose();
     _homeTownCtrl.dispose();
     super.dispose();
-    // (Autocomplete focus node is disposed inside its own State)
+  }
+
+  Future<void> _loadAct() async {
+    if (_actId == null) return;
+    try {
+      final auth = context.read<AuthProvider>();
+      final uri = Uri.parse('$_apiBase/acts/$_actId');
+      final resp = await http.get(
+        uri,
+        headers: {
+          'Content-Type': 'application/json',
+          if (auth.jwtToken != null) 'Authorization': 'Bearer ${auth.jwtToken}',
+        },
+      );
+      if (resp.statusCode != 200) return;
+      final j = jsonDecode(resp.body);
+      final act = (j['act'] as Map?) ?? {};
+
+      _nameCtrl.text = (act['name'] ?? '').toString();
+      _emailCtrl.text = (act['eMailAddr'] ?? '').toString();
+      final ht = (act['homeTown'] ?? '').toString();
+      if (ht.isNotEmpty) _prefilledHomeTown = ht;
+
+      if (mounted) setState(() {});
+    } catch (_) {
+      // soft fail; keep whatever is there
+    }
   }
 
   Future<List<TownSuggestion>> _fetchTownSuggestions(String query) async {
     if (query.trim().length < 3) return const [];
     final auth = context.read<AuthProvider>();
-    final uri = Uri.parse('$_apiBase$_townsSuggestPath').replace(
-      queryParameters: {'q': query.trim(), 'limit': '10'},
-    );
+    final uri = Uri.parse('$_apiBase$_townsSuggestPath')
+        .replace(queryParameters: {'q': query.trim(), 'limit': '10'});
 
     try {
       final resp = await http.get(
@@ -105,41 +139,61 @@ class _ActFormPageState extends State<ActFormPage> {
 
     final uid = auth.user?['_id'] ?? auth.user?['userId'];
 
+    // Build payload
     final body = <String, dynamic>{
       'name': _nameCtrl.text.trim(),
       if (_emailCtrl.text.trim().isNotEmpty)
         'eMailAddr': _emailCtrl.text.trim(),
-      if (_selectedTown != null)
+      // Hometown: if prefilled, we send that label; else use townId or typed City, ST
+      if (_prefilledHomeTown != null && _prefilledHomeTown!.isNotEmpty)
+        'homeTown': _prefilledHomeTown
+      else if (_selectedTown != null)
         'townId': _selectedTown!.id
       else
         'homeTown': _homeTownCtrl.text.trim(),
-      if (uid != null) 'userCreateId': uid,
       if (uid != null) 'userOwnerId': uid,
+      if (!_isUpdate && uid != null) 'userCreateId': uid, // only on create
     };
 
-    final uri = Uri.parse('$_apiBase/acts');
+    final uri = _isUpdate
+        ? Uri.parse('$_apiBase/acts/$_actId')
+        : Uri.parse('$_apiBase/acts');
 
     try {
-      final resp = await http.post(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          if (auth.jwtToken != null) 'Authorization': 'Bearer ${auth.jwtToken}',
-        },
-        body: jsonEncode(body),
-      );
+      final resp = await (_isUpdate
+          ? http.put(
+              uri,
+              headers: {
+                'Content-Type': 'application/json',
+                if (auth.jwtToken != null)
+                  'Authorization': 'Bearer ${auth.jwtToken}',
+              },
+              body: jsonEncode(body),
+            )
+          : http.post(
+              uri,
+              headers: {
+                'Content-Type': 'application/json',
+                if (auth.jwtToken != null)
+                  'Authorization': 'Bearer ${auth.jwtToken}',
+              },
+              body: jsonEncode(body),
+            ));
 
-      if (resp.statusCode == 201) {
+      final ok = _isUpdate ? 200 : 201;
+      if (resp.statusCode == ok) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Act created ✅')),
+          SnackBar(
+              content: Text(_isUpdate ? 'Act updated ✅' : 'Act created ✅')),
         );
-        Navigator.of(context).pop(true);
+        Navigator.of(context).pop(true); // success
       } else {
         final msg = _safeErr(resp.body);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Create failed: $msg')),
+          SnackBar(
+              content: Text('${_isUpdate ? "Update" : "Create"} failed: $msg')),
         );
       }
     } catch (e) {
@@ -185,71 +239,125 @@ class _ActFormPageState extends State<ActFormPage> {
   }
 
   Widget _buildForm(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Form(
       key: _formKey,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Create Act', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 16),
-
-          // Act Name
-          TextFormField(
-            controller: _nameCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Act Name *',
-              hintText: 'e.g., Stormbringer',
-              border: OutlineInputBorder(),
+      child: Shortcuts(
+        // ✅ Make primary button the default (Enter/NumpadEnter)
+        shortcuts: <LogicalKeySet, Intent>{
+          LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
+          LogicalKeySet(LogicalKeyboardKey.numpadEnter): const ActivateIntent(),
+        },
+        child: Actions(
+          actions: <Type, Action<Intent>>{
+            ActivateIntent: CallbackAction<ActivateIntent>(
+              onInvoke: (intent) {
+                if (!_submitting) _submit();
+                return null;
+              },
             ),
-            textInputAction: TextInputAction.next,
-            validator: (v) =>
-                (v == null || v.trim().isEmpty) ? 'Act name is required' : null,
-          ),
-          const SizedBox(height: 12),
-
-          // Email (optional)
-          TextFormField(
-            controller: _emailCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Contact Email (optional)',
-              hintText: 'act@example.com',
-              border: OutlineInputBorder(),
-            ),
-            keyboardType: TextInputType.emailAddress,
-            textInputAction: TextInputAction.next,
-          ),
-          const SizedBox(height: 12),
-
-          // Hometown with typeahead
-          _HometownAutocomplete(
-            controller: _homeTownCtrl,
-            fetcher: _fetchTownSuggestions,
-            onSelected: (town) => _selectedTown = town,
-            onTextChanged: () => _selectedTown = null,
-          ),
-
-          const SizedBox(height: 20),
-
-          Row(
+          },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ElevatedButton(
-                onPressed: _submitting ? null : _submit,
-                child: _submitting
-                    ? const SizedBox(
-                        height: 18,
-                        width: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text('Create Act'),
+              Text(_isUpdate ? 'Edit Act' : 'Create Act',
+                  style: theme.textTheme.titleLarge),
+              const SizedBox(height: 12),
+
+              // ----- Read-only Hometown label (when provided) -----
+              if (_prefilledHomeTown != null &&
+                  _prefilledHomeTown!.isNotEmpty) ...[
+                Text(
+                  'Hometown',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withOpacity(0.7),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _prefilledHomeTown!,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 16),
+              ],
+
+              // ----- Act Name -----
+              TextFormField(
+                controller: _nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Act Name *',
+                  hintText: 'e.g., Stormbringer',
+                  border: OutlineInputBorder(),
+                ),
+                textInputAction: TextInputAction.next,
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Act name is required'
+                    : null,
+                // Keep password managers away from this field
+                autofillHints: const <String>[],
+                enableSuggestions: true,
+                autocorrect: true,
               ),
-              const SizedBox(width: 12),
-              TextButton(
-                onPressed:
-                    _submitting ? null : () => Navigator.of(context).maybePop(),
-                child: const Text('Cancel'),
+              const SizedBox(height: 12),
+
+              // ----- Email (optional) -----
+              TextFormField(
+                controller: _emailCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Contact Email (optional)',
+                  hintText: 'act@example.com',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
+                autofillHints: const [AutofillHints.email],
+              ),
+              const SizedBox(height: 12),
+
+              // ----- Editable Hometown (only if not prefilled) -----
+              if (_prefilledHomeTown == null ||
+                  _prefilledHomeTown!.isEmpty) ...[
+                _HometownAutocomplete(
+                  controller: _homeTownCtrl,
+                  fetcher: _fetchTownSuggestions,
+                  onSelected: (town) => _selectedTown = town,
+                  onTextChanged: () => _selectedTown = null,
+                ),
+                const SizedBox(height: 12),
+              ],
+
+              const SizedBox(height: 8),
+
+              // ----- Buttons (right-justified; dominant on the far right) -----
+              PageButtonsRow(
+                secondaryActions: [
+                  TextButton(
+                    onPressed: _submitting
+                        ? null
+                        : () => Navigator.of(context).maybePop(),
+                    child: const Text('Cancel'),
+                  ),
+                ],
+                primaryAction: ElevatedButton(
+                  onPressed: _submitting ? null : _submit,
+                  child: _submitting
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Text(_isUpdate ? 'Update Act' : 'Create Act'),
+                ),
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -346,6 +454,10 @@ class _HometownAutocompleteState extends State<_HometownAutocomplete> {
                   ? 'Hometown is required'
                   : null,
               onChanged: (_) => widget.onTextChanged(),
+              // Keep password managers away from this field
+              autofillHints: const <String>[],
+              enableSuggestions: true,
+              autocorrect: true,
             ),
           ],
         );

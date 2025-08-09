@@ -13,6 +13,9 @@ const router = express.Router();
 // ---- config ----
 const DEFAULT_RADIUS_MILES = Number(process.env.ACT_RADIUS_SEARCH ?? "50");
 const ENRICH_USER_NAMES = process.env.ENRICH_USER_NAMES === "true"; // ✅ feature flag
+const DEFAULT_HOMETOWN_MATCH_METERS = Number(
+  process.env.ACT_HOMETOWN_MATCH_METERS ?? "50"
+); // ✅ tight hometown match tolerance (overridable)
 
 // Keep list/search payloads lean & consistent
 const LIST_PROJECTION = {
@@ -67,6 +70,117 @@ async function resolveTownFields(input: {
     },
   };
 }
+
+/**
+ * ---- BY-HOMETOWN: GET /acts/by-hometown ----
+ * Decides whether to return ALL Acts for a selected hometown.
+ * Query:
+ *   lat (required): number  -> lat of the selected town
+ *   lng (required): number  -> lng of the selected town
+ *   q   (optional): string  -> ignored when returning "all"
+ *   limit (optional): number (default 20) -> used only for the fallback path
+ *   toleranceMeters (optional): number -> overrides default hometown geo tolerance
+ *
+ * Behavior:
+ *   If total Acts for the hometown < 12:
+ *     -> return { status: "all", total, items: [...] } (items sorted by name)
+ *   Else:
+ *     -> return { status: "limited", total }
+ *
+ * NOTE: We detect "same hometown" by proximity to the Town point saved in `homeTownLoc`.
+ *       We use $geoWithin+$centerSphere for both count and fetch to avoid Mongo's $near-in-count error.
+ */
+router.get("/by-hometown", async (req: Request, res: Response) => {
+  try {
+    const lat = toNum(req.query.lat);
+    const lng = toNum(req.query.lng);
+    const limit = Math.min(Math.max(toNum(req.query.limit) ?? 20, 1), 1000);
+    if (lat === null || lng === null) {
+      return res
+        .status(400)
+        .json({ error: "lat and lng are required numeric query parameters" });
+    }
+
+    // ✅ Configurable geo tolerance with sane min/max guards
+    const toleranceParam = toNum(req.query.toleranceMeters);
+    const HOMETOWN_TOLERANCE_METERS = Math.min(
+      Math.max(toleranceParam ?? DEFAULT_HOMETOWN_MATCH_METERS, 10), // floor: 10m
+      200 // ceiling: 200m
+    );
+
+    // Use $geoWithin + $centerSphere (radius in radians)
+    const EARTH_RADIUS_METERS = 6378137; // WGS84
+    const radiusInRadians = HOMETOWN_TOLERANCE_METERS / EARTH_RADIUS_METERS;
+
+    const withinFilter = {
+      homeTownLoc: {
+        $geoWithin: {
+          $centerSphere: [[lng, lat], radiusInRadians],
+        },
+      },
+    };
+
+    const total = await Act.countDocuments(withinFilter);
+
+    if (total < 12) {
+      // Fetch ALL for this hometown, project lean DTO, default owner, enrich if enabled
+      const itemsRaw = await Act.find(withinFilter)
+        .select({
+          name: 1,
+          eMailAddr: 1,
+          homeTown: 1,
+          homeTownId: 1,
+          imageIds: 1,
+          userCreateId: 1,
+          userOwnerId: 1,
+        })
+        .limit(1000) // practical cap; hometowns are small
+        .lean();
+
+      const itemsMapped = itemsRaw.map((r: any) => ({
+        id: r._id?.toString?.() ?? r._id,
+        name: r.name,
+        eMailAddr: r.eMailAddr,
+        homeTown: r.homeTown,
+        homeTownId: r.homeTownId,
+        imageIds: r.imageIds,
+        userCreateId: r.userCreateId,
+        userOwnerId: r.userOwnerId || r.userCreateId,
+        distanceMeters: 0, // not needed here; client shows name + hometown
+      }));
+
+      const itemsEnriched = ENRICH_USER_NAMES
+        ? await enrichManyWithUserNames(itemsMapped)
+        : itemsMapped;
+
+      // Sort by name (case-insensitive)
+      itemsEnriched.sort((a: any, b: any) =>
+        (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase())
+      );
+
+      return res.status(200).json({
+        status: "all",
+        total,
+        items: itemsEnriched,
+        toleranceMeters: HOMETOWN_TOLERANCE_METERS,
+      });
+    }
+
+    // Otherwise tell client to fall back to regular typeahead search.
+    return res.status(200).json({
+      status: "limited",
+      total,
+      limit, // echo for visibility
+      toleranceMeters: HOMETOWN_TOLERANCE_METERS,
+    });
+  } catch (err: any) {
+    console.error("[acts/by-hometown] error:", err);
+    return res.status(500).json({
+      error: "Failed to evaluate hometown acts",
+      detail: err?.message ?? String(err),
+    });
+  }
+});
 
 /**
  * ---- SEARCH: GET /acts/search ----

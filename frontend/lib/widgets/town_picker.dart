@@ -1,3 +1,4 @@
+// lib/widgets/town_picker.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
@@ -59,8 +60,13 @@ class TownPicker extends StatelessWidget {
       offset: const Offset(0, 8),
       itemBuilder: (context, TownOption suggestion) {
         return ListTile(
-          title: Text(suggestion.label),
-          subtitle: Text('lat: ${suggestion.lat}, lng: ${suggestion.lng}'),
+          dense: true, // ✅ tighter layout
+          contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12, vertical: 4), // ✅ less vertical space
+          title: Text(
+            suggestion.label,
+            style: const TextStyle(fontSize: 14), // ✅ slightly smaller font
+          ),
         );
       },
       onSelected: (TownOption selection) {
@@ -98,7 +104,7 @@ class TownPicker extends StatelessWidget {
       ),
       errorBuilder: (context, error) => Padding(
         padding: const EdgeInsets.all(12),
-        child: Text('Error: $error', style: const TextStyle(color: Colors.red)),
+        child: Text('Error: $error', style: TextStyle(color: Colors.red)),
       ),
     );
   }

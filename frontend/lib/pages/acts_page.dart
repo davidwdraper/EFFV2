@@ -58,13 +58,65 @@ class _ActsPageState extends State<ActsPage> {
     super.dispose();
   }
 
-  Future<List<ActOption>> _fetchActsForTown({
+  /// New: Smart suggestions.
+  /// Ask backend if we should return ALL acts for this hometown (when total < 12).
+  /// If backend returns { status: "all", items: [...] }, we return ALL (sorted by name).
+  /// Otherwise we fall back to the existing /acts/search typeahead behavior.
+  Future<List<ActOption>> _suggestActsForTown({
     required TownOption town,
     required String pattern,
     int limit = 20,
   }) async {
     final q = pattern.trim();
+
+    // Try the new endpoint first. It decides whether to return all or to make us fall back.
+    // Expected shapes:
+    //   { status: "all", items: [...] }  → show all (sorted by name)
+    //   { status: "limited" } or anything else → fall back to /acts/search below
+    try {
+      final uriAll = Uri.parse('${widget.apiBase}/acts/by-hometown').replace(
+        queryParameters: {
+          'lat': town.lat.toString(),
+          'lng': town.lng.toString(),
+          'q':
+              q, // backend can choose to ignore q and return all when total < 12
+          'limit': '$limit', // backend can ignore if returning all
+        },
+      );
+      final resAll = await http.get(uriAll);
+      if (resAll.statusCode == 200) {
+        final body = jsonDecode(resAll.body);
+        final status = (body is Map && body['status'] is String)
+            ? (body['status'] as String)
+            : '';
+        if (status.toLowerCase() == 'all' && body['items'] is List) {
+          final items = (body['items'] as List)
+              .whereType<Map<String, dynamic>>()
+              .map((e) => ActOption.fromJson(e))
+              .toList();
+
+          // Sort ALL by name (case-insensitive)
+          items.sort(
+              (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+          return items;
+        }
+        // else → fall through to legacy search
+      }
+    } catch (_) {
+      // swallow and fall back
+    }
+
+    // Legacy behavior: require 3+ chars, use /acts/search (nearby + q + limit)
     if (q.length < 3) return [];
+    return _fetchActsForTownLegacy(town: town, pattern: q, limit: limit);
+  }
+
+  Future<List<ActOption>> _fetchActsForTownLegacy({
+    required TownOption town,
+    required String pattern,
+    int limit = 20,
+  }) async {
+    final q = pattern.trim();
     final uri = Uri.parse('${widget.apiBase}/acts/search').replace(
       queryParameters: {
         'lat': town.lat.toString(),
@@ -174,6 +226,10 @@ class _ActsPageState extends State<ActsPage> {
                   textAlign: TextAlign.left,
                 ),
                 const SizedBox(height: 10),
+
+                // Hometown picker
+                // Note: If TownPicker currently shows lat/lng in its dropdown,
+                // that formatting lives inside TownPicker. I can remove it there next.
                 TownPicker(
                   apiBase: widget.apiBase,
                   controller: _hometownController,
@@ -185,11 +241,14 @@ class _ActsPageState extends State<ActsPage> {
                     });
                   },
                 ),
+
                 const SizedBox(height: 12),
+
+                // Act name search (smart logic: ALL results if hometown total < 12)
                 if (_selectedTown != null)
                   TypeAheadField<ActOption>(
                     controller: _actSearchController,
-                    suggestionsCallback: (pattern) => _fetchActsForTown(
+                    suggestionsCallback: (pattern) => _suggestActsForTown(
                       town: _selectedTown!,
                       pattern: pattern,
                       limit: 20,
@@ -223,10 +282,12 @@ class _ActsPageState extends State<ActsPage> {
                         controller: controller,
                         focusNode: focusNode,
                         decoration: const InputDecoration(
-                          labelText: 'Search Act Name (3+ chars)',
+                          labelText: 'Search Act Name',
                           border: OutlineInputBorder(),
                           contentPadding: EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 14),
+                            horizontal: 12,
+                            vertical: 14,
+                          ),
                         ),
                       );
                     },

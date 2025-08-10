@@ -1,13 +1,16 @@
 import { Router, Request, Response } from "express";
 import axios from "axios";
+import multer from "multer";
+import FormData from "form-data";
 import { logger } from "@shared/utils/logger";
 import { authenticate } from "@shared/middleware/authenticate";
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Service bases
-const IMAGE_BASE = process.env.SVC_IMAGE_BASE!; // e.g., http://image:4005
-const USER_BASE = process.env.SVC_USER_BASE!; // e.g., http://user:4001
+const IMAGE_BASE = process.env.SVC_IMAGE_BASE!; // e.g., http://localhost:4005
+const USER_BASE = process.env.SVC_USER_BASE!; // e.g., http://localhost:4001
 const SELF_BASE = process.env.PUBLIC_API_BASE!; // e.g., http://localhost:4000
 
 // ---- types ----
@@ -35,9 +38,8 @@ async function fetchUserNames(ids: string[]): Promise<Record<string, string>> {
   try {
     const { data } = await axios.post(`${USER_BASE}/users/lookup`, { ids });
     const map: Record<string, string> = {};
-    for (const u of Array.isArray(data) ? data : []) {
+    for (const u of Array.isArray(data) ? data : [])
       map[u.id] = toDisplayName(u);
-    }
     return map;
   } catch (err: any) {
     logger.error("[orchestrator] fetchUserNames failed", { msg: err?.message });
@@ -59,25 +61,36 @@ function toDto(raw: RawImage, userNames: Record<string, string>) {
   };
 }
 
-// ---- handlers (exported for tests if needed) ----
+// ---- handlers ----
 export async function getImageDataHandler(req: Request, res: Response) {
   const { id } = req.params;
   try {
-    const resp = await axios.get(`${IMAGE_BASE}/images/${id}/data`, {
-      responseType: "arraybuffer",
+    const upstream = await axios.get(`${IMAGE_BASE}/images/${id}/data`, {
+      responseType: "stream",
+      validateStatus: () => true,
     });
-    res.setHeader(
-      "Content-Type",
-      resp.headers["content-type"] || "application/octet-stream"
-    );
-    res.setHeader(
-      "Cache-Control",
-      resp.headers["cache-control"] || "public, max-age=31536000, immutable"
-    );
-    return res.send(Buffer.from(resp.data));
+
+    if (upstream.status >= 400) {
+      logger.error("[orchestrator] GET /images/:id/data failed", {
+        id,
+        status: upstream.status,
+      });
+      return res
+        .status(upstream.status)
+        .json({ error: "Failed to fetch image data" });
+    }
+
+    const ct = upstream.headers["content-type"] || "application/octet-stream";
+    const cc =
+      upstream.headers["cache-control"] ||
+      "public, max-age=31536000, immutable";
+    res.setHeader("Content-Type", String(ct));
+    res.setHeader("Cache-Control", String(cc));
+    res.status(200);
+    upstream.data.pipe(res);
   } catch (err: any) {
     const status = err?.response?.status ?? 500;
-    logger.error("[orchestrator] GET /images/:id/data failed", {
+    logger.error("[orchestrator] GET /images/:id/data error", {
       id,
       status,
       msg: err?.message,
@@ -115,7 +128,6 @@ export async function postImagesLookupHandler(req: Request, res: Response) {
     const { data: raws } = await axios.post(`${IMAGE_BASE}/images/lookup`, {
       ids,
     });
-
     const userIds: string[] = [
       ...new Set(
         (raws as any[])
@@ -123,7 +135,6 @@ export async function postImagesLookupHandler(req: Request, res: Response) {
           .filter((id): id is string => typeof id === "string" && id.length > 0)
       ),
     ];
-
     const userNames = await fetchUserNames(userIds);
     const dtos = (raws as RawImage[]).map((r) => toDto(r, userNames));
     return res.json(dtos);
@@ -137,25 +148,50 @@ export async function postImagesLookupHandler(req: Request, res: Response) {
   }
 }
 
-// ---- pass-through mutating routes (require auth here) ----
-
 /**
- * POST /images
- * Proxy multipart upload to image service.
+ * POST /images  (upload proxy)
+ * Accepts multipart form-data with field "file" and optional "uploadBatchId".
+ * Proxies to image service POST /image.
  */
 export async function postUploadProxy(req: Request, res: Response) {
   try {
-    // Expect upstream multer? No—proxy raw body/headers with axios is tricky.
-    // Simpler: this route should NOT parse body. Mount a multer here too, then re-send as form-data.
-    // To avoid double work, let clients call the IMAGE_BASE directly in internal networks.
+    const file = (req as any).file;
+    if (!file)
+      return res
+        .status(400)
+        .json({ error: "file is required (multipart field 'file')" });
+
+    const form = new FormData();
+    form.append("file", file.buffer, {
+      filename: file.originalname || "upload.bin",
+      contentType: file.mimetype || "application/octet-stream",
+      knownLength: file.size,
+    });
+
+    const uploadBatchId = (req.body?.uploadBatchId ?? "").toString();
+    if (uploadBatchId) form.append("uploadBatchId", uploadBatchId);
+
+    const upstream = await axios.post(`${IMAGE_BASE}/image`, form, {
+      headers: {
+        ...form.getHeaders(),
+        Accept: "application/json",
+        Authorization: (req.headers.authorization as string) || "",
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      validateStatus: () => true,
+    });
+
     return res
-      .status(501)
-      .json({
-        error:
-          "Upload via orchestrator not implemented. Call image service directly or add multer proxy here.",
-      });
+      .status(upstream.status)
+      .set(upstream.headers)
+      .send(upstream.data);
   } catch (err: any) {
     const status = err?.response?.status ?? 500;
+    logger.error("[orchestrator] POST /images upload failed", {
+      status,
+      msg: err?.message,
+    });
     return res.status(status).json({ error: "Upload failed" });
   }
 }
@@ -166,10 +202,11 @@ export async function postFinalizeProxy(req: Request, res: Response) {
       `${IMAGE_BASE}/images/finalize`,
       req.body,
       {
-        headers: { Authorization: req.headers.authorization || "" },
+        headers: { Authorization: (req.headers.authorization as string) || "" },
+        validateStatus: () => true,
       }
     );
-    return res.json(data);
+    return res.status(200).json(data);
   } catch (err: any) {
     const status = err?.response?.status ?? 500;
     return res.status(status).json({ error: "Finalize failed" });
@@ -179,9 +216,10 @@ export async function postFinalizeProxy(req: Request, res: Response) {
 export async function postUnlinkProxy(req: Request, res: Response) {
   try {
     const { data } = await axios.post(`${IMAGE_BASE}/images/unlink`, req.body, {
-      headers: { Authorization: req.headers.authorization || "" },
+      headers: { Authorization: (req.headers.authorization as string) || "" },
+      validateStatus: () => true,
     });
-    return res.json(data);
+    return res.status(200).json(data);
   } catch (err: any) {
     const status = err?.response?.status ?? 500;
     return res.status(status).json({ error: "Unlink failed" });
@@ -194,28 +232,27 @@ export async function postDiscardProxy(req: Request, res: Response) {
       `${IMAGE_BASE}/images/discard`,
       req.body,
       {
-        headers: { Authorization: req.headers.authorization || "" },
+        headers: { Authorization: (req.headers.authorization as string) || "" },
+        validateStatus: () => true,
       }
     );
-    return res.json(data);
+    return res.status(200).json(data);
   } catch (err: any) {
     const status = err?.response?.status ?? 500;
     return res.status(status).json({ error: "Discard failed" });
   }
 }
 
-// ---- routes ----
-router.get("/:id/data", getImageDataHandler);
-router.get("/:id", getImageMetaHandler);
+// ---- routes (mounted at /images in app.ts) ----
+// Keep static/lookup before :id routes; constrain :id to 24-hex.
 router.post("/lookup", postImagesLookupHandler);
+router.get("/:id([a-fA-F0-9]{24})/data", getImageDataHandler);
+router.get("/:id([a-fA-F0-9]{24})", getImageMetaHandler);
 
-// Require auth for mutating endpoints
+// Mutating endpoints (require auth here; authGate also enforces)
+router.post("/", authenticate, upload.single("file"), postUploadProxy); // ✅ THIS is POST /images
 router.post("/finalize", authenticate, postFinalizeProxy);
 router.post("/unlink", authenticate, postUnlinkProxy);
 router.post("/discard", authenticate, postDiscardProxy);
-
-// NOTE: Upload via orchestrator is marked 501 to avoid double-multer complexity.
-// If you want it here, wire multer like in the image service and forward as form-data.
-// router.post("/", authenticate, postUploadProxy);
 
 export default router;

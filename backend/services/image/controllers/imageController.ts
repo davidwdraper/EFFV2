@@ -1,260 +1,256 @@
-import { Request, Response } from "express";
-import { Types } from "mongoose";
-import { ImageModel, IImage } from "../models/Image";
+import type { Request, Response } from "express";
+import axios from "axios";
+import FormData from "form-data";
+import { logger } from "@shared/utils/logger";
+import { ImageModel } from "../models/Image"; // adjust path if different
 
-const ORPHAN_TTL_HOURS = Number(process.env.IMAGE_ORPHAN_TTL_HOURS ?? 48);
+const IMAGE_BASE = process.env.SVC_IMAGE_BASE!; // e.g. http://image:4005
+const USER_BASE = process.env.SVC_USER_BASE!; // e.g. http://user:4001
+const SELF_BASE = process.env.PUBLIC_API_BASE!; // e.g. http://localhost:4000
 
-const nowPlusHours = (h: number) => new Date(Date.now() + h * 3600 * 1000);
+// ---------- helpers ----------
+const toDisplayName = (u: any) => {
+  if (!u) return null;
+  const f = (u.firstname ?? u.firstName ?? "").trim();
+  const l = (u.lastname ?? u.lastName ?? "").trim();
+  const both = `${f} ${l}`.trim();
+  return both || u.eMailAddr || u.email || null;
+};
 
-const isValidObjectId = (id: unknown): id is string =>
-  typeof id === "string" && Types.ObjectId.isValid(id);
-
-function pickOrder<T extends { id: string }>(ids: string[], docs: T[]) {
-  const map = new Map(docs.map((d) => [d.id, d]));
-  return ids.map((id) => map.get(id)).filter(Boolean) as T[];
+async function fetchUserNames(ids: string[]): Promise<Record<string, string>> {
+  if (!ids.length) return {};
+  try {
+    const { data } = await axios.post(`${USER_BASE}/users/lookup`, { ids });
+    const map: Record<string, string> = {};
+    for (const u of Array.isArray(data) ? data : []) {
+      const id = u.id || u._id;
+      if (id) map[id] = toDisplayName(u);
+    }
+    return map;
+  } catch (err: any) {
+    logger.error("[orchestrator] fetchUserNames failed", { msg: err?.message });
+    return {};
+  }
 }
 
-// ---------- READ ----------
+type RawImage = {
+  id: string;
+  _id?: string;
+  creationDate?: string | Date;
+  notes?: string | null;
+  createdBy?: string | null;
+  state?: number | string;
+};
 
+function toDto(raw: RawImage, userNames: Record<string, string>) {
+  const id = (raw.id as string) || (raw._id as string) || "";
+  return {
+    id,
+    url: `${SELF_BASE}/images/${id}/data`,
+    comment: raw.notes ?? null,
+    createdByName: raw.createdBy ? userNames[raw.createdBy] ?? null : null,
+    createdAt: raw.creationDate ?? null,
+    state: raw.state ?? null,
+  };
+}
+
+// ---------- READ CONTROLLERS ----------
 export async function getImageMeta(req: Request, res: Response) {
   const { id } = req.params;
-  if (!isValidObjectId(id)) return res.status(400).json({ error: "bad id" });
-
-  const doc = await ImageModel.findById(id).lean<IImage>().exec();
-  if (!doc) return res.status(404).json({ error: "not found" });
-
-  return res.json({
-    id: String(doc._id),
-    state: doc.state,
-    creationDate: doc.creationDate,
-    notes: doc.notes ?? null,
-    createdBy: String(doc.createdBy),
-    contentType: doc.contentType ?? null,
-    originalFilename: doc.originalFilename ?? null,
-  });
+  try {
+    const { data: raw } = await axios.get(`${IMAGE_BASE}/images/${id}`, {
+      // pass auth if your image svc needs it for reads
+      headers: pickAuth(req.headers),
+    });
+    const userIds =
+      raw?.createdBy && typeof raw.createdBy === "string"
+        ? [raw.createdBy]
+        : [];
+    const userNames = await fetchUserNames(userIds);
+    return res.json(toDto(raw as RawImage, userNames));
+  } catch (err: any) {
+    const status = err?.response?.status ?? 500;
+    logger.error("[orchestrator] getImageMeta failed", {
+      id,
+      status,
+      msg: err?.message,
+    });
+    return res.status(status).json({ error: "Failed to fetch image metadata" });
+  }
 }
 
 export async function getImageData(req: Request, res: Response) {
   const { id } = req.params;
-  if (!isValidObjectId(id)) return res.status(400).json({ error: "bad id" });
-
-  const doc = await ImageModel.findById(id)
-    .select({ image: 1, contentType: 1 })
-    .lean<{ image: Buffer; contentType?: string }>()
-    .exec();
-
-  if (!doc) return res.status(404).json({ error: "not found" });
-
-  res.setHeader("Content-Type", doc.contentType || "application/octet-stream");
-  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-  return res.send(Buffer.from(doc.image));
+  try {
+    const resp = await axios.get(`${IMAGE_BASE}/images/${id}/data`, {
+      responseType: "arraybuffer",
+      headers: pickAuth(req.headers),
+    });
+    res.setHeader(
+      "Content-Type",
+      (resp.headers["content-type"] as string) || "application/octet-stream"
+    );
+    res.setHeader(
+      "Cache-Control",
+      (resp.headers["cache-control"] as string) ||
+        "public, max-age=31536000, immutable"
+    );
+    return res.send(Buffer.from(resp.data));
+  } catch (err: any) {
+    const status = err?.response?.status ?? 500;
+    logger.error("[orchestrator] getImageData failed", {
+      id,
+      status,
+      msg: err?.message,
+    });
+    return res.status(status).json({ error: "Failed to fetch image data" });
+  }
 }
 
 export async function postLookup(req: Request, res: Response) {
   const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids : [];
   if (!ids.length) return res.json([]);
+  try {
+    const { data: raws } = await axios.post(
+      `${IMAGE_BASE}/images/lookup`,
+      { ids },
+      { headers: pickAuth(req.headers) }
+    );
 
-  const validIds = ids.filter(isValidObjectId);
-  const docs = await ImageModel.find({ _id: { $in: validIds } })
-    .select({
-      _id: 1,
-      creationDate: 1,
-      notes: 1,
-      createdBy: 1,
-      contentType: 1,
-      originalFilename: 1,
-      state: 1,
-    })
-    .lean<IImage[]>()
-    .exec();
+    const userIds: string[] = [
+      ...new Set(
+        (raws as any[])
+          .map((r) => r?.createdBy)
+          .filter((id): id is string => typeof id === "string" && id.length > 0)
+      ),
+    ];
 
-  const shaped = docs.map((d) => ({
-    id: String(d._id),
-    creationDate: d.creationDate,
-    notes: d.notes ?? null,
-    createdBy: String(d.createdBy),
-    contentType: d.contentType ?? null,
-    originalFilename: d.originalFilename ?? null,
-    state: d.state,
-  }));
-
-  return res.json(pickOrder(validIds, shaped));
+    const userNames = await fetchUserNames(userIds);
+    const dtos = (raws as RawImage[]).map((r) => toDto(r, userNames));
+    return res.json(dtos);
+  } catch (err: any) {
+    const status = err?.response?.status ?? 500;
+    logger.error("[orchestrator] postLookup failed", {
+      status,
+      msg: err?.message,
+    });
+    return res.status(status).json({ error: "Failed to fetch images" });
+  }
 }
 
-// ---------- WRITE ----------
+// ---------- WRITE CONTROLLERS ----------
+const isHex24 = (s?: string) => !!s && /^[a-fA-F0-9]{24}$/.test(s);
 
-/**
- * POST /images
- * multipart/form-data with field "file"
- * Requires req.user.id (set by upstream auth) or req.headers['x-user-id'] fallback.
- */
 export async function postUpload(req: Request, res: Response) {
-  const file = (req as any).file as Express.Multer.File | undefined;
-  const notes =
-    typeof req.body?.notes === "string" ? req.body.notes : undefined;
-  const uploadBatchId =
-    typeof req.body?.uploadBatchId === "string" && req.body.uploadBatchId.trim()
-      ? req.body.uploadBatchId.trim()
-      : undefined;
+  try {
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file)
+      return res
+        .status(400)
+        .json({ error: "file is required (multipart field 'file')" });
 
-  if (!file) return res.status(400).json({ error: "file missing" });
+    // Get user id from header (for direct svc tests) or from auth if you add it later
+    const userId =
+      (req.headers["x-user-id"] as string) ||
+      (req as any).user?._id ||
+      (req as any).user?.id;
 
-  // Expect an upstream auth middleware to stamp req.user.id
-  const userId =
-    (req as any)?.user?.id ||
-    (typeof req.headers["x-user-id"] === "string" &&
-      req.headers["x-user-id"]) ||
-    null;
-  if (!userId || !isValidObjectId(userId))
-    return res.status(401).json({ error: "unauthorized" });
-
-  const doc = await ImageModel.create({
-    uploadBatchId,
-    image: file.buffer,
-    contentType: file.mimetype,
-    originalFilename: file.originalname,
-    bytes: file.size,
-    creationDate: new Date(),
-    expiresAtDate: nowPlusHours(ORPHAN_TTL_HOURS),
-    state: "orphan",
-    notes,
-    createdBy: new Types.ObjectId(userId),
-  });
-
-  return res.status(201).json({
-    id: String(doc._id),
-    state: doc.state,
-    uploadBatchId: doc.uploadBatchId ?? null,
-    creationDate: doc.creationDate,
-    contentType: doc.contentType ?? null,
-    originalFilename: doc.originalFilename ?? null,
-  });
-}
-
-/**
- * POST /images/finalize  { imageIds: [] }
- * Set state => linked, clear TTL for each id.
- */
-export async function postFinalize(req: Request, res: Response) {
-  const imageIds: string[] = Array.isArray(req.body?.imageIds)
-    ? req.body.imageIds
-    : [];
-  if (!imageIds.length) return res.json({ linked: [], skipped: [] });
-
-  const ids = imageIds
-    .filter(isValidObjectId)
-    .map((id) => new Types.ObjectId(id));
-
-  const result = await ImageModel.updateMany(
-    { _id: { $in: ids }, state: { $in: ["orphan", "linked"] } }, // idempotent
-    { $set: { state: "linked" as const, expiresAtDate: undefined } }
-  );
-
-  // Best-effort: report linked vs skipped (not_found or deleted)
-  const found = await ImageModel.find({ _id: { $in: ids } })
-    .select({ _id: 1, state: 1 })
-    .lean()
-    .exec();
-
-  const linked: string[] = [];
-  const skipped: { id: string; reason: string }[] = [];
-
-  const foundMap = new Map(found.map((d) => [String(d._id), d.state]));
-  for (const id of imageIds) {
-    const st = foundMap.get(id);
-    if (!st) skipped.push({ id, reason: "not_found" });
-    else if (st === "deleted") skipped.push({ id, reason: "deleted" });
-    else linked.push(id);
-  }
-
-  return res.json({ linked, skipped, matched: result.matchedCount });
-}
-
-/**
- * POST /images/unlink  { imageIds: [] }
- * Set state => orphan and set TTL.
- */
-export async function postUnlink(req: Request, res: Response) {
-  const imageIds: string[] = Array.isArray(req.body?.imageIds)
-    ? req.body.imageIds
-    : [];
-  if (!imageIds.length) return res.json({ orphaned: [], skipped: [] });
-
-  const ids = imageIds
-    .filter(isValidObjectId)
-    .map((id) => new Types.ObjectId(id));
-
-  await ImageModel.updateMany(
-    { _id: { $in: ids }, state: { $in: ["linked", "orphan"] } }, // idempotent-friendly
-    {
-      $set: {
-        state: "orphan" as const,
-        expiresAtDate: nowPlusHours(ORPHAN_TTL_HOURS),
-      },
+    if (!isHex24(userId)) {
+      return res
+        .status(400)
+        .json({ error: "x-user-id header (24-hex) required" });
     }
-  );
 
-  const found = await ImageModel.find({ _id: { $in: ids } })
-    .select({ _id: 1, state: 1 })
-    .lean()
-    .exec();
+    const doc = await ImageModel.create({
+      image: file.buffer,
+      creationDate: new Date(),
+      notes:
+        typeof req.body?.notes === "string" ? req.body.notes.trim() : undefined,
+      createdBy: userId, // required by schema
+      originalFilename: file.originalname ?? undefined,
+      contentType: file.mimetype ?? undefined,
+    } as any);
 
-  const orphaned: string[] = [];
-  const skipped: { id: string; reason: string }[] = [];
-
-  const foundMap = new Map(found.map((d) => [String(d._id), d.state]));
-  for (const id of imageIds) {
-    const st = foundMap.get(id);
-    if (!st) skipped.push({ id, reason: "not_found" });
-    else if (st === "deleted") skipped.push({ id, reason: "deleted" });
-    else orphaned.push(id);
+    return res.status(201).json({
+      id: doc._id.toString(),
+      originalFilename: file.originalname ?? null,
+      contentType: file.mimetype ?? null,
+      size: file.size,
+      state: "pending",
+    });
+  } catch (err: any) {
+    return res
+      .status(500)
+      .json({ error: "Upload failed", detail: err?.message });
   }
-
-  return res.json({ orphaned, skipped });
 }
 
-/**
- * POST /images/discard  { uploadBatchId?: string, imageIds?: [] }
- * Hard delete images ONLY if state === orphan.
- */
+export async function postFinalize(req: Request, res: Response) {
+  try {
+    const { imageIds } = req.body ?? {};
+    const { data, status } = await axios.post(
+      `${IMAGE_BASE}/images/finalize`,
+      { imageIds: Array.isArray(imageIds) ? imageIds : [] },
+      { headers: pickAuth(req.headers) }
+    );
+    return res.status(status).json(data);
+  } catch (err: any) {
+    const status = err?.response?.status ?? 500;
+    logger.error("[orchestrator] postFinalize failed", {
+      status,
+      msg: err?.message,
+    });
+    return res.status(status).json({ error: "Finalize failed" });
+  }
+}
+
+export async function postUnlink(req: Request, res: Response) {
+  try {
+    const { imageIds } = req.body ?? {};
+    const { data, status } = await axios.post(
+      `${IMAGE_BASE}/images/unlink`,
+      { imageIds: Array.isArray(imageIds) ? imageIds : [] },
+      { headers: pickAuth(req.headers) }
+    );
+    return res.status(status).json(data);
+  } catch (err: any) {
+    const status = err?.response?.status ?? 500;
+    logger.error("[orchestrator] postUnlink failed", {
+      status,
+      msg: err?.message,
+    });
+    return res.status(status).json({ error: "Unlink failed" });
+  }
+}
+
 export async function postDiscard(req: Request, res: Response) {
-  const uploadBatchId =
-    typeof req.body?.uploadBatchId === "string"
-      ? req.body.uploadBatchId
-      : undefined;
-  const imageIds: string[] = Array.isArray(req.body?.imageIds)
-    ? req.body.imageIds
-    : [];
-
-  if (!uploadBatchId && !imageIds.length) {
-    return res
-      .status(400)
-      .json({ error: "uploadBatchId or imageIds required" });
+  try {
+    const { uploadBatchId, imageIds } = req.body ?? {};
+    const payload: any = {};
+    if (typeof uploadBatchId === "string" && uploadBatchId.length) {
+      payload.uploadBatchId = uploadBatchId;
+    }
+    if (Array.isArray(imageIds)) {
+      payload.imageIds = imageIds;
+    }
+    const { data, status } = await axios.post(
+      `${IMAGE_BASE}/images/discard`,
+      payload,
+      { headers: pickAuth(req.headers) }
+    );
+    return res.status(status).json(data);
+  } catch (err: any) {
+    const status = err?.response?.status ?? 500;
+    logger.error("[orchestrator] postDiscard failed", {
+      status,
+      msg: err?.message,
+    });
+    return res.status(status).json({ error: "Discard failed" });
   }
+}
 
-  const filter: any = { state: "orphan" };
-
-  if (uploadBatchId) filter.uploadBatchId = uploadBatchId;
-  if (imageIds.length) {
-    const ids = imageIds
-      .filter(isValidObjectId)
-      .map((id) => new Types.ObjectId(id));
-    filter._id = { $in: ids };
-  }
-
-  const toDelete = await ImageModel.find(filter)
-    .select({ _id: 1 })
-    .lean()
-    .exec();
-  const idsToDelete = toDelete.map((d) => d._id);
-
-  await ImageModel.deleteMany({ _id: { $in: idsToDelete } }).exec();
-
-  const deleted = idsToDelete.map(String);
-  const requested = imageIds.length ? imageIds : deleted; // best-effort
-  const skipped = requested
-    .filter((id) => !deleted.includes(id))
-    .map((id) => ({ id, reason: "not_orphan_or_not_found" }));
-
-  return res.json({ deleted, skipped });
+// ---------- small util ----------
+function pickAuth(h: Request["headers"]): Record<string, string> {
+  const auth = h["authorization"];
+  return auth ? { Authorization: Array.isArray(auth) ? auth[0] : auth } : {};
 }

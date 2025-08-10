@@ -10,11 +10,9 @@ import userRoutes from "./routes/userRoutes";
 import actRoutes from "./routes/actRoutes";
 import eventRoutes from "./routes/eventRoutes";
 import placeRoutes from "./routes/placeRoutes";
-import imageRoutes from "./routes/imageRoutes";
+import imageRoutes from "./routes/imageRoutes"; // ✅ no alias import
 import logRoutes from "./routes/logRoutes";
-import townRoutes from "./routes/townRoutes"; // ✅ NEW
-
-// ✅ NEW: entity images (GET /acts/:id/images)
+import townRoutes from "./routes/townRoutes";
 import actImageRoutes from "./routes/actRoutes.images";
 
 dotenv.config();
@@ -23,6 +21,8 @@ const app = express();
 logger.debug("orchestrator: app.ts initializing", {
   NODE_ENV: process.env.NODE_ENV,
   PORT: process.env.PORT,
+  SVC_IMAGE_BASE: process.env.SVC_IMAGE_BASE,
+  PUBLIC_API_BASE: process.env.PUBLIC_API_BASE,
 });
 
 // CORS
@@ -30,45 +30,55 @@ app.use(
   cors({
     origin: "*", // tighten in production
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept"], // include Accept
   })
 );
 
 // Parsers
 app.use(express.json());
 
-// ✅ Public health route BEFORE auth gate
+// Public health BEFORE auth
 app.get("/", (_req, res) => res.send("Orchestrator is up"));
 
-// 🔒 Auth gate AFTER health
+// Public images ping BEFORE auth and BEFORE /images mount
+app.get("/images/ping", (_req, res) =>
+  res.json({ ok: true, where: "orchestrator-app" })
+);
+
+// 🔒 Auth gate AFTER health + ping
 app.use(
   authGate(authenticate, {
-    publicGetPaths: ["/"], // health check remains public
+    publicGetPaths: ["/"],
     publicGetRegexes: [
-      /\/acts\/search$/, // e.g. /acts/search
-      /\/towns\/typeahead$/, // e.g. /towns/typeahead
-      /\/acts\/[^/]+\/images$/, // ✅ allow viewing entity images
-      /\/images\/[^/]+\/data$/, // ✅ raw image bytes
-      /\/images\/[^/]+$/, // ✅ image metadata DTO
+      /\/acts\/search$/,
+      /\/towns\/typeahead$/,
+      /\/acts\/[^/]+\/images$/,
+      /\/images\/[^/]+\/data$/,
+      /\/images\/[^/]+$/,
     ],
     publicPostPaths: ["/auth/login", "/auth/signup"],
-    // If you want the client to batch image DTOs directly, also open this:
-    // publicPostRegexes: [/^\/images\/lookup$/],
+    publicPostRegexes: [/^\/images\/lookup$/], // ✅ add this
   })
 );
 
-// Routes
+// Routes (behind auth unless whitelisted)
 app.use("/auth", authRoutes);
 app.use("/users", userRoutes);
 
-// Mount /acts routes first, then the images sub-route (paths don't overlap)
+// Acts then entity images
 app.use("/acts", actRoutes);
-app.use("/acts", actImageRoutes); // ✅ exposes GET /acts/:id/images
+app.use("/acts", actImageRoutes);
 
 app.use("/events", eventRoutes);
 app.use("/places", placeRoutes);
 app.use("/logs", logRoutes);
+
+// ✅ Single mount for images (no /image alias)
+app.get("/images/ping", (_req, res) =>
+  res.json({ ok: true, where: "orchestrator-app" })
+);
 app.use("/images", imageRoutes);
-app.use("/towns", townRoutes); // ✅ NEW
+
+app.use("/towns", townRoutes);
 
 export default app;

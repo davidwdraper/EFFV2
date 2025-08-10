@@ -22,6 +22,9 @@ dependencies:
 
   # 🔍 Typeahead support for Hometown and Act search
   flutter_typeahead: ^5.2.0
+  file_picker: ^10.2.4
+  mime_type: ^1.0.1
+  image_picker: ^1.1.2
 
 dev_dependencies:
   flutter_test:

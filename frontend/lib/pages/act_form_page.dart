@@ -7,6 +7,7 @@ import '../widgets/scaffold_wrapper.dart';
 import '../widgets/rounded_card.dart';
 import '../widgets/ownership_info.dart';
 import '../widgets/submit_bar.dart';
+import '../widgets/image_manager.dart'; // ✅ NEW
 
 class ActFormPage extends StatefulWidget {
   final String? actId;
@@ -62,6 +63,11 @@ class _ActFormPageState extends State<ActFormPage> {
   }
 
   bool _argsLoaded = false;
+
+  // ✅ Image state + controller
+  final ImageManagerController _imgController = ImageManagerController();
+  List<String> _imageIds = []; // authoritative list from backend for this Act
+  bool _imagesDirty = false; // true if staged changes exist
 
   @override
   void initState() {
@@ -339,6 +345,14 @@ class _ActFormPageState extends State<ActFormPage> {
         [data['contactEmail'], data['eMailAddr'], data['email']]);
     _contactEmailCtrl.text = email;
 
+    // ✅ imageIds (from backend)
+    final img = data['imageIds'];
+    if (img is List) {
+      _imageIds = img.whereType<String>().toList();
+    } else {
+      _imageIds = [];
+    }
+
     _jwtUserId ??= _extractUserId(widget.jwt) ?? widget.jwt;
 
     if (_looksLikeJwt(_jwtUserId) &&
@@ -378,7 +392,13 @@ class _ActFormPageState extends State<ActFormPage> {
     }
   }
 
-  void _onCancelPressed() {
+  void _onCancelPressed() async {
+    // If there were staged uploads, ask image manager to discard its orphans.
+    await _imgController.discardOrphansIfAny(
+      apiBase: _apiBase,
+      jwt: widget.jwt,
+    );
+    if (!mounted) return;
     Navigator.of(context).maybePop();
   }
 
@@ -399,24 +419,32 @@ class _ActFormPageState extends State<ActFormPage> {
       _error = null;
     });
 
-    final payload = {
-      'name': _nameCtrl.text.trim(),
-      'eMailAddr': _contactEmailCtrl.text.trim().isNotEmpty
-          ? _contactEmailCtrl.text.trim()
-          : null,
-      if (_townId != null && _townId!.trim().isNotEmpty) 'townId': _townId,
-      if ((_homeTownLabel ?? '').trim().isNotEmpty) 'homeTown': _homeTownLabel,
-      if (!_hasActId && (_jwtUserId?.isNotEmpty ?? false))
-        'userCreateId': _jwtUserId,
-      if (!_hasActId && (_jwtUserId?.isNotEmpty ?? false))
-        'userOwnerId': _jwtUserId,
-      if (!_hasActId && (_jwtUserName?.isNotEmpty ?? false))
-        'createdByName': _jwtUserName,
-      if (!_hasActId && (_jwtUserName?.isNotEmpty ?? false))
-        'ownerName': _jwtUserName,
-    };
-
     try {
+      // ✅ Ask image manager for current staged order and deltas
+      final stage = _imgController.currentStage;
+      final orderedIds = stage?.orderedImageIds ?? _imageIds;
+
+      final payload = {
+        'name': _nameCtrl.text.trim(),
+        'eMailAddr': _contactEmailCtrl.text.trim().isNotEmpty
+            ? _contactEmailCtrl.text.trim()
+            : null,
+        if (_townId != null && _townId!.trim().isNotEmpty) 'townId': _townId,
+        if ((_homeTownLabel ?? '').trim().isNotEmpty)
+          'homeTown': _homeTownLabel,
+        if (!_hasActId && (_jwtUserId?.isNotEmpty ?? false))
+          'userCreateId': _jwtUserId,
+        if (!_hasActId && (_jwtUserId?.isNotEmpty ?? false))
+          'userOwnerId': _jwtUserId,
+        if (!_hasActId && (_jwtUserName?.isNotEmpty ?? false))
+          'createdByName': _jwtUserName,
+        if (!_hasActId && (_jwtUserName?.isNotEmpty ?? false))
+          'ownerName': _jwtUserName,
+
+        // ✅ include images (canonical order) on save
+        'imageIds': orderedIds,
+      };
+
       final headers = {
         'Content-Type': 'application/json',
         if (widget.jwt?.isNotEmpty ?? false)
@@ -440,6 +468,13 @@ class _ActFormPageState extends State<ActFormPage> {
       if (res.statusCode < 200 || res.statusCode >= 300) {
         throw Exception('Save failed (${res.statusCode})');
       }
+
+      // ✅ Finalize staged image changes AFTER the act is saved
+      await _imgController.finalizeAfterParentSave(
+        apiBase: _apiBase,
+        jwt: widget.jwt,
+      );
+
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } catch (e) {
@@ -471,7 +506,8 @@ class _ActFormPageState extends State<ActFormPage> {
                     Expanded(
                       child: SingleChildScrollView(
                         controller: _scrollController,
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                        padding: const EdgeInsets.fromLTRB(
+                            12, 12, 12, 12 + _bottomBarHeight),
                         child: Form(
                           key: _formKey,
                           child: Column(
@@ -545,6 +581,20 @@ class _ActFormPageState extends State<ActFormPage> {
                                   border: OutlineInputBorder(),
                                 ),
                                 keyboardType: TextInputType.emailAddress,
+                              ),
+
+                              // 🔽🔽🔽 IMAGE MANAGER mounts here
+                              const SizedBox(height: 16),
+                              ImageManager(
+                                key: const ValueKey('act_image_manager'),
+                                apiBase: _apiBase,
+                                jwt: widget.jwt,
+                                initialImageIds: _imageIds,
+                                onStageChange: (stage) {
+                                  _imagesDirty = stage.dirty;
+                                  // No setState needed unless you want to reflect elsewhere
+                                },
+                                controller: _imgController,
                               ),
                             ],
                           ),

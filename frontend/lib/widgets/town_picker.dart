@@ -10,7 +10,7 @@ class TownPicker extends StatelessWidget {
   final TownOption? initial;
   final void Function(TownOption) onSelected;
   final String label;
-  final FocusNode? focusNode; // NEW
+  final VoidCallback? onFieldTap; // notify parent when field gets focus/tapped
 
   const TownPicker({
     super.key,
@@ -19,7 +19,7 @@ class TownPicker extends StatelessWidget {
     required this.onSelected,
     this.initial,
     this.label = 'Hometown (... or nearest)',
-    this.focusNode,
+    this.onFieldTap,
   });
 
   Future<List<TownOption>> _fetch(String pattern) async {
@@ -27,6 +27,7 @@ class TownPicker extends StatelessWidget {
     if (q.length < 3) return [];
     final uri = Uri.parse('$apiBase/towns/typeahead')
         .replace(queryParameters: {'q': q, 'limit': '20'});
+
     try {
       final res = await http.get(uri);
       if (res.statusCode != 200) return [];
@@ -48,30 +49,41 @@ class TownPicker extends StatelessWidget {
       controller: controller,
       suggestionsCallback: _fetch,
       debounceDuration: const Duration(milliseconds: 200),
-      decorationBuilder: (context, child) => Material(
-        type: MaterialType.card,
-        elevation: 4,
-        borderRadius: BorderRadius.circular(8),
-        child: child,
-      ),
+      decorationBuilder: (context, child) {
+        return Material(
+          type: MaterialType.card,
+          elevation: 4,
+          borderRadius: BorderRadius.circular(8),
+          child: child,
+        );
+      },
       constraints: const BoxConstraints(maxHeight: 280),
       offset: const Offset(0, 8),
-      itemBuilder: (context, suggestion) => ListTile(
-        dense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        title: Text(suggestion.label, style: const TextStyle(fontSize: 14)),
-      ),
-      onSelected: onSelected,
-      builder: (context, fieldController, fieldFocusNode) => TextField(
-        controller: fieldController,
-        focusNode: focusNode ?? fieldFocusNode, // allow external listener
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
+      itemBuilder: (context, TownOption suggestion) {
+        return ListTile(
+          dense: true, // compact rows
           contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-        ),
-      ),
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          title: Text(
+            suggestion.label,
+            style: const TextStyle(fontSize: 14),
+          ),
+        );
+      },
+      onSelected: onSelected,
+      builder: (context, fieldController, fieldFocusNode) {
+        return TextField(
+          controller: fieldController,
+          focusNode: fieldFocusNode, // TypeAhead manages focus
+          onTap: onFieldTap, // parent clears ≤ 12 list on tap
+          decoration: InputDecoration(
+            labelText: label,
+            border: const OutlineInputBorder(),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+          ),
+        );
+      },
       loadingBuilder: (context) => const Padding(
         padding: EdgeInsets.all(12),
         child: Row(
@@ -92,7 +104,7 @@ class TownPicker extends StatelessWidget {
       ),
       errorBuilder: (context, error) => Padding(
         padding: const EdgeInsets.all(12),
-        child: Text('Error: $error', style: const TextStyle(color: Colors.red)),
+        child: Text('Error: $error', style: TextStyle(color: Colors.red)),
       ),
     );
   }

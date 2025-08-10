@@ -73,22 +73,21 @@ async function resolveTownFields(input: {
 
 /**
  * ---- BY-HOMETOWN: GET /acts/by-hometown ----
- * Decides whether to return ALL Acts for a selected hometown.
+ * Decides whether to return ALL Acts near a selected hometown.
  * Query:
- *   lat (required): number  -> lat of the selected town
- *   lng (required): number  -> lng of the selected town
- *   q   (optional): string  -> ignored when returning "all"
- *   limit (optional): number (default 20) -> used only for the fallback path
- *   toleranceMeters (optional): number -> overrides default hometown geo tolerance
+ *   lat (required): number  -> town latitude
+ *   lng (required): number  -> town longitude
+ *   limit (optional): number (default 20) -> only echoed when "limited"
+ *   toleranceMeters (optional): number -> small circle mode (default)
+ *   miles (optional): number -> radius mode (e.g., 50). If provided, overrides toleranceMeters.
  *
  * Behavior:
- *   If total Acts for the hometown < 12:
+ *   If total Acts within the circle < 12:
  *     -> return { status: "all", total, items: [...] } (items sorted by name)
  *   Else:
  *     -> return { status: "limited", total }
  *
- * NOTE: We detect "same hometown" by proximity to the Town point saved in `homeTownLoc`.
- *       We use $geoWithin+$centerSphere for both count and fetch to avoid Mongo's $near-in-count error.
+ * Uses $geoWithin + $centerSphere to avoid $near-in-count errors.
  */
 router.get("/by-hometown", async (req: Request, res: Response) => {
   try {
@@ -101,16 +100,26 @@ router.get("/by-hometown", async (req: Request, res: Response) => {
         .json({ error: "lat and lng are required numeric query parameters" });
     }
 
-    // ✅ Configurable geo tolerance with sane min/max guards
-    const toleranceParam = toNum(req.query.toleranceMeters);
-    const HOMETOWN_TOLERANCE_METERS = Math.min(
-      Math.max(toleranceParam ?? DEFAULT_HOMETOWN_MATCH_METERS, 10), // floor: 10m
-      200 // ceiling: 200m
-    );
+    // Determine radius in meters: miles overrides toleranceMeters
+    const milesParam = toNum(req.query.miles);
+    let radiusMeters: number;
+    let mode: "miles" | "tolerance" = "tolerance";
 
-    // Use $geoWithin + $centerSphere (radius in radians)
+    if (milesParam != null && milesParam > 0) {
+      mode = "miles";
+      radiusMeters = milesToMeters(milesParam);
+    } else {
+      const toleranceParam = toNum(req.query.toleranceMeters);
+      const HOMETOWN_TOLERANCE_METERS = Math.min(
+        Math.max(toleranceParam ?? DEFAULT_HOMETOWN_MATCH_METERS, 10), // floor: 10m
+        200 // ceiling: 200m
+      );
+      radiusMeters = HOMETOWN_TOLERANCE_METERS;
+    }
+
+    // $centerSphere expects radius in radians
     const EARTH_RADIUS_METERS = 6378137; // WGS84
-    const radiusInRadians = HOMETOWN_TOLERANCE_METERS / EARTH_RADIUS_METERS;
+    const radiusInRadians = radiusMeters / EARTH_RADIUS_METERS;
 
     const withinFilter = {
       homeTownLoc: {
@@ -123,7 +132,7 @@ router.get("/by-hometown", async (req: Request, res: Response) => {
     const total = await Act.countDocuments(withinFilter);
 
     if (total < 12) {
-      // Fetch ALL for this hometown, project lean DTO, default owner, enrich if enabled
+      // Fetch ALL within the circle
       const itemsRaw = await Act.find(withinFilter)
         .select({
           name: 1,
@@ -134,7 +143,7 @@ router.get("/by-hometown", async (req: Request, res: Response) => {
           userCreateId: 1,
           userOwnerId: 1,
         })
-        .limit(1000) // practical cap; hometowns are small
+        .limit(1000) // practical cap
         .lean();
 
       const itemsMapped = itemsRaw.map((r: any) => ({
@@ -146,7 +155,7 @@ router.get("/by-hometown", async (req: Request, res: Response) => {
         imageIds: r.imageIds,
         userCreateId: r.userCreateId,
         userOwnerId: r.userOwnerId || r.userCreateId,
-        distanceMeters: 0, // not needed here; client shows name + hometown
+        distanceMeters: 0,
       }));
 
       const itemsEnriched = ENRICH_USER_NAMES
@@ -162,7 +171,9 @@ router.get("/by-hometown", async (req: Request, res: Response) => {
         status: "all",
         total,
         items: itemsEnriched,
-        toleranceMeters: HOMETOWN_TOLERANCE_METERS,
+        ...(mode === "miles"
+          ? { miles: milesParam }
+          : { toleranceMeters: radiusMeters }),
       });
     }
 
@@ -171,7 +182,9 @@ router.get("/by-hometown", async (req: Request, res: Response) => {
       status: "limited",
       total,
       limit, // echo for visibility
-      toleranceMeters: HOMETOWN_TOLERANCE_METERS,
+      ...(mode === "miles"
+        ? { miles: milesParam }
+        : { toleranceMeters: radiusMeters }),
     });
   } catch (err: any) {
     console.error("[acts/by-hometown] error:", err);

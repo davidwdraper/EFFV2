@@ -1,3 +1,4 @@
+// lib/pages/acts_page.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
@@ -45,34 +46,24 @@ class ActsPage extends StatefulWidget {
 }
 
 class _ActsPageState extends State<ActsPage> {
+  static const double _listMaxHeight = 280.0; // ← double
+  static const int _fallbackLimit = 20;
+  static const int _allActsPracticalCap = 1000;
+  static const int _minChars = 3;
+  static const int _radiusMiles = 50; // ← radius mode for by-hometown
+
   final TextEditingController _hometownController = TextEditingController();
   final TextEditingController _actSearchController = TextEditingController();
 
-  // focus node so we can clear ≤ 12 list on new town entry
-  final FocusNode _townFocusNode = FocusNode();
-
   TownOption? _selectedTown;
 
+  // State for the “≤ 12 acts” flow
   bool _checkingTownActs = false;
   bool _showAllForTown = false;
   List<ActOption> _allTownActs = const [];
 
   @override
-  void initState() {
-    super.initState();
-    _townFocusNode.addListener(() {
-      if (_townFocusNode.hasFocus) {
-        setState(() {
-          _showAllForTown = false;
-          _allTownActs = const [];
-        });
-      }
-    });
-  }
-
-  @override
   void dispose() {
-    _townFocusNode.dispose();
     _hometownController.dispose();
     _actSearchController.dispose();
     super.dispose();
@@ -87,6 +78,7 @@ class _ActsPageState extends State<ActsPage> {
     return headers;
   }
 
+  /// Ask backend if we should return ALL acts for the selected hometown (radius mode).
   Future<void> _checkAllForSelectedTown() async {
     final town = _selectedTown;
     if (town == null) return;
@@ -102,8 +94,8 @@ class _ActsPageState extends State<ActsPage> {
         queryParameters: {
           'lat': town.lat.toString(),
           'lng': town.lng.toString(),
-          'q': '',
-          'limit': '20',
+          'miles': '$_radiusMiles', // ← radius mode
+          'limit': '$_allActsPracticalCap',
         },
       );
 
@@ -119,35 +111,50 @@ class _ActsPageState extends State<ActsPage> {
               .map((e) => ActOption.fromJson(e))
               .toList()
             ..sort(
-                (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+              (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+            );
           setState(() {
             _showAllForTown = true;
             _allTownActs = items;
           });
+        } else {
+          setState(() {
+            _showAllForTown = false;
+            _allTownActs = const [];
+          });
         }
+      } else {
+        setState(() {
+          _showAllForTown = false;
+          _allTownActs = const [];
+        });
       }
     } catch (_) {
-      // ignore errors → fallback
+      setState(() {
+        _showAllForTown = false;
+        _allTownActs = const [];
+      });
     } finally {
-      if (mounted) {
-        setState(() => _checkingTownActs = false);
-      }
+      if (mounted) setState(() => _checkingTownActs = false);
     }
   }
 
+  // Legacy typeahead (when backend says there are 12+ acts)
   Future<List<ActOption>> _fetchActsForTownLegacy({
     required TownOption town,
     required String pattern,
-    int limit = 20,
+    int limit = _fallbackLimit,
   }) async {
     final q = pattern.trim();
-    if (q.length < 3) return [];
+    if (q.length < _minChars) return [];
     final uri = Uri.parse('${widget.apiBase}/acts/search').replace(
       queryParameters: {
         'lat': town.lat.toString(),
         'lng': town.lng.toString(),
         'q': q,
         'limit': limit.toString(),
+        'miles':
+            '$_radiusMiles', // keep search radius consistent with “all” check
       },
     );
 
@@ -223,29 +230,72 @@ class _ActsPageState extends State<ActsPage> {
     }
   }
 
+  // --- Act Name input with Add button (always visible above ≤12 list) ---
+  Widget _actNameInputRow({required bool enabled}) {
+    final canAdd = enabled && _actSearchController.text.trim().isNotEmpty;
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _actSearchController,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+              labelText: 'Act Name',
+              border: OutlineInputBorder(),
+              contentPadding:
+                  EdgeInsets.symmetric(horizontal: 12.0, vertical: 14.0),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8.0),
+        TextButton.icon(
+          onPressed: canAdd ? _goToCreateAct : null,
+          icon: const Icon(Icons.add),
+          label: const Text('Add'),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Rebuild when auth state changes (e.g., after login)
     context.watch<AuthProvider>();
 
     return ScaffoldWrapper(
       title: null,
-      contentPadding: const EdgeInsets.all(4),
+      contentPadding:
+          const EdgeInsets.symmetric(horizontal: 4.0, vertical: 4.0),
       child: ListView(
         padding: EdgeInsets.zero,
         children: [
           RoundedCard(
-            padding: const EdgeInsets.all(12),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                const Text('Acts',
-                    style:
-                        TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 10),
+                const Text(
+                  'Acts',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.left,
+                ),
+                const SizedBox(height: 10.0),
+
+                // Hometown picker
                 TownPicker(
                   apiBase: widget.apiBase,
                   controller: _hometownController,
-                  focusNode: _townFocusNode,
+                  onFieldTap: () {
+                    // Clear the ≤ 12 list immediately when the field is focused/tapped
+                    if (_showAllForTown || _allTownActs.isNotEmpty) {
+                      setState(() {
+                        _showAllForTown = false;
+                        _allTownActs = const [];
+                      });
+                    }
+                  },
                   onSelected: (town) {
                     setState(() {
                       _selectedTown = town;
@@ -255,102 +305,143 @@ class _ActsPageState extends State<ActsPage> {
                     _checkAllForSelectedTown();
                   },
                 ),
-                const SizedBox(height: 12),
+
+                const SizedBox(height: 12.0),
+
                 if (_selectedTown != null) ...[
                   if (_checkingTownActs)
                     const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
+                      padding: EdgeInsets.symmetric(vertical: 8.0),
                       child: Row(
                         children: [
                           SizedBox(
-                            height: 18,
-                            width: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                            height: 18.0,
+                            width: 18.0,
+                            child: CircularProgressIndicator(strokeWidth: 2.0),
                           ),
-                          SizedBox(width: 12),
-                          Text('Checking acts…'),
+                          SizedBox(width: 12.0),
+                          Text('Checking acts for this hometown…'),
                         ],
                       ),
                     )
-                  else if (_showAllForTown)
-                    Material(
-                      type: MaterialType.card,
-                      elevation: 4,
-                      borderRadius: BorderRadius.circular(8),
-                      child: ListView.separated(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        itemCount: _allTownActs.length,
-                        separatorBuilder: (_, __) =>
-                            const Divider(height: 1, indent: 12, endIndent: 12),
-                        itemBuilder: (context, i) {
-                          final act = _allTownActs[i];
-                          return ListTile(
-                            dense: true,
-                            title: Text(act.name),
-                            subtitle: Text(act.homeTown),
-                            onTap: () => _editAct(act),
-                          );
-                        },
-                      ),
-                    )
-                  else
-                    TypeAheadField<ActOption>(
-                      controller: _actSearchController,
-                      suggestionsCallback: (pattern) => _fetchActsForTownLegacy(
-                          town: _selectedTown!, pattern: pattern),
-                      debounceDuration: const Duration(milliseconds: 200),
-                      decorationBuilder: (context, child) => Material(
+                  else if (_showAllForTown) ...[
+                    // Always-visible Act Name + Add button
+                    _actNameInputRow(enabled: true),
+                    const SizedBox(height: 8.0),
+
+                    // Show ALL acts list (compact)
+                    ConstrainedBox(
+                      constraints:
+                          const BoxConstraints(maxHeight: _listMaxHeight),
+                      child: Material(
                         type: MaterialType.card,
                         elevation: 4,
                         borderRadius: BorderRadius.circular(8),
-                        child: child,
+                        child: ListView.separated(
+                          padding: const EdgeInsets.symmetric(vertical: 4.0),
+                          itemCount: _allTownActs.length,
+                          separatorBuilder: (_, __) => const Divider(
+                            height: 1.0,
+                            indent: 12.0,
+                            endIndent: 12.0,
+                          ),
+                          itemBuilder: (context, i) {
+                            final act = _allTownActs[i];
+                            return ListTile(
+                              dense: true,
+                              minVerticalPadding: 6.0,
+                              title: Text(act.name),
+                              subtitle: Text(act.homeTown),
+                              onTap: () => _editAct(act),
+                            );
+                          },
+                        ),
                       ),
-                      constraints: const BoxConstraints(maxHeight: 280),
-                      offset: const Offset(0, 8),
-                      itemBuilder: (context, suggestion) {
+                    ),
+                  ] else
+                    // Fallback to legacy typeahead when 12+
+                    TypeAheadField<ActOption>(
+                      controller: _actSearchController,
+                      suggestionsCallback: (pattern) => _fetchActsForTownLegacy(
+                        town: _selectedTown!,
+                        pattern: pattern,
+                        limit: _fallbackLimit,
+                      ),
+                      debounceDuration: const Duration(milliseconds: 200),
+                      decorationBuilder: (context, child) {
+                        return Material(
+                          type: MaterialType.card,
+                          elevation: 4,
+                          borderRadius: BorderRadius.circular(8),
+                          child: child,
+                        );
+                      },
+                      constraints:
+                          const BoxConstraints(maxHeight: _listMaxHeight),
+                      offset: const Offset(0.0, 8.0),
+                      itemBuilder: (context, ActOption suggestion) {
                         final miles = suggestion.distanceMeters / 1609.34;
                         return ListTile(
                           dense: true,
+                          minVerticalPadding: 6.0,
                           title: Text(suggestion.name),
                           subtitle: Text(
-                              '${suggestion.homeTown} • ${miles.toStringAsFixed(1)} mi'),
+                            '${suggestion.homeTown} • ${miles.toStringAsFixed(1)} mi',
+                          ),
                           onTap: () => _editAct(suggestion),
                         );
                       },
-                      onSelected: _editAct,
-                      builder: (context, controller, focusNode) => TextField(
-                        controller: controller,
-                        focusNode: focusNode,
-                        decoration: const InputDecoration(
-                          labelText: 'Search Act Name (3+ chars)',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      emptyBuilder: (context) => Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('No Acts Found!'),
-                          TextButton.icon(
-                            onPressed: _goToCreateAct,
-                            icon: const Icon(Icons.add),
-                            label: const Text('Add'),
+                      onSelected: (ActOption selection) => _editAct(selection),
+                      builder: (context, controller, focusNode) {
+                        // Keep Add reachable even when overlay is open via suffix
+                        final canAdd = controller.text.trim().isNotEmpty &&
+                            _selectedTown != null;
+                        return TextField(
+                          controller: controller,
+                          focusNode: focusNode,
+                          onChanged: (_) => setState(() {}),
+                          decoration: InputDecoration(
+                            labelText: 'Search Act Name (${_minChars}+ chars)',
+                            border: const OutlineInputBorder(),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12.0,
+                              vertical: 14.0,
+                            ),
+                            suffixIcon: IconButton(
+                              tooltip: 'Add',
+                              onPressed: canAdd ? _goToCreateAct : null,
+                              icon: const Icon(Icons.add),
+                            ),
                           ),
-                        ],
+                        );
+                      },
+                      // Add button is not here anymore (so it can’t be covered)
+                      emptyBuilder: (context) => const Padding(
+                        padding: EdgeInsets.symmetric(
+                            horizontal: 12.0, vertical: 8.0),
+                        child: Text(
+                            'No Acts Found. Type a name and tap + to add.'),
                       ),
                       loadingBuilder: (context) => const Padding(
-                        padding: EdgeInsets.all(12),
+                        padding: EdgeInsets.all(12.0),
                         child: Row(
                           children: [
                             SizedBox(
-                              height: 18,
-                              width: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              height: 18.0,
+                              width: 18.0,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2.0),
                             ),
-                            SizedBox(width: 12),
+                            SizedBox(width: 12.0),
                             Text('Searching…'),
                           ],
+                        ),
+                      ),
+                      errorBuilder: (context, error) => Padding(
+                        padding: const EdgeInsets.all(12.0),
+                        child: Text(
+                          'Error: $error',
+                          style: const TextStyle(color: Colors.red),
                         ),
                       ),
                     ),

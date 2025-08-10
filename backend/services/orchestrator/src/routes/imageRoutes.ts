@@ -1,3 +1,4 @@
+// backend/services/orchestrator/src/routes/imageRoutes.ts
 import { Router, Request, Response } from "express";
 import axios from "axios";
 import multer from "multer";
@@ -6,7 +7,12 @@ import { logger } from "@shared/utils/logger";
 import { authenticate } from "@shared/middleware/authenticate";
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage() });
+
+// Multer: 8 MB cap to match image service
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+});
 
 // Service bases
 const IMAGE_BASE = process.env.SVC_IMAGE_BASE!; // e.g., http://localhost:4005
@@ -81,12 +87,14 @@ export async function getImageDataHandler(req: Request, res: Response) {
     }
 
     const ct = upstream.headers["content-type"] || "application/octet-stream";
+    const cl = upstream.headers["content-length"];
     const cc =
       upstream.headers["cache-control"] ||
       "public, max-age=31536000, immutable";
     res.setHeader("Content-Type", String(ct));
+    if (cl) res.setHeader("Content-Length", String(cl));
     res.setHeader("Cache-Control", String(cc));
-    res.status(200);
+    res.status(upstream.status); // usually 200
     upstream.data.pipe(res);
   } catch (err: any) {
     const status = err?.response?.status ?? 500;
@@ -123,7 +131,6 @@ export async function getImageMetaHandler(req: Request, res: Response) {
 export async function postImagesLookupHandler(req: Request, res: Response) {
   const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids : [];
   if (!ids.length) return res.json([]);
-
   try {
     const { data: raws } = await axios.post(`${IMAGE_BASE}/images/lookup`, {
       ids,
@@ -156,10 +163,11 @@ export async function postImagesLookupHandler(req: Request, res: Response) {
 export async function postUploadProxy(req: Request, res: Response) {
   try {
     const file = (req as any).file;
-    if (!file)
+    if (!file) {
       return res
         .status(400)
         .json({ error: "file is required (multipart field 'file')" });
+    }
 
     const form = new FormData();
     form.append("file", file.buffer, {
@@ -170,13 +178,25 @@ export async function postUploadProxy(req: Request, res: Response) {
 
     const uploadBatchId = (req.body?.uploadBatchId ?? "").toString();
     if (uploadBatchId) form.append("uploadBatchId", uploadBatchId);
+    if (typeof req.body?.notes === "string" && req.body.notes.trim()) {
+      form.append("notes", req.body.notes.trim());
+    }
+
+    // ✅ Forward the authenticated user id so image service can satisfy required createdBy
+    const userId =
+      (req as any).user?.id ||
+      (req as any).user?._id ||
+      (req as any).user?.userId;
+
+    const headers: Record<string, string> = {
+      ...form.getHeaders(),
+      Accept: "application/json",
+      Authorization: (req.headers.authorization as string) || "",
+      ...(userId ? { "x-user-id": String(userId) } : {}),
+    };
 
     const upstream = await axios.post(`${IMAGE_BASE}/image`, form, {
-      headers: {
-        ...form.getHeaders(),
-        Accept: "application/json",
-        Authorization: (req.headers.authorization as string) || "",
-      },
+      headers,
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
       validateStatus: () => true,
@@ -250,7 +270,7 @@ router.get("/:id([a-fA-F0-9]{24})/data", getImageDataHandler);
 router.get("/:id([a-fA-F0-9]{24})", getImageMetaHandler);
 
 // Mutating endpoints (require auth here; authGate also enforces)
-router.post("/", authenticate, upload.single("file"), postUploadProxy); // ✅ THIS is POST /images
+router.post("/", authenticate, upload.single("file"), postUploadProxy); // POST /images
 router.post("/finalize", authenticate, postFinalizeProxy);
 router.post("/unlink", authenticate, postUnlinkProxy);
 router.post("/discard", authenticate, postDiscardProxy);

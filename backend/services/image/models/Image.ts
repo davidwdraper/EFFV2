@@ -33,7 +33,10 @@ export interface IImage {
 const ImageSchema = new Schema<IImage>(
   {
     uploadBatchId: { type: String, index: true },
-    image: { type: Buffer, required: true },
+
+    // Don't fetch the big blob unless explicitly selected
+    image: { type: Buffer, required: true, select: false },
+
     contentType: { type: String },
     originalFilename: { type: String },
 
@@ -42,8 +45,9 @@ const ImageSchema = new Schema<IImage>(
     height: { type: Number },
     checksum: { type: String, index: true },
 
-    creationDate: { type: Date, default: Date.now, index: -1 },
+    creationDate: { type: Date, default: Date.now }, // index via schema.index below
     expiresAtDate: { type: Date }, // TTL index below
+
     state: {
       type: String,
       enum: ["orphan", "linked", "deleted"],
@@ -68,6 +72,15 @@ const ImageSchema = new Schema<IImage>(
   {
     timestamps: false,
     versionKey: false,
+    toJSON: {
+      virtuals: false,
+      transform(_doc, ret) {
+        ret.id = ret._id?.toString?.();
+        delete ret._id;
+        delete ret.image; // never leak raw bytes in DTOs
+        return ret;
+      },
+    },
   }
 );
 
@@ -75,8 +88,27 @@ const ImageSchema = new Schema<IImage>(
 ImageSchema.index({ expiresAtDate: 1 }, { expireAfterSeconds: 0 });
 
 // Helpful secondary indexes
+ImageSchema.index({ creationDate: -1 });
 ImageSchema.index({ createdBy: 1, creationDate: -1 });
 ImageSchema.index({ state: 1, creationDate: -1 });
 ImageSchema.index({ uploadBatchId: 1, creationDate: -1 });
+
+// Optional de-dupe for identical uploads (skip deleted + require checksum)
+ImageSchema.index(
+  { createdBy: 1, checksum: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      checksum: { $type: "string" },
+      state: { $ne: "deleted" },
+    },
+  }
+);
+
+// Auto-fill bytes if missing
+ImageSchema.pre("save", function (next) {
+  if (!this.bytes && this.image) this.bytes = this.image.length;
+  next();
+});
 
 export const ImageModel = model<IImage>("Image", ImageSchema);

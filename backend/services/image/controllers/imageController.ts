@@ -1,159 +1,111 @@
+// backend/services/image/src/controllers/imageController.ts
 import type { Request, Response } from "express";
-import axios from "axios";
-import FormData from "form-data";
-import { logger } from "@shared/utils/logger";
-import { ImageModel } from "../models/Image"; // adjust path if different
+import { Types } from "mongoose";
+import { ImageModel } from "../models/Image";
 
-const IMAGE_BASE = process.env.SVC_IMAGE_BASE!; // e.g. http://image:4005
-const USER_BASE = process.env.SVC_USER_BASE!; // e.g. http://user:4001
-const SELF_BASE = process.env.PUBLIC_API_BASE!; // e.g. http://localhost:4000
+const isHex24 = (s?: string) => !!s && /^[a-fA-F0-9]{24}$/.test(s);
 
-// ---------- helpers ----------
-const toDisplayName = (u: any) => {
-  if (!u) return null;
-  const f = (u.firstname ?? u.firstName ?? "").trim();
-  const l = (u.lastname ?? u.lastName ?? "").trim();
-  const both = `${f} ${l}`.trim();
-  return both || u.eMailAddr || u.email || null;
-};
-
-async function fetchUserNames(ids: string[]): Promise<Record<string, string>> {
-  if (!ids.length) return {};
-  try {
-    const { data } = await axios.post(`${USER_BASE}/users/lookup`, { ids });
-    const map: Record<string, string> = {};
-    for (const u of Array.isArray(data) ? data : []) {
-      const id = u.id || u._id;
-      if (id) map[id] = toDisplayName(u);
-    }
-    return map;
-  } catch (err: any) {
-    logger.error("[orchestrator] fetchUserNames failed", { msg: err?.message });
-    return {};
-  }
-}
-
-type RawImage = {
-  id: string;
-  _id?: string;
-  creationDate?: string | Date;
+// Lean doc shape (adjust if your schema differs)
+type ImgDoc = {
+  _id: any;
+  creationDate?: Date | string | null;
   notes?: string | null;
-  createdBy?: string | null;
-  state?: number | string;
+  createdBy?: any;
+  contentType?: string | null;
+  originalFilename?: string | null;
+  state?: any;
+  image?: Buffer;
 };
 
-function toDto(raw: RawImage, userNames: Record<string, string>) {
-  const id = (raw.id as string) || (raw._id as string) || "";
-  return {
-    id,
-    url: `${SELF_BASE}/images/${id}/data`,
-    comment: raw.notes ?? null,
-    createdByName: raw.createdBy ? userNames[raw.createdBy] ?? null : null,
-    createdAt: raw.creationDate ?? null,
-    state: raw.state ?? null,
-  };
-}
-
-// ---------- READ CONTROLLERS ----------
+// ---------- READ ----------
 export async function getImageMeta(req: Request, res: Response) {
   const { id } = req.params;
-  try {
-    const { data: raw } = await axios.get(`${IMAGE_BASE}/images/${id}`, {
-      // pass auth if your image svc needs it for reads
-      headers: pickAuth(req.headers),
-    });
-    const userIds =
-      raw?.createdBy && typeof raw.createdBy === "string"
-        ? [raw.createdBy]
-        : [];
-    const userNames = await fetchUserNames(userIds);
-    return res.json(toDto(raw as RawImage, userNames));
-  } catch (err: any) {
-    const status = err?.response?.status ?? 500;
-    logger.error("[orchestrator] getImageMeta failed", {
-      id,
-      status,
-      msg: err?.message,
-    });
-    return res.status(status).json({ error: "Failed to fetch image metadata" });
-  }
+  if (!isHex24(id)) return res.status(400).json({ error: "Invalid id" });
+
+  const doc = (await ImageModel.findById(id).lean()) as ImgDoc | null;
+  if (!doc) return res.status(404).json({ error: "Not found" });
+
+  return res.json({
+    id: String(doc._id),
+    creationDate: doc.creationDate ?? null,
+    notes: doc.notes ?? null,
+    createdBy: doc.createdBy ? String(doc.createdBy) : null,
+    contentType: doc.contentType ?? null,
+    originalFilename: doc.originalFilename ?? null,
+    state: doc.state ?? null,
+  });
 }
 
 export async function getImageData(req: Request, res: Response) {
   const { id } = req.params;
-  try {
-    const resp = await axios.get(`${IMAGE_BASE}/images/${id}/data`, {
-      responseType: "arraybuffer",
-      headers: pickAuth(req.headers),
-    });
-    res.setHeader(
-      "Content-Type",
-      (resp.headers["content-type"] as string) || "application/octet-stream"
-    );
-    res.setHeader(
-      "Cache-Control",
-      (resp.headers["cache-control"] as string) ||
-        "public, max-age=31536000, immutable"
-    );
-    return res.send(Buffer.from(resp.data));
-  } catch (err: any) {
-    const status = err?.response?.status ?? 500;
-    logger.error("[orchestrator] getImageData failed", {
-      id,
-      status,
-      msg: err?.message,
-    });
-    return res.status(status).json({ error: "Failed to fetch image data" });
+  if (!isHex24(id)) return res.status(400).json({ error: "Invalid id" });
+
+  // IMPORTANT: fetch as a doc (no lean) and opt-in to hidden blob
+  const doc = await ImageModel.findById(id).select("+image contentType").exec();
+
+  if (!doc) return res.status(404).json({ error: "Not found" });
+
+  const buf = doc.image as unknown as Buffer;
+  if (!Buffer.isBuffer(buf)) {
+    return res.status(500).json({ error: "Image binary missing" });
   }
+
+  const ct = doc.contentType || "application/octet-stream";
+  res.setHeader("Content-Type", ct);
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("Content-Length", String(buf.byteLength));
+  return res.status(200).end(buf);
 }
 
 export async function postLookup(req: Request, res: Response) {
-  const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  // Typed + validated ids
+  const ids: string[] = (
+    Array.isArray(req.body?.ids) ? req.body.ids : []
+  ).filter((x: unknown): x is string => typeof x === "string" && isHex24(x));
+
   if (!ids.length) return res.json([]);
-  try {
-    const { data: raws } = await axios.post(
-      `${IMAGE_BASE}/images/lookup`,
-      { ids },
-      { headers: pickAuth(req.headers) }
-    );
 
-    const userIds: string[] = [
-      ...new Set(
-        (raws as any[])
-          .map((r) => r?.createdBy)
-          .filter((id): id is string => typeof id === "string" && id.length > 0)
-      ),
-    ];
+  const objIds = ids.map((s) => new Types.ObjectId(s));
+  const docs = (await ImageModel.find({
+    _id: { $in: objIds },
+  }).lean()) as ImgDoc[];
 
-    const userNames = await fetchUserNames(userIds);
-    const dtos = (raws as RawImage[]).map((r) => toDto(r, userNames));
-    return res.json(dtos);
-  } catch (err: any) {
-    const status = err?.response?.status ?? 500;
-    logger.error("[orchestrator] postLookup failed", {
-      status,
-      msg: err?.message,
-    });
-    return res.status(status).json({ error: "Failed to fetch images" });
-  }
+  // Preserve input order; skip missing
+  const map = new Map<string, ImgDoc>(
+    docs.map((d) => [String(d._id), d] as const)
+  );
+
+  const out = ids
+    .map((id) => map.get(id))
+    .filter((d): d is ImgDoc => Boolean(d))
+    .map((doc) => ({
+      id: String(doc._id),
+      creationDate: doc.creationDate ?? null,
+      notes: doc.notes ?? null,
+      createdBy: doc.createdBy ? String(doc.createdBy) : null,
+      contentType: doc.contentType ?? null,
+      originalFilename: doc.originalFilename ?? null,
+      state: doc.state ?? null,
+    }));
+
+  return res.json(out);
 }
 
-// ---------- WRITE CONTROLLERS ----------
-const isHex24 = (s?: string) => !!s && /^[a-fA-F0-9]{24}$/.test(s);
-
+// ---------- WRITE ----------
 export async function postUpload(req: Request, res: Response) {
   try {
     const file = (req as any).file as Express.Multer.File | undefined;
-    if (!file)
+    if (!file) {
       return res
         .status(400)
         .json({ error: "file is required (multipart field 'file')" });
+    }
 
-    // Get user id from header (for direct svc tests) or from auth if you add it later
+    // createdBy is required by your schema
     const userId =
-      (req.headers["x-user-id"] as string) ||
       (req as any).user?._id ||
-      (req as any).user?.id;
+      (req as any).user?.id ||
+      (req.headers["x-user-id"] as string);
 
     if (!isHex24(userId)) {
       return res
@@ -166,11 +118,14 @@ export async function postUpload(req: Request, res: Response) {
       creationDate: new Date(),
       notes:
         typeof req.body?.notes === "string" ? req.body.notes.trim() : undefined,
-      createdBy: userId, // required by schema
+      createdBy: new Types.ObjectId(userId),
       originalFilename: file.originalname ?? undefined,
       contentType: file.mimetype ?? undefined,
+      // uploadBatchId: req.body?.uploadBatchId ?? undefined, // add to schema if desired
+      // state: "pending",
     } as any);
 
+    res.setHeader("Location", `/images/${doc._id.toString()}`);
     return res.status(201).json({
       id: doc._id.toString(),
       originalFilename: file.originalname ?? null,
@@ -185,72 +140,29 @@ export async function postUpload(req: Request, res: Response) {
   }
 }
 
-export async function postFinalize(req: Request, res: Response) {
-  try {
-    const { imageIds } = req.body ?? {};
-    const { data, status } = await axios.post(
-      `${IMAGE_BASE}/images/finalize`,
-      { imageIds: Array.isArray(imageIds) ? imageIds : [] },
-      { headers: pickAuth(req.headers) }
-    );
-    return res.status(status).json(data);
-  } catch (err: any) {
-    const status = err?.response?.status ?? 500;
-    logger.error("[orchestrator] postFinalize failed", {
-      status,
-      msg: err?.message,
-    });
-    return res.status(status).json({ error: "Finalize failed" });
-  }
+export async function postFinalize(_req: Request, res: Response) {
+  // TODO: implement if you track state; stubbed for now
+  return res.json({ ok: true });
 }
 
-export async function postUnlink(req: Request, res: Response) {
-  try {
-    const { imageIds } = req.body ?? {};
-    const { data, status } = await axios.post(
-      `${IMAGE_BASE}/images/unlink`,
-      { imageIds: Array.isArray(imageIds) ? imageIds : [] },
-      { headers: pickAuth(req.headers) }
-    );
-    return res.status(status).json(data);
-  } catch (err: any) {
-    const status = err?.response?.status ?? 500;
-    logger.error("[orchestrator] postUnlink failed", {
-      status,
-      msg: err?.message,
-    });
-    return res.status(status).json({ error: "Unlink failed" });
-  }
+export async function postUnlink(_req: Request, res: Response) {
+  // TODO: implement entity-image unlink logic; stubbed for now
+  return res.json({ ok: true });
 }
 
 export async function postDiscard(req: Request, res: Response) {
   try {
-    const { uploadBatchId, imageIds } = req.body ?? {};
-    const payload: any = {};
-    if (typeof uploadBatchId === "string" && uploadBatchId.length) {
-      payload.uploadBatchId = uploadBatchId;
-    }
-    if (Array.isArray(imageIds)) {
-      payload.imageIds = imageIds;
-    }
-    const { data, status } = await axios.post(
-      `${IMAGE_BASE}/images/discard`,
-      payload,
-      { headers: pickAuth(req.headers) }
-    );
-    return res.status(status).json(data);
-  } catch (err: any) {
-    const status = err?.response?.status ?? 500;
-    logger.error("[orchestrator] postDiscard failed", {
-      status,
-      msg: err?.message,
-    });
-    return res.status(status).json({ error: "Discard failed" });
-  }
-}
+    const ids: string[] = Array.isArray(req.body?.imageIds)
+      ? req.body.imageIds
+      : [];
+    const valid = ids.filter(isHex24).map((s) => new Types.ObjectId(s));
+    if (!valid.length) return res.json({ deleted: 0 });
 
-// ---------- small util ----------
-function pickAuth(h: Request["headers"]): Record<string, string> {
-  const auth = h["authorization"];
-  return auth ? { Authorization: Array.isArray(auth) ? auth[0] : auth } : {};
+    const r = await ImageModel.deleteMany({ _id: { $in: valid } });
+    return res.json({ deleted: r.deletedCount ?? 0 });
+  } catch (err: any) {
+    return res
+      .status(500)
+      .json({ error: "Discard failed", detail: err?.message });
+  }
 }

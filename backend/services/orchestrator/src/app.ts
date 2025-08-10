@@ -1,3 +1,4 @@
+// backend/services/orchestrator/src/app.ts
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -10,7 +11,7 @@ import userRoutes from "./routes/userRoutes";
 import actRoutes from "./routes/actRoutes";
 import eventRoutes from "./routes/eventRoutes";
 import placeRoutes from "./routes/placeRoutes";
-import imageRoutes from "./routes/imageRoutes"; // ✅ no alias import
+import imageRoutes from "./routes/imageRoutes";
 import logRoutes from "./routes/logRoutes";
 import townRoutes from "./routes/townRoutes";
 import actImageRoutes from "./routes/actRoutes.images";
@@ -30,7 +31,7 @@ app.use(
   cors({
     origin: "*", // tighten in production
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept"], // include Accept
+    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
   })
 );
 
@@ -55,9 +56,10 @@ app.use(
       /\/acts\/[^/]+\/images$/,
       /\/images\/[^/]+\/data$/,
       /\/images\/[^/]+$/,
+      // /images/ping is explicit above
     ],
     publicPostPaths: ["/auth/login", "/auth/signup"],
-    publicPostRegexes: [/^\/images\/lookup$/], // ✅ add this
+    publicPostRegexes: [/^\/images\/lookup$/], // keep lookup public (you had this working)
   })
 );
 
@@ -73,10 +75,7 @@ app.use("/events", eventRoutes);
 app.use("/places", placeRoutes);
 app.use("/logs", logRoutes);
 
-// ✅ Single mount for images (no /image alias)
-app.get("/images/ping", (_req, res) =>
-  res.json({ ok: true, where: "orchestrator-app" })
-);
+// ✅ Single mount for images (no duplicate ping, no /image alias)
 app.use("/images", imageRoutes);
 
 app.use("/towns", townRoutes);

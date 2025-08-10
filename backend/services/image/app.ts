@@ -1,13 +1,13 @@
+// backend/services/image/src/app.ts
 import express from "express";
-import cors from "cors";
-// body-parser is built-in now; use express.json
 import imageRoutes from "./routes/imageRoutes";
 
 const app = express();
-app.use(cors());
+
+// JSON parser (multipart is handled by multer in routes)
 app.use(express.json({ limit: "10mb" }));
 
-// Mount at root — your routes file already includes /images/... and /image
+// Mount at root — routes already include /images/... and /image
 app.use("/", imageRoutes);
 
 // Health

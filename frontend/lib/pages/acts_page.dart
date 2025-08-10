@@ -46,18 +46,17 @@ class ActsPage extends StatefulWidget {
 }
 
 class _ActsPageState extends State<ActsPage> {
-  static const double _listMaxHeight = 280.0; // ← double
+  static const double _listMaxHeight = 280.0;
   static const int _fallbackLimit = 20;
   static const int _allActsPracticalCap = 1000;
   static const int _minChars = 3;
-  static const int _radiusMiles = 50; // ← radius mode for by-hometown
+  static const int _radiusMiles = 50;
 
   final TextEditingController _hometownController = TextEditingController();
   final TextEditingController _actSearchController = TextEditingController();
 
   TownOption? _selectedTown;
 
-  // State for the “≤ 12 acts” flow
   bool _checkingTownActs = false;
   bool _showAllForTown = false;
   List<ActOption> _allTownActs = const [];
@@ -78,7 +77,6 @@ class _ActsPageState extends State<ActsPage> {
     return headers;
   }
 
-  /// Ask backend if we should return ALL acts for the selected hometown (radius mode).
   Future<void> _checkAllForSelectedTown() async {
     final town = _selectedTown;
     if (town == null) return;
@@ -94,7 +92,7 @@ class _ActsPageState extends State<ActsPage> {
         queryParameters: {
           'lat': town.lat.toString(),
           'lng': town.lng.toString(),
-          'miles': '$_radiusMiles', // ← radius mode
+          'miles': '$_radiusMiles',
           'limit': '$_allActsPracticalCap',
         },
       );
@@ -113,10 +111,19 @@ class _ActsPageState extends State<ActsPage> {
             ..sort(
               (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
             );
-          setState(() {
-            _showAllForTown = true;
-            _allTownActs = items;
-          });
+
+          // Only show the ≤12 panel when there are actual items
+          if (items.isNotEmpty) {
+            setState(() {
+              _showAllForTown = true;
+              _allTownActs = items;
+            });
+          } else {
+            setState(() {
+              _showAllForTown = false;
+              _allTownActs = const [];
+            });
+          }
         } else {
           setState(() {
             _showAllForTown = false;
@@ -139,7 +146,6 @@ class _ActsPageState extends State<ActsPage> {
     }
   }
 
-  // Legacy typeahead (when backend says there are 12+ acts)
   Future<List<ActOption>> _fetchActsForTownLegacy({
     required TownOption town,
     required String pattern,
@@ -153,8 +159,7 @@ class _ActsPageState extends State<ActsPage> {
         'lng': town.lng.toString(),
         'q': q,
         'limit': limit.toString(),
-        'miles':
-            '$_radiusMiles', // keep search radius consistent with “all” check
+        'miles': '$_radiusMiles',
       },
     );
 
@@ -204,7 +209,11 @@ class _ActsPageState extends State<ActsPage> {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Act created')));
       _actSearchController.clear();
-      setState(() {});
+      // After creating, hide the ≤12 panel
+      setState(() {
+        _showAllForTown = false;
+        _allTownActs = const [];
+      });
     }
   }
 
@@ -230,7 +239,6 @@ class _ActsPageState extends State<ActsPage> {
     }
   }
 
-  // --- Act Name input with Add button (always visible above ≤12 list) ---
   Widget _actNameInputRow({required bool enabled}) {
     final canAdd = enabled && _actSearchController.text.trim().isNotEmpty;
     return Row(
@@ -259,7 +267,6 @@ class _ActsPageState extends State<ActsPage> {
 
   @override
   Widget build(BuildContext context) {
-    // Rebuild when auth state changes (e.g., after login)
     context.watch<AuthProvider>();
 
     return ScaffoldWrapper(
@@ -288,7 +295,6 @@ class _ActsPageState extends State<ActsPage> {
                   apiBase: widget.apiBase,
                   controller: _hometownController,
                   onFieldTap: () {
-                    // Clear the ≤ 12 list immediately when the field is focused/tapped
                     if (_showAllForTown || _allTownActs.isNotEmpty) {
                       setState(() {
                         _showAllForTown = false;
@@ -325,11 +331,8 @@ class _ActsPageState extends State<ActsPage> {
                       ),
                     )
                   else if (_showAllForTown) ...[
-                    // Always-visible Act Name + Add button
                     _actNameInputRow(enabled: true),
                     const SizedBox(height: 8.0),
-
-                    // Show ALL acts list (compact)
                     ConstrainedBox(
                       constraints:
                           const BoxConstraints(maxHeight: _listMaxHeight),
@@ -359,7 +362,7 @@ class _ActsPageState extends State<ActsPage> {
                       ),
                     ),
                   ] else
-                    // Fallback to legacy typeahead when 12+
+                    // When there are no acts to show, fall back to legacy typeahead
                     TypeAheadField<ActOption>(
                       controller: _actSearchController,
                       suggestionsCallback: (pattern) => _fetchActsForTownLegacy(
@@ -393,7 +396,6 @@ class _ActsPageState extends State<ActsPage> {
                       },
                       onSelected: (ActOption selection) => _editAct(selection),
                       builder: (context, controller, focusNode) {
-                        // Keep Add reachable even when overlay is open via suffix
                         final canAdd = controller.text.trim().isNotEmpty &&
                             _selectedTown != null;
                         return TextField(
@@ -415,7 +417,6 @@ class _ActsPageState extends State<ActsPage> {
                           ),
                         );
                       },
-                      // Add button is not here anymore (so it can’t be covered)
                       emptyBuilder: (context) => const Padding(
                         padding: EdgeInsets.symmetric(
                             horizontal: 12.0, vertical: 8.0),

@@ -35,10 +35,12 @@ class _ActFormPageState extends State<ActFormPage> {
   String? _creatorName;
   String? _ownerName;
   String? _homeTownLabel;
+  String? _townId;
 
   String? _createdById;
   String? _ownerId;
   String? _jwtUserId;
+  String? _jwtUserName;
 
   final _nameCtrl = TextEditingController();
   final _contactEmailCtrl = TextEditingController();
@@ -50,7 +52,6 @@ class _ActFormPageState extends State<ActFormPage> {
 
   bool get _hasActId => widget.actId != null && widget.actId!.isNotEmpty;
 
-  // Enable when user owns OR created the act; allow when creating a new act (no actId yet).
   bool get _canEdit {
     if (!_hasActId) return true;
     final uid = _canon(_jwtUserId);
@@ -60,16 +61,41 @@ class _ActFormPageState extends State<ActFormPage> {
     return uid == owner || uid == creator;
   }
 
+  bool _argsLoaded = false;
+
   @override
   void initState() {
     super.initState();
     _nameCtrl.text = widget.prefillName ?? '';
     _homeTownLabel = widget.prefillHomeTown;
 
-    // Decode JWT → user id (supports `_id` and nested `user._id`) or fallback to raw string.
     _jwtUserId = _extractUserId(widget.jwt) ?? widget.jwt;
+    _jwtUserName = _extractUserName(widget.jwt);
+
+    if (!_hasActId) {
+      _createdById = _jwtUserId;
+      _ownerId = _jwtUserId;
+      _creatorName = _jwtUserName;
+      _ownerName = _jwtUserName;
+    }
 
     if (_hasActId) _loadAct();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_argsLoaded) return;
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map) {
+      final rawTownId = args['townId']?.toString();
+      final rawHomeTown = args['prefillHomeTown']?.toString();
+      if (rawTownId != null && rawTownId.isNotEmpty) _townId = rawTownId;
+      if ((rawHomeTown != null && rawHomeTown.isNotEmpty)) {
+        _homeTownLabel ??= rawHomeTown;
+      }
+    }
+    _argsLoaded = true;
   }
 
   @override
@@ -79,8 +105,6 @@ class _ActFormPageState extends State<ActFormPage> {
     _scrollController.dispose();
     super.dispose();
   }
-
-  // ---------------- helpers ----------------
 
   String _firstNonEmpty(List<dynamic> values) {
     for (final v in values) {
@@ -115,9 +139,6 @@ class _ActFormPageState extends State<ActFormPage> {
     return null;
   }
 
-  /// Extract an ID from many shapes:
-  /// - String/num → string
-  /// - Map → check id, _id, uid, userId, user_id, value
   String? _getId(dynamic v) {
     if (v == null) return null;
     if (v is num) return v.toString();
@@ -140,37 +161,29 @@ class _ActFormPageState extends State<ActFormPage> {
     return null;
   }
 
-  /// Try to decode a JWT and pull a plausible user id.
-  /// Includes `_id` and nested `user._id`. Tries url-safe and standard base64 with padding.
-  String? _extractUserId(String? token) {
+  Map<String, dynamic>? _decodeJwtPayload(String? token) {
     if (token == null || token.isEmpty) return null;
     final raw = token.startsWith('Bearer ') ? token.substring(7) : token;
     if (!_looksLikeJwt(raw)) return null;
     final parts = raw.split('.');
     if (parts.length < 2) return null;
     String payload = parts[1];
-
-    Map<String, dynamic>? _decode(String b64, {bool urlSafe = true}) {
-      try {
-        String s = b64;
-        if (urlSafe) {
-          s = s.replaceAll('-', '+').replaceAll('_', '/');
-        }
-        while (s.length % 4 != 0) {
-          s += '=';
-        }
-        final jsonStr = utf8.decode(base64.decode(s));
-        final obj = json.decode(jsonStr);
-        return (obj is Map<String, dynamic>) ? obj : null;
-      } catch (_) {
-        return null;
+    try {
+      String s = payload.replaceAll('-', '+').replaceAll('_', '/');
+      while (s.length % 4 != 0) {
+        s += '=';
       }
+      final jsonStr = utf8.decode(base64.decode(s));
+      final obj = json.decode(jsonStr);
+      return (obj is Map<String, dynamic>) ? obj : null;
+    } catch (_) {
+      return null;
     }
+  }
 
-    final obj =
-        _decode(payload, urlSafe: true) ?? _decode(payload, urlSafe: false);
+  String? _extractUserId(String? token) {
+    final obj = _decodeJwtPayload(token);
     if (obj == null) return null;
-
     String pick(dynamic x) {
       if (x == null) return '';
       if (x is String) return x.trim();
@@ -179,9 +192,8 @@ class _ActFormPageState extends State<ActFormPage> {
     }
 
     final userMap = (obj['user'] is Map) ? (obj['user'] as Map) : null;
-
     final candidates = <String>[
-      pick(obj['_id']), // important for tokens shaped like yours
+      pick(obj['_id']),
       pick(obj['sub']),
       pick(obj['userId']),
       pick(obj['uid']),
@@ -190,8 +202,34 @@ class _ActFormPageState extends State<ActFormPage> {
       if (userMap != null) pick(userMap['id']),
       pick(obj['user_id']),
     ].where((e) => e.isNotEmpty).toList();
-
     return candidates.isNotEmpty ? candidates.first : null;
+  }
+
+  String? _extractUserName(String? token) {
+    final obj = _decodeJwtPayload(token);
+    if (obj == null) return null;
+    final name = _firstNonEmpty([
+      obj['name'],
+      _joinNames(
+        _firstNonEmpty([obj['firstname'], obj['firstName'], obj['first']]),
+        _firstNonEmpty([obj['lastname'], obj['lastName'], obj['last']]),
+      ),
+    ]);
+    if (name.isNotEmpty) return name;
+    final userMap = (obj['user'] is Map) ? (obj['user'] as Map) : null;
+    if (userMap != null) {
+      final n = _firstNonEmpty([
+        userMap['name'],
+        _joinNames(
+          _firstNonEmpty(
+              [userMap['firstname'], userMap['firstName'], userMap['first']]),
+          _firstNonEmpty(
+              [userMap['lastname'], userMap['lastName'], userMap['last']]),
+        ),
+      ]);
+      return n.isNotEmpty ? n : null;
+    }
+    return null;
   }
 
   String _getTownLabel(dynamic town) {
@@ -226,7 +264,6 @@ class _ActFormPageState extends State<ActFormPage> {
   }
 
   void _normalizeAndMapAct(Map<String, dynamic> data) {
-    // Creator
     final creator =
         _firstNonEmpty([data['createdByName'], data['creatorName']]);
     _creatorName = _firstNonEmpty([
@@ -250,7 +287,6 @@ class _ActFormPageState extends State<ActFormPage> {
       data['creatorID'],
     ]);
 
-    // Owner
     final ownerDisp = _firstNonEmpty([data['ownerName'], data['ownedByName']]);
     _ownerName = _firstNonEmpty([
       ownerDisp,
@@ -276,7 +312,6 @@ class _ActFormPageState extends State<ActFormPage> {
       data['ownerID'],
     ]);
 
-    // Home town
     _homeTownLabel = _firstNonEmpty([
       data['homeTownLabel'],
       data['homeTownName'],
@@ -291,25 +326,27 @@ class _ActFormPageState extends State<ActFormPage> {
       widget.prefillHomeTown,
     ]);
 
-    // Editable fields
+    _townId = _firstNonEmpty([
+      _getId(data['townId']),
+      _getId(data['homeTownId']),
+      _getId(data['homeTownObj']),
+      _getId(data['town']),
+    ]);
+
     final actName = _firstNonEmpty([data['name']]);
     if (actName.isNotEmpty) _nameCtrl.text = actName;
     final email = _firstNonEmpty(
         [data['contactEmail'], data['eMailAddr'], data['email']]);
     _contactEmailCtrl.text = email;
 
-    // Ensure user id present (in case jwt set after init)
     _jwtUserId ??= _extractUserId(widget.jwt) ?? widget.jwt;
 
-    // LAST-RESORT MATCH: if jwt still looks like a token and it CONTAINS ownerId, adopt ownerId
     if (_looksLikeJwt(_jwtUserId) &&
         (_ownerId != null && _ownerId!.isNotEmpty) &&
         (widget.jwt?.contains(_ownerId!) ?? false)) {
       _jwtUserId = _ownerId;
     }
   }
-
-  // ---------------- data ----------------
 
   Future<void> _loadAct() async {
     setState(() {
@@ -341,30 +378,51 @@ class _ActFormPageState extends State<ActFormPage> {
     }
   }
 
-  // ---------------- actions ----------------
-
   void _onCancelPressed() {
     Navigator.of(context).maybePop();
   }
 
   Future<void> _onSavePressed() async {
     if (!_formKey.currentState!.validate()) return;
+
+    if (!_hasActId) {
+      final townMissing = (_townId == null || _townId!.trim().isEmpty) &&
+          !((_homeTownLabel ?? '').trim().isNotEmpty);
+      if (townMissing) {
+        setState(() => _error = 'Select a hometown before creating the act.');
+        return;
+      }
+    }
+
     setState(() {
       _loading = true;
       _error = null;
     });
+
     final payload = {
       'name': _nameCtrl.text.trim(),
       'eMailAddr': _contactEmailCtrl.text.trim().isNotEmpty
           ? _contactEmailCtrl.text.trim()
           : null,
+      if (_townId != null && _townId!.trim().isNotEmpty) 'townId': _townId,
+      if ((_homeTownLabel ?? '').trim().isNotEmpty) 'homeTown': _homeTownLabel,
+      if (!_hasActId && (_jwtUserId?.isNotEmpty ?? false))
+        'userCreateId': _jwtUserId,
+      if (!_hasActId && (_jwtUserId?.isNotEmpty ?? false))
+        'userOwnerId': _jwtUserId,
+      if (!_hasActId && (_jwtUserName?.isNotEmpty ?? false))
+        'createdByName': _jwtUserName,
+      if (!_hasActId && (_jwtUserName?.isNotEmpty ?? false))
+        'ownerName': _jwtUserName,
     };
+
     try {
       final headers = {
         'Content-Type': 'application/json',
         if (widget.jwt?.isNotEmpty ?? false)
           'Authorization': 'Bearer ${widget.jwt}',
       };
+
       late final http.Response res;
       if (_hasActId) {
         res = await http.put(
@@ -392,8 +450,6 @@ class _ActFormPageState extends State<ActFormPage> {
   }
 
   void _onClaimPressed() {}
-
-  // ---------------- UI ----------------
 
   @override
   Widget build(BuildContext context) {
@@ -495,8 +551,6 @@ class _ActFormPageState extends State<ActFormPage> {
                         ),
                       ),
                     ),
-
-                    // --- Pinned bottom action area: translucent bg under, crisp buttons on top ---
                     SizedBox(
                       height: _bottomBarHeight,
                       child: Stack(
@@ -504,8 +558,7 @@ class _ActFormPageState extends State<ActFormPage> {
                           Positioned.fill(
                             child: Container(
                               decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(
-                                    0.08), // <<< adjust transparency here
+                                color: Colors.black.withOpacity(0.08),
                                 borderRadius: const BorderRadius.vertical(
                                   bottom: Radius.circular(12),
                                 ),
@@ -519,13 +572,14 @@ class _ActFormPageState extends State<ActFormPage> {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.end,
                                 children: [
-                                  // "Update Act" to the right of Cancel via RTL
                                   Directionality(
                                     textDirection: TextDirection.rtl,
                                     child: SizedBox(
                                       height: double.infinity,
                                       child: SubmitBar(
-                                        primaryLabel: 'Update Act',
+                                        primaryLabel: _hasActId
+                                            ? 'Update Act'
+                                            : 'Create Act',
                                         onPrimary: _loading || !_canEdit
                                             ? null
                                             : _onSavePressed,
@@ -542,7 +596,6 @@ class _ActFormPageState extends State<ActFormPage> {
                         ],
                       ),
                     ),
-                    // --- end pinned area ---
                   ],
                 ),
               ),

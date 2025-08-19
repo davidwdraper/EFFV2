@@ -1,15 +1,18 @@
-// src/routes/authRoutes.ts
+// backend/services/auth/src/routes/authRoutes.ts
 import express from "express";
-import { signup, login } from "../controllers/authController";
+import * as authController from "../controllers/authController";
 import { logger } from "@shared/utils/logger";
 
 const router = express.Router();
 
-logger.debug("authService: authRoutes initialized", {
-  routes: ["/auth/signup", "/auth/login"],
-});
+logger.debug(
+  { routes: ["/auth/create", "/auth/login", "/auth/password_reset"] },
+  "authService: routes initialized"
+);
 
-router.post("/signup", signup);
-router.post("/login", login);
+// One-line route → controller mappings
+router.post("/create", authController.create);
+router.post("/login", authController.login);
+router.post("/password_reset", authController.passwordReset);
 
 export default router;

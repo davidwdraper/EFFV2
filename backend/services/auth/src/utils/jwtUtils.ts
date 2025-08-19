@@ -1,4 +1,4 @@
-// src/utils/jwtUtils.ts
+// backend/services/auth/src/utils/jwtUtils.ts
 import jwt from "jsonwebtoken";
 import { logger } from "@shared/utils/logger";
 
@@ -16,9 +16,10 @@ const SECRET: string = process.env.JWT_SECRET;
  * @returns Signed JWT token
  */
 export function generateToken(payload: object): string {
-  logger.debug("authService: Generating JWT token", {
-    payloadKeys: Object.keys(payload),
-  });
+  logger.debug(
+    { payloadKeys: Object.keys(payload) },
+    "authService: Generating JWT token"
+  );
 
   return jwt.sign(payload, SECRET, { expiresIn: "1h" });
 }

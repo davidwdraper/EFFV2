@@ -1,19 +1,29 @@
-import dotenv from 'dotenv';
-import path from 'path';
+// backend/services/auth/src/config.ts
+import { requireEnv, requireNumber } from "../../shared/config/env";
 
-// Determine current environment (default to development)
-const env = process.env.NODE_ENV || 'development';
+/**
+ * Auth service config (no defaults; env must be loaded by ./bootstrap).
+ * Note: Removed deprecated orchestrator URL and unused mongoUri.
+ * Auth is a business-tier service that talks directly to USER_SERVICE_URL.
+ */
 
-// Dynamically load the correct .env file (.env.local, .env.docker, etc.)
-const envPath = path.resolve(__dirname, `../../../.env.${env}`);
-dotenv.config({ path: envPath });
+export const serviceName = requireEnv("AUTH_SERVICE_NAME");
+export const port = requireNumber("AUTH_PORT");
+export const jwtSecret = requireEnv("JWT_SECRET");
+export const userServiceUrl = requireEnv("USER_SERVICE_URL"); // direct to user service (tier-3)
+export const logLevel = requireEnv("LOG_LEVEL");
+export const logServiceUrl = requireEnv("LOG_SERVICE_URL");
 
-// Export service-specific and shared config values
+export function requireUpstream(name: "USER_SERVICE_URL") {
+  return requireEnv(name);
+}
+
 export const config = {
-  env,
-  port: process.env.AUTH_PORT || 4007,
-  jwtSecret: process.env.JWT_SECRET || '2468',
-  mongoUri: process.env.MONGO_URI || 'mongodb://mongo:27017/eff_user_db',
-  orchestratorUrl: process.env.ORCHESTRATOR_URL || 'http://orchestrator-core:4011',
-  nodeEnv: process.env.NODE_ENV || 'development',
+  serviceName,
+  port,
+  jwtSecret,
+  userServiceUrl,
+  logLevel,
+  logServiceUrl,
+  requireUpstream,
 };

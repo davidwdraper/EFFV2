@@ -1,33 +1,14 @@
-// models/userModel.ts
-import mongoose, { Document, Model, Schema } from 'mongoose';
-import bcrypt from 'bcrypt';
+// backend/services/auth/src/models/User.ts
+// Business-tier DTO for data fetched from the User service.
+// No schemas, no DB — Auth does not persist users here.
 
-export interface IUser extends Document {
-  eMailAddr: string;
-  password: string;
-  comparePassword(candidate: string): Promise<boolean>;
+export interface UserDTO {
+  id: string; // canonical id from user service
+  email: string; // canonical email (lowercased)
+  password?: string; // hashed, only present on private lookups
+  firstname: string;
+  middlename?: string;
+  lastname: string;
+  userStatus: number;
+  userType: number;
 }
-
-const UserSchema = new Schema<IUser>({
-  eMailAddr: { type: String, unique: true, required: true },
-  password: { type: String, required: true },
-});
-
-// 🔐 Pre-save hook for hashing
-UserSchema.pre('save', async function (next) {
-  const user = this as IUser;
-
-  if (!user.isModified('password')) return next();
-  user.password = await bcrypt.hash(user.password, 10);
-  next();
-});
-
-// 🔐 Method to compare passwords
-UserSchema.methods.comparePassword = function (
-  candidate: string
-): Promise<boolean> {
-  return bcrypt.compare(candidate, this.password);
-};
-
-// ⚙️ Export with correct typing
-export const UserModel: Model<IUser> = mongoose.model<IUser>('User', UserSchema);

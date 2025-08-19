@@ -12,7 +12,7 @@ export interface IAct {
   userOwnerId: string;
 
   name: string;
-  eMailAddr?: string;
+  email?: string;
   homeTown: string;
 
   homeTownLat?: number; // Lat/Lng used for spatial searches within homeTown radius

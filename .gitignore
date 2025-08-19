@@ -1,66 +1,160 @@
-# --- FLUTTER / DART ---
+# ===== FLUTTER / DART =====
 .dart_tool/
 .packages
 .pub-cache/
+.flutter-plugins
+.flutter-plugins-dependencies
+.flutter-versions
+.melos_tool/
 build/
-flutter_*.png
+**/build/
 generated_plugin_registrant.dart
 
-# --- ENV FILES ---
+# App lockfile (optional – keep if you want reproducible builds)
+# pubspec.lock
+
+# ===== ENV FILES =====
 .env
 .env.*
+!.env.example
 
-# --- LOG FILES ---
+# ===== LOG FILES =====
 logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log
 
-# --- IDEs ---
+# ===== IDEs =====
 .vscode/
 .idea/
 *.iml
+*.code-workspace
 
-# --- OS / SYSTEM FILES ---
+# ===== OS / SYSTEM FILES =====
 .DS_Store
+Thumbs.db
 *.swp
 *.tmp
 *.temp
 *.bak
 
-# --- ANDROID ---
+# ===== ANDROID =====
 android/.gradle/
-android/app/build/
+android/.cxx/
 android/local.properties
+android/**/intermediates/
+android/**/generated/
+android/**/outputs/
+android/**/release/
+android/**/debug/
 *.keystore
 
-# --- IOS ---
+# ===== iOS =====
 ios/Flutter/
 ios/.symlinks/
 ios/Pods/
 ios/Runner.xcworkspace/
 ios/Podfile.lock
 ios/ServiceDefinitions.json
+# Xcode user/junk
+**/*.xcuserstate
+**/*.xcuserdatad/
+**/*.xcworkspace/xcuserdata/
+**/*.pbxuser
+**/*.mode1v3
+**/*.mode2v3
+**/*.moved-aside
+# Derived & build
+**/DerivedData/
+**/build/
 
-# --- MACOS ---
+# ===== macOS =====
 macos/Flutter/ephemeral/
 macos/Pods/
 macos/Podfile.lock
+macos/**/DerivedData/
+macos/**/build/
 
-# --- WINDOWS ---
+# ===== WINDOWS =====
 windows/runner/Debug/
 windows/runner/Release/
 windows/runner/*.vcxproj.user
 
-# --- LINUX ---
+# ===== LINUX =====
 linux/flutter/ephemeral/
 
-# --- WEB ---
+# ===== WEB (Flutter) =====
 web/.dart_tool/
 web/build/
 
-# --- DOCKER ---
+# ===== DOCKER =====
 *.local
 docker-compose.override.yml
+**/.devcontainer/
+**/.docker/
+**/docker-data/
 
-# --- FIREBASE (OPTIONAL) ---
+# ===== FIREBASE (OPTIONAL) =====
 ios/Runner/GoogleService-Info.plist
 android/app/google-services.json
+.firebase/
+.firebaserc
+
+# ============================
+#   NODE / TYPESCRIPT BACKEND
+# ============================
+# dependencies
+node_modules/
+**/node_modules/
+
+# builds & coverage
+dist/
+**/dist/
+build/
+**/build/
+coverage/
+**/.nyc_output/
+.lcov/
+**/coverage/
+coverage.lcov
+
+# ts
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# package managers (decide per policy)
+# If you KEEP lockfiles, delete these three lines:
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# caches
+.cache/
+**/.cache/
+.tmp/
+**/.tmp/
+.eslintcache
+.stylelintcache
+.ts-node-cache
+
+# processes
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# local dev data
+*.sqlite
+*.sqlite3
+*.db
+*.tgz
+
+# OpenAPI / codegen (common in microservices)
+**/openapi/generated/
+**/swagger/generated/
+**/api/**/generated/
+
+# Misc build artifacts
+**/*.map

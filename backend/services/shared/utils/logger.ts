@@ -1,93 +1,113 @@
 import axios from "axios";
-import { Request } from "express";
-import { getCallerInfo } from "./logMeta";
+import type { Request } from "express";
+import pino, { type LoggerOptions, type LevelWithSilent } from "pino";
+import { getCallerInfo } from "../../shared/utils/logMeta";
 
-const NODE_ENV = process.env.NODE_ENV || "dev";
-const LOG_LEVEL = process.env.LOG_LEVEL || "info";
-const LOG_SERVICE_URL =
-  process.env.LOG_SERVICE_URL || "http://localhost:4006/log";
+// ── Env enforcement (no fallbacks) ─────────────────────────────────────────────
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || v.trim() === "")
+    throw new Error(`Missing required env var: ${name}`);
+  return v;
+}
 
-const levelMap: Record<string, number> = {
-  error: 0,
-  warn: 1,
-  info: 2,
-  debug: 3,
+const LOG_LEVEL = requireEnv("LOG_LEVEL") as LevelWithSilent;
+const LOG_SERVICE_URL = requireEnv("LOG_SERVICE_URL"); // e.g. http://log-service/log
+
+// Validate LOG_LEVEL against pino known levels (fail fast)
+const validLevels = new Set<LevelWithSilent>([
+  "fatal",
+  "error",
+  "warn",
+  "info",
+  "debug",
+  "trace",
+  "silent",
+]);
+if (!validLevels.has(LOG_LEVEL)) {
+  throw new Error(
+    `Invalid LOG_LEVEL: "${LOG_LEVEL}". Expected one of ${Array.from(
+      validLevels
+    ).join(", ")}`
+  );
+}
+
+// ── Pino: runtime instrumentation only (stdout JSON) ───────────────────────────
+const pinoOptions: LoggerOptions = {
+  level: LOG_LEVEL,
+  // No hooks: DB writes are explicit via postAudit()
 };
+export const logger = pino(pinoOptions);
 
-const currentLevel = levelMap[LOG_LEVEL.toLowerCase()] ?? 2;
-
-function extractLogContext(req: Request): Record<string, any> {
+// ── Context helper (unchanged behavior) ───────────────────────────────────────
+export function extractLogContext(req: Request): Record<string, any> {
   return {
     path: req.originalUrl,
     method: req.method,
-    userId: (req as any).user?._id,
+    userId: (req as any).user?._id || (req as any).user?.userId,
     entityId: req.params?.id,
     entityName: (req as any).entityName,
     ip: req.ip,
   };
 }
 
-export const logger = {
-  async log(
-    type: "error" | "warn" | "info" | "debug",
-    message: string,
-    meta: Record<string, any> = {}
-  ) {
-    const level = levelMap[type];
-    if (level > currentLevel) return;
+// ── Optional shim for legacy call-sites that used logger.log(...) ─────────────
+export async function log(
+  type: "error" | "warn" | "info" | "debug",
+  message: string,
+  meta: Record<string, any> = {}
+) {
+  const fn = (logger as any)[type] ?? logger.info.bind(logger);
+  fn(meta, message);
+}
+export const error = (msg: string, meta?: Record<string, any>) =>
+  logger.error(meta || {}, msg);
+export const warn = (msg: string, meta?: Record<string, any>) =>
+  logger.warn(meta || {}, msg);
+export const info = (msg: string, meta?: Record<string, any>) =>
+  logger.info(meta || {}, msg);
+export const debug = (msg: string, meta?: Record<string, any>) =>
+  logger.debug(meta || {}, msg);
 
-    // 🧠 Automatically determine caller info
-    const caller = getCallerInfo(3);
-    const { file, line, functionName } = caller || {};
+// ── Audit client: explicit business events → Log service ───────────────────────
+export type AuditEvent = Record<string, any>;
 
-    const payload = {
-      logType: level,
-      logSeverity: level,
-      message,
-      ...meta,
-      sourceFile: file,
-      sourceLine: line,
-      sourceFunction: functionName,
-      timeCreated: new Date().toISOString(),
+// Normalize whatever getCallerInfo returns (.file/.line/.functionName variants)
+// Normalize whatever getCallerInfo returns (.file/.line/.functionName variants)
+type CallerLike = Record<string, any>;
+function normalizeCaller(ci: CallerLike | null | undefined) {
+  const c = ci || {};
+  const sourceFile =
+    c.file ?? c.fileName ?? c.filename ?? c.sourceFile ?? c.path ?? c.source;
+  const sourceLine =
+    c.line ?? c.lineNumber ?? c.lineno ?? c.sourceLine ?? c.columnNumber;
+  const sourceFunction =
+    c.functionName ?? c.func ?? c.function ?? c.method ?? c.fn ?? c.name;
+  return { sourceFile, sourceLine, sourceFunction };
+}
+
+/**
+ * Controllers push to req.audit[]. app.ts flushes once per request by calling postAudit(req.audit).
+ * Hard-fails only on missing env at startup; individual POST failures do not throw.
+ */
+export async function postAudit(events: AuditEvent[] | AuditEvent) {
+  const arr = Array.isArray(events) ? events : [events];
+
+  const enrich = (e: AuditEvent) => {
+    const { sourceFile, sourceLine, sourceFunction } = normalizeCaller(
+      getCallerInfo(3)
+    );
+    return {
+      timeCreated: e.timeCreated ?? new Date().toISOString(),
+      sourceFile: e.sourceFile ?? sourceFile,
+      sourceLine: e.sourceLine ?? sourceLine,
+      sourceFunction: e.sourceFunction ?? sourceFunction,
+      ...e,
     };
+  };
 
-    // 🖨️ Console log for non-production (all levels)
-    if (NODE_ENV !== "production") {
-      const prefix = `[${type.toUpperCase()}]`;
-      if (level <= 1) console.warn(prefix, message, payload);
-      else console.log(prefix, message, payload);
-    }
-
-    // 📝 Send only errors and warnings to DB
-    if (level <= 1) {
-      try {
-        await axios.post(LOG_SERVICE_URL, payload);
-      } catch (err) {
-        if (NODE_ENV !== "production") {
-          console.warn(
-            "[logger] Failed to POST to log service:",
-            err instanceof Error ? err.message : err
-          );
-        }
-      }
-    }
-  },
-
-  error(msg: string, meta?: Record<string, any>) {
-    return logger.log("error", msg, meta);
-  },
-
-  warn(msg: string, meta?: Record<string, any>) {
-    return logger.log("warn", msg, meta);
-  },
-
-  info(msg: string, meta?: Record<string, any>) {
-    return logger.log("info", msg, meta);
-  },
-
-  debug(msg: string, meta?: Record<string, any>) {
-    return logger.log("debug", msg, meta);
-  },
-
-  extractLogContext,
-};
+  // Fire-and-forget; do not crash request flow if log service is unavailable
+  await Promise.allSettled(
+    arr.map((e) => axios.post(LOG_SERVICE_URL, enrich(e), { timeout: 1500 }))
+  );
+}

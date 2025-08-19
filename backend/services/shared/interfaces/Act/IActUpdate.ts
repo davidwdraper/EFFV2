@@ -3,7 +3,7 @@
 export interface IActUpdate {
   actType?: number[];
   name?: string;
-  eMailAddr?: string;
+  email?: string;
   userOwnerId?: string;
   homeTown?: string;
   actStatus?: number;

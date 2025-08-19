@@ -35,3 +35,19 @@ export function assertRequiredEnv(keys: string[]) {
     throw new Error(`Missing required env vars: ${missing.join(", ")}`);
   }
 }
+
+/** Require a non-empty env var; returns trimmed string. */
+export function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || !v.trim()) throw new Error(`Missing required env: ${name}`);
+  return v.trim();
+}
+
+/** Require an env var that parses to a finite number. */
+export function requireNumber(name: string): number {
+  const v = requireEnv(name);
+  const n = Number(v);
+  if (!Number.isFinite(n))
+    throw new Error(`Env ${name} must be a finite number`);
+  return n;
+}

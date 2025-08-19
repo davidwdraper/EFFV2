@@ -4,6 +4,7 @@ import express from "express";
 import cors from "cors";
 import axios from "axios";
 import { createHealthRouter, ReadinessFn } from "../../shared/health";
+import actRoutes from "./routes/actRoutes";
 import userRoutes from "./routes/userRoutes";
 import { serviceName, requireUpstream } from "./config";
 
@@ -45,6 +46,7 @@ app.use(
 );
 
 // one-liner mount per group
+app.use("/acts", actRoutes);
 app.use("/users", userRoutes);
 
 app.use((_req, res) => {

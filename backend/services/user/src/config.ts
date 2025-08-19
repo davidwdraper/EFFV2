@@ -1,18 +1,30 @@
-import dotenv from 'dotenv';
-import path from 'path';
+// backend/services/user/src/config.ts
+import { requireEnv, requireNumber } from "../../shared/config/env";
 
-// Determine current environment (default to development)
-const env = process.env.NODE_ENV || 'development';
+export const serviceName = requireEnv("USER_SERVICE_NAME");
+export const port = requireNumber("USER_PORT");
+export const mongoUri = requireEnv("USER_MONGO_URI");
+export const jwtSecret = requireEnv("JWT_SECRET"); // required, no fallback
+export const logLevel = requireEnv("LOG_LEVEL");
+export const logServiceUrl = requireEnv("LOG_SERVICE_URL");
 
-// Dynamically load the correct .env file (.env.local, .env.docker, etc.)
-const envPath = path.resolve(__dirname, `../../../.env.${env}`);
-dotenv.config({ path: envPath });
+// Upstream helpers (if user service calls others — rare for entity tier)
+export function requireUpstream(
+  name:
+    | "ACT_SERVICE_URL"
+    | "PLACE_SERVICE_URL"
+    | "EVENT_SERVICE_URL"
+    | "LOG_SERVICE_URL"
+) {
+  return requireEnv(name);
+}
 
-// Export service-specific and shared config values
 export const config = {
-  env,
-  port: parseInt(process.env.USER_PORT || '4001', 10),
-  mongoUri: process.env.USER_MONGO_URI || 'mongodb://localhost:27017/eff_user_db',
-  jwtSecret: process.env.JWT_SECRET || '2468',
-  logLevel: process.env.LOG_LEVEL || 'info',
+  serviceName,
+  port,
+  mongoUri,
+  jwtSecret,
+  logLevel,
+  logServiceUrl,
+  requireUpstream,
 };

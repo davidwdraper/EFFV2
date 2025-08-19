@@ -380,8 +380,7 @@ class _ActFormPageState extends State<ActFormPage> {
       }
       final decoded = jsonDecode(res.body);
       if (decoded is! Map) throw Exception('Unexpected response shape');
-      final actMap = _unwrapActEnvelope(
-          Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>));
+      final actMap = _unwrapActEnvelope(Map<String, dynamic>.from(decoded));
       _normalizeAndMapAct(actMap);
 
       if (mounted) setState(() {});
@@ -422,7 +421,7 @@ class _ActFormPageState extends State<ActFormPage> {
     try {
       // ✅ Ask image manager for current staged order and deltas
       final stage = _imgController.currentStage;
-      final orderedIds = stage?.orderedImageIds ?? _imageIds;
+      final orderedIds = stage.orderedImageIds ?? _imageIds;
 
       final payload = {
         'name': _nameCtrl.text.trim(),

@@ -295,11 +295,11 @@ class _ImageManagerState extends State<ImageManager> {
 
       if (pf.bytes != null && pf.bytes!.isNotEmpty) {
         picks.add(_PendingFile.bytes(name: name, bytes: pf.bytes!, mime: mime));
-      } else if (pf.readStream != null && pf.size != null) {
+      } else if (pf.readStream != null) {
         picks.add(_PendingFile.stream(
           name: name,
           stream: pf.readStream!,
-          size: pf.size!,
+          size: pf.size,
           mime: mime,
         ));
       } else if (!kIsWeb && (pf.path != null && pf.path!.isNotEmpty)) {

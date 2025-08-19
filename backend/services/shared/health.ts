@@ -1,60 +1,60 @@
 // backend/services/shared/health.ts
 
-import { Router, Request, Response } from "express";
+import express from "express";
 
-type Check = { ok: boolean; detail?: string };
-type ReadinessFn = () => Promise<Record<string, Check>>;
+export type ReadinessDetails = Record<string, any>;
+export type ReadinessFn = (
+  req: express.Request,
+  ...args: any[]
+) => Promise<ReadinessDetails> | ReadinessDetails;
 
-const START = Date.now();
-
-export function createHealthRouter(opts: {
+type Options = {
   service: string;
   env?: string;
   version?: string;
   gitSha?: string;
   readiness?: ReadinessFn;
-}) {
-  const {
-    service,
-    env = process.env.NODE_ENV || "development",
-    version = process.env.BUILD_VERSION || "dev",
-    gitSha = process.env.GIT_SHA || "dev",
-    readiness,
-  } = opts;
+};
 
-  const r = Router();
+/**
+ * Exposes:
+ *   GET /health   -> legacy/compat liveness
+ *   GET /healthz  -> k8s-style liveness
+ *   GET /readyz   -> readiness; may include upstream details
+ */
+export function createHealthRouter(opts: Options) {
+  const router = express.Router();
 
-  r.get("/health", (_req: Request, res: Response) => {
-    res.setHeader("Cache-Control", "no-store");
-    res.json({
-      status: "ok",
-      service,
-      env,
-      version,
-      gitSha,
-      uptimeSec: Number(((Date.now() - START) / 1000).toFixed(2)),
-      time: new Date().toISOString(),
-    });
+  const base = {
+    service: opts.service,
+    env: opts.env ?? process.env.NODE_ENV,
+    version: opts.version,
+    gitSha: opts.gitSha,
+  };
+
+  // Legacy liveness (compat with older scripts/monitors)
+  router.get("/health", (_req, res) => {
+    res.json({ ...base, ok: true });
   });
 
-  r.get("/ready", async (_req: Request, res: Response) => {
-    res.setHeader("Cache-Control", "no-store");
-    let checks: Record<string, Check> = {};
+  // Kubernetes liveness
+  router.get("/healthz", (_req, res) => {
+    res.json({ ...base, ok: true });
+  });
+
+  // Readiness (+ optional upstream checks)
+  router.get("/readyz", async (req, res) => {
     try {
-      checks = (await readiness?.()) ?? {};
-    } catch (e: any) {
-      checks._readiness = {
+      const details = opts.readiness ? await opts.readiness(req) : {};
+      res.json({ ...base, ok: true, ...details });
+    } catch (err) {
+      res.status(503).json({
+        ...base,
         ok: false,
-        detail: e?.message || "readiness threw",
-      };
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    const allOk = Object.values(checks).every((c) => c.ok !== false);
-    res.status(allOk ? 200 : 503).json({
-      status: allOk ? "ok" : "degraded",
-      service,
-      checks: Object.keys(checks).length ? checks : { self: { ok: true } },
-    });
   });
 
-  return r;
+  return router;
 }

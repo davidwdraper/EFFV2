@@ -1,8 +1,11 @@
 // backend/services/gateway/src/app.ts
+
 import express from "express";
 import cors from "cors";
-import { createHealthRouter } from "../../shared/health";
+import axios from "axios";
+import { createHealthRouter, ReadinessFn } from "../../shared/health";
 import userRoutes from "./routes/userRoutes";
+import { serviceName, requireUpstream } from "./config";
 
 export const app = express();
 
@@ -21,10 +24,23 @@ app.use(express.json({ limit: "1mb" }));
 
 app.get("/", (_req, res) => res.send("gateway is up"));
 
+// Upstream (throws if missing; consistent with requireUpstream contract)
+const ACT_URL = requireUpstream("ACT_SERVICE_URL");
+
+// define readiness fn with proper signature
+const readiness: ReadinessFn = async (_req) => {
+  try {
+    const r = await axios.get(`${ACT_URL}/healthz`, { timeout: 1500 });
+    return { upstreams: { act: { ok: r.status === 200, url: ACT_URL } } };
+  } catch {
+    return { upstreams: { act: { ok: false, url: ACT_URL } } };
+  }
+};
+
 app.use(
   createHealthRouter({
-    service: "gateway",
-    readiness: async () => ({ upstreams: { ok: true } }),
+    service: serviceName, // comes from config.ts (named export)
+    readiness,
   })
 );
 
@@ -38,7 +54,6 @@ app.use((_req, res) => {
 });
 
 app.use(
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   (
     err: any,
     _req: express.Request,

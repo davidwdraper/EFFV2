@@ -15,8 +15,8 @@ const upload = multer({
 });
 
 // Service bases
-const IMAGE_BASE = process.env.SVC_IMAGE_BASE!; // e.g., http://localhost:4005
-const USER_BASE = process.env.SVC_USER_BASE!; // e.g., http://localhost:4001
+const IMAGE_BASE = process.env.IMAGE_SERVICE_URL!; // e.g., http://localhost:4005
+const USER_BASE = process.env.USER_SERVICE_URL!; // e.g., http://localhost:4001
 const SELF_BASE = process.env.PUBLIC_API_BASE!; // e.g., http://localhost:4000
 
 // ---- types ----
@@ -119,7 +119,7 @@ export async function getImageMetaHandler(req: Request, res: Response) {
     return res.json(toDto(raw as RawImage, userNames));
   } catch (err: any) {
     const status = err?.response?.status ?? 500;
-    logger.error("[orchestrator] GET /images/:id failed", {
+    logger.error("[gateway] GET /images/:id failed", {
       id,
       status,
       msg: err?.message,

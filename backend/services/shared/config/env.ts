@@ -51,3 +51,15 @@ export function requireNumber(name: string): number {
     throw new Error(`Env ${name} must be a finite number`);
   return n;
 }
+
+/** Typed upstream selector so controllers/routes can safely fetch service URLs. */
+export type UpstreamKey =
+  | "USER_SERVICE_URL"
+  | "ACT_SERVICE_URL"
+  | "PLACE_SERVICE_URL"
+  | "EVENT_SERVICE_URL"
+  | "AUTH_SERVICE_URL"; // ← added for auth gateway proxy
+
+export function requireUpstream(name: UpstreamKey): string {
+  return requireEnv(name);
+}

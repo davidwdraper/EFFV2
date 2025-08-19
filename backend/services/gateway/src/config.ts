@@ -41,6 +41,7 @@ export function requireUpstream(
     | "ACT_SERVICE_URL"
     | "PLACE_SERVICE_URL"
     | "EVENT_SERVICE_URL"
+    | "AUTH_SERVICE_URL" // ✅ added
 ) {
   return requireEnv(name);
 }

@@ -16,6 +16,9 @@ const LOG_LEVEL = requireEnv("LOG_LEVEL") as LevelWithSilent;
 const LOG_SERVICE_URL = requireEnv("LOG_SERVICE_URL"); // e.g. http://localhost:4005/logs
 const LOG_SERVICE_TOKEN_CURRENT = requireEnv("LOG_SERVICE_TOKEN_CURRENT"); // callers always send CURRENT
 
+// Optional: bind service into base logs if present (no fallback value)
+const SERVICE_NAME = process.env.SERVICE_NAME?.trim();
+
 // Validate LOG_LEVEL against pino known levels (fail fast)
 const validLevels = new Set<LevelWithSilent>([
   "fatal",
@@ -35,9 +38,24 @@ if (!validLevels.has(LOG_LEVEL)) {
 }
 
 // ── Pino: runtime instrumentation only (stdout JSON) ───────────────────────────
+// Redact secrets so audits pass and no tokens leak to stdout
 const pinoOptions: LoggerOptions = {
   level: LOG_LEVEL,
-  // No hooks: DB writes are explicit via postAudit()/postAuditStrict()
+  base: SERVICE_NAME ? { service: SERVICE_NAME } : undefined,
+  redact: {
+    paths: [
+      "req.headers.authorization",
+      "req.headers.cookie",
+      "res.headers.set-cookie",
+      // Just in case anyone logs config/env-like blobs:
+      "*.password",
+      "*.secret",
+      "*.token",
+      "*.apiKey",
+      "*.x-internal-key",
+    ],
+    remove: true,
+  },
 };
 export const logger = pino(pinoOptions);
 
@@ -95,11 +113,13 @@ function enrichEvent(e: AuditEvent): AuditEvent {
   const { sourceFile, sourceLine, sourceFunction } = normalizeCaller(
     getCallerInfo(3)
   );
+  // SERVICE_NAME tag helps filter audits by service in DB
   return {
     timeCreated: e.timeCreated ?? new Date().toISOString(),
     sourceFile: e.sourceFile ?? sourceFile,
     sourceLine: e.sourceLine ?? sourceLine,
     sourceFunction: e.sourceFunction ?? sourceFunction,
+    service: SERVICE_NAME || e.service, // include if configured
     ...e,
   };
 }

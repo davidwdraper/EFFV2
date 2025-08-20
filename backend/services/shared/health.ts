@@ -16,6 +16,14 @@ type Options = {
   readiness?: ReadinessFn;
 };
 
+function getReqId(req: express.Request) {
+  const h =
+    req.headers["x-request-id"] ||
+    req.headers["x-correlation-id"] ||
+    req.headers["x-amzn-trace-id"];
+  return (Array.isArray(h) ? h[0] : h) || (req as any).id || undefined;
+}
+
 /**
  * Exposes:
  *   GET /health   -> legacy/compat liveness
@@ -33,24 +41,25 @@ export function createHealthRouter(opts: Options) {
   };
 
   // Legacy liveness (compat with older scripts/monitors)
-  router.get("/health", (_req, res) => {
-    res.json({ ...base, ok: true });
+  router.get("/health", (req, res) => {
+    res.json({ ...base, ok: true, instance: getReqId(req) });
   });
 
   // Kubernetes liveness
-  router.get("/healthz", (_req, res) => {
-    res.json({ ...base, ok: true });
+  router.get("/healthz", (req, res) => {
+    res.json({ ...base, ok: true, instance: getReqId(req) });
   });
 
   // Readiness (+ optional upstream checks)
   router.get("/readyz", async (req, res) => {
     try {
       const details = opts.readiness ? await opts.readiness(req) : {};
-      res.json({ ...base, ok: true, ...details });
+      res.json({ ...base, ok: true, instance: getReqId(req), ...details });
     } catch (err) {
       res.status(503).json({
         ...base,
         ok: false,
+        instance: getReqId(req),
         error: err instanceof Error ? err.message : String(err),
       });
     }

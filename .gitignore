@@ -1,3 +1,5 @@
+# backend/.gitignore
+
 # ===== FLUTTER / DART =====
 .dart_tool/
 .packages
@@ -9,14 +11,13 @@
 build/
 **/build/
 generated_plugin_registrant.dart
+# pubspec.lock (keep if you want reproducible builds)
 
-# App lockfile (optional – keep if you want reproducible builds)
-# pubspec.lock
-
-# ===== ENV FILES =====
-.env
-.env.*
-!.env.example
+# ===== ENV FILES (recursive) =====
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
 
 # ===== LOG FILES =====
 logs/
@@ -58,7 +59,6 @@ ios/Pods/
 ios/Runner.xcworkspace/
 ios/Podfile.lock
 ios/ServiceDefinitions.json
-# Xcode user/junk
 **/*.xcuserstate
 **/*.xcuserdatad/
 **/*.xcworkspace/xcuserdata/
@@ -66,7 +66,6 @@ ios/ServiceDefinitions.json
 **/*.mode1v3
 **/*.mode2v3
 **/*.moved-aside
-# Derived & build
 **/DerivedData/
 **/build/
 
@@ -115,29 +114,30 @@ dist/
 build/
 **/build/
 coverage/
-**/.nyc_output/
-.lcov/
 **/coverage/
+**/.nyc_output/
+.nyc_output/
+.lcov/
 coverage.lcov
 
 # ts
 *.tsbuildinfo
 **/*.tsbuildinfo
+.ts-node-cache
 
-# package managers (decide per policy)
-# If you KEEP lockfiles, delete these three lines:
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
+# package manager lockfiles (KEEP for reproducible installs)
+# (intentionally NOT ignored)
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
 
-# caches
+# caches & temp
 .cache/
 **/.cache/
 .tmp/
 **/.tmp/
 .eslintcache
 .stylelintcache
-.ts-node-cache
 
 # processes
 pids
@@ -150,8 +150,12 @@ pids
 *.sqlite3
 *.db
 *.tgz
+mongodb/
+redis-data/
+dump.rdb
+appendonly.aof
 
-# OpenAPI / codegen (common in microservices)
+# OpenAPI / codegen
 **/openapi/generated/
 **/swagger/generated/
 **/api/**/generated/

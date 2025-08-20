@@ -41,9 +41,14 @@ const pinoOptions: LoggerOptions = {
 };
 export const logger = pino(pinoOptions);
 
-// ── Context helper (unchanged behavior) ───────────────────────────────────────
+// ── Context helper (adds requestId; otherwise unchanged) ──────────────────────
 export function extractLogContext(req: Request): Record<string, any> {
+  const hdrId =
+    (req.headers["x-request-id"] as string | undefined) ||
+    (req.headers["x-correlation-id"] as string | undefined) ||
+    (req.headers["x-amzn-trace-id"] as string | undefined);
   return {
+    requestId: (req as any).id || hdrId || null,
     path: req.originalUrl,
     method: req.method,
     userId: (req as any).user?._id || (req as any).user?.userId || null,
@@ -74,7 +79,6 @@ export const debug = (msg: string, meta?: Record<string, any>) =>
 // ── Audit client: explicit business events → Log service ───────────────────────
 export type AuditEvent = Record<string, any>;
 
-// Normalize whatever getCallerInfo returns (.file/.line/.functionName variants)
 type CallerLike = Record<string, any>;
 function normalizeCaller(ci: CallerLike | null | undefined) {
   const c = ci || {};
@@ -102,7 +106,7 @@ function enrichEvent(e: AuditEvent): AuditEvent {
 
 /**
  * Best-effort audit: fire-and-forget. Never throws.
- * Now includes internal auth header for the Log service.
+ * Includes internal auth header for the Log service.
  */
 export async function postAudit(events: AuditEvent[] | AuditEvent) {
   const arr = Array.isArray(events) ? events : [events];
@@ -129,7 +133,7 @@ export async function postAudit(events: AuditEvent[] | AuditEvent) {
 
 /**
  * Strict audit: throws if the log service is unreachable or returns non-2xx.
- * Use this when you must fail the caller request if auditing fails.
+ * Use when you must fail the caller request if auditing fails.
  */
 export async function postAuditStrict(
   events: AuditEvent[] | AuditEvent
@@ -156,7 +160,6 @@ export async function postAuditStrict(
       )
     );
   } catch (err: any) {
-    // Bubble up a clean error message (no secrets)
     const msg =
       (err?.response && `log service responded ${err.response.status}`) ||
       (err?.code && `log service error ${err.code}`) ||

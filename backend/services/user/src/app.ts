@@ -11,6 +11,7 @@ import {
 import { createHealthRouter } from "../../shared/health";
 import userRoutes from "./routes/userRoutes";
 import userPublicRoutes from "./routes/userPublicRoutes";
+import directoryRoutes from "./routes/directoryRoutes"; // ← NEW
 
 const app = express();
 app.disable("x-powered-by");
@@ -118,8 +119,9 @@ app.use(
 );
 
 // Routes
-app.use("/users", userRoutes); // auth-required CRUD
-app.use("/users", userPublicRoutes); // public names endpoint
+app.use("/users", userRoutes); // auth-required CRUD (gateway enforces)
+app.use("/users", userPublicRoutes); // public names endpoint (legacy/compat)
+app.use("/directory", directoryRoutes); // ← NEW: friend-lookup search API
 
 // 404 + error handler
 app.use((_req, res) =>
@@ -136,14 +138,12 @@ app.use(
   ) => {
     const status = Number(err?.status || err?.statusCode || 500);
     req.log?.error({ msg: "handler:error", err, status }, "request error");
-    res
-      .status(Number.isFinite(status) ? status : 500)
-      .json({
-        error: {
-          code: err?.code || "INTERNAL_ERROR",
-          message: err?.message || "Unexpected error",
-        },
-      });
+    res.status(Number.isFinite(status) ? status : 500).json({
+      error: {
+        code: err?.code || "INTERNAL_ERROR",
+        message: err?.message || "Unexpected error",
+      },
+    });
   }
 );
 

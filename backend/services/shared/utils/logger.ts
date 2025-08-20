@@ -1,3 +1,4 @@
+// backend/services/shared/utils/logger.ts
 import axios from "axios";
 import type { Request } from "express";
 import pino, { type LoggerOptions, type LevelWithSilent } from "pino";
@@ -8,11 +9,12 @@ function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v || v.trim() === "")
     throw new Error(`Missing required env var: ${name}`);
-  return v;
+  return v.trim();
 }
 
 const LOG_LEVEL = requireEnv("LOG_LEVEL") as LevelWithSilent;
-const LOG_SERVICE_URL = requireEnv("LOG_SERVICE_URL"); // e.g. http://log-service/log
+const LOG_SERVICE_URL = requireEnv("LOG_SERVICE_URL"); // e.g. http://localhost:4005/logs
+const LOG_SERVICE_TOKEN_CURRENT = requireEnv("LOG_SERVICE_TOKEN_CURRENT"); // callers always send CURRENT
 
 // Validate LOG_LEVEL against pino known levels (fail fast)
 const validLevels = new Set<LevelWithSilent>([
@@ -35,7 +37,7 @@ if (!validLevels.has(LOG_LEVEL)) {
 // ── Pino: runtime instrumentation only (stdout JSON) ───────────────────────────
 const pinoOptions: LoggerOptions = {
   level: LOG_LEVEL,
-  // No hooks: DB writes are explicit via postAudit()
+  // No hooks: DB writes are explicit via postAudit()/postAuditStrict()
 };
 export const logger = pino(pinoOptions);
 
@@ -44,7 +46,7 @@ export function extractLogContext(req: Request): Record<string, any> {
   return {
     path: req.originalUrl,
     method: req.method,
-    userId: (req as any).user?._id || (req as any).user?.userId,
+    userId: (req as any).user?._id || (req as any).user?.userId || null,
     entityId: req.params?.id,
     entityName: (req as any).entityName,
     ip: req.ip,
@@ -73,7 +75,6 @@ export const debug = (msg: string, meta?: Record<string, any>) =>
 export type AuditEvent = Record<string, any>;
 
 // Normalize whatever getCallerInfo returns (.file/.line/.functionName variants)
-// Normalize whatever getCallerInfo returns (.file/.line/.functionName variants)
 type CallerLike = Record<string, any>;
 function normalizeCaller(ci: CallerLike | null | undefined) {
   const c = ci || {};
@@ -86,28 +87,81 @@ function normalizeCaller(ci: CallerLike | null | undefined) {
   return { sourceFile, sourceLine, sourceFunction };
 }
 
+function enrichEvent(e: AuditEvent): AuditEvent {
+  const { sourceFile, sourceLine, sourceFunction } = normalizeCaller(
+    getCallerInfo(3)
+  );
+  return {
+    timeCreated: e.timeCreated ?? new Date().toISOString(),
+    sourceFile: e.sourceFile ?? sourceFile,
+    sourceLine: e.sourceLine ?? sourceLine,
+    sourceFunction: e.sourceFunction ?? sourceFunction,
+    ...e,
+  };
+}
+
 /**
- * Controllers push to req.audit[]. app.ts flushes once per request by calling postAudit(req.audit).
- * Hard-fails only on missing env at startup; individual POST failures do not throw.
+ * Best-effort audit: fire-and-forget. Never throws.
+ * Now includes internal auth header for the Log service.
  */
 export async function postAudit(events: AuditEvent[] | AuditEvent) {
   const arr = Array.isArray(events) ? events : [events];
-
-  const enrich = (e: AuditEvent) => {
-    const { sourceFile, sourceLine, sourceFunction } = normalizeCaller(
-      getCallerInfo(3)
-    );
-    return {
-      timeCreated: e.timeCreated ?? new Date().toISOString(),
-      sourceFile: e.sourceFile ?? sourceFile,
-      sourceLine: e.sourceLine ?? sourceLine,
-      sourceFunction: e.sourceFunction ?? sourceFunction,
-      ...e,
-    };
-  };
-
-  // Fire-and-forget; do not crash request flow if log service is unavailable
   await Promise.allSettled(
-    arr.map((e) => axios.post(LOG_SERVICE_URL, enrich(e), { timeout: 1500 }))
+    arr.map((e) =>
+      axios.post(LOG_SERVICE_URL, enrichEvent(e), {
+        timeout: 1500,
+        headers: {
+          "content-type": "application/json",
+          "x-internal-key": LOG_SERVICE_TOKEN_CURRENT,
+        },
+        // Never forward client Authorization to the log service
+        transformRequest: [
+          (data, headers) => {
+            if (headers && "authorization" in headers)
+              delete (headers as any).authorization;
+            return JSON.stringify(data);
+          },
+        ],
+      })
+    )
   );
+}
+
+/**
+ * Strict audit: throws if the log service is unreachable or returns non-2xx.
+ * Use this when you must fail the caller request if auditing fails.
+ */
+export async function postAuditStrict(
+  events: AuditEvent[] | AuditEvent
+): Promise<void> {
+  const arr = Array.isArray(events) ? events : [events];
+  try {
+    await Promise.all(
+      arr.map((e) =>
+        axios.post(LOG_SERVICE_URL, enrichEvent(e), {
+          timeout: 2000,
+          headers: {
+            "content-type": "application/json",
+            "x-internal-key": LOG_SERVICE_TOKEN_CURRENT,
+          },
+          transformRequest: [
+            (data, headers) => {
+              if (headers && "authorization" in headers)
+                delete (headers as any).authorization;
+              return JSON.stringify(data);
+            },
+          ],
+          // axios throws on non-2xx by default
+        })
+      )
+    );
+  } catch (err: any) {
+    // Bubble up a clean error message (no secrets)
+    const msg =
+      (err?.response && `log service responded ${err.response.status}`) ||
+      (err?.code && `log service error ${err.code}`) ||
+      err?.message ||
+      "log service request failed";
+    throw new Error(`Audit logging failed: ${msg}`);
+  }
 }

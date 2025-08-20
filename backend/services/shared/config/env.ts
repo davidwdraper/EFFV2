@@ -52,6 +52,38 @@ export function requireNumber(name: string): number {
   return n;
 }
 
+/** Require a strict boolean (true/false only). */
+export function requireBoolean(name: string): boolean {
+  const v = requireEnv(name).toLowerCase();
+  if (v !== "true" && v !== "false")
+    throw new Error(`Env ${name} must be "true" or "false"`);
+  return v === "true";
+}
+
+/** Require a valid absolute URL (http/https). */
+export function requireUrl(name: string): string {
+  const v = requireEnv(name);
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    throw new Error(`Env ${name} must be a valid URL`);
+  }
+  if (!/^https?:$/.test(u.protocol))
+    throw new Error(`Env ${name} must be http or https URL`);
+  return v;
+}
+
+/** Require JSON and parse it (throws on invalid). */
+export function requireJson<T = unknown>(name: string): T {
+  const v = requireEnv(name);
+  try {
+    return JSON.parse(v) as T;
+  } catch {
+    throw new Error(`Env ${name} must be valid JSON`);
+  }
+}
+
 /** Typed upstream selector so controllers/routes can safely fetch service URLs. */
 export type UpstreamKey =
   | "USER_SERVICE_URL"
@@ -59,8 +91,16 @@ export type UpstreamKey =
   | "PLACE_SERVICE_URL"
   | "EVENT_SERVICE_URL"
   | "AUTH_SERVICE_URL"
-  | "IMAGE_SERVICE_URL";
+  | "IMAGE_SERVICE_URL"
+  | "LOG_SERVICE_URL";
 
 export function requireUpstream(name: UpstreamKey): string {
   return requireEnv(name);
+}
+
+/** Redact helper for safe logging of env maps (keeps key names, hides values). */
+export function redactEnv(
+  obj: Record<string, unknown>
+): Record<string, string> {
+  return Object.fromEntries(Object.keys(obj).map((k) => [k, "***redacted***"]));
 }

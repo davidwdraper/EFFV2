@@ -1,6 +1,7 @@
 // backend/services/act/src/controllers/actController.ts
 
 import type { RequestHandler, Request, Response, NextFunction } from "express";
+import mongoose from "mongoose";
 import ActModel from "../models/Act";
 
 // Generic async wrapper that keeps Express types happy
@@ -9,6 +10,31 @@ const asyncHandler =
   (req: Request, res: Response, next: NextFunction): void => {
     Promise.resolve(fn(req, res, next)).catch(next);
   };
+
+// Small helper to throw HTTP errors (Problem+JSON shaped by global error handler)
+function httpError(status: number, detail: string, title?: string): never {
+  const err: any = new Error(detail);
+  err.status = status;
+  if (title) err.title = title;
+  throw err;
+}
+
+function parsePositiveInt(v: unknown, def: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(0, Math.floor(n));
+}
+
+function validateObjectId(id: string) {
+  if (!mongoose.isValidObjectId(id))
+    httpError(400, "Invalid id format", "Bad Request");
+}
+
+function isDupKey(err: any) {
+  return (
+    err && (err.code === 11000 || String(err?.message || "").includes("E11000"))
+  );
+}
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Controllers (typed as RequestHandler so return types don't fight TS)
@@ -21,13 +47,10 @@ export const ping: RequestHandler = asyncHandler(async (_req, res) => {
 export const list: RequestHandler = asyncHandler(async (req, res) => {
   const name = (req.query.name as string | undefined)?.trim();
   const limit = Math.min(
-    Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1),
+    Math.max(parsePositiveInt(req.query.limit ?? "20", 20), 1),
     100
   );
-  const offset = Math.max(
-    parseInt(String(req.query.offset ?? "0"), 10) || 0,
-    0
-  );
+  const offset = parsePositiveInt(req.query.offset ?? "0", 0);
 
   const filter: Record<string, any> = {};
   if (name) {
@@ -44,10 +67,11 @@ export const list: RequestHandler = asyncHandler(async (req, res) => {
 
 export const getById: RequestHandler = asyncHandler(async (req, res) => {
   const { id } = req.params;
+  validateObjectId(id);
+
   const doc = await ActModel.findById(id).lean();
   if (!doc) {
-    res.status(404).json({ error: "Not found" });
-    return;
+    httpError(404, "Act not found", "Not Found");
   }
   res.json(doc);
 });
@@ -56,25 +80,21 @@ export const create: RequestHandler = asyncHandler(async (req, res) => {
   const body = req.body || {};
 
   // Required fields (align with model)
-  if (!body.name) {
-    res.status(400).json({ error: "name is required" });
-    return;
+  if (!body.name || typeof body.name !== "string") {
+    httpError(400, "name is required", "Bad Request");
   }
   if (!Array.isArray(body.actType) || body.actType.length === 0) {
-    res.status(400).json({ error: "actType must be a non-empty array" });
-    return;
+    httpError(400, "actType must be a non-empty array", "Bad Request");
   }
   if (!body.userCreateId || !body.userOwnerId) {
-    res
-      .status(400)
-      .json({ error: "userCreateId and userOwnerId are required" });
-    return;
+    httpError(400, "userCreateId and userOwnerId are required", "Bad Request");
   }
   if (!body.homeTown || !body.homeTownId || !body.homeTownLoc) {
-    res
-      .status(400)
-      .json({ error: "homeTown, homeTownId, and homeTownLoc are required" });
-    return;
+    httpError(
+      400,
+      "homeTown, homeTownId, and homeTownLoc are required",
+      "Bad Request"
+    );
   }
 
   const nowIso = new Date().toISOString();
@@ -85,35 +105,57 @@ export const create: RequestHandler = asyncHandler(async (req, res) => {
     dateLastUpdated: nowIso,
   };
 
-  const doc = await ActModel.create(toCreate);
-  res.status(201).json(doc);
+  try {
+    const doc = await ActModel.create(toCreate);
+    // audit example (flushed by app middleware)
+    req.audit?.push({ type: "create", model: "Act", id: String(doc._id) });
+    res.status(201).json(doc);
+  } catch (err: any) {
+    if (isDupKey(err))
+      httpError(409, "Act already exists (name, homeTownId)", "Conflict");
+    throw err;
+  }
 });
 
 export const update: RequestHandler = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const body = { ...(req.body || {}) };
+  validateObjectId(id);
 
-  // Bump last updated every PUT/PATCH
+  const body = { ...(req.body || {}) };
   body.dateLastUpdated = new Date().toISOString();
 
-  const doc = await ActModel.findByIdAndUpdate(id, body, {
-    new: true,
-    runValidators: true,
-  }).lean();
+  try {
+    const doc = await ActModel.findByIdAndUpdate(id, body, {
+      new: true,
+      runValidators: true,
+    }).lean();
 
-  if (!doc) {
-    res.status(404).json({ error: "Not found" });
-    return;
+    if (!doc) {
+      httpError(404, "Act not found", "Not Found");
+    }
+
+    // audit example
+    req.audit?.push({ type: "update", model: "Act", id });
+
+    res.json(doc);
+  } catch (err: any) {
+    if (isDupKey(err))
+      httpError(409, "Act already exists (name, homeTownId)", "Conflict");
+    throw err;
   }
-  res.json(doc);
 });
 
 export const remove: RequestHandler = asyncHandler(async (req, res) => {
   const { id } = req.params;
+  validateObjectId(id);
+
   const result = await ActModel.findByIdAndDelete(id).lean();
   if (!result) {
-    res.status(404).json({ error: "Not found" });
-    return;
+    httpError(404, "Act not found", "Not Found");
   }
+
+  // audit example
+  req.audit?.push({ type: "delete", model: "Act", id });
+
   res.status(204).send();
 });

@@ -1,4 +1,5 @@
-import mongoose, { Schema, Types, model } from "mongoose";
+// backend/services/image/src/models/Image.ts
+import mongoose, { Schema, Types } from "mongoose";
 
 /**
  * Single-owner image model with orphan/linked lifecycle and TTL cleanup.
@@ -8,10 +9,10 @@ import mongoose, { Schema, Types, model } from "mongoose";
 export type ImageState = "orphan" | "linked" | "deleted";
 export type ModerationStatus = "pending" | "valid" | "invalid" | "check";
 
-export interface IImage {
+export interface ImageDocument {
   _id: Types.ObjectId;
   uploadBatchId?: string;
-  image: Buffer;
+  image: Buffer; // raw bytes (excluded by default)
   contentType?: string;
   originalFilename?: string;
 
@@ -22,20 +23,20 @@ export interface IImage {
   checksum?: string;
 
   creationDate: Date;
-  expiresAtDate?: Date; // set when orphan; TTL index cleans it
+  expiresAtDate?: Date; // when set (for orphans), TTL index purges
   state: ImageState; // orphan | linked | deleted
   moderation?: ModerationStatus;
   notes?: string;
 
-  createdBy: Types.ObjectId; // User _id (uploader)
+  createdBy: Types.ObjectId; // uploader (User _id)
 }
 
-const ImageSchema = new Schema<IImage>(
+const schema = new Schema<ImageDocument>(
   {
     uploadBatchId: { type: String, index: true },
 
-    // Don't fetch the big blob unless explicitly selected
-    image: { type: Buffer, required: true, select: false },
+    // Don’t fetch the big blob unless explicitly requested
+    image: { type: Buffer, required: true, select: false }, // select:false excludes by default :contentReference[oaicite:0]{index=0}
 
     contentType: { type: String },
     originalFilename: { type: String },
@@ -45,8 +46,8 @@ const ImageSchema = new Schema<IImage>(
     height: { type: Number },
     checksum: { type: String, index: true },
 
-    creationDate: { type: Date, default: Date.now }, // index via schema.index below
-    expiresAtDate: { type: Date }, // TTL index below
+    creationDate: { type: Date, default: Date.now },
+    expiresAtDate: { type: Date }, // TTL index defined below (expireAfterSeconds: 0) :contentReference[oaicite:1]{index=1}
 
     state: {
       type: String,
@@ -81,34 +82,45 @@ const ImageSchema = new Schema<IImage>(
         return ret;
       },
     },
+    toObject: {
+      virtuals: false,
+      transform(_doc, ret) {
+        ret.id = ret._id?.toString?.();
+        delete ret._id;
+        delete ret.image;
+        return ret;
+      },
+    },
   }
 );
 
 // TTL: remove docs when expiresAtDate < now (only set for orphans)
-ImageSchema.index({ expiresAtDate: 1 }, { expireAfterSeconds: 0 });
+schema.index({ expiresAtDate: 1 }, { expireAfterSeconds: 0 }); // TTL index config :contentReference[oaicite:2]{index=2}
 
 // Helpful secondary indexes
-ImageSchema.index({ creationDate: -1 });
-ImageSchema.index({ createdBy: 1, creationDate: -1 });
-ImageSchema.index({ state: 1, creationDate: -1 });
-ImageSchema.index({ uploadBatchId: 1, creationDate: -1 });
+schema.index({ creationDate: -1 });
+schema.index({ createdBy: 1, creationDate: -1 });
+schema.index({ state: 1, creationDate: -1 });
+schema.index({ uploadBatchId: 1, creationDate: -1 });
 
-// Optional de-dupe for identical uploads (skip deleted + require checksum)
-ImageSchema.index(
+// Optional de-dupe: same owner + same checksum, excluding “deleted”
+schema.index(
   { createdBy: 1, checksum: 1 },
   {
     unique: true,
     partialFilterExpression: {
       checksum: { $type: "string" },
       state: { $ne: "deleted" },
-    },
+    }, // partial index pattern :contentReference[oaicite:3]{index=3}
   }
 );
 
 // Auto-fill bytes if missing
-ImageSchema.pre("save", function (next) {
-  if (!this.bytes && this.image) this.bytes = this.image.length;
+schema.pre("save", function (next) {
+  if (!this.bytes && (this as any).image)
+    (this as any).bytes = (this as any).image.length;
   next();
 });
 
-export const ImageModel = model<IImage>("Image", ImageSchema);
+const ImageModel = mongoose.model<ImageDocument>("Image", schema);
+export default ImageModel;

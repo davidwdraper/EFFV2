@@ -58,7 +58,8 @@ export type UpstreamKey =
   | "ACT_SERVICE_URL"
   | "PLACE_SERVICE_URL"
   | "EVENT_SERVICE_URL"
-  | "AUTH_SERVICE_URL"; // ← added for auth gateway proxy
+  | "AUTH_SERVICE_URL"
+  | "IMAGE_SERVICE_URL";
 
 export function requireUpstream(name: UpstreamKey): string {
   return requireEnv(name);

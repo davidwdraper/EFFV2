@@ -8,6 +8,7 @@ import { createHealthRouter, ReadinessFn } from "../../shared/health";
 import actRoutes from "./routes/actRoutes";
 import userRoutes from "./routes/userRoutes";
 import authRoutes from "./routes/authRoutes";
+import imageRoutes from "./routes/imageRoutes";
 
 import { serviceName, requireUpstream } from "./config";
 
@@ -52,6 +53,7 @@ app.use(
 app.use("/acts", actRoutes);
 app.use("/users", userRoutes);
 app.use("/auth", authRoutes);
+app.use("/images", imageRoutes);
 
 app.use((_req, res) => {
   res

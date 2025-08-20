@@ -318,4 +318,6 @@ Env layout: “Where is .env.dev located if not at repo root?”
 
 We left off refactoring the backend. orchestrator was renamed gateway, and it is just gatekeeper and proxy. orchestrator-core was eliminated. The backend is tiered. The top tier is the gateway, the gateway can communicate with all services depending on need. the next tier is the business logic services that may need to call out to one or more entity services. The bottom tier, is the entity servcies which will usually have their own DB, or they proxy a 3rd party API. The bottom tier services to communicate directly with other services except for the logger.
 
+index.ts files have import a bootstrap, to get logging working first.
+
 That’s the blueprint. Paste this at the top of new sessions and we’ll stay locked on rails: identical services, audit-friendly, and investor-grade.

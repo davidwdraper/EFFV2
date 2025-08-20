@@ -1,8 +1,0 @@
-{
-  "extends": "../tsconfig.json",
-  "compilerOptions": {
-    "rootDir": "..",
-    "outDir": "../dist/orchestrator"
-  },
-  "include": ["index.ts"]
-}

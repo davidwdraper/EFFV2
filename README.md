@@ -320,4 +320,8 @@ We left off refactoring the backend. orchestrator was renamed gateway, and it is
 
 index.ts files have import a bootstrap, to get logging working first.
 
+We introduced tokens to secure logging.
+
+I now want to go back and again refactor gateway, act, user and image with redis and other methods for ensuring a super high-speed platform. This app might fizzle out, or it could very quickly jump to millions of users, with lots of them hitting simultaneously, especially Friday afternoons and Saturdays. If that happens, it will be too late refactor the code for performance. I will paste some previous conversations we've had, right after this.
+
 That’s the blueprint. Paste this at the top of new sessions and we’ll stay locked on rails: identical services, audit-friendly, and investor-grade.

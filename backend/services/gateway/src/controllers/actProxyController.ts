@@ -6,7 +6,6 @@ import { withTrace, getRequestId } from "../../../shared/trace";
 
 const ACT_SERVICE_URL = requireUpstream("ACT_SERVICE_URL");
 
-// ——— utilities ———
 function sanitizeResponseHeaders(headers: Record<string, string> = {}) {
   const {
     connection,
@@ -28,7 +27,6 @@ function passThroughError(
   fallbackMessage: string
 ) {
   const ax = err as AxiosError;
-
   if (ax && ax.response) {
     const { status, headers, data } = ax.response;
     return res
@@ -36,7 +34,6 @@ function passThroughError(
       .set(sanitizeResponseHeaders(headers as any))
       .send(data);
   }
-
   const code = (ax && ax.code) || "";
   const msg = (ax as any)?.message || "Upstream error";
   const timeout =
@@ -46,36 +43,71 @@ function passThroughError(
   const connErr =
     code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EHOSTUNREACH";
   const status = timeout ? 504 : connErr ? 502 : 500;
-
   return res.status(status).json({ error: fallbackMessage, detail: msg, code });
 }
 
-// IMPORTANT: preserve the /acts prefix so upstream sees the same path
 const toUpstream = (req: Request) =>
   `${ACT_SERVICE_URL.replace(/\/$/, "")}${req.originalUrl}`;
 
-// ——— proxy handlers (one per common endpoint) ———
+const commonHeaders = (req: any, res: any) => ({
+  ...req.headers,
+  host: undefined as any,
+  "x-request-id": getRequestId(req, res),
+});
 
 /** GET /acts */
 export const list = withTrace(
   "gateway: GET /acts (proxy→act)",
-  async (req: Request, res: Response) => {
-    const requestId = getRequestId(req, res);
+  async (req, res) => {
     try {
-      const response = await axios.get(toUpstream(req), {
-        headers: {
-          ...req.headers,
-          host: undefined as any,
-          "x-request-id": requestId,
-        },
+      const r = await axios.get(toUpstream(req), {
+        headers: commonHeaders(req, res),
         validateStatus: () => true,
       });
       return res
-        .status(response.status)
-        .set(sanitizeResponseHeaders(response.headers as any))
-        .send(response.data);
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
     } catch (err) {
       return passThroughError(res, err, "Failed to list acts");
+    }
+  }
+);
+
+/** GET /acts/search */
+export const search = withTrace(
+  "gateway: GET /acts/search (proxy→act)",
+  async (req, res) => {
+    try {
+      const r = await axios.get(toUpstream(req), {
+        headers: commonHeaders(req, res),
+        validateStatus: () => true,
+      });
+      return res
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
+    } catch (err) {
+      return passThroughError(res, err, "Failed to search acts");
+    }
+  }
+);
+
+/** GET /acts/by-hometown */
+export const byHometown = withTrace(
+  "gateway: GET /acts/by-hometown (proxy→act)",
+  async (req, res) => {
+    try {
+      const r = await axios.get(toUpstream(req), {
+        headers: commonHeaders(req, res),
+        validateStatus: () => true,
+      });
+      return res
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
+    } catch (err) {
+      return passThroughError(res, err, "Failed to search acts by hometown");
     }
   }
 );
@@ -83,21 +115,16 @@ export const list = withTrace(
 /** GET /acts/:id */
 export const getById = withTrace(
   "gateway: GET /acts/:id (proxy→act)",
-  async (req: Request, res: Response) => {
-    const requestId = getRequestId(req, res);
+  async (req, res) => {
     try {
-      const response = await axios.get(toUpstream(req), {
-        headers: {
-          ...req.headers,
-          host: undefined as any,
-          "x-request-id": requestId,
-        },
+      const r = await axios.get(toUpstream(req), {
+        headers: commonHeaders(req, res),
         validateStatus: () => true,
       });
       return res
-        .status(response.status)
-        .set(sanitizeResponseHeaders(response.headers as any))
-        .send(response.data);
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
     } catch (err) {
       return passThroughError(res, err, "Failed to fetch act");
     }
@@ -107,21 +134,16 @@ export const getById = withTrace(
 /** POST /acts */
 export const create = withTrace(
   "gateway: POST /acts (proxy→act)",
-  async (req: Request, res: Response) => {
-    const requestId = getRequestId(req, res);
+  async (req, res) => {
     try {
-      const response = await axios.post(toUpstream(req), req.body, {
-        headers: {
-          ...req.headers,
-          host: undefined as any,
-          "x-request-id": requestId,
-        },
+      const r = await axios.post(toUpstream(req), req.body, {
+        headers: commonHeaders(req, res),
         validateStatus: () => true,
       });
       return res
-        .status(response.status)
-        .set(sanitizeResponseHeaders(response.headers as any))
-        .send(response.data);
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
     } catch (err) {
       return passThroughError(res, err, "Failed to create act");
     }
@@ -131,21 +153,16 @@ export const create = withTrace(
 /** PUT /acts/:id */
 export const update = withTrace(
   "gateway: PUT /acts/:id (proxy→act)",
-  async (req: Request, res: Response) => {
-    const requestId = getRequestId(req, res);
+  async (req, res) => {
     try {
-      const response = await axios.put(toUpstream(req), req.body, {
-        headers: {
-          ...req.headers,
-          host: undefined as any,
-          "x-request-id": requestId,
-        },
+      const r = await axios.put(toUpstream(req), req.body, {
+        headers: commonHeaders(req, res),
         validateStatus: () => true,
       });
       return res
-        .status(response.status)
-        .set(sanitizeResponseHeaders(response.headers as any))
-        .send(response.data);
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
     } catch (err) {
       return passThroughError(res, err, "Failed to update act");
     }
@@ -155,21 +172,16 @@ export const update = withTrace(
 /** DELETE /acts/:id */
 export const remove = withTrace(
   "gateway: DELETE /acts/:id (proxy→act)",
-  async (req: Request, res: Response) => {
-    const requestId = getRequestId(req, res);
+  async (req, res) => {
     try {
-      const response = await axios.delete(toUpstream(req), {
-        headers: {
-          ...req.headers,
-          host: undefined as any,
-          "x-request-id": requestId,
-        },
+      const r = await axios.delete(toUpstream(req), {
+        headers: commonHeaders(req, res),
         validateStatus: () => true,
       });
       return res
-        .status(response.status)
-        .set(sanitizeResponseHeaders(response.headers as any))
-        .send(response.data);
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
     } catch (err) {
       return passThroughError(res, err, "Failed to delete act");
     }

@@ -6,7 +6,7 @@ import jwt, { JwtPayload } from "jsonwebtoken";
 export interface AuthUser extends JwtPayload {
   _id: string;
   userType?: number;
-  eMailAddr?: string;
+  email?: string;
   firstname?: string;
   middlename?: string;
   lastname?: string;

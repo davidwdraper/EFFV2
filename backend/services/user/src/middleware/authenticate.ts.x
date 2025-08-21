@@ -29,14 +29,14 @@
 //         'userType' in decoded &&
 //         'lastname' in decoded &&
 //         'firstname' in decoded &&
-//         'eMailAddr' in decoded
+//         'email' in decoded
 //       ) {
 //         req.user = {
 //           _id: decoded._id as string,
 //           userType: decoded.userType as number,
 //           firstname: decoded.firstname as string,
 //           lastname: decoded.lastname as string,
-//           eMailAddr: decoded.eMailAddr as string,
+//           email: decoded.email as string,
 //         };
 //         return next();
 //       } else {

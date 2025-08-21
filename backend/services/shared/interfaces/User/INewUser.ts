@@ -4,7 +4,7 @@ export interface INewUser {
   lastname: string;
   firstname: string;
   middlename?: string;
-  eMailAddr: string;
+  email: string;
   password: string;
   userStatus?: number; // default handled in model
   userType?: number; // default handled in model

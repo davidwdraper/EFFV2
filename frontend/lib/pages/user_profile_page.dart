@@ -42,7 +42,7 @@ class _UserProfilePageState extends State<UserProfilePage> {
     }
 
     final user = auth.user;
-    _emailController.text = (user?['eMailAddr'] ?? '') as String;
+    _emailController.text = (user?['email'] ?? '') as String;
     _firstController.text = (user?['firstname'] ?? '') as String;
     _middleController.text = (user?['middlename'] ?? '') as String;
     _lastController.text = (user?['lastname'] ?? '') as String;

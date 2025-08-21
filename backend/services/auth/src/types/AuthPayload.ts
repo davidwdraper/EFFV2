@@ -1,6 +1,6 @@
 export interface AuthPayload {
   _id: string;
-  eMailAddr: string;
+  email: string;
   userType: number;
   firstname: string;
   lastname: string;

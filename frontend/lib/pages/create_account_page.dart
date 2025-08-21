@@ -43,7 +43,7 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
       "firstname": _firstnameController.text.trim(),
       "middlename": _middlenameController.text.trim(),
       "lastname": _lastnameController.text.trim(),
-      "eMailAddr": _emailController.text.trim(),
+      "email": _emailController.text.trim(),
       "password": _passwordController.text,
     };
 

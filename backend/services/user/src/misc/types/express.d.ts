@@ -1,4 +1,4 @@
-import { AuthPayload } from './express';
+import { AuthPayload } from "./express";
 
 declare global {
   namespace Express {
@@ -13,5 +13,5 @@ export interface AuthPayload {
   userType: number;
   firstname: string;
   lastname: string;
-  eMailAddr: string;
+  email: string;
 }

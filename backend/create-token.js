@@ -6,7 +6,7 @@ const token = jwt.sign(
     lastname: "Chanley",
     middlename: "C",
     firstname: "Caren",
-    eMailAddr: "caren@gmail.com",
+    email: "caren@gmail.com",
   },
   "6969", // Use exact secret from .env
   { expiresIn: "100h" }

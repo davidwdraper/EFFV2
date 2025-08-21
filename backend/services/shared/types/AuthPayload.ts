@@ -3,6 +3,6 @@ export interface AuthPayload {
   _id: string;
   firstname: string;
   lastname: string;
-  eMailAddr: string;
+  email: string;
   userType: number;
 }

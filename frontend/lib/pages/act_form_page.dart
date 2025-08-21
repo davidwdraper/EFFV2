@@ -341,8 +341,8 @@ class _ActFormPageState extends State<ActFormPage> {
 
     final actName = _firstNonEmpty([data['name']]);
     if (actName.isNotEmpty) _nameCtrl.text = actName;
-    final email = _firstNonEmpty(
-        [data['contactEmail'], data['eMailAddr'], data['email']]);
+    final email =
+        _firstNonEmpty([data['contactEmail'], data['email'], data['email']]);
     _contactEmailCtrl.text = email;
 
     // ✅ imageIds (from backend)
@@ -425,7 +425,7 @@ class _ActFormPageState extends State<ActFormPage> {
 
       final payload = {
         'name': _nameCtrl.text.trim(),
-        'eMailAddr': _contactEmailCtrl.text.trim().isNotEmpty
+        'email': _contactEmailCtrl.text.trim().isNotEmpty
             ? _contactEmailCtrl.text.trim()
             : null,
         if (_townId != null && _townId!.trim().isNotEmpty) 'townId': _townId,

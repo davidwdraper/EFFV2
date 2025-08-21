@@ -50,7 +50,7 @@ class AuthProvider extends ChangeNotifier {
     final resp = await http.post(
       Uri.parse('$_apiBase/auth/login'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'eMailAddr': email, 'password': password}),
+      body: jsonEncode({'email': email, 'password': password}),
     );
 
     if (resp.statusCode == 200) {

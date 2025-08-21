@@ -40,8 +40,8 @@ export const create = async (req: Request, res: Response) => {
   );
 
   try {
-    // Accept new `email` (canonical). Tolerate legacy `eMailAddr` just in case.
-    const email = String((req.body.email ?? req.body.eMailAddr) || "")
+    // Accept new `email` (canonical). Tolerate legacy `email` just in case.
+    const email = String((req.body.email ?? req.body.email) || "")
       .trim()
       .toLowerCase();
     const firstname = String(req.body.firstname || "").trim();
@@ -89,7 +89,7 @@ export const create = async (req: Request, res: Response) => {
 
     const created = response.data?.user ?? response.data ?? {};
     const safeUser = (() => {
-      const { password: _pw, eMailAddr: _legacy, ...rest } = created;
+      const { password: _pw, email: _legacy, ...rest } = created;
       if (!rest.email && typeof _legacy === "string")
         (rest as any).email = _legacy;
       return rest;
@@ -114,7 +114,7 @@ export const create = async (req: Request, res: Response) => {
 
 /**
  * POST /auth/login
- * Body: { email, password }   (legacy: accepts eMailAddr)
+ * Body: { email, password }   (legacy: accepts email)
  * Behavior: fetch user with hash via User service, compare, return JWT.
  */
 export const login = async (req: Request, res: Response) => {
@@ -124,7 +124,7 @@ export const login = async (req: Request, res: Response) => {
   );
 
   try {
-    const email = String((req.body.email ?? req.body.eMailAddr) || "")
+    const email = String((req.body.email ?? req.body.email) || "")
       .trim()
       .toLowerCase();
     const password = req.body.password;
@@ -206,7 +206,7 @@ export const passwordReset = async (req: Request, res: Response) => {
   logger.debug({}, "authService: POST /auth/password_reset called");
 
   try {
-    const email = String((req.body.email ?? req.body.eMailAddr) || "")
+    const email = String((req.body.email ?? req.body.email) || "")
       .trim()
       .toLowerCase();
     const newPassword = req.body.newPassword;

@@ -13,7 +13,7 @@
         "header": [{ "key": "Content-Type", "value": "application/json" }],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"firstname\": \"Andrew\",\n  \"lastname\": \"Draper\",\n  \"eMailAddr\": \"andrew@google.com\",\n  \"password\": \"password123\",\n  \"userType\": 2\n}"
+          "raw": "{\n  \"firstname\": \"Andrew\",\n  \"lastname\": \"Draper\",\n  \"email\": \"andrew@google.com\",\n  \"password\": \"password123\",\n  \"userType\": 2\n}"
         },
         "url": {
           "raw": "http://localhost:4000/signup",
@@ -32,7 +32,7 @@
         "header": [{ "key": "Content-Type", "value": "application/json" }],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"firstname\": \"Emma\",\n  \"lastname\": \"Sanchez\",\n  \"eMailAddr\": \"emma@health.org\",\n  \"password\": \"trustno1\",\n  \"userType\": 1\n}"
+          "raw": "{\n  \"firstname\": \"Emma\",\n  \"lastname\": \"Sanchez\",\n  \"email\": \"emma@health.org\",\n  \"password\": \"trustno1\",\n  \"userType\": 1\n}"
         },
         "url": {
           "raw": "http://localhost:4000/signup",
@@ -51,7 +51,7 @@
         "header": [{ "key": "Content-Type", "value": "application/json" }],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"firstname\": \"Rome\",\n  \"lastname\": \"Walker\",\n  \"eMailAddr\": \"rome@fbi.gov\",\n  \"password\": \"deepcover\",\n  \"userType\": 3\n}"
+          "raw": "{\n  \"firstname\": \"Rome\",\n  \"lastname\": \"Walker\",\n  \"email\": \"rome@fbi.gov\",\n  \"password\": \"deepcover\",\n  \"userType\": 3\n}"
         },
         "url": {
           "raw": "http://localhost:4000/signup",

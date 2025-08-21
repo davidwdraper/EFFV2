@@ -2,7 +2,7 @@
 import axios from "axios";
 import type { Request } from "express";
 import pino, { type LoggerOptions, type LevelWithSilent } from "pino";
-import { getCallerInfo } from "../../shared/utils/logMeta";
+import { getCallerInfo } from "../../shared/utils/logMeta"; // keep as-is to match your tree
 
 // ── Env enforcement (no fallbacks) ─────────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -38,23 +38,37 @@ if (!validLevels.has(LOG_LEVEL)) {
 }
 
 // ── Pino: runtime instrumentation only (stdout JSON) ───────────────────────────
-// Redact secrets so audits pass and no tokens leak to stdout
+// Redact secrets so audits pass and no tokens leak to stdout.
+// NOTE: For hyphenated header names, use bracket notation.
 const pinoOptions: LoggerOptions = {
   level: LOG_LEVEL,
   base: SERVICE_NAME ? { service: SERVICE_NAME } : undefined,
   redact: {
+    remove: true,
     paths: [
+      // Request headers
       "req.headers.authorization",
       "req.headers.cookie",
-      "res.headers.set-cookie",
-      // Just in case anyone logs config/env-like blobs:
-      "*.password",
-      "*.secret",
-      "*.token",
-      "*.apiKey",
-      "*.x-internal-key",
+      "req.headers['x-internal-key']",
+      "req.headers['x-api-key']",
+      // Request body (common sensitive fields)
+      "req.body.password",
+      "req.body.token",
+      "req.body.apiKey",
+      "req.body.secret",
+      // Response headers
+      "res.headers['set-cookie']",
+      "res.headers['Set-Cookie']",
+      "res.headers.cookie",
+      "res.headers['x-internal-key']",
+      "res.headers['x-api-key']",
+      // Generic error objects that pino may serialize
+      "err.config.headers.authorization",
+      "err.config.headers['x-internal-key']",
+      "err.response.headers['set-cookie']",
+      "err.response.config.headers.authorization",
+      "err.response.config.headers['x-internal-key']",
     ],
-    remove: true,
   },
 };
 export const logger = pino(pinoOptions);

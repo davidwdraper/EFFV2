@@ -13,6 +13,7 @@ import actRoutes from "./routes/actRoutes";
 import userRoutes from "./routes/userRoutes";
 import authRoutes from "./routes/authRoutes";
 import imageRoutes from "./routes/imageRoutes";
+import townRoutes from "./routes/townRoutes"; // ← ADDED
 
 import {
   serviceName,
@@ -120,6 +121,9 @@ app.use(
         return { statusCode: res.statusCode };
       },
     },
+    // Important: don’t let pino-http try to redact headers itself,
+    // since shared/logger.ts handles redaction. Prevent duplicate/invalid paths.
+    redact: { paths: [], remove: true },
   })
 );
 
@@ -168,6 +172,7 @@ app.use("/acts", actRoutes);
 app.use("/users", userRoutes);
 app.use("/auth", authRoutes);
 app.use("/images", imageRoutes);
+app.use("/towns", townRoutes); // ← ADDED
 
 // ── 404 + Error handlers (Problem+JSON) ──────────────────────────────────────
 app.use(notFoundHandler());

@@ -6,6 +6,7 @@ import pinoHttp from "pino-http";
 import { randomUUID } from "crypto";
 
 import actRoutes from "./routes/actRoutes";
+import townRoutes from "./routes/townRoutes"; // ← ADDED
 import {
   logger,
   postAudit,
@@ -142,10 +143,15 @@ app.use(
 
 // ── Routes
 app.use("/acts", actRoutes);
+app.use("/towns", townRoutes); // ← ADDED
 
 // ── 404 and error handler (Problem+JSON)
 app.use((req, res, _next) => {
-  if (req.path.startsWith("/acts") || req.path.startsWith("/health")) {
+  if (
+    req.path.startsWith("/acts") ||
+    req.path.startsWith("/towns") || // ← ADDED
+    req.path.startsWith("/health")
+  ) {
     return res
       .status(404)
       .type("application/problem+json")

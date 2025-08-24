@@ -1,18 +1,40 @@
-import dotenv from 'dotenv';
-import path from 'path';
+// backend/services/act/src/config.ts
 
-// ✅ Replace with absolute path to project root
-const env = process.env.NODE_ENV || 'dev';
-const envPath = path.resolve(__dirname, '../../../../.env.' + env);
-dotenv.config({ path: envPath });
+/**
+ * SOP-compliant config:
+ * - No dotenv loading here (bootstrap.ts loads env).
+ * - No hardcoded defaults — all required vars must be present.
+ * - Fail fast at import time if something is missing/invalid.
+ */
 
-console.log(`[Act config] loading env from: ${envPath}`);
-console.log(`[Act config] ACT_PORT is: ${process.env.ACT_PORT}`);
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (v == null || String(v).trim() === "") {
+    throw new Error(`Missing required env var: ${name}`);
+  }
+  return v;
+}
+
+function requireNumber(name: string): number {
+  const raw = requireEnv(name);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    throw new Error(`Invalid number for env var ${name}: "${raw}"`);
+  }
+  return n;
+}
 
 export const config = {
-  env,
-  port: parseInt(process.env.ACT_PORT || '8888', 10),
-  mongoUri: process.env.ACT_MONGO_URI || 'mongodb://localhost:27017/eff_act_db',
-  jwtSecret: process.env.JWT_SECRET || '2468',
-  logLevel: process.env.LOG_LEVEL || 'info',
-};
+  // pass-through (optional)
+  env: process.env.NODE_ENV,
+
+  // required
+  serviceName: requireEnv("ACT_SERVICE_NAME"),
+  port: requireNumber("ACT_PORT"),
+  mongoUri: requireEnv("ACT_MONGO_URI"),
+  logLevel: requireEnv("LOG_LEVEL"),
+  logServiceUrl: requireEnv("LOG_SERVICE_URL"),
+
+  // optional
+  jwtSecret: process.env.JWT_SECRET,
+} as const;

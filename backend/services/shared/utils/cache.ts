@@ -1,121 +1,204 @@
 // backend/services/shared/utils/cache.ts
-import type { Request, RequestHandler } from "express";
-import crypto from "crypto";
+import type { Request, Response, RequestHandler } from "express";
 import { getRedis } from "./redis";
-import { requireNumber } from "../config/env";
 
-// Build a stable cache key from method, path, and **sorted** query params
-function makeKey(namespace: string, req: Request): string {
-  const url = req.originalUrl || req.url || "";
-  const [path, q] = url.split("?", 2);
-  let norm = path;
-  if (q) {
-    const params = new URLSearchParams(q);
-    const entries = Array.from(params.entries()).sort(([a], [b]) =>
-      a.localeCompare(b)
-    );
-    const qs = new URLSearchParams(entries).toString();
-    norm = `${path}?${qs}`;
-  }
-  const raw = `${req.method} ${norm}`;
-  const hash = crypto.createHash("sha1").update(raw).digest("hex");
-  return `cache:${namespace}:${hash}`;
+// ----------------- Low-level helpers (Promise-based) -----------------
+
+export async function redisGet(key: string): Promise<string | null> {
+  const r = await getRedis();
+  if (!r || !(r as any).isOpen) return null;
+  return r.get(key);
 }
 
+export async function redisSet(
+  key: string,
+  value: string,
+  ttlSeconds?: number
+): Promise<void> {
+  const r = await getRedis();
+  if (!r || !(r as any).isOpen) return;
+  if (ttlSeconds && ttlSeconds > 0) {
+    await r.set(key, value, { EX: ttlSeconds });
+  } else {
+    await r.set(key, value);
+  }
+}
+
+export async function cacheDel(key: string | string[]): Promise<void> {
+  const r = await getRedis();
+  if (!r || !(r as any).isOpen) return;
+  const arr = Array.isArray(key) ? key : [key];
+  if (arr.length) await r.del(arr);
+}
+
+export async function cacheDelByPrefix(prefix: string): Promise<void> {
+  const r = await getRedis();
+  if (!r || !(r as any).isOpen) return;
+
+  const match = `${prefix}*`;
+  const it = (r as any).scanIterator?.({ MATCH: match, COUNT: 200 });
+
+  if (it && typeof it[Symbol.asyncIterator] === "function") {
+    const batch: string[] = [];
+    for await (const k of it as AsyncIterable<string>) {
+      batch.push(k);
+      if (batch.length >= 200) {
+        await r.del(batch);
+        batch.length = 0;
+      }
+    }
+    if (batch.length) await r.del(batch);
+    return;
+  }
+
+  // Fallback — fine for dev/test
+  try {
+    const keys = await r.keys(match);
+    if (keys.length) await r.del(keys);
+  } catch {
+    // ignore
+  }
+}
+
+// ----------------- Key derivation -----------------
+
+function stableQueryString(req: Request): string {
+  const qp = new URLSearchParams();
+  const q = req.query as Record<string, any>;
+  Object.keys(q)
+    .sort()
+    .forEach((k) => {
+      const v = q[k];
+      if (Array.isArray(v)) v.sort().forEach((vv) => qp.append(k, String(vv)));
+      else if (v !== undefined && v !== null) qp.append(k, String(v));
+    });
+  const s = qp.toString();
+  return s ? `?${s}` : "";
+}
+
+function makeKey(ns: string, req: Request): string {
+  // Namespace + method + normalized path + stable query
+  const base = `${ns}:${req.method}:${req.baseUrl || ""}${req.path}`;
+  return `${base}${stableQueryString(req)}`;
+}
+
+function ttlFromEnv(envVar?: string): number | undefined {
+  if (!envVar) return undefined;
+  const raw = process.env[envVar];
+  if (!raw) return undefined;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+// ----------------- Middleware API expected by your routes -----------------
+
 /**
- * GET response cache.
- * Reads TTL from the provided env var name (required; no defaults).
- * - Adds 'x-cache: HIT|MISS' header.
- * - Only caches 2xx JSON responses (res.json).
- * - Fails open if Redis is down.
+ * Cache GET responses for a namespace. TTL read from env var at runtime.
+ * Usage in routes: cacheGet("act", "ACT_CACHE_TTL_SEC")
  */
 export function cacheGet(
   namespace: string,
-  ttlEnvName: string
+  ttlEnvVar?: string
 ): RequestHandler {
-  const redis = getRedis();
-  const ttl = requireNumber(ttlEnvName);
-
-  return async (req, res, next) => {
+  return (req, res, next) => {
     if (req.method !== "GET") return next();
 
-    const key = makeKey(namespace, req);
+    (async () => {
+      const key = makeKey(namespace, req);
+      const hit = await redisGet(key);
 
-    try {
-      const hit = await redis.get(key);
       if (hit) {
-        res.setHeader("x-cache", "HIT");
-        return res.json(JSON.parse(hit));
-      }
-    } catch {
-      // fail-open
-    }
-
-    res.setHeader("x-cache", "MISS");
-    const original = res.json.bind(res);
-    (res as any).json = (body: any) => {
-      try {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          void redis.set(key, JSON.stringify(body), { EX: ttl });
+        // We store an envelope: { status, headers, body }
+        try {
+          const env = JSON.parse(hit) as {
+            status: number;
+            headers?: Record<string, string>;
+            body: any;
+          };
+          if (env.headers) {
+            for (const [h, v] of Object.entries(env.headers)) {
+              // avoid setting hop-by-hop headers
+              if (!/^connection$|^transfer-encoding$|^keep-alive$/i.test(h)) {
+                res.setHeader(h, v as any);
+              }
+            }
+          }
+          res.status(env.status || 200).send(env.body);
+          return;
+        } catch {
+          // Fall through on parse error
         }
-      } catch {
-        // ignore cache write errors
       }
-      return original(body);
-    };
 
-    next();
+      // Miss: capture response and cache after send if 2xx
+      const send = res.send.bind(res);
+      (res as any).send = (body: any) => {
+        try {
+          const status = res.statusCode;
+          if (status >= 200 && status < 300) {
+            const headers: Record<string, string> = {};
+            // capture a few safe headers
+            const keep = ["content-type", "cache-control", "etag"];
+            keep.forEach((h) => {
+              const v = res.getHeader(h);
+              if (typeof v === "string") headers[h] = v;
+            });
+            const envelope = JSON.stringify({ status, headers, body });
+            void redisSet(key, envelope, ttlFromEnv(ttlEnvVar));
+          }
+        } catch {
+          // ignore cache errors
+        }
+        return send(body);
+      };
+
+      next();
+    })().catch(next);
   };
 }
 
 /**
- * Invalidate all cached keys for a namespace using scanIterator + UNLINK (non-blocking).
- * Safe for dev and early prod; can be upgraded to key-tagging later.
+ * Wrap a handler so that after a 2xx response it invalidates cache for the given key or namespace.
+ * - If arg contains '*', treated as a pattern and we clear by prefix up to '*'.
+ * - If arg has no ':' and no '*', it's treated as a **namespace** and we clear `${ns}:`.
  */
-export async function invalidateNamespace(namespace: string): Promise<void> {
-  const redis = getRedis();
-  const pattern = `cache:${namespace}:*`;
-  const batch: string[] = [];
-  const BATCH_SIZE = 200;
+export function invalidateOnSuccess(
+  keyOrNamespace: string | string[]
+): (handler: RequestHandler) => RequestHandler {
+  const arr = Array.isArray(keyOrNamespace) ? keyOrNamespace : [keyOrNamespace];
 
-  try {
-    // node-redis v4 async iterator
-    for await (const key of redis.scanIterator({
-      MATCH: pattern,
-      COUNT: 200,
-    })) {
-      batch.push(String(key));
-      if (batch.length >= BATCH_SIZE) {
-        // UNLINK is async/non-blocking server-side (prefer over DEL)
-        // @ts-expect-error variadic unlink
-        await redis.unlink(...batch);
-        batch.length = 0;
-      }
-    }
-    if (batch.length) {
-      // @ts-expect-error variadic unlink
-      await redis.unlink(...batch);
-    }
-  } catch {
-    // fail-open on invalidation (cache can be stale; correctness will still be ok on next write)
-  }
-}
+  const toPrefix = (k: string): { isPrefix: boolean; value: string } => {
+    if (k.includes("*"))
+      return { isPrefix: true, value: k.slice(0, k.indexOf("*")) };
+    // Treat bare namespace as prefix
+    if (!k.includes(":")) return { isPrefix: true, value: `${k}:` };
+    return { isPrefix: false, value: k };
+  };
 
-/**
- * Middleware that registers a post-response hook to invalidate the namespace
- * after successful mutations (POST/PUT/PATCH/DELETE with 2xx).
- */
-export function invalidateOnSuccess(namespace: string): RequestHandler {
-  return (req, res, next) => {
-    const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(req.method);
-    if (!mutating) return next();
+  return (handler: RequestHandler): RequestHandler => {
+    return (req, res, next) => {
+      const done = async () => {
+        res.removeListener("finish", done);
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            for (const k of arr) {
+              const spec = toPrefix(k);
+              if (spec.isPrefix) await cacheDelByPrefix(spec.value);
+              else await cacheDel(spec.value);
+            }
+          } catch {
+            // best-effort only
+          }
+        }
+      };
 
-    res.on("finish", () => {
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        void invalidateNamespace(namespace);
-      }
-    });
+      // Always hook finish first
+      res.on("finish", () => {
+        void done();
+      });
 
-    next();
+      // Properly chain async handlers so errors go to Express and don't hang
+      Promise.resolve(handler(req, res, next)).catch(next);
+    };
   };
 }

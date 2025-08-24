@@ -1,9 +1,21 @@
+// /backend/services/act/tsconfig.json
 {
-  "extends": "../tsconfig.json",
+  "extends": "../../../tsconfig.json",
   "compilerOptions": {
-    "module": "Commonjs",
-    "rootDir": "..",
-    "outDir": "../dist/act"
+    "module": "CommonJS",
+    "target": "ES2022",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+
+    "rootDir": "..", // include sibling folders under /services
+    "outDir": "../dist/act", // keep output outside the source tree
+
+    "types": ["node"] // vitest types not needed for runtime
   },
-  "include": ["index.ts"]
+  "include": [
+    "src",
+    "index.ts",
+    "../shared/**/*.ts" // compile shared utilities/contracts too
+  ]
 }

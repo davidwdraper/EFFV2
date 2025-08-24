@@ -1,9 +1,13 @@
 // backend/services/shared/contracts/user.ts
 import { z } from "zod";
-import { ObjectIdString, ISODateString } from "./common";
+import { zObjectId, zIsoDate } from "./common";
+
+// Optional: keep TS type aliases for convenience (not used as schemas)
+type ObjectIdString = z.infer<typeof zObjectId>;
+type ISODateString = z.infer<typeof zIsoDate>;
 
 export const UserDTO = z.object({
-  _id: ObjectIdString,
+  _id: zObjectId, // <-- schema, not type
   email: z.string().email(),
   firstname: z.string().min(1),
   middlename: z.string().optional(),
@@ -13,8 +17,8 @@ export const UserDTO = z.object({
   imageIds: z.array(z.string()).default([]),
   userEntryId: z.string().optional(),
   userOwnerId: z.string().optional(),
-  dateCreated: ISODateString,
-  dateLastUpdated: ISODateString,
+  dateCreated: zIsoDate, // <-- schema
+  dateLastUpdated: zIsoDate, // <-- schema
 });
 export type UserDTO = z.infer<typeof UserDTO>;
 

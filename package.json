@@ -17,14 +17,25 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.3.0",
+    "@types/supertest": "^6.0.3",
+    "@vitest/coverage-v8": "^3.2.4",
     "concurrently": "^8.0.0",
+    "dotenv": "^17.2.1",
     "dotenv-cli": "^10.0.0",
+    "supertest": "^7.1.4",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.2.4"
   },
   "scripts": {
     "dev": "./run.sh dev",
-    "docker": "./run.sh docker"
+    "docker": "./run.sh docker",
+    "test:act:unit": "vitest run -c backend/services/act/vitest.config.ts",
+    "test:act:watch": "vitest -c backend/services/act/vitest.config.ts --watch",
+    "test:act:e2e": "vitest run -c backend/tests/vitest.config.e2e.ts",
+    "test:act": "yarn test:act:unit && yarn test:act:e2e",
+    "coverage:act": "vitest run --coverage -c backend/services/act/vitest.config.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",

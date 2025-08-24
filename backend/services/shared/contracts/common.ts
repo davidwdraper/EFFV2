@@ -47,6 +47,19 @@ export const zListResponse = <T extends z.ZodTypeAny>(item: T) =>
     items: z.array(item),
   });
 
+/** RFC 7807 Problem+JSON */
+export const zProblem = z.object({
+  type: z.string().default("about:blank"),
+  title: z.string(),
+  status: z.number().int(),
+  detail: z.string().optional(),
+  instance: z.string().optional(),
+  // app-specific extras (optional)
+  code: z.string().optional(),
+  errors: z.array(z.any()).optional(),
+});
+export type Problem = z.infer<typeof zProblem>;
+
 /** Problem+JSON helper for Zod validation errors */
 export function zodBadRequest(res: Response, error: ZodError) {
   const errors = error.issues.map((i) => ({
@@ -58,6 +71,7 @@ export function zodBadRequest(res: Response, error: ZodError) {
     type: "about:blank",
     title: "Bad Request",
     status: 400,
+    code: "BAD_REQUEST", // ← add this
     detail: "Validation failed",
     errors,
   });

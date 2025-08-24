@@ -1,26 +1,62 @@
 // backend/services/act/src/db.ts
 import mongoose from "mongoose";
-import { config } from "./config";
 import { logger } from "@shared/utils/logger";
 
-export const connectDB = async () => {
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || !v.trim()) throw new Error(`Missing required env var: ${name}`);
+  return v.trim();
+}
+
+function redactMongoUri(uri: string): string {
   try {
-    await mongoose.connect(config.mongoUri);
-    logger.info(
-      {
-        component: "mongodb",
-        uri: config.mongoUri.replace(/:\/\/.*@/, "://***:***@"),
-      },
-      "[MongoDB-act] Connected"
-    );
-  } catch (err) {
-    logger.error(
-      {
-        component: "mongodb",
-        error: err instanceof Error ? err.message : String(err),
-      },
-      "[MongoDB-act] Connection error"
-    );
-    process.exit(1); // fail-fast on DB error (adjust if you prefer retry logic)
+    const u = new URL(uri);
+    if (u.password) u.password = "***";
+    if (u.username) u.username = "***";
+    return u.toString();
+  } catch {
+    return uri.replace(/\/\/([^@]+)@/, "//***:***@");
   }
-};
+}
+
+let connected = false;
+
+export async function connectDb(): Promise<void> {
+  if (connected) return;
+
+  const uri = requireEnv("ACT_MONGO_URI");
+
+  // Be explicit; disable buffering so errors surface immediately
+  mongoose.set("bufferCommands", false);
+  mongoose.set("strictQuery", true);
+
+  // Avoid deprecation churn; Mongoose 7+ uses driver defaults
+  logger.info(
+    { msg: "mongo:connect", uri: redactMongoUri(uri) },
+    "[act] connecting to Mongo"
+  );
+
+  // Initiate and await actual socket open
+  await mongoose.connect(uri).catch((err) => {
+    logger.error({ err }, "[act] mongoose.connect failed");
+    throw err;
+  });
+
+  // Wait until the connection emits 'connected' (readyState === 1)
+  if (mongoose.connection.readyState !== 1) {
+    await mongoose.connection.asPromise(); // resolves when connected
+  }
+
+  connected = true;
+  logger.info("[act] Mongo connected");
+}
+
+export async function disconnectDb(): Promise<void> {
+  try {
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
+  } finally {
+    connected = false;
+  }
+}

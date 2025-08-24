@@ -1,13 +1,11 @@
+// /backend/services/shared/tsconfig.json
 {
-  "extends": "../../../tsconfig.base.json",
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist",
-    "declaration": true,
-    "composite": true,
-    "module": "commonjs",
-    "target": "ES2019",
-    "moduleResolution": "node"
+    "types": ["node"],
+    "composite": false,
+    "declaration": false,
+    "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["**/*.ts"]
 }

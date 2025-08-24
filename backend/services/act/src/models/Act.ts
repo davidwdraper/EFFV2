@@ -69,9 +69,10 @@ const actSchema = new Schema<ActDocument>(
     userCreateId: { type: String, required: true },
     userOwnerId: { type: String, required: true },
 
+    // Name is indexed (non-unique). Uniqueness is enforced only together with homeTownId.
     name: { type: String, required: true, index: true },
 
-    // canonicalized email
+    // canonicalized email (non-unique helper index via { index: true })
     email: { type: String, index: true },
 
     // Human-readable town string (e.g., "Austin, TX")
@@ -157,8 +158,12 @@ const actSchema = new Schema<ActDocument>(
   }
 );
 
-// Unique by (name, homeTownId)
-actSchema.index({ name: 1, homeTownId: 1 }, { unique: true });
+// Canonical uniqueness: same name can exist in many towns;
+// only the pair (name, homeTownId) must be unique.
+actSchema.index(
+  { name: 1, homeTownId: 1 },
+  { unique: true, name: "uniq_name_homeTownId" }
+);
 
 // 2dsphere index for radius search
 actSchema.index({ homeTownLoc: "2dsphere" });

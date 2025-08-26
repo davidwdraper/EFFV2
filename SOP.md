@@ -1,204 +1,164 @@
-NowVibin Backend — New-Session SOP (Act-style template + shared test harness)
+# NowVibin Backend — New-Session SOP (Act-style template + shared test harness)
 
 Paste this at the start of each session. It keeps all services identical, audit-ready, and test harnesses consistent.
 
-Prime Directives
+---
 
-State-of-the-art, fast, scalable, audit-ready.
+## Prime Directives
 
-Single-concern source files; shared logic in services/shared.
+- State-of-the-art, fast, scalable, **audit-ready**.
+- Single-concern source files; shared logic in `services/shared`.
+- **Full file drops only.** Existing files must be pasted in full.
+- You never give me options. No "Option A / Option B". **Decide and deliver.**
+- All services **mirror Act** structure 1:1.
+- Routes = **one-liners**. No logic in routes.
+- **No baked values.** Env names only; values come from env files.
+- Instrumentation everywhere (pino / pino-http).
+- **Audit all mutations.** Controllers push → `req.audit[]`, flushed once.
+- `try/catch` everywhere that matters. `asyncHandler` + global error middleware.
+- Audit-ready: explicit env validation, consistent logging, **no silent fallbacks**.
+- Every file begins with repo path in a `//` comment.
+- Dev bootstrap may default `ENV_FILE` to `.env.dev`; **prod must set explicitly**.
 
-Full file drops only. Existing files must be pasted in full.
+---
 
-You never give me options — you decide and deliver.
+## Canonical Service Layout (Act-style, with additions)
 
-All services mirror Act structure 1:1.
-
-Routes = one-liners. No logic in routes.
-
-No baked values. Env names only; values come from env files.
-
-Instrumentation everywhere (pino-http).
-
-Audit all mutations. Controllers push → req.audit[], flushed once.
-
-try/catch everywhere that matters. asyncHandler + global error middleware.
-
-Audit-ready: explicit env validation, consistent logging, no silent fallbacks.
-
-Every file begins with repo path in a // comment.
-
-Dev bootstrap may default ENV_FILE to .env.dev; prod must set explicitly.
-
-Canonical Service Layout
 backend/services/<svc>/
 ├─ index.ts
 ├─ vitest.config.ts
 ├─ .env.test
+├─ scripts/ # one-off ops (e.g., loadTowns.ts); NO app imports that create listeners
+│ └─ README.md # how to run scripts with ENV_FILE and ts-node
 ├─ src/
-│ ├─ bootstrap.ts
-│ ├─ app.ts
-│ ├─ config.ts
-│ ├─ db.ts
-│ ├─ routes/
-│ ├─ controllers/
-│ ├─ models/
-│ └─ middleware/
+│ ├─ bootstrap.ts # loads env, config, db; wires app; exports { app, serverHandle? }
+│ ├─ app.ts # express app factory; mounts middleware/routes; no listen()
+│ ├─ config.ts # env parsing/validation; no defaults for required keys
+│ ├─ db.ts # mongoose connect; bufferCommands=false; exports connection
+│ ├─ contracts/ # zod schemas + DTOs (request/response)
+│ ├─ types/ # TS types/interfaces that aren’t zod
+│ ├─ middleware/ # asyncHandler, requestId, logger, auth, audit, cache, errors
+│ ├─ models/ # schemas + indexes
+│ ├─ controllers/ # business logic only
+│ ├─ routes/ # one-liners mapping HTTP → controller
+│ └─ utils/ # svc-local utilities only
 └─ test/
-├─ setup.ts
-├─ seed/runBeforeEach.ts
-├─ utils/http.ts
+├─ setup.ts # global setup; env; logger silencing; db connect; seeds
+├─ seed/
+│ ├─ runBeforeEach.ts # truncate/seed idempotently; logs pre/post counts
+│ └─ factories.ts # valid payload builders
 ├─ helpers/
-│ ├─ mongo.ts
-│ ├─ server.ts
-│ └─ factories.ts
+│ ├─ mongo.ts # shared connection reuse; ensureIndexes
+│ ├─ server.ts # boot app on PORT=0; expose supertest agent
+│ └─ http.ts # expectOK/expectCreated + Problem+JSON dump on fail
 ├─ unit/
 └─ e2e/
 
-Shared
+shell
+Copy
+Edit
+
+### Shared
+
 backend/services/shared/
-├─ config/env.ts
-├─ health.ts
+├─ config/env.ts # ENV_FILE resolution + requireEnv(name)
+├─ health.ts # health/ping factories
 └─ utils/
-├─ logger.ts
-├─ logMeta.ts
-└─ cache.ts
+├─ logger.ts # pino base + remote log POSTer
+├─ logMeta.ts # getCallerInfo, service tags
+├─ cache.ts # redis client, cacheGet(ns, ttlVar)
+└─ requestId.ts
 
-Environment Policy
+yaml
+Copy
+Edit
 
-Dev: ENV_FILE optional; defaults .env.dev.
+---
 
-Prod: ENV_FILE required.
+## Environment Policy
 
-Vars prefixed (ACT_PORT, USER_MONGO_URI, etc.).
+- **Dev:** `ENV_FILE` optional; defaults `.env.dev`.
+- **Prod:** `ENV_FILE` **required**.
+- Vars **namespaced** (e.g., `ACT_PORT`, `USER_MONGO_URI`).
+- **No fallbacks** for required keys. Fail fast in `config.ts`.
 
-No fallbacks for required keys.
+---
 
-Bootstrap & Index
+## Bootstrap & Index
 
-index.ts imports ./src/bootstrap first.
+- `index.ts` imports `./src/bootstrap` **first**. Nothing else.
+- `bootstrap.ts` logs env path, asserts required vars, connects DB, builds app, and **only for runtime** starts `listen()`.
 
-Bootstrap logs env path and asserts required vars.
+---
 
-Logging & Audit
+## Logging & Audit
 
-pino for structured logs (entry, exit, error).
+- `pino` + `pino-http` with requestId.
+- `postAudit` flushes `req.audit[]` once/request (mutations).
+- Request ID accepted from headers, else `randomUUID`.
 
-postAudit for business events (mutations).
+---
 
-Request ID from headers or randomUUID.
+## Performance / Ops Notes
 
-Performance/Operational Notes
+- `mongoose.set("bufferCommands", false)`.
+- **Indexes defined in models**; tests call `ensureIndexes()`.
+- Redis caching via `shared/utils/cache.ts` (`REDIS_DISABLED=1` in tests).
+- Future: circuit breakers, retries, rate limiting.
 
-mongoose.set("bufferCommands", false).
+---
 
-Indexes defined in models.
+## Test Harness
 
-Redis caching via cache.ts.
+- Vitest, Node env, 60s timeouts.
+- Coverage ≥90% lines/funcs/branches/stmts.
+- `c8` ignore only on unreachable lines.
+- `vite-tsconfig-paths` plugin.
+- Global setup: set envs, silence pino, ensure seeds.
+- Seeding via idempotent bulkWrite + namespaced values.
+- Supertest helpers: expectOK/Created, dump Problem+JSON on fail.
+- Mongo hygiene: reuse connection, ensureIndexes, truncate if needed.
+- Keep error/audit test routes under `NODE_ENV=test`.
+- Assert **shapes**, not IDs.
 
-Future: circuit breakers, retries, rate limiting.
+---
 
-Test Harness (standard across services)
-Vitest config
+## Where We Left Off
 
-Node env, 60s timeouts.
+1. Add new folders (scripts/, contracts/, types/) across all services.
+2. Retest Acts via gateway (4000) + direct (4002); coverage ≥90%.
+3. Clone harness onto User service:
+   - directory endpoint with cache.
+   - seeds (role matrix).
+   - mirror auth gates.
+   - env vars like `USER_NAME_LOOKUP_MAX_IDS`.
 
-Coverage 90% lines/funcs/branches/stmts.
+---
 
-c8 ignore only on impossible defensive lines.
+## Session-start Ritual
 
-Deterministic bootstrap (test/setup.ts)
+1. Paste **this SOP**.
+2. Say which service we’re on.
+3. Paste existing files I must merge (full, first line = repo path).
+4. I deliver full drops, no options.
 
-Always set:
+---
 
-NODE_ENV=test
+## Quick Sanity Checklist
 
-Service vars (USER_SERVICE_NAME, USER_MONGO_URI, USER_PORT, …).
+- [ ] No logic in routes.
+- [ ] Required envs asserted.
+- [ ] bufferCommands=false; indexes in models.
+- [ ] Request-ID logging.
+- [ ] Audit events flushed.
+- [ ] `.env.test` present.
+- [ ] Tests green via gateway + direct.
+- [ ] Coverage ≥90% all metrics.
+- [ ] Seeds idempotent + descriptive.
+- [ ] No baked values.
 
-Cutoffs/flags controllers rely on.
+---
 
-Silence pino in tests (stub logger).
+**End SOP v2**
 
-Import globals via types: ["vitest/globals"].
-
-Seeding
-
-test/seed/runBeforeEach.ts.
-
-Idempotent bulkWrite, upsert, includes required schema fields (e.g., GeoJSON loc).
-
-Namespaced (UVTEST\_\*).
-
-Logs pre/post counts.
-
-Supertest helpers (test/utils/http.ts)
-
-expectOK, expectCreated wrappers.
-
-Log full Problem+JSON on failure.
-
-Mongo hygiene
-
-Ensure indexes documented.
-
-GeoJSON loc always seeded.
-
-Connection reuse across tests.
-
-Routes & test hooks
-
-Keep /**err-nonfinite, /**audit guarded by NODE_ENV=test.
-
-Use unmatched path for 404 tests.
-
-Coverage playbook
-
-Tick cold branches with micro-specs.
-
-Search “no q” path by tuning cutoff in env.
-
-Lower gates temporarily (<1%) only with TODO + date.
-
-Prefer factories for known-good payloads.
-
-Import/config sanity
-
-Tests import ../src/....
-
-Vitest plugins: vite-tsconfig-paths.
-
-Setup includes seeds and env.
-
-Zod diagnostics
-
-Log response bodies when 400/500 unexpected.
-
-Use factories for tricky payloads.
-
-Flake killers
-
-REDIS_DISABLED=1 in tests.
-
-PORT=0 ephemeral.
-
-Clamp typeahead/list limits in tests.
-
-Assert shapes, not IDs.
-
-“Do nots”
-
-Never seed in app code.
-
-Don’t rely on ordering without explicit sort.
-
-Don’t assert static IDs from seeds.
-
-Where We Left Off
-
-Act coverage: a couple cold branches left (search cutoff, app error handler).
-
-Goal: ≥90% coverage across all.
-
-Use this harness for User service next — rename seeds/env to USER\_\*.
-
-The user service is working, but needs refactoring for redis and a test harness the same as Act. To ensure exact alignment, let's start with index.ts. I will send you the Act version and then the User version. You can merge from act/index.ts to user/index.ts
+We are picking up where we left off, debugging Act tests.

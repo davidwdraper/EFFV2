@@ -1,0 +1,53 @@
+Vitest + global test setup
+
+backend/services/act/vitest.config.ts
+
+backend/services/act/test/setup.ts
+
+backend/services/act/.env.test (scrub secrets; I only need key names + dummy values)
+
+Test helpers & seed harness
+
+backend/services/act/test/helpers/server.ts
+
+backend/services/act/test/helpers/mongo.ts
+
+backend/services/act/test/helpers/http.ts
+
+backend/services/act/test/seed/runBeforeEach.ts (the one you pasted earlier was truncated — please repost full)
+
+backend/services/act/test/seed/factories.ts
+
+Failing specs so I can fix what’s actually breaking
+
+backend/services/act/test/unit/** (all)
+
+backend/services/act/test/e2e/** (all)
+
+Especially the failing one: act.more-coverage.spec.ts
+
+Runtime bits the tests exercise (to align app wiring)
+
+backend/services/act/src/app.ts
+
+backend/services/act/src/routes/*.ts (one-liners)
+
+backend/services/act/src/controllers/*.ts (the by-hometown/get handlers in particular)
+
+backend/services/act/src/models/{Act.ts,Town.ts}
+
+Middleware used by tests
+
+backend/services/act/src/middleware/{errors.ts,audit.ts,logger.ts,requestId.ts,auth.ts}
+
+Shared utilities referenced by Act
+
+backend/services/shared/utils/{logger.ts,logMeta.ts,cache.ts,requestId.ts}
+
+backend/services/shared/health.ts
+
+Script we discussed for seeding + audit
+
+backend/services/act/scripts/loadTowns.ts
+
+backend/services/act/scripts/README.md (if present)

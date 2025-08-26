@@ -1,7 +1,7 @@
 // backend/services/act/test/seed/runBeforeEach.ts
-import { beforeAll } from "vitest";
+import { beforeAll, beforeEach } from "vitest";
 import mongoose from "mongoose";
-import Town from "../../src/models/Town";
+import { randomUUID } from "node:crypto";
 
 const NV_PREFIX = "NVTEST_";
 
@@ -21,7 +21,9 @@ async function ensureConnected(): Promise<boolean> {
   const uri = process.env.ACT_MONGO_URI;
   if (!uri) {
     // eslint-disable-next-line no-console
-    console.warn("[test-seed] ACT_MONGO_URI is not set; cannot seed towns.");
+    console.warn(
+      "[test-seed] ACT_MONGO_URI is not set; cannot connect for seeding."
+    );
     return false;
   }
 
@@ -37,71 +39,94 @@ async function ensureConnected(): Promise<boolean> {
   }
 }
 
-async function seedNvTestTownsIfMissing() {
+/**
+ * Verify that NVTEST_* towns exist.
+ * DO NOT write to towns — towns are static, loaded manually out-of-band.
+ * If missing, we log a warning so failures are obvious, but we don't mutate.
+ */
+async function verifyNvTestTownsPresent() {
   if (process.env.NODE_ENV !== "test") return;
-
   const connected = await ensureConnected();
   if (!connected) return;
 
-  const uri = process.env.ACT_MONGO_URI;
+  const uri = process.env.ACT_MONGO_URI!;
   const dbName = dbNameFromUri(uri);
+  const towns = mongoose.connection.db.collection("towns");
 
-  const preCount = await Town.countDocuments({
+  const preCount = await towns.countDocuments({
     name: { $regex: new RegExp(`^${NV_PREFIX}`) },
   });
   // eslint-disable-next-line no-console
-  console.log(`[test-seed] Pre-count NVTEST_* towns in ${dbName}: ${preCount}`);
+  console.log(`[test-seed] NVTEST_* towns in ${dbName}: ${preCount}`);
 
   if (preCount === 0) {
-    type Seed = { name: string; state: string; lat: number; lng: number };
-    const seeds: Seed[] = [
-      { name: "NVTEST_TOWN_Tampa", state: "FL", lat: 27.9506, lng: -82.4572 },
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[test-seed] No NVTEST_* towns found. Towns are read-only and must be preloaded into the test DB."
+    );
+  }
+}
+
+/**
+ * Ensure two guaranteed Act matches for typeahead tests.
+ * Uses raw upserts to avoid model imports; idempotent by name.
+ */
+async function ensureZetaActs() {
+  const connected = await ensureConnected();
+  if (!connected) return;
+
+  const acts = mongoose.connection.db.collection("acts");
+  const now = new Date();
+
+  // Helper to upsert by name
+  async function upsertByName(name: string) {
+    await acts.updateOne(
+      { name },
       {
-        name: "NVTEST_Tamalpais Valley",
-        state: "CA",
-        lat: 37.878,
-        lng: -122.545,
-      },
-      { name: "NVTEST_Tamworth", state: "NH", lat: 43.855, lng: -71.286 },
-      { name: "NVTEST_Austin", state: "TX", lat: 30.2672, lng: -97.7431 },
-      { name: "NVTEST_Albany", state: "NY", lat: 42.6526, lng: -73.7562 },
-    ];
-
-    // IMPORTANT: Provide GeoJSON 'loc' with coordinates [lng, lat] to satisfy 2dsphere index
-    const docs = seeds.map((s) => ({
-      name: s.name,
-      state: s.state,
-      lat: s.lat,
-      lng: s.lng,
-      loc: { type: "Point", coordinates: [s.lng, s.lat] },
-    }));
-
-    await Town.bulkWrite(
-      docs.map((d) => ({
-        updateOne: {
-          filter: { name: d.name },
-          update: { $setOnInsert: d },
-          upsert: true,
+        $setOnInsert: {
+          // minimal required shape consistent with your Act schema
+          name,
+          dateCreated: now,
+          dateLastUpdated: now,
+          actStatus: 0, // visible
+          actType: [1], // arbitrary valid type
+          userCreateId: randomUUID(),
+          userOwnerId: randomUUID(),
+          eMailAddr: "seed@nv.test",
+          imageIds: [],
         },
-      })),
-      { ordered: false }
+        $set: {
+          dateLastUpdated: now,
+        },
+      },
+      { upsert: true }
     );
   }
 
-  const postCount = await Town.countDocuments({
-    name: { $regex: new RegExp(`^${NV_PREFIX}`) },
-  });
+  await upsertByName("Zeta Alpha");
+  await upsertByName("Zeta Beta");
+
+  // Debug assurance: prove seeds exist post-cleanup
+  const zetaCount = await acts.countDocuments({ name: { $regex: /^Zeta / } });
   // eslint-disable-next-line no-console
-  console.log(
-    `[test-seed] Post-count NVTEST_* towns in ${dbName}: ${postCount}`
-  );
+  console.log(`[test-seed] Zeta acts present: ${zetaCount}`);
 }
 
 beforeAll(async () => {
   try {
-    await seedNvTestTownsIfMissing();
+    await verifyNvTestTownsPresent();
   } catch (e: any) {
     // eslint-disable-next-line no-console
-    console.warn("[test-seed] NVTEST_* towns seed skipped:", e?.message || e);
+    console.warn("[test-seed] Towns verification skipped:", e?.message || e);
+  }
+});
+
+// After each cleanup (defined in setup.ts), re-upsert Zeta acts so typeahead always finds matches
+beforeEach(async () => {
+  try {
+    await ensureZetaActs();
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.warn("[test-seed] ensureZetaActs skipped:", e?.message || e);
   }
 });

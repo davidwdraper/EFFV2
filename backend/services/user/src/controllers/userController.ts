@@ -2,12 +2,12 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import mongoose from "mongoose";
 import UserModel from "../models/User";
-import { normalizeEmail, emailToBucket } from "../../../shared/tenant/bucket";
+import { normalizeEmail, emailToBucket } from "@shared/tenant/bucket";
 import {
   upsertDirectory,
   deleteFromDirectory,
 } from "../services/directoryWriter";
-import { invalidateNamespace } from "../../../shared/utils/cache";
+import { invalidateNamespace } from "@shared/utils/cache";
 
 // Small async wrapper to keep routes one-liners and centralize try/catch
 const asyncHandler =
@@ -87,8 +87,8 @@ export const create: RequestHandler = asyncHandler(async (req, res) => {
       firstname,
       lastname,
       middlename,
-      // bucket fields (future-proofing; safe to ignore downstream if model doesn't yet store them)
-      emailNorm, // duplicate field if your model uses separate emailNorm
+      // bucket fields
+      emailNorm,
       bucket,
       // timestamps + defaults you already use
       dateCreated: now,
@@ -96,18 +96,18 @@ export const create: RequestHandler = asyncHandler(async (req, res) => {
       userStatus: 0,
       userType: 0,
       imageIds: [],
-      // pass through any extra fields the UI sent (e.g., userEntryId, userOwnerId, etc.)
+      // pass through extras
       ...rest,
     });
 
     // Directory upsert (does not expose email to clients)
     await upsertDirectory({
       userId: String(doc._id),
-      bucket: bucket,
+      bucket,
       email: doc.email,
-      emailNorm: emailNorm,
-      givenName: doc.firstname, // map -> directory
-      familyName: doc.lastname, // map -> directory
+      emailNorm,
+      givenName: doc.firstname,
+      familyName: doc.lastname,
       city: (doc as any).city,
       state: (doc as any).state,
       country: (doc as any).country,
@@ -154,13 +154,82 @@ export const getById: RequestHandler = asyncHandler(async (req, res) => {
   return res.status(200).json(sanitize(user));
 });
 
-// PUT /users/:id  (protected)
-export const update: RequestHandler = asyncHandler(async (req, res) => {
+// PUT /users/:id  → **full replace**
+export const replaceUser: RequestHandler = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id))
+    return res.status(400).json({ error: "Invalid id format" });
+
+  const body = { ...(req.body ?? {}) };
+
+  // Require core fields on replace (no partials)
+  if (
+    !required(body.email) ||
+    !required(body.firstname) ||
+    !required(body.lastname)
+  ) {
+    return res
+      .status(400)
+      .json({ error: "Missing required fields: email, firstname, lastname" });
+  }
+
+  // Canonicalize email; compute bucket
+  const emailNorm = normalizeEmail(String(body.email));
+  body.email = emailNorm;
+  body.emailNorm = emailNorm;
+  body.bucket = emailToBucket(emailNorm);
+
+  // Server-controlled fields
+  body.dateLastUpdated = new Date();
+
+  try {
+    // Overwrite semantics: replace whole doc with provided fields
+    const updated = await UserModel.findByIdAndUpdate(id, body, {
+      new: true,
+      overwrite: true, // <-- this is the key difference vs PATCH
+      runValidators: true,
+      setDefaultsOnInsert: false,
+    }).lean();
+
+    if (!updated) return res.status(404).json({ error: "User not found" });
+
+    // Directory upsert with latest values
+    await upsertDirectory({
+      userId: String(updated._id),
+      bucket: (updated as any).bucket,
+      email: updated.email,
+      emailNorm: normalizeEmail(String(updated.email)),
+      givenName: (updated as any).firstname,
+      familyName: (updated as any).lastname,
+      city: (updated as any).city,
+      state: (updated as any).state,
+      country: (updated as any).country,
+    });
+
+    // Audit
+    req.audit?.push({ type: "replace", model: "User", id });
+
+    // Invalidate caches
+    void invalidateNamespace("user");
+    void invalidateNamespace("user-directory");
+
+    return res.status(200).json(sanitize(updated));
+  } catch (err: any) {
+    if (isDupKey(err)) {
+      return res.status(409).json({ error: "User already exists" });
+    }
+    throw err;
+  }
+});
+
+// PATCH /users/:id  → **partial update**
+export const patchUser: RequestHandler = asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!isValidId(id))
     return res.status(400).json({ error: "Invalid id format" });
 
   const patch: Record<string, any> = { ...(req.body || {}) };
+
   // Canonicalize email if provided
   if (required(patch.email)) {
     const emailNorm = normalizeEmail(String(patch.email));
@@ -168,13 +237,16 @@ export const update: RequestHandler = asyncHandler(async (req, res) => {
     patch.emailNorm = emailNorm;
     patch.bucket = emailToBucket(emailNorm);
   }
+
+  // Server-controlled fields
   patch.dateLastUpdated = new Date();
 
   try {
-    const user = await UserModel.findByIdAndUpdate(id, patch, {
-      new: true,
-      runValidators: true,
-    }).lean();
+    const user = await UserModel.findByIdAndUpdate(
+      id,
+      { $set: patch },
+      { new: true, runValidators: true }
+    ).lean();
 
     if (!user) return res.status(404).json({ error: "User not found" });
 
@@ -195,7 +267,7 @@ export const update: RequestHandler = asyncHandler(async (req, res) => {
 
     // Audit
     req.audit?.push({
-      type: "update",
+      type: "patch",
       model: "User",
       id,
       fields: Object.keys(patch),

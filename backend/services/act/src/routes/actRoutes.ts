@@ -1,7 +1,7 @@
 // backend/services/act/src/routes/actRoutes.ts
 import { Router } from "express";
 import * as ActController from "../controllers/actController";
-import { cacheGet, invalidateOnSuccess } from "../../../shared/utils/cache";
+import { cacheGet, invalidateOnSuccess } from "@shared/utils/cache";
 
 const router = Router();
 
@@ -24,7 +24,7 @@ router.get("/:id", cacheGet("act", "ACT_CACHE_TTL_SEC"), ActController.getById);
 
 // Mutations invalidate the "act" namespace on success
 router.post("/", invalidateOnSuccess("act")(ActController.create));
-router.patch("/:id", invalidateOnSuccess("act")(ActController.update)); // <-- add PATCH
+router.patch("/:id", invalidateOnSuccess("act")(ActController.update));
 router.put("/:id", invalidateOnSuccess("act")(ActController.update));
 router.delete("/:id", invalidateOnSuccess("act")(ActController.remove));
 

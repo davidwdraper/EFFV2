@@ -1,16 +1,17 @@
 // backend/services/act/src/routes/townRoutes.ts
 import { Router } from "express";
 import * as c from "../controllers/townController";
-import { cacheGet } from "../../../shared/utils/cache";
+import { cacheGet } from "@shared/utils/cache";
 
 const r = Router();
 
 r.get("/ping", c.ping);
 
 // Disable cache for typeahead in tests to avoid stale/poisoned results
+const passthrough = (_req: any, _res: any, next: any) => next();
 const maybeCacheTypeahead =
   process.env.NODE_ENV === "test"
-    ? (_req: any, _res: any, next: any) => next()
+    ? passthrough
     : cacheGet("town", "TOWN_CACHE_TTL_SEC");
 
 r.get("/typeahead", maybeCacheTypeahead, c.typeahead);

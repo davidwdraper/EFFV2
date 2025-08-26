@@ -1,35 +1,24 @@
 // backend/services/act/index.ts
-import "./src/bootstrap"; // Load ENV_FILE + validate ACT_* before anything else
+import "./src/bootstrap"; // ENV_FILE + ACT_* validated before anything else
 import app from "./src/app";
 import { config } from "./src/config";
 import { connectDb } from "./src/db";
 import { logger } from "../shared/utils/logger";
-
-console.log("[Act index.ts] CWD:", process.cwd());
+import { startHttpService } from "../shared/bootstrap/startHttpService";
 
 async function start() {
   try {
+    // If your connectDb needs a URI: await connectDb(config.mongoUri);
     await connectDb();
 
-    const server = app.listen(config.port, () => {
-      logger.info(
-        { service: process.env.ACT_SERVICE_NAME, port: config.port },
-        `Act service listening on port ${config.port}`
-      );
-    });
-
-    // Graceful shutdown
-    process.on("SIGTERM", () => {
-      logger.info("SIGTERM received. Shutting down Act service...");
-      server.close(() => process.exit(0));
-    });
-
-    process.on("SIGINT", () => {
-      logger.info("SIGINT received. Shutting down Act service...");
-      server.close(() => process.exit(0));
+    startHttpService({
+      app,
+      port: config.port, // supports PORT=0 in tests
+      serviceName: String(process.env.ACT_SERVICE_NAME),
+      logger,
     });
   } catch (err) {
-    logger.error({ err }, "Failed to start Act service");
+    logger.error({ err }, "failed to start Act service");
     process.exit(1);
   }
 }

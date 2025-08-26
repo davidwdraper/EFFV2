@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import { logger } from "../../shared/utils/logger";
 import { config } from "./config";
 
-export const connectDB = async () => {
+export const connectDb = async () => {
   try {
     await mongoose.connect(config.mongoUri);
     logger.info(

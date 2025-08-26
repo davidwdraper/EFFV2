@@ -1,150 +1,65 @@
 // backend/services/user/src/app.ts
+
 import express from "express";
-import cors from "cors";
-import pinoHttp from "pino-http";
-import { randomUUID } from "crypto";
+
+// Shared middleware & helpers (DRY across services)
+import { coreMiddleware } from "@shared/middleware/core";
+import { makeHttpLogger } from "@shared/middleware/httpLogger";
+import { entryExit } from "@shared/middleware/entryExit";
+import { auditBuffer } from "@shared/middleware/audit";
 import {
-  logger,
-  postAudit,
-  extractLogContext,
-} from "../../shared/utils/logger";
-import { createHealthRouter } from "../../shared/health";
+  notFoundProblemJson,
+  errorProblemJson,
+} from "@shared/middleware/problemJson";
+import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
+import { createHealthRouter } from "@shared/health";
+
+// Service routes
 import userRoutes from "./routes/userRoutes";
 import userPublicRoutes from "./routes/userPublicRoutes";
-import directoryRoutes from "./routes/directoryRoutes"; // ← NEW
+import directoryRoutes from "./routes/directoryRoutes"; // friend-lookup search API
 
-const app = express();
+// ── Env enforcement (no defaults, identical pattern across services)
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || v.trim() === "")
+    throw new Error(`Missing required env var: ${name}`);
+  return v.trim();
+}
+const SERVICE_NAME = requireEnv("USER_SERVICE_NAME");
+requireEnv("USER_MONGO_URI");
+requireEnv("USER_PORT");
+
+// Express app
+export const app = express(); // named export (tests & other callers)
 app.disable("x-powered-by");
 app.set("trust proxy", true);
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
 
-app.use(
-  pinoHttp({
-    logger,
-    genReqId: (req, res) => {
-      const hdr =
-        req.headers["x-request-id"] ||
-        req.headers["x-correlation-id"] ||
-        req.headers["x-amzn-trace-id"];
-      const id = (Array.isArray(hdr) ? hdr[0] : hdr) || randomUUID();
-      res.setHeader("x-request-id", id);
-      return String(id);
-    },
-    customLogLevel(_req, res, err) {
-      if (err) return "error";
-      const s = res.statusCode;
-      if (s >= 500) return "error";
-      if (s >= 400) return "warn";
-      return "info";
-    },
-    customProps(req) {
-      return { service: "user", route: (req as any).route?.path };
-    },
-    autoLogging: {
-      ignore: (req) =>
-        req.url === "/health" ||
-        req.url === "/healthz" ||
-        req.url === "/readyz" ||
-        req.url === "/favicon.ico",
-    },
-    serializers: {
-      req(req) {
-        return { id: (req as any).id, method: req.method, url: req.url };
-      },
-      res(res) {
-        return { statusCode: res.statusCode };
-      },
-    },
-  })
-);
+// Core middleware (shared)
+app.use(coreMiddleware());
+app.use(makeHttpLogger(SERVICE_NAME));
+app.use(entryExit());
+app.use(auditBuffer());
 
-// Entry/Exit timing
-app.use((req, res, next) => {
-  const start = process.hrtime.bigint();
-  req.log.info(
-    {
-      msg: "handler:start",
-      method: req.method,
-      url: req.originalUrl,
-      params: req.params,
-      query: req.query,
-    },
-    "request entry"
-  );
-  res.on("finish", () => {
-    const ms = Number(process.hrtime.bigint() - start) / 1e6;
-    req.log.info(
-      {
-        msg: "handler:finish",
-        statusCode: res.statusCode,
-        durationMs: Math.round(ms),
-      },
-      "request exit"
-    );
-  });
-  next();
-});
-
-// Request-scoped audit buffer
-declare global {
-  namespace Express {
-    interface Request {
-      audit?: Array<Record<string, any>>;
-    }
-  }
-}
-app.use((req, res, next) => {
-  req.audit = [];
-  res.on("finish", () => {
-    if (req.audit?.length) {
-      const ctx = extractLogContext(req);
-      void postAudit(req.audit.map((e) => ({ ...ctx, ...e })));
-      req.log.info(
-        { msg: "audit:flush", count: req.audit.length },
-        "audit events flushed"
-      );
-    }
-  });
-  next();
-});
-
-// Health endpoints
+// Health (uniform across services)
 app.use(
   createHealthRouter({
-    service: "user",
+    service: SERVICE_NAME,
     readiness: async () => ({ upstreams: { ok: true } }),
   })
 );
 
-// Routes
+// Test helpers (only under NODE_ENV=test)
+addTestOnlyHelpers(app as any, ["/users", "/directory"]);
+
+// Routes (preserve existing behavior)
 app.use("/users", userRoutes); // auth-required CRUD (gateway enforces)
 app.use("/users", userPublicRoutes); // public names endpoint (legacy/compat)
-app.use("/directory", directoryRoutes); // ← NEW: friend-lookup search API
+app.use("/directory", directoryRoutes);
 
-// 404 + error handler
-app.use((_req, res) =>
-  res
-    .status(404)
-    .json({ error: { code: "NOT_FOUND", message: "Route not found" } })
-);
-app.use(
-  (
-    err: any,
-    req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction
-  ) => {
-    const status = Number(err?.status || err?.statusCode || 500);
-    req.log?.error({ msg: "handler:error", err, status }, "request error");
-    res.status(Number.isFinite(status) ? status : 500).json({
-      error: {
-        code: err?.code || "INTERNAL_ERROR",
-        message: err?.message || "Unexpected error",
-      },
-    });
-  }
-);
+// 404 and error handler (Problem+JSON, SOP-standard)
+app.use(notFoundProblemJson(["/users", "/directory", "/health"]));
+app.use(errorProblemJson());
 
+// keep default export too (future-proof for different import styles)
 export default app;

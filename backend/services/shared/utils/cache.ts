@@ -60,6 +60,14 @@ export async function cacheDelByPrefix(prefix: string): Promise<void> {
   }
 }
 
+/**
+ * Namespace-wide invalidation helper.
+ * Example: invalidateNamespace("user") clears all keys starting with "user:".
+ */
+export async function invalidateNamespace(namespace: string): Promise<void> {
+  await cacheDelByPrefix(`${namespace}:`);
+}
+
 // ----------------- Key derivation -----------------
 
 function stableQueryString(req: Request): string {

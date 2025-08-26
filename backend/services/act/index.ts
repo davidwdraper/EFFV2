@@ -2,14 +2,14 @@
 import "./src/bootstrap"; // Load ENV_FILE + validate ACT_* before anything else
 import app from "./src/app";
 import { config } from "./src/config";
-import { connectDB } from "./src/db";
+import { connectDb } from "./src/db";
 import { logger } from "../shared/utils/logger";
 
 console.log("[Act index.ts] CWD:", process.cwd());
 
 async function start() {
   try {
-    await connectDB();
+    await connectDb();
 
     const server = app.listen(config.port, () => {
       logger.info(

@@ -55,6 +55,25 @@ const commonHeaders = (req: any, res: any) => ({
   "x-request-id": getRequestId(req, res),
 });
 
+/** GET /acts/ping */
+export const ping = withTrace(
+  "gateway: GET /acts/ping (proxy→act)",
+  async (req, res) => {
+    try {
+      const r = await axios.get(toUpstream(req), {
+        headers: commonHeaders(req, res),
+        validateStatus: () => true,
+      });
+      return res
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
+    } catch (err) {
+      return passThroughError(res, err, "Failed to ping act");
+    }
+  }
+);
+
 /** GET /acts */
 export const list = withTrace(
   "gateway: GET /acts (proxy→act)",
@@ -165,6 +184,25 @@ export const update = withTrace(
         .send(r.data);
     } catch (err) {
       return passThroughError(res, err, "Failed to update act");
+    }
+  }
+);
+
+/** PATCH /acts/:id */
+export const patch = withTrace(
+  "gateway: PATCH /acts/:id (proxy→act)",
+  async (req, res) => {
+    try {
+      const r = await axios.patch(toUpstream(req), req.body, {
+        headers: commonHeaders(req, res),
+        validateStatus: () => true,
+      });
+      return res
+        .status(r.status)
+        .set(sanitizeResponseHeaders(r.headers as any))
+        .send(r.data);
+    } catch (err) {
+      return passThroughError(res, err, "Failed to patch act");
     }
   }
 );

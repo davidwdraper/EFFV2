@@ -1,12 +1,13 @@
 // backend/services/gateway/src/middleware/authGate.ts
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
 import axios, { AxiosError } from "axios";
+import jwt from "jsonwebtoken";
 
 /**
  * Auth strategy:
  * - GET = public by default, unless path matches PUBLIC_GET_REQUIRE_AUTH_PREFIXES.
- * - Non-GET = require Bearer token, EXCEPT auth public prefixes (login/create/reset/verify).
- * - Read-only mode blocks mutations EXCEPT read-only exempt prefixes (e.g., auth login).
+ * - Non-GET = require token, EXCEPT auth public prefixes (login/create/reset/verify).
+ * - Read-only mode blocks mutations EXCEPT read-only exempt prefixes.
  *
  * ENV (pipe-delimited prefixes):
  *   PUBLIC_GET_REQUIRE_AUTH_PREFIXES=/users/private|/users/email
@@ -15,15 +16,64 @@ import axios, { AxiosError } from "axios";
  *   READ_ONLY_EXEMPT_PREFIXES=/auth/login|/auth/verify
  *   AUTH_VERIFY_TIMEOUT_MS=1200
  *   AUTH_SERVICE_URL=<required at runtime when a protected request is present>
+ *
+ * E2E toggles:
+ *   E2E_REQUIRE_AUTH=1     -> enable E2E fast-path checks
+ *   E2E_BEARER=<token>     -> exact token match accepted in E2E mode
+ *   JWT_SECRET=<secret>    -> optional: local jwt.verify() allowed in E2E mode
  */
+
+function toList(v?: string) {
+  return String(v || "")
+    .split("|")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function startsWithAny(path: string, prefixes: string[]) {
+  const p = path.toLowerCase();
+  return prefixes.some((x) => x && p.startsWith(x.toLowerCase()));
+}
+
+/** Extract token from common headers/cookies. Accepts:
+ *  - Authorization: Bearer <jwt> OR raw <jwt>
+ *  - x-access-token / x-auth-token / x-authorization
+ *  - Cookies: auth / token / jwt
+ */
+function extractToken(req: Request): string | undefined {
+  const hAuth =
+    (req.headers["authorization"] as string | undefined) ??
+    (req.headers["Authorization"] as unknown as string | undefined);
+  if (hAuth && typeof hAuth === "string") {
+    const trimmed = hAuth.trim();
+    if (/^bearer\s+/i.test(trimmed))
+      return trimmed.replace(/^bearer\s+/i, "").trim();
+    return trimmed;
+  }
+
+  const alt = ["x-access-token", "x-auth-token", "x-authorization"] as const;
+  for (const name of alt) {
+    const v = req.headers[name];
+    if (typeof v === "string" && v) return v.trim();
+  }
+
+  const c = (req as any).cookies as Record<string, string> | undefined;
+  if (c) {
+    if (c.auth) return c.auth.trim();
+    if (c.token) return c.token.trim();
+    if (c.jwt) return c.jwt.trim();
+  }
+
+  return undefined;
+}
+
+function tokensEqual(a?: string, b?: string) {
+  const raw = (x?: string) => (x ? x.replace(/^bearer\s+/i, "").trim() : "");
+  return raw(a) === raw(b);
+}
+
 export function authGate(): RequestHandler {
   const readOnlyMode = String(process.env.READ_ONLY_MODE || "false") === "true";
-
-  const toList = (v?: string) =>
-    String(v || "")
-      .split("|")
-      .map((s) => s.trim())
-      .filter(Boolean);
 
   const protectedGetPrefixes = toList(
     process.env.PUBLIC_GET_REQUIRE_AUTH_PREFIXES
@@ -39,14 +89,15 @@ export function authGate(): RequestHandler {
   const authUrl = (process.env.AUTH_SERVICE_URL || "").replace(/\/+$/, "");
   const verifyTimeout = Number(process.env.AUTH_VERIFY_TIMEOUT_MS || 1200);
 
-  const startsWithAny = (path: string, prefixes: string[]) =>
-    prefixes.some((p) => p && path.toLowerCase().startsWith(p.toLowerCase()));
+  const e2eMode = process.env.E2E_REQUIRE_AUTH === "1";
+  const e2eBearer = process.env.E2E_BEARER;
+  const jwtSecret = process.env.JWT_SECRET || process.env.AUTH_JWT_SECRET;
 
   return async (req, res, next) => {
     const method = (req.method || "GET").toUpperCase();
     const path = req.path || "/";
 
-    // Read-only: block mutations except explicit exemptions (login/verify etc.)
+    // Read-only: block mutations except explicit exemptions
     if (
       readOnlyMode &&
       method !== "GET" &&
@@ -63,32 +114,58 @@ export function authGate(): RequestHandler {
       });
     }
 
-    // GETs are public unless explicitly protected by prefix
+    // Determine if this request needs auth
     const isProtectedGet =
       method === "GET" && startsWithAny(path, protectedGetPrefixes);
-
-    // Non-GETs require auth unless the path is an auth-public endpoint (login/create/reset/verify)
     const isAuthPublic = startsWithAny(path, authPublicPrefixes);
     const needsAuth =
       method !== "GET" && method !== "HEAD" ? !isAuthPublic : isProtectedGet;
 
     if (!needsAuth) return next();
 
-    // Require Bearer token
-    const authz = req.headers.authorization || "";
-    const token = authz.startsWith("Bearer ")
-      ? authz.slice("Bearer ".length)
-      : "";
+    // Require token
+    const token = extractToken(req);
     if (!token) {
       return res.status(401).json({
         type: "about:blank",
         title: "Unauthorized",
         status: 401,
-        detail: "Missing Bearer token",
+        detail: "Missing authentication token",
         instance: (req as any).id,
       });
     }
 
+    // --- E2E fast-paths (do NOT change public routes/contracts) ---
+    if (e2eMode) {
+      // 1) Exact match with E2E_BEARER
+      if (e2eBearer && tokensEqual(token, e2eBearer)) {
+        (req as any).user = {
+          id: "e2e-user",
+          roles: ["tester"],
+          scopes: ["*"],
+        };
+        return next();
+      }
+
+      // 2) Optional local JWT verification if JWT_SECRET is provided
+      if (jwtSecret) {
+        try {
+          const payload = jwt.verify(token, jwtSecret) as any;
+          (req as any).user = {
+            id: payload?.uid || payload?.sub || "unknown",
+            roles: payload?.roles || [],
+            scopes: payload?.scopes || payload?.scope || [],
+            email: payload?.email,
+            name: payload?.name,
+          };
+          return next();
+        } catch {
+          // fall through to auth service /verify
+        }
+      }
+    }
+
+    // --- Default behavior: verify with Auth Service ---
     if (!authUrl) {
       return res.status(500).json({
         type: "about:blank",
@@ -109,7 +186,7 @@ export function authGate(): RequestHandler {
         }
       );
       if (verify?.data) {
-        (req as any).user = verify.data.user || verify.data;
+        (req as any).user = (verify.data as any).user || verify.data;
       }
       return next();
     } catch (e) {

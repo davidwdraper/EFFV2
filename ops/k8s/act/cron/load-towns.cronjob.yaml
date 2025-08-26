@@ -1,0 +1,73 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: act-towns-loader
+  namespace: nowvibin
+spec:
+  # Run at 02:00 on the 1st of every month (cluster local time)
+  schedule: "0 2 1 * *"
+  # Ensure we don't overlap if a previous run is still executing
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: act-towns-loader
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: towns-loader
+              # TODO: replace with your pushed image for the act service that includes the loader script
+              image: ghcr.io/YOUR_ORG/act-service:latest
+              imagePullPolicy: IfNotPresent
+              command:
+                # If your image contains compiled JS, use: ["node","dist/scripts/loadTowns.js"]
+                # If your image contains TS + ts-node, use the line below:
+                - node
+                - --loader
+                - ts-node/esm
+                - backend/services/act/scripts/loadTowns.ts
+              env:
+                # Required
+                - name: ACT_MONGO_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: act-towns-loader-secrets
+                      key: ACT_MONGO_URI
+                - name: SIMPLEMAPS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: act-towns-loader-secrets
+                      key: SIMPLEMAPS_URL
+                # Choose one auth method (token or header); keep unused one absent
+                - name: SIMPLEMAPS_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: act-towns-loader-secrets
+                      key: SIMPLEMAPS_TOKEN
+                - name: SIMPLEMAPS_AUTH_HEADER
+                  valueFrom:
+                    secretKeyRef:
+                      name: act-towns-loader-secrets
+                      key: SIMPLEMAPS_AUTH_HEADER
+                # Optional tuning/logging
+                - name: SIMPLEMAPS_TIMEOUT_MS
+                  value: "20000"
+                - name: LOG_LEVEL
+                  value: "info"
+                - name: AUDIT_LOG_PATH
+                  value: "/var/log/nv_audit.log"
+              volumeMounts:
+                - name: audit-log
+                  mountPath: /var/log
+          volumes:
+            - name: audit-log
+              emptyDir: {} # swap to a persistent volume if you want logs kept on disk beyond pod lifetime

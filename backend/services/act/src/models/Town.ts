@@ -27,7 +27,7 @@ const TownSchema = new Schema<TownDocument>(
     population: { type: Number },
     fips: { type: String },
 
-    // ✅ GeoJSON point for radius searches (kept from your original)
+    // ✅ GeoJSON point for radius searches
     loc: {
       type: {
         type: String,
@@ -65,20 +65,16 @@ TownSchema.pre("save", function (next) {
   if (!doc.loc || !Array.isArray(doc.loc.coordinates)) {
     doc.loc = { type: "Point", coordinates: [doc.lng, doc.lat] };
   } else {
-    // Keep coordinates consistent if lat/lng changed
     doc.loc.coordinates[0] = doc.lng;
     doc.loc.coordinates[1] = doc.lat;
   }
   next();
 });
 
-// Useful name/state index
-TownSchema.index({ name: 1, state: 1 });
-
-// Optional: popularity-first sort helper
+// Uniqueness & geo
+TownSchema.index({ name: 1, state: 1 }, { unique: true }); // enforce ref-data uniqueness
 TownSchema.index({ population: -1 });
-
-// ✅ 2dsphere index for $geoNear (kept)
 TownSchema.index({ loc: "2dsphere" });
 
-export default mongoose.model<TownDocument>("Town", TownSchema);
+export default (mongoose.models.Town as mongoose.Model<TownDocument>) ||
+  mongoose.model<TownDocument>("Town", TownSchema);

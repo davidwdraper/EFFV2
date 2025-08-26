@@ -4,22 +4,26 @@
   "main": "index.ts",
   "scripts": {
     "start": "ts-node -r tsconfig-paths/register --project tsconfig.json index.ts",
-    "dev": "ts-node-dev -r tsconfig-paths/register --respawn --project tsconfig.json index.ts"
+    "dev": "ts-node-dev -r tsconfig-paths/register --respawn --project tsconfig.json index.ts",
+    "load:towns": "TS_NODE_FILES=1 node -r ts-node/register scripts/loadTowns.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",
     "cors": "^2.8.5",
+    "csv-parse": "^6.1.0",
     "csv-parser": "^3.2.0",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "mongoose": "^7.6.0",
-    "pino-http": "^10.5.0"
+    "pino-http": "^10.5.0",
+    "unzipper": "0.12"
   },
   "devDependencies": {
     "@types/express": "4.17.21",
     "ts-node": "^10.9.1",
     "ts-node-dev": "^2.0.0",
     "tsconfig-paths": "^4.2.0",
+    "tsx": "^4.15.0",
     "typescript": "^5.2.2"
   }
 }

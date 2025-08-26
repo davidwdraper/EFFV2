@@ -6,7 +6,7 @@ import { zodBadRequest, zObjectId, clean, respond } from "@shared/contracts";
 import { notFound } from "@shared/http/errors";
 import { escapeRe } from "../lib/search";
 import * as repo from "../repo/townRepo";
-import { toTownListItem, toTownTypeaheadItem } from "../dto/townDTO";
+import { toTownListItem, toTownTypeaheadItem } from "../dto/townDto";
 
 // ── Limits (prod-only value; tests must not rely on gating here) ──────────────
 const MAX_TYPEAHEAD_LIMIT = 5000;

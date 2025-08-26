@@ -3,13 +3,9 @@ import { Router } from "express";
 import * as c from "../controllers/userPublicController";
 import { cacheGet } from "../../../shared/utils/cache";
 
-const router = Router();
+const r = Router();
 
-// Public names lookup (IDs → "First [Middle] Last"); cached by TTL env
-router.get(
-  "/public/names",
-  cacheGet("user", "USER_CACHE_TTL_SEC"),
-  c.publicNames
-);
+// Cache is fine here; TTL via USER_CACHE_TTL_SEC
+r.get("/public/names", cacheGet("user", "USER_CACHE_TTL_SEC"), c.publicNames);
 
-export default router;
+export default r;

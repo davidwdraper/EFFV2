@@ -18,7 +18,7 @@ import { notFound, badRequest as badRequestMsg } from "@shared/http/errors";
 import { makeList } from "@shared/http/pagination";
 import { UNFILTERED_CUTOFF } from "../config/search";
 import { escapeRe, nameRegex, milesToRadians } from "../lib/search";
-import { toActDto, toWire } from "../dto/actDTO";
+import { toActDto, toWire } from "../dto/actDto";
 import * as repo from "../repo/actRepo";
 
 // Schemas

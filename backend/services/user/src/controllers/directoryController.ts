@@ -1,27 +1,9 @@
 // backend/services/user/src/controllers/directoryController.ts
-import type { RequestHandler, Request, Response, NextFunction } from "express";
-import Directory from "../models/Directory";
-
-const asyncHandler =
-  (fn: RequestHandler) =>
-  (req: Request, res: Response, next: NextFunction): void => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-
-function prefixRe(term: string) {
-  const t = String(term || "")
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .toLowerCase()
-    .trim();
-  return new RegExp("^" + t);
-}
-
-function httpError(status: number, detail: string, title?: string): never {
-  const err: any = new Error(detail);
-  err.status = status;
-  if (title) err.title = title;
-  throw err;
-}
+import type { RequestHandler } from "express";
+import { asyncHandler } from "@shared/middleware/asyncHandler";
+import { prefixRe } from "../lib/search";
+import * as repo from "../repo/directoryRepo";
+import { toDirectoryDiscovery } from "../dto/directoryDto";
 
 // GET /directory/search?q=Jane%20Sm&limit=20&offset=0
 export const search: RequestHandler = asyncHandler(async (req, res) => {
@@ -34,7 +16,11 @@ export const search: RequestHandler = asyncHandler(async (req, res) => {
     parseInt(String(req.query.offset ?? "0"), 10) || 0,
     0
   );
-  if (!q) httpError(400, "q is required", "Bad Request");
+
+  if (!q) {
+    res.status(400).json({ error: "q is required" });
+    return;
+  }
 
   const tokens = q
     .split(/\s+/)
@@ -63,19 +49,12 @@ export const search: RequestHandler = asyncHandler(async (req, res) => {
   }
 
   const [items, total] = await Promise.all([
-    Directory.find(filter).skip(offset).limit(limit).lean(),
-    Directory.countDocuments(filter),
+    repo.find(filter, limit, offset),
+    repo.count(filter),
   ]);
 
   // No emails returned; only discovery data
-  const safe = items.map((d) => ({
-    id: d.userId,
-    name: [d.givenName, d.familyName].filter(Boolean).join(" "),
-    city: d.city,
-    state: d.state,
-    country: d.country,
-    bucket: d.bucket,
-  }));
+  const safe = (items ?? []).map(toDirectoryDiscovery);
 
   res.json({ total, limit, offset, items: safe });
 });

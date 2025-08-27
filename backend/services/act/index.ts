@@ -6,15 +6,21 @@ import { connectDb } from "./src/db";
 import { logger } from "../shared/utils/logger";
 import { startHttpService } from "../shared/bootstrap/startHttpService";
 
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "[act] Unhandled Promise Rejection");
+});
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "[act] Uncaught Exception");
+});
+
 async function start() {
   try {
-    // If your connectDb needs a URI: await connectDb(config.mongoUri);
     await connectDb();
 
     startHttpService({
       app,
       port: config.port, // supports PORT=0 in tests
-      serviceName: String(process.env.ACT_SERVICE_NAME),
+      serviceName: config.serviceName,
       logger,
     });
   } catch (err) {

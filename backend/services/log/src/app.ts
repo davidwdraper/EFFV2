@@ -3,7 +3,8 @@ import express from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import { randomUUID } from "crypto";
-import "@shared/types/express"; // keep: enables req.user in TS
+import mongoose from "mongoose";
+import "@shared/types/express"; // req.user typing
 
 import { connectDB } from "./db";
 import logRoutes from "./routes/logRoutes";
@@ -17,9 +18,9 @@ const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", true);
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "1mb" })); // logs are small messages; keep tight
+app.use(express.json({ limit: "1mb" }));
 
-// Request logging (entry/exit/error) via pino-http
+// Request logging
 app.use(
   pinoHttp({
     logger,
@@ -43,11 +44,11 @@ app.use(
       return { service: config.serviceName, route: (req as any).route?.path };
     },
     autoLogging: {
-      // keep health endpoints quiet
       ignore: (req) =>
         req.url === "/health" ||
         req.url === "/healthz" ||
         req.url === "/readyz" ||
+        req.url === "/health/deep" ||
         req.url === "/favicon.ico",
     },
     serializers: {
@@ -61,10 +62,10 @@ app.use(
   })
 );
 
-// Connect DB before routes (fail-fast on error inside connectDB)
+// Connect DB before routes (fail fast if it throws)
 void connectDB();
 
-// Health endpoints (legacy + k8s style)
+// Health endpoints
 app.use(
   createHealthRouter({
     service: config.serviceName,
@@ -72,11 +73,25 @@ app.use(
   })
 );
 
-// Routes — canonical + legacy mount (no logic in routes)
-app.use("/logs", logRoutes);
-app.use("/log", logRoutes); // backward-compatible alias
+// Deep health: confirms DB connectivity for logger deepPing()
+app.get("/health/deep", (_req, res) => {
+  const ready = mongoose.connection.readyState === 1; // connected
+  res.json({
+    ok: ready,
+    service: config.serviceName,
+    db: {
+      connected: ready,
+      name: (mongoose.connection as any).name || undefined,
+      host: (mongoose.connection as any).host || undefined,
+    },
+  });
+});
 
-// 404 + error handler (structured, audit-friendly)
+// Routes — one-liners
+app.use("/logs", logRoutes);
+app.use("/log", logRoutes); // alias if you’re still calling it
+
+// 404 + error handler
 app.use((_req, res) =>
   res
     .status(404)

@@ -221,3 +221,102 @@ All events include `service`. **Audit/Error** always include caller metadata fro
 - Ensure `LOG_FS_DIR` exists and is writable at boot; fail fast if missing.
 - Monitor disk usage; alert at ≥80%.
 - Surface metrics: breaker open time, FS append count, flush success/fail, dropped lines.
+
+We start back at the Act service where we need to refactor to make the Zod schema the source of truth.
+Also ensure that all audits and logging use the new refactored logger util.
+Make sure that every route has debug entry/exit logging.
+
+Not sure if I'm repeating this:
+
+Prime Directive
+
+One canonical source of truth per entity.
+Everything else adapts to it. No duplication, no parallel definitions.
+
+⸻
+
+Data Normalization Pattern
+    •    Canonical Contract:
+Zod schema in backend/services/shared/contracts/<entity>.contract.ts
+→ Export z.infer type as the single truth.
+    •    DTOs:
+Located in <svc>/src/validators/<entity>.dto.ts using .omit(), .pick(), .partial().
+    •    Mappers:
+In <svc>/src/mappers/<entity>.mapper.ts for domain ↔ DB conversion.
+Functions: domainToDb(entity) and dbToDomain(doc).
+    •    Model:
+In <svc>/src/models/<entity>.model.ts for persistence only (Mongoose).
+    •    Repo:
+In <svc>/src/repos/<entity>Repo.ts — always return domain objects via mapper.
+    •    Controller:
+Validate params → parse body via DTO → call repo → return domain.
+No business logic, no shortcuts.
+    •    Error/Logging:
+Shared problem.ts, asyncHandler.ts, logger.ts.
+Every controller logs entry/exit with request ID.
+
+⸻
+
+Service File Layout (inline)
+    •    backend/services//src/controllers
+    •    backend/services//src/repos
+    •    backend/services//src/models
+    •    backend/services//src/mappers
+    •    backend/services//src/validators
+    •    backend/services/shared/contracts
+    •    backend/services/shared/utils
+
+⸻
+
+Safe Field Addition SOP
+    1.    Add to shared/contracts/<entity>.contract.ts.
+    2.    Update DTOs if exposed to API.
+    3.    Adjust mappers.
+    4.    Update Mongoose model if required (index/required).
+    5.    Add/adjust 2 tests (mapper round-trip + one controller).
+→ Done. No ripple edits.
+
+⸻
+
+Testing Expectations
+    •    Mapper unit tests: domain ↔ DB.
+    •    Controller HTTP tests: 200/201/400/404.
+    •    Repo tests: CRUD with ephemeral Mongo.
+    •    70% coverage during triage; restore to 90%+ once green.
+
+⸻
+
+Pre-Release Rule: No Workarounds
+    •    No barrels (index.ts re-exports).
+    •    No shims/ad-hoc glue.
+    •    No brittle overrides.
+    •    No “just for now” hacks.
+If it feels like a shim, the blueprint is wrong — fix the seam, don’t patch it.
+
+V2 Rule: Performance shortcuts and convenience exports can be revisited post-MVP. Never before.
+
+⸻
+
+Hack Audit Rule
+    •    Before release, identify and remove all hacks:
+    •    Barrel exports under /src/index.ts.
+    •    Hand-rolled type casts or any.
+    •    One-off JSON responses not using problem.ts.
+    •    Controllers with hidden repo/DB logic.
+    •    Temporary flags or code marked with TODO/FIXME.
+    •    Every service passes an audit sweep:
+    •    Folder tree matches blueprint.
+    •    No orphan files.
+    •    No “helpers” that duplicate shared utils.
+
+⸻
+
+Cookie-Cutter Rule
+
+Every new service copies this exact blueprint.
+Contract → DTO → Mapper → Model → Repo → Controller.
+Nothing else. Consistency = speed.
+
+⸻
+
+✅ End of SOP Addendum

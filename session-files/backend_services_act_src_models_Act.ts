@@ -1,5 +1,8 @@
 // backend/services/act/src/models/Act.ts
-import mongoose, { Schema, Document, model } from "mongoose";
+import mongoose, { Schema, Document, Types } from "mongoose";
+
+// Keep this model self-contained to avoid drift with old interfaces.
+// _id stays canonical; timestamps remain strings.
 
 export type BlackoutDays = [
   boolean,
@@ -9,12 +12,12 @@ export type BlackoutDays = [
   boolean,
   boolean,
   boolean
-]; // [Sun..Sat]
+]; // [Sun..Sat] or your chosen ordering
 
 export interface ActDocument extends Document {
-  // Timestamps are Dates on the model; convert to ISO in DTO at the edge
-  dateCreated: Date;
-  dateLastUpdated: Date;
+  // Timestamps as strings (ISO recommended)
+  dateCreated: string;
+  dateLastUpdated: string;
 
   // Core fields
   actStatus: number; // default 0
@@ -26,13 +29,13 @@ export interface ActDocument extends Document {
 
   // Hometown / geo
   homeTown: string; // human-readable (e.g., "Austin, TX")
-  homeTownId: string; // ← string per shared contract (NOT ObjectId)
+  homeTownId: Types.ObjectId; // FK → Town
   homeTownLoc: { type: "Point"; coordinates: [number, number] }; // [lng, lat]
 
   // Assets
   imageIds?: string[];
 
-  // Optional frontend fields
+  // NEW optional fields (for frontend; optional until UI refactor)
   websiteUrl?: string;
   distanceWillingToTravel?: number; // miles
   genreList?: number[]; // enum codes
@@ -47,8 +50,12 @@ export interface ActDocument extends Document {
 
 const timeRe = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 
-const ActSchema = new Schema<ActDocument>(
+const actSchema = new Schema<ActDocument>(
   {
+    // timestamps kept as strings per your existing behavior
+    dateCreated: { type: String, required: true },
+    dateLastUpdated: { type: String, required: true },
+
     actStatus: { type: Number, required: true, default: 0 },
     actType: {
       type: [Number],
@@ -62,11 +69,17 @@ const ActSchema = new Schema<ActDocument>(
     userCreateId: { type: String, required: true },
     userOwnerId: { type: String, required: true },
 
+    // Name is indexed (non-unique). Uniqueness is enforced only together with homeTownId.
     name: { type: String, required: true, index: true },
+
+    // canonicalized email (non-unique helper index via { index: true })
     email: { type: String, index: true },
 
+    // Human-readable town string (e.g., "Austin, TX")
     homeTown: { type: String, required: true },
-    homeTownId: { type: String, required: true }, // ← string FK
+
+    // Link + denormalized geo
+    homeTownId: { type: Schema.Types.ObjectId, ref: "Town", required: true },
     homeTownLoc: {
       type: {
         type: String,
@@ -80,7 +93,9 @@ const ActSchema = new Schema<ActDocument>(
         validate: {
           validator(v: number[]) {
             return (
-              Array.isArray(v) && v.length === 2 && v.every(Number.isFinite)
+              Array.isArray(v) &&
+              v.length === 2 &&
+              v.every((n) => Number.isFinite(n))
             );
           },
           message: "homeTownLoc.coordinates must be [lng, lat] numbers",
@@ -90,10 +105,10 @@ const ActSchema = new Schema<ActDocument>(
 
     imageIds: { type: [String], default: [] },
 
-    // ── Optional fields ──────────────────────────────────────────────────────
+    // ── NEW optional fields ───────────────────────────────────────────────────
     websiteUrl: { type: String },
     distanceWillingToTravel: { type: Number, min: 0 },
-    genreList: { type: [Number], default: undefined },
+    genreList: { type: [Number], default: undefined }, // keep undefined if absent
     actDuration: { type: Number, min: 0 },
     breakLength: { type: Number, min: 0 },
     numberOfBreaks: { type: Number, min: 0 },
@@ -119,29 +134,43 @@ const ActSchema = new Schema<ActDocument>(
           v === undefined || (Array.isArray(v) && v.length === 7),
         message: "blackoutDays must be an array of 7 booleans",
       },
-      default: undefined,
+      default: undefined, // keep missing if not provided
     },
   },
   {
     strict: true,
     versionKey: false,
-    timestamps: { createdAt: "dateCreated", updatedAt: "dateLastUpdated" }, // ← key fix
-    toJSON: { virtuals: true, transform: (_doc, ret) => ret },
+    toJSON: {
+      virtuals: true,
+      // IMPORTANT: Keep `_id` — no aliasing to `id`
+      transform: (_doc, ret) => {
+        // do NOT delete _id; controller handles DTO normalization
+        return ret;
+      },
+    },
     toObject: {
       virtuals: true,
       versionKey: false,
-      transform: (_doc, ret) => ret,
+      transform: (_doc, ret) => {
+        return ret;
+      },
     },
   }
 );
 
-// Uniqueness by (name, homeTownId)
-ActSchema.index(
+// Canonical uniqueness: same name can exist in many towns;
+// only the pair (name, homeTownId) must be unique.
+actSchema.index(
   { name: 1, homeTownId: 1 },
   { unique: true, name: "uniq_name_homeTownId" }
 );
-// 2dsphere index for radius search
-ActSchema.index({ homeTownLoc: "2dsphere" });
 
-const ActModel = model<ActDocument>("Act", ActSchema);
-export default ActModel;
+// 2dsphere index for radius search
+actSchema.index({ homeTownLoc: "2dsphere" });
+
+// Helpful secondary indexes (uncomment if/when needed)
+// actSchema.index({ actType: 1 });
+// actSchema.index({ userOwnerId: 1 });
+
+const Act = mongoose.model<ActDocument>("Act", actSchema);
+export default Act;

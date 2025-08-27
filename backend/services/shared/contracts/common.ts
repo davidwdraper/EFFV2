@@ -30,12 +30,17 @@ export const zGeoQuery = z.object({
   miles: z.coerce.number().min(0.1).max(500).default(25),
 });
 
-/** Time-of-day "HH:MM" or "HH:MM:SS" (24h) */
+/**
+ * Time-of-day:
+ *  - Accepts "H:MM" or "HH:MM", 24h clock
+ *  - Optional ":SS"
+ *  - Examples: "9:00", "09:00", "23:59", "07:30:15"
+ */
 export const zTimeOfDay = z
   .string()
   .regex(
-    /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/,
-    'Expected "HH:MM" or "HH:MM:SS"'
+    /^(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/,
+    'Expected "H:MM" or "HH:MM" (optional ":SS")'
   );
 
 /** Standard list response shape factory */
@@ -71,7 +76,7 @@ export function zodBadRequest(res: Response, error: ZodError) {
     type: "about:blank",
     title: "Bad Request",
     status: 400,
-    code: "BAD_REQUEST", // ← add this
+    code: "BAD_REQUEST",
     detail: "Validation failed",
     errors,
   });

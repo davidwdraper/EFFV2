@@ -1,5 +1,4 @@
 // backend/services/gateway/src/app.ts
-
 import express from "express";
 import cors from "cors";
 import axios from "axios";
@@ -9,18 +8,12 @@ import { randomUUID } from "crypto";
 import { createHealthRouter, ReadinessFn } from "../../shared/health";
 import { logger } from "../../shared/utils/logger";
 
-import actRoutes from "./routes/actRoutes";
-import userRoutes from "./routes/userRoutes";
-import authRoutes from "./routes/authRoutes";
-import imageRoutes from "./routes/imageRoutes";
-import townRoutes from "./routes/townRoutes"; // ← ADDED
-
 import {
   serviceName,
-  requireUpstream,
   rateLimitCfg,
   timeoutCfg,
   breakerCfg,
+  requireUpstreamByKey,
 } from "./config";
 
 import { requestIdMiddleware } from "./middleware/requestId";
@@ -34,6 +27,7 @@ import { timeoutsMiddleware } from "./middleware/timeouts";
 import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
 import { authGate } from "./middleware/authGate";
 import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
+import { genericProxy } from "./middleware/genericProxy";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -41,8 +35,7 @@ import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
 function sanitizeUrl(u: string): string {
   try {
     const [path, qs] = u.split("?", 2);
-    // Redact email-like path segments to avoid PII in logs
-    let p = path
+    const p = path
       .replace(/(\/users\/email\/)[^/]+/i, "$1<redacted>")
       .replace(/(\/users\/private\/email\/)[^/]+/i, "$1<redacted>");
     return qs ? `${p}?${qs}` : p;
@@ -62,7 +55,7 @@ app.set("trust proxy", true);
 app.use(
   cors({
     origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
     allowedHeaders: [
       "Content-Type",
       "Authorization",
@@ -76,10 +69,10 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Request ID first (accept/echo; always present)
+// Request ID first
 app.use(requestIdMiddleware());
 
-// pino-http: entry/exit/error with reqId + svc
+// pino-http logger
 app.use(
   pinoHttp({
     logger,
@@ -121,45 +114,39 @@ app.use(
         return { statusCode: res.statusCode };
       },
     },
-    // Important: don’t let pino-http try to redact headers itself,
-    // since shared/logger.ts handles redaction. Prevent duplicate/invalid paths.
     redact: { paths: [], remove: true },
   })
 );
 
-// Problem+JSON envelope (RFC 7807)
+// Problem+JSON envelope
 app.use(problemJsonMiddleware());
 
-// Global rate limit (IP + optional user header)
+// Rate limits, timeouts, breaker, auth
 app.use(rateLimitMiddleware(rateLimitCfg));
-
-// Extra limiter for sensitive read endpoints (e.g., /users/email/*)
 app.use(sensitiveLimiter());
-
-// Per-request timeouts (hard cap on handler time)
 app.use(timeoutsMiddleware(timeoutCfg));
-
-// Per-upstream circuit breaker (applies to proxy routes)
 app.use(circuitBreakerMiddleware(breakerCfg));
-
-// Auth gate: GETs are public except prefixes; all non-GET require auth
 app.use(authGate());
 
-// Lightweight root
+// Root
 app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
-// ── Health / Readiness (pings ACT as representative upstream) ────────────────
-const ACT_URL = requireUpstream("ACT_SERVICE_URL");
+// ──────────────────────────────────────────────────────────────────────────────
+// Health / Readiness
+// ──────────────────────────────────────────────────────────────────────────────
 
+// Upstream check: Act
+const ACT_URL = requireUpstreamByKey("ACT_SERVICE_URL");
 const readiness: ReadinessFn = async (_req) => {
   try {
-    const r = await axios.get(`${ACT_URL}/healthz`, { timeout: 1500 });
+    const r = await axios.get(`${ACT_URL}/health`, { timeout: 1500 });
     return { upstreams: { act: { ok: r.status === 200, url: ACT_URL } } };
   } catch {
     return { upstreams: { act: { ok: false, url: ACT_URL } } };
   }
 };
 
+// Self health + readiness combined
 app.use(
   createHealthRouter({
     service: serviceName,
@@ -167,13 +154,11 @@ app.use(
   })
 );
 
-// ── Routes (one-liners) ──────────────────────────────────────────────────────
-app.use("/acts", actRoutes);
-app.use("/users", userRoutes);
-app.use("/auth", authRoutes);
-app.use("/images", imageRoutes);
-app.use("/towns", townRoutes); // ← ADDED
-
-// ── 404 + Error handlers (Problem+JSON) ──────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────
+// Proxy + errors
+// ──────────────────────────────────────────────────────────────────────────────
+app.use("/api", genericProxy());
 app.use(notFoundHandler());
 app.use(errorHandler());
+
+export default app;

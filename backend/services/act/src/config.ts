@@ -32,7 +32,6 @@ export const config = {
   env: process.env.NODE_ENV,
 
   // required
-  serviceName: requireEnv("ACT_SERVICE_NAME"),
   port: requireNumber("ACT_PORT"),
   mongoUri: requireEnv("ACT_MONGO_URI"),
   logLevel: requireEnv("LOG_LEVEL"),

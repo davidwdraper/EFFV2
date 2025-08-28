@@ -19,7 +19,6 @@ loadEnvFromFileOrThrow(resolved);
 assertRequiredEnv([
   "LOG_LEVEL",
   "LOG_SERVICE_URL",
-  "ACT_SERVICE_NAME",
   "ACT_MONGO_URI",
   "ACT_PORT",
 ]);

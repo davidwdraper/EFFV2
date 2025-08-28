@@ -6,23 +6,28 @@ import {
   assertRequiredEnv,
 } from "../../shared/config/env";
 
-// Dev-friendly default for local runs; override explicitly with ENV_FILE when needed.
+// Dev-friendly default for local runs; override with ENV_FILE when needed.
 const envFile =
   (process.env.ENV_FILE && process.env.ENV_FILE.trim()) || ".env.dev";
 
-// Always resolve from the monorepo root (same as Act)
+// Always resolve from the monorepo root
 const resolved = path.resolve(__dirname, "../../../..", envFile);
 console.log(`[bootstrap] Loading env from: ${resolved}`);
 loadEnvFromFileOrThrow(resolved);
 
-// Validate required env for the gateway up front.
-// (If your config uses different names, adjust here; these match the typical gateway setup.)
+// Validate only what the gateway itself truly needs at boot.
+// DO NOT require SERVICE_NAME; it's set in code (src/config.ts).
 assertRequiredEnv([
   "LOG_LEVEL",
   "LOG_SERVICE_URL",
-  "SERVICE_NAME",
   "GATEWAY_PORT",
-  // Add other mandatory gateway vars here (e.g., upstream URLs, secrets):
-  // "UPSTREAM_ACT_URL",
-  // "UPSTREAM_USER_URL",
+  // Keep the list minimal. Other values are validated lazily where used:
+  // "RATE_LIMIT_WINDOW_MS",
+  // "RATE_LIMIT_MAX",
+  // "TIMEOUT_GATEWAY_MS",
+  // "BREAKER_FAILURE_THRESHOLD",
+  // "BREAKER_HALFOPEN_AFTER_MS",
+  // "BREAKER_MIN_RTT_MS",
+  // "REDIS_URL",
+  // etc.
 ]);

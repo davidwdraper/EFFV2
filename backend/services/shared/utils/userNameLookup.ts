@@ -67,10 +67,13 @@ export async function getUserNamesByIds(
 
     return result;
   } catch (err: any) {
-    logger.error("getUserNamesByIds failed", {
-      error: err?.response?.data || err.message,
-      missingCount: missing.length,
-    });
+    logger.error(
+      {
+        err, // Pino recognizes `err` specially and logs stack, type, message
+        missingCount: missing.length,
+      },
+      "getUserNamesByIds failed"
+    );
     // Return whatever we had from cache; don't throw
     return result;
   }

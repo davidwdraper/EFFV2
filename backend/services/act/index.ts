@@ -1,8 +1,9 @@
 // backend/services/act/index.ts
 import "./src/bootstrap"; // ENV_FILE + ACT_* validated before anything else
+import "./src/log.init";
 import "tsconfig-paths/register"; // alias resolver for ts-node runtime
 import app from "./src/app";
-import { config } from "./src/config";
+import { config, SERVICE_NAME } from "./src/config";
 import { connectDb } from "./src/db";
 import { logger } from "../shared/utils/logger";
 import { startHttpService } from "../shared/bootstrap/startHttpService";
@@ -27,7 +28,7 @@ async function start() {
     startHttpService({
       app,
       port: config.port, // supports PORT=0 in tests
-      serviceName: config.serviceName,
+      serviceName: SERVICE_NAME,
       logger,
     });
   } catch (err) {

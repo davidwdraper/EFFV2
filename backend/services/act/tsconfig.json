@@ -1,3 +1,4 @@
+// backend/services/act/tsconfig.json
 {
   "extends": "../../../tsconfig.json",
   "compilerOptions": {
@@ -8,17 +9,17 @@
     "skipLibCheck": true,
 
     "rootDir": "..", // include sibling folders under /services
-    "outDir": "../dist/act", // keep output outside the source tree
+    "outDir": "./dist", // ⬅️ emit INSIDE this service
 
-    "types": ["node"] // vitest types not needed for runtime
+    "types": ["node"]
   },
   "ts-node": { "files": true },
   "include": [
     "src",
     "index.ts",
-    "scripts/**/*.ts", // loader scripts
-    "scripts/types/**/*.d.ts", // <-- add this to pick up unzipper.d.ts shim
-    "types/**/*.d.ts", // (keep if you also have /types shims)
-    "../shared/**/*.ts"
+    "scripts/**/*.ts",
+    "scripts/types/**/*.d.ts",
+    "types/**/*.d.ts",
+    "../shared/**/*.ts" // required for @shared/* imports
   ]
 }

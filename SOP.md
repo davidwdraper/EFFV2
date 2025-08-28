@@ -321,6 +321,9 @@ Nothing else. Consistency = speed.
 
 ⸻
 
+Gateway service has been refactored to be generic, using 2nd path part to determine service.
+All api call should be api/<service>/<rest of path>
+
 ✅ End of SOP Addendum
 
-Having trouble resolving zodBadRequest
+Now need to test act, both directly and through the gateway. Start with a single test, then work work our way up to >= 90% coverage.

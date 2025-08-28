@@ -84,20 +84,6 @@ export function requireJson<T = unknown>(name: string): T {
   }
 }
 
-/** Typed upstream selector so controllers/routes can safely fetch service URLs. */
-export type UpstreamKey =
-  | "USER_SERVICE_URL"
-  | "ACT_SERVICE_URL"
-  | "PLACE_SERVICE_URL"
-  | "EVENT_SERVICE_URL"
-  | "AUTH_SERVICE_URL"
-  | "IMAGE_SERVICE_URL"
-  | "LOG_SERVICE_URL";
-
-export function requireUpstream(name: UpstreamKey): string {
-  return requireEnv(name);
-}
-
 /** Redact helper for safe logging of env maps (keeps key names, hides values). */
 export function redactEnv(
   obj: Record<string, unknown>

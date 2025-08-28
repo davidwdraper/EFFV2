@@ -1,6 +1,6 @@
 // backend/services/gateway/index.ts
-
 import "./src/bootstrap"; // load ENV_FILE (defaults to .env.dev) + assert required envs FIRST
+import "./src/log.init";
 import { app } from "./src/app";
 import { PORT, SERVICE_NAME } from "./src/config";
 import { logger } from "../shared/utils/logger";
@@ -8,10 +8,7 @@ import { logger } from "../shared/utils/logger";
 async function start() {
   try {
     const server = app.listen(PORT, () => {
-      logger.info(
-        { service: SERVICE_NAME, port: PORT },
-        `[${SERVICE_NAME}] listening`
-      );
+      logger.info({ port: PORT }, `[${SERVICE_NAME}] listening`);
     });
 
     // Graceful shutdown

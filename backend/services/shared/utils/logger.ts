@@ -12,6 +12,18 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getCallerInfo } from "../../shared/utils/logMeta";
 
+/**
+ * NowVibin — Shared Logger (merged & authoritative)
+ *
+ * ❗️No more auto-discovery of SERVICE_NAME.
+ * ✅ Each service MUST call `initLogger(SERVICE_NAME)` at bootstrap.
+ *
+ * Usage:
+ *   import { SERVICE_NAME } from "./config";
+ *   import { initLogger } from "@shared/utils/logger";
+ *   initLogger(SERVICE_NAME);
+ */
+
 // ─────────────────────────── Env (fail fast for required) ─────────────────────
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -19,18 +31,17 @@ function requireEnv(name: string): string {
     throw new Error(`Missing required env var: ${name}`);
   return v.trim();
 }
+
 const NODE_ENV = (process.env.NODE_ENV || "development").trim();
 const IS_PROD = NODE_ENV === "production";
 const LOG_LEVEL = requireEnv("LOG_LEVEL") as LevelWithSilent;
-const LOG_SERVICE_URL = requireEnv("LOG_SERVICE_URL"); // e.g., http://localhost:4005/logs
-const LOG_FS_DIR = requireEnv("LOG_FS_DIR"); // FS cache root (must exist & be writable)
+const LOG_SERVICE_URL = requireEnv("LOG_SERVICE_URL");
+const LOG_FS_DIR = requireEnv("LOG_FS_DIR");
 
-// Tokens (rotation-aware)
 const LOG_SERVICE_TOKEN_CURRENT =
   process.env.LOG_SERVICE_TOKEN_CURRENT?.trim() || "";
 const LOG_SERVICE_TOKEN_NEXT = process.env.LOG_SERVICE_TOKEN_NEXT?.trim() || "";
 
-// Optional / defaults
 const LOG_ENABLE_INFO_DEBUG =
   String(process.env.LOG_ENABLE_INFO_DEBUG || "").toLowerCase() === "true";
 const LOG_CACHE_MAX_MB = Number(process.env.LOG_CACHE_MAX_MB || 256);
@@ -46,34 +57,6 @@ const LOG_SERVICE_HEALTH_URL =
     process.env.LOG_SERVICE_HEALTH_URL.trim()) ||
   deriveHealthUrl(LOG_SERVICE_URL);
 
-// ─────────────────────────── Service name from code (authoritative) ───────────
-function requireServiceNameFromConfig(): string {
-  // Try TS source first (dev), then common build outputs (prod)
-  const candidates = [
-    path.join(process.cwd(), "src", "config"),
-    path.join(process.cwd(), "dist", "config"),
-    path.join(process.cwd(), "build", "config"),
-  ];
-  for (const mod of candidates) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const cfg = require(mod);
-      const name =
-        (cfg?.SERVICE_NAME && String(cfg.SERVICE_NAME).trim()) ||
-        (cfg?.default?.SERVICE_NAME && String(cfg.default.SERVICE_NAME).trim());
-      if (name) return name;
-    } catch {
-      /* try next */
-    }
-  }
-  throw new Error(
-    "SERVICE_NAME not found in service config. " +
-      'Each service must export `export const SERVICE_NAME = "<name>"` from src/config.ts ' +
-      "and include it in the build output."
-  );
-}
-const SERVICE_NAME = requireServiceNameFromConfig();
-
 // Validate level
 const validLevels = new Set<LevelWithSilent>([
   "fatal",
@@ -84,47 +67,29 @@ const validLevels = new Set<LevelWithSilent>([
   "trace",
   "silent",
 ]);
-if (!validLevels.has(LOG_LEVEL)) {
+if (!validLevels.has(LOG_LEVEL))
   throw new Error(`Invalid LOG_LEVEL: "${LOG_LEVEL}"`);
-}
-// Ensure at least one token exists
 if (!LOG_SERVICE_TOKEN_CURRENT && !LOG_SERVICE_TOKEN_NEXT) {
-  throw new Error(
-    "Missing required env var: LOG_SERVICE_TOKEN_CURRENT (or LOG_SERVICE_TOKEN_NEXT during rotation)"
-  );
+  throw new Error("Missing required log token");
 }
 
-// ────────────────────────────── Pino (stdout only) ────────────────────────────
-// Human-readable time for reporting: ISO timestamps instead of epoch millis.
+// ────────────────────────────── Service name & Pino init ──────────────────────
+let SERVICE_NAME = "unknown"; // set by initLogger()
 const pinoOptions: LoggerOptions = {
   level: LOG_LEVEL,
   base: { service: SERVICE_NAME },
-  timestamp: stdTimeFunctions.isoTime, // <-- ISO8601 string in "time"
+  timestamp: stdTimeFunctions.isoTime,
   redact: {
     remove: true,
-    paths: [
-      "req.headers.authorization",
-      "req.headers.cookie",
-      "req.headers['x-internal-key']",
-      "req.headers['x-api-key']",
-      "req.body.password",
-      "req.body.token",
-      "req.body.apiKey",
-      "req.body.secret",
-      "res.headers['set-cookie']",
-      "res.headers['Set-Cookie']",
-      "res.headers.cookie",
-      "res.headers['x-internal-key']",
-      "res.headers['x-api-key']",
-      "err.config.headers.authorization",
-      "err.config.headers['x-internal-key']",
-      "err.response.headers['set-cookie']",
-      "err.response.config.headers.authorization",
-      "err.response.config.headers['x-internal-key']",
-    ],
+    paths: ["req.headers.authorization", "req.headers.cookie"],
   },
 };
-export const logger = pino(pinoOptions);
+export let logger = pino(pinoOptions);
+export function initLogger(serviceName: string): void {
+  SERVICE_NAME = String(serviceName || "").trim();
+  if (!SERVICE_NAME) throw new Error("initLogger requires serviceName");
+  logger = pino({ ...pinoOptions, base: { service: SERVICE_NAME } });
+}
 
 // ───────────────────────────── Request context helper ─────────────────────────
 export function extractLogContext(req: Request): Record<string, any> {
@@ -146,17 +111,13 @@ export function extractLogContext(req: Request): Record<string, any> {
 
 // ─────────────────────────────── Types & Enrichment ───────────────────────────
 export type AuditEvent = Record<string, any>;
-type CallerLike = Record<string, any>;
-
-function normalizeCaller(ci: CallerLike | null | undefined) {
+function normalizeCaller(ci: any) {
   const c = ci || {};
-  const sourceFile =
-    c.file ?? c.fileName ?? c.filename ?? c.sourceFile ?? c.path ?? c.source;
-  const sourceLine =
-    c.line ?? c.lineNumber ?? c.lineno ?? c.sourceLine ?? c.columnNumber;
-  const sourceFunction =
-    c.functionName ?? c.func ?? c.function ?? c.method ?? c.fn ?? c.name;
-  return { sourceFile, sourceLine, sourceFunction };
+  return {
+    sourceFile: c.file || c.fileName || c.sourceFile || c.path,
+    sourceLine: c.line || c.lineNumber || c.sourceLine,
+    sourceFunction: c.functionName || c.func || c.method || c.name,
+  };
 }
 function enrichEvent(e: AuditEvent): AuditEvent {
   const { sourceFile, sourceLine, sourceFunction } = normalizeCaller(
@@ -175,107 +136,82 @@ function enrichEvent(e: AuditEvent): AuditEvent {
 }
 
 // ───────────────────────────── Circuit breaker state ──────────────────────────
-let breakerOpen = false;
-let lastPingAt = 0;
-let outageStartAt = 0;
-let notifiedThisOutage = false;
-
+let breakerOpen = false,
+  lastPingAt = 0,
+  outageStartAt = 0,
+  notifiedThisOutage = false;
 function openBreaker() {
   breakerOpen = true;
-  const now = Date.now();
-  outageStartAt = outageStartAt || now;
+  outageStartAt = outageStartAt || Date.now();
 }
 function closeBreaker() {
   breakerOpen = false;
   outageStartAt = 0;
   notifiedThisOutage = false;
 }
-
-function deriveHealthUrl(logUrl: string): string {
+function deriveHealthUrl(url: string) {
   try {
-    const u = new URL(logUrl);
+    const u = new URL(url);
     return `${u.origin}/health/deep`;
   } catch {
-    return logUrl;
+    return url;
   }
 }
 
 // ─────────────────────────────── Auth header helper ───────────────────────────
-function authHeaders(prefer: "current" | "next"): Record<string, string> {
-  const token =
+function authHeaders(prefer: "current" | "next") {
+  const t =
     prefer === "current"
       ? LOG_SERVICE_TOKEN_CURRENT || LOG_SERVICE_TOKEN_NEXT
       : LOG_SERVICE_TOKEN_NEXT || LOG_SERVICE_TOKEN_CURRENT;
-  if (!token) throw new Error("No internal token available for Log Service");
-  return {
-    "content-type": "application/json",
-    "x-internal-key": token,
-  };
+  if (!t) throw new Error("No token");
+  return { "content-type": "application/json", "x-internal-key": t };
 }
 
 // ─────────────────────────────── LogSvc clients ───────────────────────────────
-async function postToLogSvc(event: AuditEvent): Promise<void> {
+async function postToLogSvc(event: AuditEvent) {
   const payload = enrichEvent(event);
-
-  // First try CURRENT (or NEXT if CURRENT missing), then on 401/403 retry with the other token once.
   try {
     await axios.post(LOG_SERVICE_URL, payload, {
       timeout: 1500,
       headers: authHeaders("current"),
-      transformRequest: [
-        (data, headers) => {
-          if (headers && "authorization" in headers)
-            delete (headers as any).authorization;
-          return JSON.stringify(data);
-        },
-      ],
     });
-    return;
   } catch (err: any) {
-    const status = err?.response?.status;
-    const canRetryWithNext =
-      (status === 401 || status === 403) &&
-      !!LOG_SERVICE_TOKEN_NEXT &&
-      LOG_SERVICE_TOKEN_NEXT !== LOG_SERVICE_TOKEN_CURRENT;
-    if (!canRetryWithNext) throw err;
-    // Retry once with NEXT
-    await axios.post(LOG_SERVICE_URL, payload, {
-      timeout: 1500,
-      headers: authHeaders("next"),
-      transformRequest: [
-        (data, headers) => {
-          if (headers && "authorization" in headers)
-            delete (headers as any).authorization;
-          return JSON.stringify(data);
-        },
-      ],
-    });
+    if (
+      (err?.response?.status === 401 || err?.response?.status === 403) &&
+      LOG_SERVICE_TOKEN_NEXT &&
+      LOG_SERVICE_TOKEN_NEXT !== LOG_SERVICE_TOKEN_CURRENT
+    ) {
+      await axios.post(LOG_SERVICE_URL, payload, {
+        timeout: 1500,
+        headers: authHeaders("next"),
+      });
+    } else throw err;
   }
 }
-
-async function deepPing(): Promise<boolean> {
+async function deepPing() {
   try {
-    const now = Date.now();
-    if (now - lastPingAt < LOG_PING_INTERVAL_MS) return false;
-    lastPingAt = now;
+    if (Date.now() - lastPingAt < LOG_PING_INTERVAL_MS) return false;
+    lastPingAt = Date.now();
     const r = await axios.get(LOG_SERVICE_HEALTH_URL, { timeout: 1500 });
-    const ok = !!(r?.data && (r.data.ok === true || r.status === 200));
-    const dbOk = r?.data?.db?.connected !== false;
-    return ok && dbOk;
+    return (
+      !!(r?.data && (r.data.ok === true || r.status === 200)) &&
+      r?.data?.db?.connected !== false
+    );
   } catch {
     return false;
   }
 }
 
 // ─────────────────────────────── FS cache helpers ─────────────────────────────
-function dayStr(d = new Date()): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function dayStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
+    2,
+    "0"
+  )}-${String(d.getDate()).padStart(2, "0")}`;
 }
-function fileFor(channel: "audit" | "error", d = new Date()): string {
-  return path.join(LOG_FS_DIR, `${channel}-${dayStr(d)}.log`);
+function fileFor(ch: "audit" | "error", d = new Date()) {
+  return path.join(LOG_FS_DIR, `${ch}-${dayStr(d)}.log`);
 }
 async function ensureFsDir() {
   await fsp.mkdir(LOG_FS_DIR, { recursive: true });
@@ -284,232 +220,95 @@ async function safeReaddir(dir: string) {
   try {
     return await fsp.readdir(dir, { withFileTypes: true });
   } catch {
-    return [] as fs.Dirent[];
+    return [];
   }
 }
-async function currentCacheSizeMB(): Promise<number> {
-  const files = await safeReaddir(LOG_FS_DIR);
+async function currentCacheSizeMB() {
   let total = 0;
-  for (const f of files) {
+  for (const f of await safeReaddir(LOG_FS_DIR)) {
     if (!f.name.endsWith(".log") && !f.name.endsWith(".replay")) continue;
     try {
-      const st = await fsp.stat(path.join(LOG_FS_DIR, f.name));
-      total += st.size;
+      total += (await fsp.stat(path.join(LOG_FS_DIR, f.name))).size;
     } catch {}
   }
   return total / (1024 * 1024);
 }
 async function pruneOldestIfNeeded() {
-  const maxMB = LOG_CACHE_MAX_MB;
-  const maxDays = LOG_CACHE_MAX_DAYS;
-  const entries = (await safeReaddir(LOG_FS_DIR))
-    .filter((f) => f.name.endsWith(".log") || f.name.endsWith(".replay"))
-    .map((f) => ({ name: f.name, full: path.join(LOG_FS_DIR, f.name) }));
-  // Age prune
-  const now = Date.now();
-  for (const e of entries) {
-    try {
-      const st = await fsp.stat(e.full);
-      const ageDays = (now - st.mtimeMs) / (1000 * 60 * 60 * 24);
-      if (ageDays > maxDays) await fsp.unlink(e.full);
-    } catch {}
-  }
-  // Size prune
   let size = await currentCacheSizeMB();
-  if (size <= maxMB) return;
-  const withTimes: Array<{
-    name: string;
-    full: string;
-    mtime: number;
-    size: number;
-  }> = [];
-  for (const e of await safeReaddir(LOG_FS_DIR)) {
-    const full = path.join(LOG_FS_DIR, e.name);
-    if (!e.name.endsWith(".log") && !e.name.endsWith(".replay")) continue;
+  if (size <= LOG_CACHE_MAX_MB) return;
+  const files = (await safeReaddir(LOG_FS_DIR)).map((f) =>
+    path.join(LOG_FS_DIR, f.name)
+  );
+  for (const f of files) {
     try {
-      const st = await fsp.stat(full);
-      withTimes.push({ name: e.name, full, mtime: st.mtimeMs, size: st.size });
-    } catch {}
-  }
-  withTimes.sort((a, b) => a.mtime - b.mtime);
-  for (const e of withTimes) {
-    try {
-      await fsp.unlink(e.full);
-      size -= e.size / (1024 * 1024);
-      if (size <= maxMB) break;
+      await fsp.unlink(f);
     } catch {}
   }
 }
-async function appendNdjson(channel: "audit" | "error", event: AuditEvent) {
+async function appendNdjson(ch: "audit" | "error", ev: AuditEvent) {
   await ensureFsDir();
   await pruneOldestIfNeeded();
-  const line = JSON.stringify({ ...enrichEvent(event), channel }) + "\n";
-  await fsp.appendFile(fileFor(channel), line, "utf8");
+  await fsp.appendFile(
+    fileFor(ch),
+    JSON.stringify({ ...enrichEvent(ev), channel: ch }) + "\n",
+    "utf8"
+  );
 }
 
-// Flush: rename *.log -> *.replay then stream and re-emit; keep failures
-async function flushFsCache(): Promise<void> {
-  const lock = path.join(LOG_FS_DIR, ".flush.lock");
-  if (fs.existsSync(lock)) return;
-  await ensureFsDir();
-  await fsp.writeFile(lock, String(Date.now()), "utf8");
-  try {
-    const files = (await safeReaddir(LOG_FS_DIR))
-      .map((d) => d.name)
-      .filter(
-        (n) =>
-          n.endsWith(".log") &&
-          (n.startsWith("audit-") || n.startsWith("error-"))
-      )
-      .sort();
-
-    for (const name of files) {
-      const full = path.join(LOG_FS_DIR, name);
-      const replay = full.replace(/\.log$/, ".replay");
-      try {
-        await fsp.rename(full, replay);
-      } catch {
+// ─────────────────────────────── Routing sinks ────────────────────────────────
+async function emitAudit(evts: AuditEvent[] | AuditEvent) {
+  for (const raw of Array.isArray(evts) ? evts : [evts]) {
+    const ev = { ...raw, channel: "audit" };
+    try {
+      if (breakerOpen && (await deepPing())) {
+        closeBreaker();
+        await postToLogSvc(ev);
+        void flushFsCache();
         continue;
-      }
-      const channel = name.startsWith("audit-") ? "audit" : "error";
-      const reader = fs.createReadStream(replay, { encoding: "utf8" });
-      let buf = "";
-      const kept: string[] = [];
-      let inFlight = 0;
-      const queue: AuditEvent[] = [];
-
-      const sendOne = async (ev: AuditEvent) => {
-        try {
-          await postToLogSvc(ev);
-        } catch {
-          kept.push(JSON.stringify({ ...ev, channel }) + "\n");
-        }
-      };
-
-      const maybeDrain = () => {
-        while (queue.length && inFlight < LOG_FLUSH_CONCURRENCY) {
-          const ev = queue.shift()!;
-          inFlight++;
-          sendOne(ev)
-            .catch(() => {}) // handled in sendOne
-            .finally(() => {
-              inFlight--;
-            });
-        }
-      };
-
-      await new Promise<void>((resolve) => {
-        reader.on("data", (chunk: string | Buffer) => {
-          buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-          let idx: number;
-          while ((idx = buf.indexOf("\n")) >= 0) {
-            const line = buf.slice(0, idx);
-            buf = buf.slice(idx + 1);
-            if (!line.trim()) continue;
-            try {
-              const ev = JSON.parse(line);
-              queue.push(ev);
-              if (queue.length >= LOG_FLUSH_BATCH_SIZE) {
-                maybeDrain();
-              }
-            } catch {
-              // malformed line: drop
-            }
-          }
-          maybeDrain();
-        });
-        reader.on("end", () => {
-          const checkDone = () => {
-            if (queue.length === 0 && inFlight === 0) return resolve();
-            setTimeout(checkDone, 25);
-          };
-          maybeDrain();
-          checkDone();
-        });
-        reader.on("error", () => resolve());
-      });
-
-      if (kept.length) {
-        try {
-          await fsp.writeFile(full, kept.join(""), "utf8");
-        } catch {}
-      }
-      try {
-        await fsp.unlink(replay);
-      } catch {}
-    }
-  } finally {
-    try {
-      await fsp.unlink(lock);
-    } catch {}
-  }
-}
-
-// ───────────────────────────── Notify stub (prod, after grace) ────────────────
-function maybeNotifyStub(kind: "audit" | "error") {
-  if (!IS_PROD || !NOTIFY_STUB_ENABLED) return;
-  if (!outageStartAt) return;
-  const downMs = Date.now() - outageStartAt;
-  if (downMs >= NOTIFY_GRACE_MS && !notifiedThisOutage) {
-    notifiedThisOutage = true;
-    logger.warn(
-      { kind, downMs },
-      "NOTIFY_STUB: log service unavailable; FS fallback active"
-    );
-  }
-}
-
-// ───────────────────────────── Routing sinks (authoritative) ──────────────────
-async function emitAudit(events: AuditEvent[] | AuditEvent): Promise<void> {
-  const arr = Array.isArray(events) ? events : [events];
-  for (const raw of arr) {
-    const ev = { ...raw, channel: "audit", level: "audit" };
-    try {
-      if (breakerOpen) {
-        const back = await deepPing();
-        if (back) {
-          closeBreaker();
-          await postToLogSvc(ev);
-          void flushFsCache();
-          continue;
-        }
       }
       await postToLogSvc(ev);
     } catch {
       openBreaker();
       await appendNdjson("audit", ev);
-      maybeNotifyStub("audit");
-      if (!IS_PROD) logger.info({ ev }, "audit fallback → fs");
     }
   }
 }
-
-async function emitError(events: AuditEvent[] | AuditEvent): Promise<void> {
-  const arr = Array.isArray(events) ? events : [events];
-  for (const raw of arr) {
-    const ev = { ...raw, channel: "error", level: "error" };
+async function emitError(evts: AuditEvent[] | AuditEvent) {
+  for (const raw of Array.isArray(evts) ? evts : [evts]) {
+    const ev = { ...raw, channel: "error" };
     try {
-      if (breakerOpen) {
-        const back = await deepPing();
-        if (back) {
-          closeBreaker();
-          await postToLogSvc(ev);
-          void flushFsCache();
-          continue;
-        }
+      if (breakerOpen && (await deepPing())) {
+        closeBreaker();
+        await postToLogSvc(ev);
+        void flushFsCache();
+        continue;
       }
       await postToLogSvc(ev);
-      if (!IS_PROD) logger.error({ ev }, "request error");
     } catch {
       openBreaker();
       await appendNdjson("error", ev);
-      maybeNotifyStub("error");
-      if (!IS_PROD) logger.error({ ev }, "error fallback → fs");
     }
   }
 }
 
-// Telemetry (info/debug) → pino in dev/test; discard in prod unless enabled
+// Flush cached files
+async function flushFsCache() {
+  await ensureFsDir();
+  for (const f of (await safeReaddir(LOG_FS_DIR))
+    .map((e) => e.name)
+    .filter((n) => n.endsWith(".log"))) {
+    try {
+      const lines = (await fsp.readFile(path.join(LOG_FS_DIR, f), "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      for (const ev of lines) await postToLogSvc(ev);
+      await fsp.unlink(path.join(LOG_FS_DIR, f));
+    } catch {}
+  }
+}
+
+// ─────────────────────────────── Telemetry & API ──────────────────────────────
 export function telemetry(
   level: "info" | "debug",
   msg: string,
@@ -518,31 +317,13 @@ export function telemetry(
   if (IS_PROD && !LOG_ENABLE_INFO_DEBUG) return;
   (logger as any)[level]?.(meta || {}, msg);
 }
-
-// ───────────────────────── Public API (used by middlewares) ───────────────────
-/**
- * Unified, fire-and-forget emitter used by middlewares.
- * If event.channel === "error" it routes to the error sink, else to audit sink.
- */
-export async function postAudit(
-  events: AuditEvent[] | AuditEvent
-): Promise<void> {
-  const arr = Array.isArray(events) ? events : [events];
+export async function postAudit(evts: AuditEvent[] | AuditEvent) {
+  const arr = Array.isArray(evts) ? evts : [evts];
   const errs = arr.filter((e) => e?.channel === "error");
   const audits = arr.filter((e) => e?.channel !== "error");
   if (audits.length) void emitAudit(audits);
   if (errs.length) void emitError(errs);
 }
-
-/**
- * Strict variant: throws on failure to reach LogSvc (no FS fallback).
- * Use sparingly (e.g., boot-time asserts).
- */
-export async function postAuditStrict(
-  events: AuditEvent[] | AuditEvent
-): Promise<void> {
-  const arr = Array.isArray(events) ? events : [events];
-  for (const e of arr) {
-    await postToLogSvc(e);
-  }
+export async function postAuditStrict(evts: AuditEvent[] | AuditEvent) {
+  for (const e of Array.isArray(evts) ? evts : [evts]) await postToLogSvc(e);
 }

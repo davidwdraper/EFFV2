@@ -14,16 +14,15 @@ import { createHealthRouter } from "@shared/health";
 
 import actRoutes from "./routes/actRoutes";
 import townRoutes from "./routes/townRoutes";
+import { SERVICE_NAME, config } from "./config";
 
-// Env enforcement (same as before)
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v || !v.trim()) throw new Error(`Missing required env var: ${name}`);
-  return v.trim();
+// Ensure required envs (other than service name, which is from code)
+if (!config.mongoUri) {
+  throw new Error("Missing required env var: ACT_MONGO_URI");
 }
-const SERVICE_NAME = requireEnv("ACT_SERVICE_NAME");
-requireEnv("ACT_MONGO_URI");
-requireEnv("ACT_PORT");
+if (!config.port) {
+  throw new Error("Missing required env var: ACT_PORT");
+}
 
 // Express app
 export const app = express();

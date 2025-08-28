@@ -1,0 +1,96 @@
+{
+  "Apath": "./.env.dev",
+  "Bpath": "./.env.test",
+  "duplicates": {
+    "A": [
+      {
+        "key": "PUBLIC_GET_REQUIRE_AUTH_PREFIXES",
+        "lines": [
+          17,
+          76
+        ],
+        "lastValue": "/users/private|/users/email"
+      }
+    ],
+    "B": [
+      {
+        "key": "PUBLIC_GET_REQUIRE_AUTH_PREFIXES",
+        "lines": [
+          21,
+          109
+        ],
+        "lastValue": "/users/private|/users/email"
+      },
+      {
+        "key": "LOG_SERVICE_URL",
+        "lines": [
+          80,
+          88
+        ],
+        "lastValue": "http://localhost:4006/logs"
+      },
+      {
+        "key": "LOG_SERVICE_TOKEN_CURRENT",
+        "lines": [
+          81,
+          86
+        ],
+        "lastValue": "test-current-key"
+      }
+    ]
+  },
+  "onlyInA": [],
+  "onlyInB": [
+    "ACT_MIN_STATUS_VISIBLE",
+    "ACT_TYPEAHEAD_LIMIT",
+    "ACT_TYPEAHEAD_MIN_CHARS",
+    "CACHE_PROVIDER",
+    "E2E_BEARER",
+    "E2E_REQUIRE_AUTH",
+    "LOG_CACHE_MAX_DAYS",
+    "LOG_CACHE_MAX_MB",
+    "LOG_ENABLE_INFO_DEBUG",
+    "LOG_FLUSH_BATCH_SIZE",
+    "LOG_FLUSH_CONCURRENCY",
+    "LOG_FS_DIR",
+    "LOG_INGEST_BURST",
+    "LOG_INGEST_RL_ENABLED",
+    "LOG_INGEST_RPS",
+    "LOG_INTERNAL_KEY_CURRENT",
+    "LOG_INTERNAL_KEY_NEXT",
+    "LOG_PING_INTERVAL_MS",
+    "LOG_SERVICE_HEALTH_URL",
+    "LOG_SERVICE_TOKEN_NEXT",
+    "NOTIFY_STUB_ENABLED",
+    "REDIS_DISABLED",
+    "SIMPLEMAPS_URL"
+  ],
+  "conflicts": [
+    "ACT_MONGO_URI",
+    "ACT_SEARCH_UNFILTERED_CUTOFF",
+    "ACT_SERVICE_URL",
+    "AUTH_MONGO_URI",
+    "AUTH_SERVICE_URL",
+    "EVENTACT_MONGO_URI",
+    "EVENTACT_SERVICE_URL",
+    "EVENTPLACE_MONGO_URI",
+    "EVENTPLACE_SERVICE_URL",
+    "EVENT_MONGO_URI",
+    "EVENT_SERVICE_URL",
+    "IMAGE_MONGO_URI",
+    "IMAGE_SERVICE_URL",
+    "LOG_MONGO_URI",
+    "LOG_SERVICE_NAME",
+    "LOG_SERVICE_TOKEN_CURRENT",
+    "LOG_SERVICE_URL",
+    "NODE_ENV",
+    "PLACE_MONGO_URI",
+    "PLACE_SERVICE_URL",
+    "PUBLIC_API_BASE",
+    "REDIS_URL",
+    "USERACT_MONGO_URI",
+    "USERACT_SERVICE_URL",
+    "USER_MONGO_URI",
+    "USER_SERVICE_URL"
+  ]
+}

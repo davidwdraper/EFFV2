@@ -1,6 +1,6 @@
 // backend/services/shared/http/errors.ts
 import type { Response } from "express";
-import { clean } from "@shared/contracts";
+import { clean } from "../contracts/clean"; // ← concrete module, no barrels
 
 export const notFound = (res: Response) =>
   res

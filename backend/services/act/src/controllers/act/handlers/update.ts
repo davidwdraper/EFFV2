@@ -1,82 +1,34 @@
 // backend/services/act/src/controllers/act/handlers/update.ts
-import type { RequestHandler } from "express";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
-import {
-  zodBadRequest,
-  zActUpdate,
-  clean,
-  respond,
-  zActDto,
-} from "@shared/contracts";
-import { notFound } from "@shared/http/errors";
+import type { Request, Response, NextFunction } from "express";
+import { logger } from "../../../../../shared/utils/logger";
+import { updateActDto } from "../../../validators/act.dto";
 import * as repo from "../../../repo/actRepo";
-import { toActDto, toWire } from "../../../dto/actDto";
-import { zIdParam } from "./schemas";
 
-export const update: RequestHandler = asyncHandler(async (req, res) => {
-  const idParsed = zIdParam.safeParse(req.params);
-  if (!idParsed.success) return zodBadRequest(res, idParsed.error);
-  const { id } = idParsed.data;
+export async function update(req: Request, res: Response, next: NextFunction) {
+  const requestId = String(req.headers["x-request-id"] || "");
+  const { id } = req.params;
+  logger.debug({ requestId, actId: id }, "[ActHandlers.update] enter");
+  try {
+    const dto = updateActDto.parse(req.body);
+    const saved = await repo.update(id, dto);
+    if (!saved) {
+      logger.debug({ requestId, actId: id }, "[ActHandlers.update] not_found");
+      return res
+        .status(404)
+        .json({ code: "NOT_FOUND", detail: "Act not found" });
+    }
 
-  const bodyParsed = zActUpdate.safeParse(req.body ?? {});
-  if (!bodyParsed.success) {
-    return res
-      .status(400)
-      .type("application/problem+json")
-      .json(
-        clean({
-          type: "about:blank",
-          title: "Bad Request",
-          status: 400,
-          code: "VALIDATION_ERROR",
-          detail: "Validation failed",
-          errors: bodyParsed.error.issues?.map((i) => ({
-            path: i.path,
-            message: i.message,
-            code: i.code,
-            expected: (i as any).expected,
-            received: (i as any).received,
-          })),
-        })
-      );
+    (req as any).audit?.push({
+      type: "ACT_UPDATED",
+      entity: "Act",
+      entityId: saved._id,
+      data: { fields: Object.keys(req.body || {}) },
+    });
+
+    logger.debug({ requestId, actId: saved._id }, "[ActHandlers.update] exit");
+    res.json(saved);
+  } catch (err) {
+    logger.debug({ requestId, err }, "[ActHandlers.update] error");
+    next(err);
   }
-
-  // Enforce non-empty actType when provided (matches spec)
-  if (
-    Object.prototype.hasOwnProperty.call(bodyParsed.data, "actType") &&
-    Array.isArray((bodyParsed.data as any).actType) &&
-    (bodyParsed.data as any).actType.length === 0
-  ) {
-    return res
-      .status(400)
-      .type("application/problem+json")
-      .json(
-        clean({
-          type: "about:blank",
-          title: "Bad Request",
-          status: 400,
-          code: "VALIDATION_ERROR",
-          detail: "Validation failed",
-          errors: [
-            {
-              path: ["actType"],
-              message: "actType must contain at least one value",
-              code: "too_small",
-              minimum: 1,
-              type: "array",
-              inclusive: true,
-            },
-          ],
-        })
-      );
-  }
-
-  const updateBody = clean({
-    ...toWire(bodyParsed.data),
-    dateLastUpdated: new Date().toISOString(),
-  });
-
-  const doc = await repo.updateById(id, updateBody);
-  if (!doc) return notFound(res);
-  return respond(res, zActDto, toActDto(doc));
-});
+}

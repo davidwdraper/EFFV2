@@ -1,29 +1,23 @@
 // backend/services/act/src/routes/townRoutes.ts
 import { Router } from "express";
-import * as c from "../controllers/townController";
-import { cacheGet } from "@shared/utils/cache";
-import { methodNotAllowed } from "../middleware/methodNotAllowed";
+import { cacheGet, invalidateOnSuccess } from "@shared/utils/cache";
 
-const r = Router();
+// Direct handler imports (no barrels, no adapters)
+import { ping } from "../controllers/town/handlers/ping";
+import { list } from "../controllers/town/handlers/list";
+import { findById } from "../controllers/town/handlers/findById";
+import { typeahead } from "../controllers/town/handlers/typeahead";
 
-r.get("/ping", c.ping);
+const router = Router();
 
-// Disable cache for typeahead in tests to avoid stale/poisoned results
-const passthrough = (_req: any, _res: any, next: any) => next();
-const maybeCacheTypeahead =
-  process.env.NODE_ENV === "test"
-    ? passthrough
-    : cacheGet("town", "TOWN_CACHE_TTL_SEC");
+// one-liners only — no logic here
+router.get("/ping", ping);
 
-// READS (existing behavior preserved)
-r.get("/typeahead", maybeCacheTypeahead, c.typeahead);
-r.get("/", cacheGet("town", "TOWN_CACHE_TTL_SEC"), c.list);
-r.get("/:id", cacheGet("town", "TOWN_CACHE_TTL_SEC"), c.getById);
+// Public GETs with cache (TTL via TOWN_CACHE_TTL_SEC)
+router.get("/search", cacheGet("town", "TOWN_CACHE_TTL_SEC"), typeahead);
+router.get("/", cacheGet("town", "TOWN_CACHE_TTL_SEC"), list);
+router.get("/:id", cacheGet("town", "TOWN_CACHE_TTL_SEC"), findById);
 
-// EXPLICIT READ-ONLY CONTRACT: block mutations with 405
-r.post("/", methodNotAllowed);
-r.put("/:id", methodNotAllowed);
-r.patch("/:id", methodNotAllowed);
-r.delete("/:id", methodNotAllowed);
+// If you later add create/update/remove, wrap them with invalidateOnSuccess("town")
 
-export default r;
+export default router;

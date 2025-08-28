@@ -1,7 +1,8 @@
 // backend/services/act/src/controllers/act/handlers/ping.ts
-import type { RequestHandler } from "express";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
+import type { Request, Response } from "express";
+import { logger } from "../../../../../shared/utils/logger";
 
-export const ping: RequestHandler = asyncHandler(async (_req, res) => {
-  res.json({ ok: true, service: "act", ts: new Date().toISOString() });
-});
+export async function ping(_req: Request, res: Response) {
+  logger.debug({}, "[ActHandlers.ping] enter/exit");
+  res.json({ ok: true });
+}

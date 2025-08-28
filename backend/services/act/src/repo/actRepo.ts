@@ -1,87 +1,122 @@
-// backend/services/act/src/repo/actRepo.ts
-import { Types } from "mongoose";
+// backend/services/act/src/repos/actRepo.ts
 import ActModel, { ActDocument } from "../models/Act";
+import TownModel from "../models/Town";
+import { dbToDomain, domainToDb } from "../mappers/act.mapper";
+import { normalizeActName } from "../../../shared/utils/normalizeActName";
+import type {
+  CreateActDto,
+  UpdateActDto,
+  SearchByRadiusDto,
+} from "../validators/act.dto";
 
-// Conservative helper for explicit ObjectId casting where needed.
-function asObjectId(id: string | Types.ObjectId) {
-  if (id instanceof Types.ObjectId) return id;
-  if (typeof id === "string" && /^[a-f\d]{24}$/i.test(id)) {
-    return new Types.ObjectId(id);
+type GeoPoint = { type: "Point"; coordinates: [number, number] };
+const M_PER_MI = 1609.344;
+
+// Ensure we always have a proper GeoJSON point for actLoc.
+// If missing, fall back to the town's coordinates.
+async function ensureActLocFallback<
+  T extends { homeTownId: string; actLoc?: Partial<GeoPoint> }
+>(dto: T): Promise<Omit<T, "actLoc"> & { actLoc: GeoPoint }> {
+  // Provided and valid
+  if (
+    dto.actLoc &&
+    dto.actLoc.type === "Point" &&
+    Array.isArray(dto.actLoc.coordinates) &&
+    dto.actLoc.coordinates.length === 2 &&
+    Number.isFinite(dto.actLoc.coordinates[0]) &&
+    Number.isFinite(dto.actLoc.coordinates[1])
+  ) {
+    return dto as Omit<T, "actLoc"> & { actLoc: GeoPoint };
   }
-  return id as any;
+
+  // Fallback to Town coords
+  const town = await TownModel.findById(dto.homeTownId).lean();
+  if (!town || !town.loc || !Array.isArray(town.loc.coordinates)) {
+    throw new Error("Missing town coordinates for fallback actLoc");
+  }
+
+  const actLoc: GeoPoint = {
+    type: "Point",
+    coordinates: [town.loc.coordinates[0], town.loc.coordinates[1]],
+  };
+
+  const { actLoc: _ignore, ...rest } = dto as any;
+  return { ...rest, actLoc };
 }
 
-export function list(
-  filter: Record<string, any>,
-  limit: number,
-  offset: number
-) {
-  return ActModel.find(filter)
-    .sort({ _id: 1 })
-    .skip(offset)
-    .limit(limit)
-    .lean();
+// ──────────────────────────────────────────────────────────────────────────────
+// CRUD
+// ──────────────────────────────────────────────────────────────────────────────
+
+export async function create(input: CreateActDto) {
+  const withLoc = await ensureActLocFallback(input);
+  const doc = await ActModel.create({
+    ...domainToDb(withLoc),
+    nameNormalized: normalizeActName(withLoc.name),
+  });
+  return dbToDomain(doc as ActDocument);
 }
 
-export function count(filter: Record<string, any>) {
-  return ActModel.countDocuments(filter);
-}
+export async function update(id: string, input: UpdateActDto) {
+  const payload: Record<string, unknown> = domainToDb(input);
 
-export function findAll(
-  filter: Record<string, any>,
-  limit: number,
-  offset: number
-) {
-  return ActModel.find(filter)
-    .sort({ _id: 1 })
-    .skip(offset)
-    .limit(limit)
-    .lean();
-}
+  if (input.name) {
+    payload.nameNormalized = normalizeActName(input.name);
+  }
 
-export function findById(id: string | Types.ObjectId) {
-  return ActModel.findById(id as any).lean();
-}
+  // If actLoc not explicitly set but town/address may have changed, refresh fallback
+  if (
+    !input.actLoc &&
+    (input.homeTownId ||
+      input.addressStreet1 ||
+      input.addressCity ||
+      input.addressState ||
+      input.addressZip)
+  ) {
+    const current = await ActModel.findById(id).lean();
+    if (!current) return null;
 
-export function findByName(name: string) {
-  return ActModel.findOne({ name }).lean();
-}
+    const refreshed = await ensureActLocFallback({
+      homeTownId: (input.homeTownId as string) || current.homeTownId,
+      actLoc: current.actLoc as GeoPoint,
+    });
+    payload.actLoc = refreshed.actLoc;
+  }
 
-export async function create(doc: Partial<ActDocument>) {
-  // Ignore any client-supplied timestamps; server owns them.
-  if ("dateCreated" in (doc as any)) delete (doc as any).dateCreated;
-  if ("dateLastUpdated" in (doc as any)) delete (doc as any).dateLastUpdated;
-
-  const created = new ActModel(doc as any);
-  const saved = await created.save(); // timestamps applied automatically
-  return saved.toObject();
-}
-
-export function updateById(id: string | Types.ObjectId, update: any) {
-  // Never set timestamps manually; let Mongoose handle it.
-  if ("dateCreated" in update) delete update.dateCreated;
-  if ("dateLastUpdated" in update) delete update.dateLastUpdated;
-
-  return ActModel.findByIdAndUpdate(id as any, update, {
+  const updated = await ActModel.findByIdAndUpdate(id, payload, {
     new: true,
     runValidators: true,
-    timestamps: true, // ensure updatedAt bump on FOU paths
-  }).lean();
+  });
+  return updated ? dbToDomain(updated as ActDocument) : null;
 }
 
-/**
- * Delete semantics:
- * 1) Try findByIdAndDelete first (returns removed doc if found)
- * 2) If null, fall back to deleteOne({_id}) and consider success when deletedCount > 0
- */
-export async function deleteById(id: string | Types.ObjectId) {
-  const removed = await ActModel.findByIdAndDelete(id as any).lean();
-  if (removed) return removed as any;
+export async function findById(id: string) {
+  const doc = await ActModel.findById(id);
+  return doc ? dbToDomain(doc as ActDocument) : null;
+}
 
-  const _id = asObjectId(id);
-  const res = await ActModel.deleteOne({ _id });
-  if ((res as any)?.deletedCount > 0) {
-    return { _id } as any;
-  }
-  return null;
+export async function removeById(id: string) {
+  const doc = await ActModel.findByIdAndDelete(id);
+  return !!doc;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+export async function searchByRadius(q: SearchByRadiusDto) {
+  const meters = q.maxMiles * M_PER_MI;
+  const query: any = {
+    actLoc: {
+      $near: {
+        $geometry: { type: "Point", coordinates: q.center },
+        $maxDistance: meters,
+      },
+    },
+  };
+
+  if (q.actType) query.actType = { $in: q.actType };
+  if (q.genre)
+    query.genreList = { $elemMatch: { $regex: q.genre, $options: "i" } };
+  if (q.nameLike) query.name = { $regex: q.nameLike, $options: "i" };
+
+  const docs = await ActModel.find(query).limit(q.limit);
+  return docs.map((d) => dbToDomain(d as ActDocument));
 }

@@ -1,12 +1,13 @@
 // backend/services/act/src/models/Town.ts
-import mongoose, { Schema, Document } from "mongoose";
+import { Schema, Document, model } from "mongoose";
 
 /**
- * Towns = reference data (manually loaded), GET-only by default.
- * To (re)load or modify towns, set ALLOW_TOWN_WRITES=1 (or ACT_TOWNS_READONLY=0).
+ * Town model used by Act repo for geospatial fallbacks.
+ * NOTE: _id is a STRING to match homeTownId:string across services.
  */
 
 export interface TownDocument extends Document {
+  _id: string; // string id (e.g., "austin-tx" or FIPS)
   name: string; // "Austin"
   state: string; // "TX"
   lat: number;
@@ -14,123 +15,53 @@ export interface TownDocument extends Document {
   county?: string;
   population?: number;
   fips?: string;
-  loc?: {
-    type: "Point";
-    coordinates: [number, number]; // [lng, lat]
-  };
+  loc: { type: "Point"; coordinates: [number, number] }; // [lng, lat]
 }
 
 const TownSchema = new Schema<TownDocument>(
   {
+    _id: { type: String, required: true }, // << string, not ObjectId
     name: { type: String, required: true, index: true },
     state: { type: String, required: true, index: true },
+
     lat: { type: Number, required: true },
     lng: { type: Number, required: true },
 
-    // Optional enrichments (retained)
     county: { type: String },
     population: { type: Number },
     fips: { type: String },
 
-    // ✅ GeoJSON point for radius searches
     loc: {
       type: {
         type: String,
         enum: ["Point"],
         default: "Point",
+        required: true,
       },
       coordinates: {
         type: [Number], // [lng, lat]
-        // keep undefined so we set it from lat/lng in pre('save')
-        default: undefined,
+        required: true,
+        validate: {
+          validator(v: number[]) {
+            return (
+              Array.isArray(v) && v.length === 2 && v.every(Number.isFinite)
+            );
+          },
+          message: "loc.coordinates must be [lng, lat] numbers",
+        },
       },
     },
   },
   {
+    strict: true,
     versionKey: false,
-    toJSON: {
-      virtuals: true,
-      transform: (_doc, ret) => {
-        ret.id = ret._id;
-        delete ret._id;
-      },
-    },
-    toObject: {
-      virtuals: true,
-      transform: (_doc, ret) => {
-        ret.id = ret._id;
-        delete ret._id;
-      },
-    },
+    // indexes built here; connection should have bufferCommands=false at bootstrap per SOP
   }
 );
 
-// ── Read-only mode toggle ─────────────────────────────────────────────────────
-const READONLY =
-  process.env.ALLOW_TOWN_WRITES !== "1" &&
-  (process.env.NODE_ENV === "test" || process.env.ACT_TOWNS_READONLY !== "0");
-
-// Guard helper for mutating ops
-const guardWrite = (next: (err?: Error) => void) => {
-  if (READONLY) {
-    return next(
-      new Error(
-        "Towns collection is read-only (set ALLOW_TOWN_WRITES=1 or ACT_TOWNS_READONLY=0 for loader scripts)."
-      )
-    );
-  }
-  return next();
-};
-
-// Ensure loc is always aligned with lat/lng; also respect read-only
-TownSchema.pre("save", function (next) {
-  if (READONLY) return guardWrite(next);
-  const doc = this as TownDocument;
-  if (!doc.loc || !Array.isArray(doc.loc.coordinates)) {
-    doc.loc = { type: "Point", coordinates: [doc.lng, doc.lat] };
-  } else {
-    doc.loc.coordinates[0] = doc.lng;
-    doc.loc.coordinates[1] = doc.lat;
-  }
-  next();
-});
-
-// Block other mutating ops in read-only mode
-// replace your insertMany hook with this typed version
-TownSchema.pre(
-  "insertMany",
-  function (
-    this: mongoose.Model<TownDocument>,
-    next: (err?: mongoose.CallbackError) => void,
-    _docs: any[],
-    _options?: any
-  ) {
-    guardWrite(next);
-  }
-);
-TownSchema.pre("updateOne", function (next) {
-  guardWrite(next);
-});
-TownSchema.pre("updateMany", function (next) {
-  guardWrite(next);
-});
-TownSchema.pre("findOneAndUpdate", function (next) {
-  guardWrite(next);
-});
-TownSchema.pre("deleteOne", function (next) {
-  guardWrite(next);
-});
-TownSchema.pre("deleteMany", function (next) {
-  guardWrite(next);
-});
-TownSchema.pre("findOneAndDelete", function (next) {
-  guardWrite(next);
-});
-
-// Uniqueness & geo (preserved)
-TownSchema.index({ name: 1, state: 1 }, { unique: true }); // enforce ref-data uniqueness
-TownSchema.index({ population: -1 });
+// Fast lookups and spatial queries
+TownSchema.index({ name: 1, state: 1 }, { name: "idx_name_state" }); // non-unique: towns with same name exist across states
 TownSchema.index({ loc: "2dsphere" });
 
-export default (mongoose.models.Town as mongoose.Model<TownDocument>) ||
-  mongoose.model<TownDocument>("Town", TownSchema);
+const TownModel = model<TownDocument>("Town", TownSchema);
+export default TownModel;

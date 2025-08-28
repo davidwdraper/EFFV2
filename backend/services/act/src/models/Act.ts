@@ -1,5 +1,6 @@
 // backend/services/act/src/models/Act.ts
-import mongoose, { Schema, Document, model } from "mongoose";
+import { Schema, Document, model } from "mongoose";
+import { normalizeActName } from "../../../shared/utils/normalizeActName";
 
 export type BlackoutDays = [
   boolean,
@@ -9,43 +10,57 @@ export type BlackoutDays = [
   boolean,
   boolean,
   boolean
-]; // [Sun..Sat]
+];
 
 export interface ActDocument extends Document {
-  // Timestamps are Dates on the model; convert to ISO in DTO at the edge
   dateCreated: Date;
   dateLastUpdated: Date;
 
-  // Core fields
-  actStatus: number; // default 0
-  actType: number[]; // >= 1
+  actStatus: number;
+  actType: number[];
   userCreateId: string;
   userOwnerId: string;
+
   name: string;
+  nameNormalized: string;
+  aliases?: string[];
+
   email?: string;
 
-  // Hometown / geo
-  homeTown: string; // human-readable (e.g., "Austin, TX")
-  homeTownId: string; // ← string per shared contract (NOT ObjectId)
-  homeTownLoc: { type: "Point"; coordinates: [number, number] }; // [lng, lat]
+  homeTown: string;
+  state: string;
+  homeTownId: string;
 
-  // Assets
-  imageIds?: string[];
+  // Optional mailing address
+  addressStreet1?: string;
+  addressStreet2?: string;
+  addressCity?: string;
+  addressState?: string;
+  addressZip?: string;
 
-  // Optional frontend fields
+  // Spatial location (always required)
+  actLoc: { type: "Point"; coordinates: [number, number] };
+
+  imageIds: string[];
+
   websiteUrl?: string;
-  distanceWillingToTravel?: number; // miles
-  genreList?: number[]; // enum codes
-  actDuration?: number; // minutes
-  breakLength?: number; // minutes
-  numberOfBreaks?: number;
+  distanceWillingToTravel: number;
+  genreList: string[];
+  actDuration: number;
+  breakLength: number;
+  numberOfBreaks: number;
+
   bookingNotes?: string;
-  earliestStartTime?: string; // "HH:MM" or "HH:MM:SS"
-  latestStartTime?: string; // "HH:MM" or "HH:MM:SS"
+  earliestStartTime?: string;
+  latestStartTime?: string;
   blackoutDays?: BlackoutDays;
+
+  validatedBy: string[];
+  invalidatedBy: string[];
 }
 
 const timeRe = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
+const zipRe = /^\d{5}(-\d{4})?$/;
 
 const ActSchema = new Schema<ActDocument>(
   {
@@ -63,11 +78,30 @@ const ActSchema = new Schema<ActDocument>(
     userOwnerId: { type: String, required: true },
 
     name: { type: String, required: true, index: true },
+    nameNormalized: { type: String, required: true, index: true },
+    aliases: { type: [String], default: [] },
+
     email: { type: String, index: true },
 
     homeTown: { type: String, required: true },
-    homeTownId: { type: String, required: true }, // ← string FK
-    homeTownLoc: {
+    state: { type: String, required: true },
+    homeTownId: { type: String, required: true },
+
+    // Optional mailing address
+    addressStreet1: { type: String },
+    addressStreet2: { type: String },
+    addressCity: { type: String },
+    addressState: { type: String },
+    addressZip: {
+      type: String,
+      validate: {
+        validator: (v: string) => !v || zipRe.test(v),
+        message: "Invalid ZIP code",
+      },
+    },
+
+    // Spatial point: required for search, default to town coords if no address provided
+    actLoc: {
       type: {
         type: String,
         enum: ["Point"],
@@ -75,7 +109,7 @@ const ActSchema = new Schema<ActDocument>(
         required: true,
       },
       coordinates: {
-        type: [Number], // [lng, lat]
+        type: [Number],
         required: true,
         validate: {
           validator(v: number[]) {
@@ -83,20 +117,35 @@ const ActSchema = new Schema<ActDocument>(
               Array.isArray(v) && v.length === 2 && v.every(Number.isFinite)
             );
           },
-          message: "homeTownLoc.coordinates must be [lng, lat] numbers",
+          message: "actLoc.coordinates must be [lng, lat] numbers",
         },
       },
     },
 
     imageIds: { type: [String], default: [] },
 
-    // ── Optional fields ──────────────────────────────────────────────────────
     websiteUrl: { type: String },
-    distanceWillingToTravel: { type: Number, min: 0 },
-    genreList: { type: [Number], default: undefined },
-    actDuration: { type: Number, min: 0 },
-    breakLength: { type: Number, min: 0 },
-    numberOfBreaks: { type: Number, min: 0 },
+    distanceWillingToTravel: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: () => Number(process.env.ACT_DISTANCE_DEFAULT_MI || 50),
+    },
+    genreList: {
+      type: [String],
+      required: true,
+      validate: {
+        validator: (v: string[]) =>
+          Array.isArray(v) &&
+          v.length > 0 &&
+          v.every((s) => typeof s === "string" && s.trim().length > 0),
+        message: "genreList must be a non-empty array of strings",
+      },
+    },
+    actDuration: { type: Number, required: true, min: 0 },
+    breakLength: { type: Number, required: true, min: 0 },
+    numberOfBreaks: { type: Number, required: true, min: 0 },
+
     bookingNotes: { type: String },
     earliestStartTime: {
       type: String,
@@ -119,29 +168,59 @@ const ActSchema = new Schema<ActDocument>(
           v === undefined || (Array.isArray(v) && v.length === 7),
         message: "blackoutDays must be an array of 7 booleans",
       },
-      default: undefined,
+    },
+
+    validatedBy: {
+      type: [String],
+      validate: {
+        validator: (v: string[]) => Array.isArray(v) && v.length <= 3,
+        message: "validatedBy must contain at most 3 user IDs",
+      },
+      default: [],
+    },
+    invalidatedBy: {
+      type: [String],
+      validate: {
+        validator: (v: string[]) => Array.isArray(v) && v.length <= 3,
+        message: "invalidatedBy must contain at most 3 user IDs",
+      },
+      default: [],
     },
   },
   {
     strict: true,
     versionKey: false,
-    timestamps: { createdAt: "dateCreated", updatedAt: "dateLastUpdated" }, // ← key fix
-    toJSON: { virtuals: true, transform: (_doc, ret) => ret },
-    toObject: {
-      virtuals: true,
-      versionKey: false,
-      transform: (_doc, ret) => ret,
-    },
+    timestamps: { createdAt: "dateCreated", updatedAt: "dateLastUpdated" },
   }
 );
 
-// Uniqueness by (name, homeTownId)
 ActSchema.index(
-  { name: 1, homeTownId: 1 },
-  { unique: true, name: "uniq_name_homeTownId" }
+  { nameNormalized: 1, homeTownId: 1 },
+  {
+    unique: true,
+    name: "uniq_nameNormalized_homeTownId",
+    collation: { locale: "en", strength: 1 },
+  }
 );
-// 2dsphere index for radius search
-ActSchema.index({ homeTownLoc: "2dsphere" });
+
+ActSchema.index({ actLoc: "2dsphere" });
+
+ActSchema.pre("validate", function (next) {
+  try {
+    const normalized = normalizeActName(this.name);
+    this.nameNormalized = normalized || this.name?.toLowerCase()?.trim() || "";
+    if (
+      !this.actLoc ||
+      !Array.isArray(this.actLoc.coordinates) ||
+      this.actLoc.coordinates.length !== 2
+    ) {
+      return next(new Error("actLoc.coordinates must be provided [lng, lat]"));
+    }
+    next();
+  } catch (err) {
+    next(err as Error);
+  }
+});
 
 const ActModel = model<ActDocument>("Act", ActSchema);
 export default ActModel;

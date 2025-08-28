@@ -1,7 +1,11 @@
 // backend/services/shared/utils/logger.ts
 import axios from "axios";
 import type { Request } from "express";
-import pino, { type LoggerOptions, type LevelWithSilent } from "pino";
+import pino, {
+  type LoggerOptions,
+  type LevelWithSilent,
+  stdTimeFunctions,
+} from "pino";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -27,7 +31,6 @@ const LOG_SERVICE_TOKEN_CURRENT =
 const LOG_SERVICE_TOKEN_NEXT = process.env.LOG_SERVICE_TOKEN_NEXT?.trim() || "";
 
 // Optional / defaults
-const SERVICE_NAME = process.env.SERVICE_NAME?.trim();
 const LOG_ENABLE_INFO_DEBUG =
   String(process.env.LOG_ENABLE_INFO_DEBUG || "").toLowerCase() === "true";
 const LOG_CACHE_MAX_MB = Number(process.env.LOG_CACHE_MAX_MB || 256);
@@ -42,6 +45,34 @@ const LOG_SERVICE_HEALTH_URL =
   (process.env.LOG_SERVICE_HEALTH_URL &&
     process.env.LOG_SERVICE_HEALTH_URL.trim()) ||
   deriveHealthUrl(LOG_SERVICE_URL);
+
+// ─────────────────────────── Service name from code (authoritative) ───────────
+function requireServiceNameFromConfig(): string {
+  // Try TS source first (dev), then common build outputs (prod)
+  const candidates = [
+    path.join(process.cwd(), "src", "config"),
+    path.join(process.cwd(), "dist", "config"),
+    path.join(process.cwd(), "build", "config"),
+  ];
+  for (const mod of candidates) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const cfg = require(mod);
+      const name =
+        (cfg?.SERVICE_NAME && String(cfg.SERVICE_NAME).trim()) ||
+        (cfg?.default?.SERVICE_NAME && String(cfg.default.SERVICE_NAME).trim());
+      if (name) return name;
+    } catch {
+      /* try next */
+    }
+  }
+  throw new Error(
+    "SERVICE_NAME not found in service config. " +
+      'Each service must export `export const SERVICE_NAME = "<name>"` from src/config.ts ' +
+      "and include it in the build output."
+  );
+}
+const SERVICE_NAME = requireServiceNameFromConfig();
 
 // Validate level
 const validLevels = new Set<LevelWithSilent>([
@@ -64,9 +95,11 @@ if (!LOG_SERVICE_TOKEN_CURRENT && !LOG_SERVICE_TOKEN_NEXT) {
 }
 
 // ────────────────────────────── Pino (stdout only) ────────────────────────────
+// Human-readable time for reporting: ISO timestamps instead of epoch millis.
 const pinoOptions: LoggerOptions = {
   level: LOG_LEVEL,
-  base: SERVICE_NAME ? { service: SERVICE_NAME } : undefined,
+  base: { service: SERVICE_NAME },
+  timestamp: stdTimeFunctions.isoTime, // <-- ISO8601 string in "time"
   redact: {
     remove: true,
     paths: [

@@ -1,29 +1,24 @@
 // backend/services/act/src/controllers/act/handlers/list.ts
-import type { RequestHandler } from "express";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
-import { zodBadRequest, zActListDto, respond } from "@shared/contracts";
-import { makeList } from "@shared/http/pagination";
-import { escapeRe } from "../../../lib/search";
-import { toActDto } from "../../../dto/actDto";
-import * as repo from "../../../repo/actRepo";
-import { zListQuery } from "./schemas";
+import type { Request, Response, NextFunction } from "express";
+import { logger } from "../../../../../shared/utils/logger";
+import ActModel from "../../../models/Act";
+import { dbToDomain } from "../../../mappers/act.mapper";
 
-export const list: RequestHandler = asyncHandler(async (req, res) => {
-  const parsed = zListQuery.safeParse(req.query);
-  if (!parsed.success) return zodBadRequest(res, parsed.error);
-  const { name, limit, offset } = parsed.data;
-
-  const filter: Record<string, any> = {};
-  if (name) filter.name = { $regex: new RegExp(escapeRe(name), "i") };
-
-  const [rows, total] = await Promise.all([
-    repo.list(filter, limit, offset),
-    repo.count(filter),
-  ]);
-
-  return respond(
-    res,
-    zActListDto,
-    makeList(rows.map(toActDto), limit, offset, total)
-  );
-});
+export async function list(req: Request, res: Response, next: NextFunction) {
+  const requestId = String(req.headers["x-request-id"] || "");
+  logger.debug({ requestId }, "[ActHandlers.list] enter");
+  try {
+    const limit = Math.min(
+      Math.max(parseInt(String(req.query.limit ?? "50"), 10) || 50, 1),
+      200
+    );
+    const skip = Math.max(parseInt(String(req.query.skip ?? "0"), 10) || 0, 0);
+    const docs = await ActModel.find({}).skip(skip).limit(limit);
+    const items = docs.map((d) => dbToDomain(d));
+    logger.debug({ requestId, count: items.length }, "[ActHandlers.list] exit");
+    res.json({ items, count: items.length, limit, skip });
+  } catch (err) {
+    logger.debug({ requestId, err }, "[ActHandlers.list] error");
+    next(err);
+  }
+}

@@ -18,6 +18,8 @@ All services mirror Act structure 1:1.
 
 Routes = one-liners. No logic in routes.
 
+No large controller files. Routes import individual handlers located at src/controllers/<service name>/handlers/...
+
 No baked values. Env names only; values come from env files.
 
 Instrumentation everywhere (pino / pino-http).
@@ -320,3 +322,5 @@ Nothing else. Consistency = speed.
 ⸻
 
 ✅ End of SOP Addendum
+
+Having trouble resolving zodBadRequest

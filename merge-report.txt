@@ -1,0 +1,67 @@
+A file: ./.env.dev
+B file: ./.env.test
+
+Duplicates in A (1):
+  PUBLIC_GET_REQUIRE_AUTH_PREFIXES @ lines 17, 76 (last-wins="/users/private|/users/email")
+
+Duplicates in B (3):
+  PUBLIC_GET_REQUIRE_AUTH_PREFIXES @ lines 21, 109 (last-wins="/users/private|/users/email")
+  LOG_SERVICE_URL @ lines 80, 88 (last-wins="http://localhost:4006/logs")
+  LOG_SERVICE_TOKEN_CURRENT @ lines 81, 86 (last-wins="test-current-key")
+
+Only in A (0):
+
+Only in B (23):
+  ACT_MIN_STATUS_VISIBLE
+  ACT_TYPEAHEAD_LIMIT
+  ACT_TYPEAHEAD_MIN_CHARS
+  CACHE_PROVIDER
+  E2E_BEARER
+  E2E_REQUIRE_AUTH
+  LOG_CACHE_MAX_DAYS
+  LOG_CACHE_MAX_MB
+  LOG_ENABLE_INFO_DEBUG
+  LOG_FLUSH_BATCH_SIZE
+  LOG_FLUSH_CONCURRENCY
+  LOG_FS_DIR
+  LOG_INGEST_BURST
+  LOG_INGEST_RL_ENABLED
+  LOG_INGEST_RPS
+  LOG_INTERNAL_KEY_CURRENT
+  LOG_INTERNAL_KEY_NEXT
+  LOG_PING_INTERVAL_MS
+  LOG_SERVICE_HEALTH_URL
+  LOG_SERVICE_TOKEN_NEXT
+  NOTIFY_STUB_ENABLED
+  REDIS_DISABLED
+  SIMPLEMAPS_URL
+
+Conflicting keys (26):
+  ACT_MONGO_URI  (A="mongodb://localhost:27017/eff_act_db", B="mongodb://127.0.0.1:27017/nv_test_act_db")
+  ACT_SEARCH_UNFILTERED_CUTOFF  (A="12", B="25")
+  ACT_SERVICE_URL  (A="http://localhost:4002", B="http://127.0.0.1:4002")
+  AUTH_MONGO_URI  (A="mongodb://localhost:27017/eff_auth_db", B="mongodb://127.0.0.1:27017/nv_test_auth_db")
+  AUTH_SERVICE_URL  (A="http://localhost:4007", B="http://127.0.0.1:4007")
+  EVENTACT_MONGO_URI  (A="mongodb://localhost:27017/eff_eventact_db", B="mongodb://127.0.0.1:27017/nv_test_eventact_db")
+  EVENTACT_SERVICE_URL  (A="http://localhost:4008", B="http://127.0.0.1:4008")
+  EVENTPLACE_MONGO_URI  (A="mongodb://localhost:27017/eff_eventplace_db", B="mongodb://127.0.0.1:27017/nv_test_eventplace_db")
+  EVENTPLACE_SERVICE_URL  (A="http://localhost:4009", B="http://127.0.0.1:4009")
+  EVENT_MONGO_URI  (A="mongodb://localhost:27017/eff_event_db", B="mongodb://127.0.0.1:27017/nv_test_event_db")
+  EVENT_SERVICE_URL  (A="http://localhost:4003", B="http://127.0.0.1:4003")
+  IMAGE_MONGO_URI  (A="mongodb://localhost:27017/eff_image_db", B="mongodb://127.0.0.1:27017/nv_test_image_db")
+  IMAGE_SERVICE_URL  (A="http://localhost:4005", B="http://127.0.0.1:4005")
+  LOG_MONGO_URI  (A="mongodb://localhost:27017/eff_log_db", B="mongodb://127.0.0.1:27017/nv_test_log_db")
+  LOG_SERVICE_NAME  (A="log", B="log-service-test")
+  LOG_SERVICE_TOKEN_CURRENT  (A="b95627fb1b43b7bd37381bf7d61ba236cbd6320f9fc91a701d9c0b657183ebd9", B="test-current-key")
+  LOG_SERVICE_URL  (A="http://127.0.0.1:4006/log", B="http://localhost:4006/logs")
+  NODE_ENV  (A="dev", B="test")
+  PLACE_MONGO_URI  (A="mongodb://localhost:27017/eff_place_db", B="mongodb://127.0.0.1:27017/nv_test_place_db")
+  PLACE_SERVICE_URL  (A="http://localhost:4004", B="http://127.0.0.1:4004")
+  PUBLIC_API_BASE  (A="http://localhost:4000", B="http://127.0.0.1:4000")
+  REDIS_URL  (A="redis://localhost:6379", B="redis://127.0.0.1:6379")
+  USERACT_MONGO_URI  (A="mongodb://localhost:27017/eff_useract_db", B="mongodb://127.0.0.1:27017/nv_test_useract_db")
+  USERACT_SERVICE_URL  (A="http://localhost:4010", B="http://127.0.0.1:4010")
+  USER_MONGO_URI  (A="mongodb://localhost:27017/eff_user_db", B="mongodb://127.0.0.1:27017/nv_test_user_db")
+  USER_SERVICE_URL  (A="http://localhost:4001", B="http://127.0.0.1:4001")
+
+Merged written to merged.env

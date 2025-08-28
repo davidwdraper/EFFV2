@@ -324,6 +324,10 @@ Nothing else. Consistency = speed.
 Gateway service has been refactored to be generic, using 2nd path part to determine service.
 All api call should be api/<service>/<rest of path>
 
+gateway and act (both direct and via gateway) are responding to curl health check
+
 ✅ End of SOP Addendum
 
-Now need to test act, both directly and through the gateway. Start with a single test, then work work our way up to >= 90% coverage.
+Now need to wire up surface tests for act, both directly and through the gateway. Start with a single test, then work work our way up to >= 90% coverage.
+
+I am uploading a zip file of the act test folder used before all the refactoring.

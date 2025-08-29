@@ -1,20 +1,13 @@
-// backend/services/gateway/src/app.ts
+// backend/services/gateway-core/src/app.ts
 import express from "express";
 import cors from "cors";
-import axios from "axios";
 import pinoHttp from "pino-http";
 import { randomUUID } from "crypto";
 
-import { createHealthRouter, ReadinessFn } from "../../shared/health";
+import { verifyInternalJwt } from "./middleware/verifyInternalJwt";
+// import { createHealthRouter } from "../../shared/health"; // ← unused; remove
 import { logger } from "../../shared/utils/logger";
-
-import {
-  serviceName,
-  rateLimitCfg,
-  timeoutCfg,
-  breakerCfg,
-  requireUpstreamByKey,
-} from "./config";
+import { serviceName, rateLimitCfg, timeoutCfg, breakerCfg } from "./config";
 
 import { requestIdMiddleware } from "./middleware/requestId";
 import {
@@ -28,6 +21,7 @@ import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
 import { authGate } from "./middleware/authGate";
 import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
 import { genericProxy } from "./middleware/genericProxy";
+import { buildGatewayCoreHealthRouter } from "./routes/health.router";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -48,10 +42,10 @@ function sanitizeUrl(u: string): string {
 // App
 // ──────────────────────────────────────────────────────────────────────────────
 export const app = express();
-
 app.disable("x-powered-by");
 app.set("trust proxy", true);
 
+// CORS + body parsing
 app.use(
   cors({
     origin: "*",
@@ -65,11 +59,10 @@ app.use(
     ],
   })
 );
-
 app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
-// Request ID first
+// Request ID FIRST so all logs include it (including auth failures)
 app.use(requestIdMiddleware());
 
 // pino-http logger
@@ -96,11 +89,16 @@ app.use(
       return { service: serviceName, reqId: (req as any).id };
     },
     autoLogging: {
-      ignore: (req) =>
-        req.url === "/health" ||
-        req.url === "/healthz" ||
-        req.url === "/readyz" ||
-        req.url === "/favicon.ico",
+      ignore: (req) => {
+        const u = req.url || "";
+        // Ignore any health-ish paths, regardless of suffix or query
+        return (
+          u === "/favicon.ico" ||
+          u.startsWith("/health") ||
+          u.startsWith("/healthz") ||
+          u.startsWith("/readyz")
+        );
+      },
     },
     serializers: {
       req(req) {
@@ -121,43 +119,33 @@ app.use(
 // Problem+JSON envelope
 app.use(problemJsonMiddleware());
 
-// Rate limits, timeouts, breaker, auth
+// Rate limits, timeouts, breaker, extra guards
 app.use(rateLimitMiddleware(rateLimitCfg));
 app.use(sensitiveLimiter());
 app.use(timeoutsMiddleware(timeoutCfg));
 app.use(circuitBreakerMiddleware(breakerCfg));
-app.use(authGate());
 
-// Root
+// Health (no auth for health) — keep this BEFORE auth
+app.use(buildGatewayCoreHealthRouter());
+
+// Simple root ping
 app.get("/", (_req, res) => res.type("text/plain").send("gateway-core is up"));
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Health / Readiness
-// ──────────────────────────────────────────────────────────────────────────────
+// Internal S2S auth AFTER logging so 401s are visible with reqId
+app.use((req, _res, next) => {
+  logger.debug(
+    { reqId: (req as any).id },
+    "[auth] placing verifyInternalJwt + authGate"
+  );
+  next();
+});
+app.use(verifyInternalJwt);
+app.use(authGate());
 
-// Upstream check: Act
-const ACT_URL = requireUpstreamByKey("ACT_SERVICE_URL");
-const readiness: ReadinessFn = async (_req) => {
-  try {
-    const r = await axios.get(`${ACT_URL}/health`, { timeout: 1500 });
-    return { upstreams: { act: { ok: r.status === 200, url: ACT_URL } } };
-  } catch {
-    return { upstreams: { act: { ok: false, url: ACT_URL } } };
-  }
-};
+// Proxy plane (/api/<service>/<rest>)
+app.use("/api", genericProxy());
 
-// Self health + readiness combined
-app.use(
-  createHealthRouter({
-    service: serviceName,
-    readiness,
-  })
-);
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Proxy + errors
-// ──────────────────────────────────────────────────────────────────────────────
-app.use("/internal", genericProxy());
+// 404 + error handlers
 app.use(notFoundHandler());
 app.use(errorHandler());
 

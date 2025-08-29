@@ -1,33 +1,30 @@
-// backend/services/gateway/src/bootstrap.ts
-
+// backend/services/gateway-core/src/bootstrap.ts
 import path from "path";
 import {
   loadEnvFromFileOrThrow,
   assertRequiredEnv,
 } from "../../shared/config/env";
 
-// Dev-friendly default for local runs; override with ENV_FILE when needed.
 const envFile =
   (process.env.ENV_FILE && process.env.ENV_FILE.trim()) || ".env.dev";
-
-// Always resolve from the monorepo root
 const resolved = path.resolve(__dirname, "../../../..", envFile);
+
 console.log(`[bootstrap] Loading env from: ${resolved}`);
 loadEnvFromFileOrThrow(resolved);
 
-// Validate only what the gateway itself truly needs at boot.
-// DO NOT require SERVICE_NAME; it's set in code (src/config.ts).
+// One-time visibility for S2S plane
+console.log(
+  "[s2s] iss=%s aud=%s",
+  process.env.S2S_JWT_ISSUER,
+  process.env.S2S_JWT_AUDIENCE
+);
+
+// Keep required envs minimal but correct for core
 assertRequiredEnv([
   "LOG_LEVEL",
   "LOG_SERVICE_URL",
-  "GATEWAY_PORT",
-  // Keep the list minimal. Other values are validated lazily where used:
-  // "RATE_LIMIT_WINDOW_MS",
-  // "RATE_LIMIT_MAX",
-  // "TIMEOUT_GATEWAY_MS",
-  // "BREAKER_FAILURE_THRESHOLD",
-  // "BREAKER_HALFOPEN_AFTER_MS",
-  // "BREAKER_MIN_RTT_MS",
-  // "REDIS_URL",
-  // etc.
+  "GATEWAY_CORE_PORT", // core’s listener
+  "S2S_JWT_SECRET",
+  "S2S_JWT_ISSUER",
+  "S2S_JWT_AUDIENCE",
 ]);

@@ -8,8 +8,8 @@ import { URL } from "node:url";
 
 /**
  * Generic reverse proxy that forwards /<svc>/<rest...> to ENV[<SVC>_SERVICE_URL]/<rest...>.
- * - Expects to be MOUNTED at /api so first segment is the service slug.
- * - Uses alias map and naive singularization for ENV keys.
+ * - Mounted at /api so first segment is the service slug.
+ * - No baked URLs; resolveUpstreamBase reads env.
  * - Streams request/response (no buffering).
  * - Preserves querystring, method, headers; sets x-forwarded-* and x-request-id.
  * - Rejects if <svc> not in allowlist or env key missing.
@@ -17,10 +17,30 @@ import { URL } from "node:url";
 export function genericProxy(): RequestHandler {
   return (req, res) => {
     // Because this is mounted at /api, req.url begins with "/<svc>/..."
-    const segments = (req.url || "/").split("?")[0].split("/").filter(Boolean);
+    const pathOnly = (req.url || "/").split("?")[0];
+    const segments = pathOnly.split("/").filter(Boolean);
     const svc = segments[0] || "";
 
+    logger.debug(
+      {
+        requestId: (req as any).id,
+        method: req.method,
+        originalUrl: req.originalUrl,
+        url: req.url,
+        svc,
+      },
+      "[gateway] inbound"
+    );
+
     if (!svc || !isAllowedServiceSlug(svc)) {
+      logger.warn(
+        {
+          requestId: (req as any).id,
+          svc,
+          reason: "unknown_or_disallowed_service",
+        },
+        "[gateway] reject"
+      );
       res.status(404).json({
         type: "about:blank",
         title: "Not Found",
@@ -31,10 +51,31 @@ export function genericProxy(): RequestHandler {
       return;
     }
 
-    let upstream;
+    let upstream: { svcKey: string; base: string };
     try {
+      logger.debug(
+        { requestId: (req as any).id, svc },
+        "[gateway] resolving upstream"
+      );
       upstream = resolveUpstreamBase(svc); // { svcKey, base }
+      logger.debug(
+        {
+          requestId: (req as any).id,
+          svc,
+          envKey: upstream.svcKey,
+          base: upstream.base,
+        },
+        "[gateway] resolved upstream"
+      );
     } catch (e: any) {
+      logger.error(
+        {
+          requestId: (req as any).id,
+          svc,
+          err: e?.message || String(e),
+        },
+        "[gateway] resolveUpstreamBase error"
+      );
       res.status(500).json({
         type: "about:blank",
         title: "Internal Server Error",
@@ -81,13 +122,25 @@ export function genericProxy(): RequestHandler {
       req.socket?.remoteAddress
     );
     if (xfHost) outHeaders["x-forwarded-host"] = xfHost;
-    outHeaders["x-forwarded-proto"] = req.protocol || "http";
+    outHeaders["x-forwarded-proto"] = (req as any).protocol || "http";
     outHeaders["x-request-id"] =
       (req as any).id ||
       (Array.isArray(req.headers["x-request-id"])
         ? req.headers["x-request-id"][0]
         : (req.headers["x-request-id"] as string)) ||
       "";
+
+    logger.debug(
+      {
+        requestId: (req as any).id,
+        svc,
+        envKey: upstream.svcKey,
+        target: targetUrl,
+        method: req.method,
+        hasAuth: Boolean(outHeaders["authorization"]),
+      },
+      "[gateway] proxy enter"
+    );
 
     // Make request
     const urlObj = new URL(targetUrl);
@@ -167,16 +220,6 @@ export function genericProxy(): RequestHandler {
 
     // Stream body
     req.pipe(upstreamReq);
-    logger.debug(
-      {
-        requestId: (req as any).id,
-        svc,
-        envKey: upstream.svcKey,
-        target: targetUrl,
-        method: req.method,
-      },
-      "[gateway] proxy enter"
-    );
   };
 }
 

@@ -1,4 +1,4 @@
-// backend/services/gateway/index.ts
+// backend/services/gateway-core/index.ts
 import "./src/bootstrap"; // load ENV_FILE (defaults to .env.dev) + assert required envs FIRST
 import "./src/log.init";
 import { app } from "./src/app";
@@ -7,6 +7,13 @@ import { logger } from "../shared/utils/logger";
 
 async function start() {
   try {
+    console.log(
+      "[gateway-core boot] PID=%d CWD=%s ENV_FILE=%s",
+      process.pid,
+      process.cwd(),
+      process.env.ENV_FILE
+    );
+
     const server = app.listen(PORT, () => {
       logger.info({ port: PORT }, `[${SERVICE_NAME}] listening`);
     });

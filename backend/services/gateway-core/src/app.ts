@@ -129,7 +129,7 @@ app.use(circuitBreakerMiddleware(breakerCfg));
 app.use(authGate());
 
 // Root
-app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
+app.get("/", (_req, res) => res.type("text/plain").send("gateway-core is up"));
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Health / Readiness
@@ -157,7 +157,7 @@ app.use(
 // ──────────────────────────────────────────────────────────────────────────────
 // Proxy + errors
 // ──────────────────────────────────────────────────────────────────────────────
-app.use("/api", genericProxy());
+app.use("/internal", genericProxy());
 app.use(notFoundHandler());
 app.use(errorHandler());
 

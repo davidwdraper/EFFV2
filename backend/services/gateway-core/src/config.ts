@@ -2,7 +2,7 @@
 import { requireEnum, requireNumber, requireEnv } from "../../shared/env";
 
 // ── Service identity ──────────────────────────────────────────────────────────
-export const SERVICE_NAME = "gateway" as const;
+export const SERVICE_NAME = "gateway-core" as const;
 
 // Enforce valid mode (no defaults)
 export const NODE_ENV = requireEnum("NODE_ENV", [
@@ -12,7 +12,7 @@ export const NODE_ENV = requireEnum("NODE_ENV", [
 ]);
 
 // Required listen port
-export const PORT = requireNumber("GATEWAY_PORT");
+export const PORT = requireNumber("GATEWAY_CORE_PORT");
 
 // Optional toggles (ok if missing — no defaults applied)
 export const AUTH_ENABLED = (process.env.AUTH_ENABLED ?? "true") !== "false";

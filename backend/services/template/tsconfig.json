@@ -1,0 +1,22 @@
+// backend/services/template/tsconfig.json
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "target": "ES2022",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "rootDir": "..",
+    "outDir": "./dist",
+    "types": ["node"]
+  },
+  "ts-node": { "files": true },
+  "include": [
+    "src",
+    "index.ts",
+    "scripts/**/*.ts",
+    "types/**/*.d.ts",
+    "../shared/**/*.ts"
+  ]
+}

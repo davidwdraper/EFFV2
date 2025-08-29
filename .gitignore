@@ -162,3 +162,4 @@ appendonly.aof
 
 # Misc build artifacts
 **/*.map
+*.zip

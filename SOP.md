@@ -328,6 +328,9 @@ gateway and act (both direct and via gateway) are responding to curl health chec
 
 ✅ End of SOP Addendum
 
-Now need to wire up surface tests for act, both directly and through the gateway. Start with a single test, then work work our way up to >= 90% coverage.
+We now have gateway-core.
+I want to build Geo-Service, that takes a mailing address and returns a lat and long.
+We will use the Google api for this. You will need to provide guidance on getting setup with google, and building the code for the service. The service will our SOP, based on the Act service, but with No DB integration.
+In the future this service can use a different 3rd party provider based on env configuration to determine provider at runtime.
 
-I am uploading a zip file of the act test folder used before all the refactoring.
+Once the Geo-service is complete, we integrate it into the stub that was built within the Act service, for determining an Act's geoLocation based on a provided mailing address.

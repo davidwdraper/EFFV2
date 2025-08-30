@@ -326,7 +326,221 @@ All api call should be api/<service>/<rest of path>
 
 gateway and act (both direct and via gateway) are responding to curl health check
 
-✅ End of SOP Addendum
+✅ End of SOP Addendum1
+
+Addundum 2 - security and authorization
+
+SOP Addendum — Uniform Service-to-Service (S2S) Authorization
+Scope
+
+Applies to all internal worker services (geo, act, place, log, etc.), the gateway (external), and gateway-core (internal). Establishes one way to authenticate and authorize every internal call. Health endpoints stay open.
+
+The Rule (non-negotiable)
+
+Only the gateway is externally reachable. The gateway-core has no external visibility.
+
+Every non-health request to a worker must carry a valid S2S JWT minted by a trusted issuer (the gateway or gateway-core).
+
+gateway-core always injects S2S to workers when proxying; never forward user tokens internally.
+
+Health endpoints (/health, /healthz, /readyz) remain open, constant-time, no fan-out.
+
+Token Format (now) & Upgrade Path
+
+Algo (now): HS256 (shared secret).
+
+Claims (required):
+
+iss: one of gateway or gateway-core
+
+aud: internal-services
+
+exp (≤ 60s), iat
+
+svc: caller identity (e.g., gateway, gateway-core, act)
+
+Optional (authZ): perm (e.g., geocode:resolve).
+
+Upgrade (later for money flows): switch to RS256/ES256 + JWKS with kid rotation.
+
+Required Env (standardize names)
+
+Minting services (gateway & gateway-core):
+
+S2S_JWT_SECRET=devlocal-core-internal
+S2S_JWT_ISSUER=gateway # on the external gateway
+S2S_JWT_AUDIENCE=internal-services
+S2S_TOKEN_TTL_SEC=60
+
+(On gateway-core, S2S_JWT_ISSUER=gateway-core.)
+
+Workers (verify S2S):
+
+S2S_JWT_SECRET=devlocal-core-internal
+S2S_JWT_AUDIENCE=internal-services
+S2S_ALLOWED_ISSUERS=gateway,gateway-core
+
+# Optional hardening per worker:
+
+S2S_ALLOWED_CALLERS=gateway,gateway-core,act
+REQUIRE_PERMISSIONS=false
+
+Responsibilities
+Gateway (external)
+
+Validates user auth (out of scope here).
+
+When calling a worker directly, mint S2S and set Authorization: Bearer <S2S>.
+
+gateway-core (internal)
+
+Proxies /api/<svc>/<rest> only; no external exposure.
+
+Always overwrite outbound Authorization with a fresh S2S token; do not forward user tokens.
+
+Per-caller rate limits and audit logging.
+
+Signer
+
+// src/utils/s2s.ts (in gateway-core)
+import jwt from "jsonwebtoken";
+export function mintS2SToken(caller="gateway-core", ttl=+process.env.S2S_TOKEN_TTL_SEC!||60){
+const now = Math.floor(Date.now()/1000);
+return jwt.sign(
+{ sub:"s2s", iss:process.env.S2S_JWT_ISSUER!, aud:process.env.S2S_JWT_AUDIENCE!,
+iat:now, exp:now+ttl, svc:caller },
+process.env.S2S_JWT_SECRET!, { algorithm:"HS256", noTimestamp:true }
+);
+}
+
+Proxy injection
+
+// before proxy.web(...)
+import { mintS2SToken } from "../utils/s2s";
+req.headers.authorization = `Bearer ${mintS2SToken("gateway-core")}`;
+req.headers["x-s2s-caller"] = "gateway-core";
+
+Workers (all internal services)
+
+Mount health first (open), then require S2S for everything else.
+
+// app.ts (worker)
+import { createHealthRouter } from "../../shared/health";
+import { verifyS2S } from "../../shared/middleware/verifyS2S";
+
+app.use(createHealthRouter({ service: "geo" })); // open
+app.use(verifyS2S); // protect the rest
+
+Shared verifier
+
+// shared/middleware/verifyS2S.ts
+import type { Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
+const AUD = process.env.S2S_JWT_AUDIENCE || "internal-services";
+const ISS = (process.env.S2S_ALLOWED_ISSUERS||"").split(",").map(s=>s.trim()).filter(Boolean);
+const CALLERS = (process.env.S2S_ALLOWED_CALLERS||"").split(",").map(s=>s.trim()).filter(Boolean);
+const OPEN = new Set(["/","/health","/healthz","/readyz"]);
+
+export function verifyS2S(req:Request,res:Response,next:NextFunction){
+if (OPEN.has(req.path)) return next();
+const raw = req.headers.authorization||"";
+const tok = raw.startsWith("Bearer ")?raw.slice(7):"";
+if(!tok) return res.status(401).json({code:"UNAUTHORIZED",status:401,message:"Missing token"});
+try{
+const p = jwt.verify(tok, process.env.S2S_JWT_SECRET!, { audience: AUD }) as any;
+if(!ISS.includes(p.iss)) return res.status(401).json({code:"UNAUTHORIZED",status:401,message:"Bad issuer"});
+if(CALLERS.length && !CALLERS.includes(p.svc))
+return res.status(403).json({code:"FORBIDDEN",status:403,message:"Caller not allowed"});
+(req as any).s2s = p; next();
+}catch{ return res.status(401).json({code:"UNAUTHORIZED",status:401,message:"Invalid signature"}); }
+}
+
+Operational Guardrails
+
+Exposure: only the gateway has public ports. gateway-core is internal-only. Workers have no public ports.
+
+Paid APIs: egress via fixed NAT; lock provider keys to that IP; quotas + circuit breaker.
+
+Rate limit: by s2s.svc at gateway-core and workers.
+
+Audit: deny logs (no token/bad issuer/caller) with reqId, svc, endpoint, remote addr; alert on spikes.
+
+Secrets: .env for dev; secrets manager + rotation for prod.
+
+Tests (every worker)
+
+401 on missing/wrong/expired token; wrong aud; bad iss.
+
+403 when S2S_ALLOWED_CALLERS is set and caller not allowed.
+
+Happy path with valid S2S from gateway-core or gateway.
+
+Migration Plan
+
+Add verifyS2S to all workers (after health).
+
+Enable S2S injection in gateway-core proxy.
+
+Set envs: S2S_ALLOWED_ISSUERS=gateway,gateway-core and per-service S2S_ALLOWED_CALLERS.
+
+Verify: direct worker calls fail (401/403); via gateway-core succeed (or return provider errors).
+
+Lock provider keys to egress IP.
+
+Bottom line: Only the gateway is public. gateway-core is internal-only. Workers refuse non-health calls without a short-lived, gateway-minted S2S token.
+✅ End of SOP Addendum 2
+
+Addenum 3
+SOP Addendum — Dev HTTP Exception (Gateway)
+
+Purpose: Allow plain HTTP only in dev without weakening prod.
+
+Policy
+
+Dev/local: HTTP is allowed. Bind the gateway to 127.0.0.1. No HSTS. No redirect.
+
+Staging/Prod: HTTPS only. HSTS on. HTTP requests 308→HTTPS.
+
+gateway-core & workers: remain internal-only; unaffected.
+
+Env (copy/paste)
+
+# dev
+
+GATEWAY_PORT=4010
+GATEWAY_BIND_ADDR=127.0.0.1
+FORCE_HTTPS=false
+
+# prod
+
+GATEWAY_PORT=443
+GATEWAY_BIND_ADDR=0.0.0.0
+FORCE_HTTPS=true
+
+Gateway wiring (tiny)
+// bootstrap listen
+const PORT = +process.env.GATEWAY_PORT!;
+const BIND = process.env.GATEWAY_BIND_ADDR || "127.0.0.1";
+server.listen(PORT, BIND);
+
+// redirect middleware (enforce only when FORCE_HTTPS=true)
+app.set("trust proxy", true);
+app.use((req, res, next) => {
+if (process.env.FORCE_HTTPS !== "true") return next();
+const xf = String(req.headers["x-forwarded-proto"] || "");
+if (req.secure || xf === "https") return next();
+return res.redirect(308, `https://${req.headers.host}${req.originalUrl}`);
+});
+
+Quick checks
+
+Dev: curl -I http://127.0.0.1:4010/healthz → 200 OK (no redirect).
+
+Prod: curl -I http://<prod-host>/healthz → 308 Permanent Redirect to https://….
+
+That’s it: HTTP for dev convenience, HTTPS everywhere that matters.
+
+✅ End of SOP Addendum 3
 
 We now have gateway-core.
 I want to build Geo-Service, that takes a mailing address and returns a lat and long.

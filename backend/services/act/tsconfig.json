@@ -1,25 +1,20 @@
-// backend/services/act/tsconfig.json
 {
-  "extends": "../../../tsconfig.json",
   "compilerOptions": {
+    "target": "ES2020",
     "module": "CommonJS",
-    "target": "ES2022",
-    "moduleResolution": "Node",
+    "moduleResolution": "node",
     "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
     "skipLibCheck": true,
 
-    "rootDir": "..", // include sibling folders under /services
-    "outDir": "./dist", // ⬅️ emit INSIDE this service
+    "rootDir": "./src",
+    "outDir": "./dist",
 
-    "types": ["node"]
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["../shared/*"]
+    }
   },
-  "ts-node": { "files": true },
-  "include": [
-    "src",
-    "index.ts",
-    "scripts/**/*.ts",
-    "scripts/types/**/*.d.ts",
-    "types/**/*.d.ts",
-    "../shared/**/*.ts" // required for @shared/* imports
-  ]
+  "include": ["src"]
 }

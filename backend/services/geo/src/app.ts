@@ -10,6 +10,7 @@ import {
 } from "@shared/middleware/problemJson";
 import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
 import { createHealthRouter } from "@shared/health";
+import { verifyS2S } from "@shared/middleware/verifyS2S";
 import geoRoutes from "./routes/geo.routes";
 import { SERVICE_NAME, config } from "./config";
 
@@ -25,7 +26,7 @@ app.use(makeHttpLogger(SERVICE_NAME));
 app.use(entryExit());
 app.use(auditBuffer());
 
-// health
+// health (open)
 app.use(
   createHealthRouter({
     service: SERVICE_NAME,
@@ -33,14 +34,17 @@ app.use(
   })
 );
 
-// test helpers
-addTestOnlyHelpers(app as any, ["/geo"]);
+// S2S protection for everything else
+app.use(verifyS2S);
 
-// routes
-app.use("/geo", geoRoutes);
+// test helpers (limit to real routes)
+addTestOnlyHelpers(app as any, ["/resolve", "/health", "/healthz", "/readyz"]);
+
+// routes (root-mounted per SOP)
+app.use("/", geoRoutes);
 
 // 404 + error
-app.use(notFoundProblemJson(["/geo", "/health"]));
+app.use(notFoundProblemJson(["/health", "/healthz", "/readyz", "/resolve"]));
 app.use(errorProblemJson());
 
 export default app;

@@ -4,7 +4,7 @@
   "main": "index.ts",
   "scripts": {
     "start": "ts-node -r tsconfig-paths/register --project tsconfig.json index.ts",
-    "dev": "yarn build && TS_NODE_FILES=1 ts-node-dev --respawn --transpile-only index.ts",
+    "dev": "TS_NODE_FILES=1 ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts",
     "load:towns": "TS_NODE_FILES=1 node -r ts-node/register scripts/loadTowns.ts",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run"

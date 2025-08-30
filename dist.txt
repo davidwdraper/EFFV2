@@ -1,0 +1,14 @@
+backend/services/template/tsconfig.json:    "outDir": "./dist",
+backend/services/user/tsconfig.json:    "outDir": "../dist/user"
+backend/services/useract/tsconfig.json:    "outDir": "../dist/useract"
+backend/services/act/tsconfig.json:    "outDir": "./dist", // ⬅️ emit INSIDE this service
+backend/services/eventact/tsconfig.json:    "outDir": "../dist/eventact"
+backend/services/eventplace/tsconfig.json:    "outDir": "../dist/eventplace"
+backend/services/gateway-core/tsconfig.json:    "outDir": "dist",
+backend/services/geo/tsconfig.json:    "outDir": "./dist",
+backend/services/event/tsconfig.json:    "outDir": "../dist/event"
+backend/services/gateway/tsconfig.json:    "outDir": "dist",
+backend/services/place/tsconfig.json:    "outDir": "../dist/place"
+backend/services/image/tsconfig.json:    "outDir": "../dist/image"
+backend/services/log/tsconfig.json:    "outDir": "../dist/log"
+backend/services/auth/tsconfig.json:    "outDir": "../dist/auth"

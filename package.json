@@ -24,6 +24,7 @@
     "dotenv-cli": "^10.0.0",
     "supertest": "^7",
     "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.9.2",
     "vite-tsconfig-paths": "^5.1.4",

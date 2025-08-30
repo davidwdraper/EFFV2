@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# scripts/run.sh
+set -Eeuo pipefail
 
-cd "$(dirname "$0")"
+# ======= CONFIG: edit this list =======
+# Each line: name|path|start-command
+# Comment out a line with '#' to disable a service.
+SERVICES=(
+  "gateway|backend/services/gateway|yarn dev"
+  "gateway-core|backend/services/gateway-core|yarn dev"
+  "geo|backend/services/geo|yarn dev"
+  "act|backend/services/act|yarn dev"
+  # "auth|backend/services/auth|yarn dev"
+  # "image|backend/services/image|yarn dev"
+  # "user|backend/services/user|yarn dev"
+  # "log|backend/services/log|yarn dev"
+)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Trap Ctrl-C and clean up (processes + optional local Redis)
-# ──────────────────────────────────────────────────────────────────────────────
+MODE="${1:-dev}"   # dev | docker
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$ROOT"
+
+echo "▶ run.sh starting in MODE=$MODE (root=$ROOT)"
+
+# ======= Clean shutdown =======
+PIDS=()
 REDIS_PROC_PID=""
 REDIS_DOCKER_ID=""
-MODE="${1:-dev}"
-
 cleanup() {
   echo "🧹 Cleaning up..."
   if [[ -n "$REDIS_PROC_PID" ]] && ps -p "$REDIS_PROC_PID" >/dev/null 2>&1; then
@@ -20,139 +36,143 @@ cleanup() {
     echo "🧯 Stopping dockerized Redis ($REDIS_DOCKER_ID)"
     docker stop "$REDIS_DOCKER_ID" >/dev/null 2>&1 || true
   fi
-  # Kill the concurrently process group
-  kill 0 >/dev/null 2>&1 || true
+  if [[ "${#PIDS[@]}" -gt 0 ]]; then
+    echo "🧯 Stopping services: ${PIDS[*]}"
+    kill "${PIDS[@]}" >/dev/null 2>&1 || true
+  fi
 }
-trap 'echo "🛑 Caught Ctrl-C."; cleanup; exit 0' INT TERM
+trap 'echo "🛑 Caught signal"; cleanup; exit 0' INT TERM
+trap 'echo "💥 Error on line $LINENO"; cleanup; exit 1' ERR
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Services to run (dev mode)
-# ──────────────────────────────────────────────────────────────────────────────
-SERVICES=(
-  gateway
-  log
-  user
-  act
-  auth
-  image
-)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Helper: load a key from .env file (very basic)
-# ──────────────────────────────────────────────────────────────────────────────
-get_env() {
-  local file="$1"
-  local key="$2"
-  # shellcheck disable=SC2162
-  while IFS='=' read -r k v; do
-    [[ "$k" =~ ^\ *# ]] && continue
-    [[ -z "$k" ]] && continue
-    if [[ "$k" == "$key" ]]; then
-      echo "${v}"
-      return 0
-    fi
-  done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$file" || true)
-  return 1
+# ======= Helpers =======
+get_env() { # get key from .env.dev
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || return 1
+  grep -E "^${key}=" "$file" | tail -n1 | cut -d'=' -f2- || true
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Docker mode
-# ──────────────────────────────────────────────────────────────────────────────
+# ======= Docker mode =======
 if [[ "$MODE" == "docker" ]]; then
-  echo "🛳️  Starting in DOCKER mode..."
-  # Expect docker-compose.yml to define a 'redis' service; if not, add it.
-  docker-compose --env-file .env.docker up --build
+  echo "🛳️  Starting docker compose..."
+  docker compose --env-file .env.docker up --build
   exit 0
 fi
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Dev mode: start local Redis if needed, then start node services
-# ──────────────────────────────────────────────────────────────────────────────
-if [[ "$MODE" == "dev" ]]; then
-  if [[ ! -f ".env.dev" ]]; then
-    echo "❌ .env.dev not found at repo root."
-    exit 1
-  fi
+# ======= Dev mode =======
+if [[ "$MODE" != "dev" ]]; then
+  echo "❌ Invalid mode. Usage: ./scripts/run.sh [dev|docker]"
+  exit 1
+fi
 
-  echo "🧹 Killing any processes using service ports from .env.dev..."
-  # Allow failures (no PIDs found)
-  set +e
-  grep _PORT .env.dev | cut -d '=' -f2 | xargs -I {} lsof -ti :{} 2>/dev/null | xargs kill -9 2>/dev/null
-  set -e
+[[ -f ".env.dev" ]] || { echo "❌ .env.dev not found at repo root ($ROOT)"; exit 1; }
 
-  # ── Determine if we should bring up a local Redis in dev ────────────────────
-  REDIS_URL="$(get_env .env.dev REDIS_URL || true)"
-  # Default to localhost if unset (your shared bootstrap may still require it explicitly)
-  if [[ -z "${REDIS_URL}" ]]; then
-    REDIS_URL="redis://localhost:6379"
-    echo "ℹ️  REDIS_URL not set in .env.dev — assuming ${REDIS_URL} for dev."
-  fi
-
-  needs_local_redis="false"
-  if [[ "$REDIS_URL" =~ ^redis://(127\.0\.0\.1|localhost):6379(/.*)?$ ]]; then
-    needs_local_redis="true"
-  fi
-
-  if [[ "$needs_local_redis" == "true" ]]; then
-    echo "🔎 Checking local Redis at ${REDIS_URL}..."
-    if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
-      echo "✅ Redis is already running."
+# ----- Robust port cleanup (no fragile pipes) -----
+echo "🧹 Killing anything on ports from .env.dev..."
+ports="$(grep -E '^[A-Z0-9_]+_PORT=' .env.dev 2>/dev/null | sed -E 's/.*=//' | tr -d '"' | tr ' ' '\n' | grep -E '^[0-9]+$' || true)"
+if [[ -z "${ports}" ]]; then
+  echo "ℹ️  No *_PORT entries found in .env.dev"
+else
+  for p in ${ports}; do
+    [[ -z "$p" ]] && continue
+    pids_on_port="$(lsof -ti "tcp:$p" 2>/dev/null || true)"
+    if [[ -n "$pids_on_port" ]]; then
+      echo "  • Killing PIDs on :$p → $pids_on_port"
+      # shellcheck disable=SC2086
+      kill -9 $pids_on_port 2>/dev/null || true
     else
-      echo "⚙️  Starting local Redis for dev..."
-      if command -v redis-server >/dev/null 2>&1; then
-        # Lightweight: no persistence for dev speed
-        redis-server --save "" --appendonly no >/dev/null 2>&1 &
-        REDIS_PROC_PID=$!
-        # Wait briefly for readiness
-        sleep 0.4
-        if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
-          echo "✅ redis-server up (pid $REDIS_PROC_PID)."
-        else
-          echo "⚠️  redis-server started but not responding yet."
-        fi
-      elif command -v docker >/dev/null 2>&1; then
-        echo "🐳 Launching Redis via Docker..."
-        REDIS_DOCKER_ID="$(docker run -d --rm -p 6379:6379 --name nowvibin-redis redis:7-alpine)"
-        # Brief wait
-        sleep 0.8
-        if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
-          echo "✅ Docker Redis up (container $REDIS_DOCKER_ID)."
-        else
-          echo "⚠️  Docker Redis started but not responding yet."
-        fi
-      else
-        echo "❌ No local redis-server or docker available. Install Redis (brew install redis) or run Docker."
-        exit 1
-      fi
-    fi
-  else
-    echo "ℹ️  REDIS_URL points to a remote host. Not starting local Redis."
-  fi
-
-  echo "💻 Starting available services with concurrently..."
-  COMMANDS=()
-  NAMES=()
-
-  for service in "${SERVICES[@]}"; do
-    path="backend/services/$service"
-    if [[ -d "$path" ]]; then
-      COMMANDS+=("cd $path && NODE_ENV=dev dotenv -e ../../../.env.dev -- yarn dev")
-      NAMES+=("$service")
-    else
-      echo "⚠️  Skipping missing service: $service"
+      echo "  • No processes on :$p"
     fi
   done
-
-  npx concurrently \
-    --kill-others-on-fail \
-    --names "$(IFS=,; echo "${NAMES[*]}")" \
-    --prefix "[{name}]" \
-    "${COMMANDS[@]}"
-
-  # If concurrently exits, cleanup handles Redis stop too.
-  cleanup
-  exit 0
 fi
 
-echo "❌ Invalid mode. Usage: ./run.sh [dev|docker]"
-exit 1
+# ----- Redis (optional local) -----
+REDIS_URL="$(get_env .env.dev REDIS_URL || true)"
+if [[ -z "${REDIS_URL:-}" ]]; then
+  REDIS_URL="redis://localhost:6379"
+  echo "ℹ️  REDIS_URL not set; assuming $REDIS_URL for dev."
+fi
+
+needs_local_redis="false"
+if echo "$REDIS_URL" | grep -Eq '^redis://(127\.0\.0\.1|localhost):6379(/.*)?$'; then
+  needs_local_redis="true"
+fi
+
+if [[ "$needs_local_redis" == "true" ]]; then
+  echo "🔎 Checking local Redis @ $REDIS_URL..."
+  if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
+    echo "✅ Redis already running."
+  else
+    echo "⚙️  Starting local redis-server (no persistence)..."
+    if command -v redis-server >/dev/null 2>&1; then
+      redis-server --save "" --appendonly no >/dev/null 2>&1 & REDIS_PROC_PID=$!
+      sleep 0.5
+      if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
+        echo "✅ redis-server up (pid $REDIS_PROC_PID)."
+      else
+        echo "⚠️  redis-server started but not responding yet."
+      fi
+    elif command -v docker >/dev/null 2>&1; then
+      echo "🐳 Launching Redis via Docker..."
+      REDIS_DOCKER_ID="$(docker run -d --rm -p 6379:6379 --name nowvibin-redis redis:7-alpine)"
+      sleep 0.8
+      if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
+        echo "✅ Docker Redis up (container $REDIS_DOCKER_ID)."
+      else
+        echo "⚠️  Docker Redis started but not responding yet."
+      fi
+    else
+      echo "❌ No redis-server or docker available. Install Redis (brew install redis) or run Docker."
+      exit 1
+    fi
+  fi
+else
+  echo "ℹ️  REDIS_URL points to remote; not starting local Redis."
+fi
+
+# ----- Build command list from SERVICES (comments respected) -----
+NAMES=()
+CMDS=()
+
+echo "🧭 Services list:"
+for line in "${SERVICES[@]}"; do
+  # Skip empty or comment lines
+  if echo "$line" | grep -Eq '^[[:space:]]*$'; then continue; fi
+  if echo "$line" | grep -Eq '^[[:space:]]*#'; then
+    echo "  • (disabled) $line"
+    continue
+  fi
+
+  name="${line%%|*}"; rest="${line#*|}"
+  path="${rest%%|*}"; cmd="${rest#*|}"
+  name="$(echo "$name" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  path="$(echo "$path" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  cmd="$(echo "$cmd"  | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  [[ -z "$cmd" ]] && cmd="yarn dev"
+
+  if [[ ! -d "$path" ]]; then
+    echo "  • (missing)  $name → $path"
+    continue
+  fi
+
+  echo "  • (enabled)  $name → $path :: $cmd"
+  NAMES+=("$name")
+  # Use dotenv from repo root so all services share the same .env.dev
+  CMDS+=("cd \"$path\" && NODE_ENV=dev npx -y dotenv -e \"$ROOT/.env.dev\" -- $cmd")
+done
+
+if [[ "${#NAMES[@]}" -eq 0 ]]; then
+  echo "❌ No enabled services. Edit SERVICES in scripts/run.sh."
+  exit 1
+fi
+
+# ----- Start everything (background) -----
+echo "🚀 Starting services..."
+for i in "${!NAMES[@]}"; do
+  name="${NAMES[$i]}"; cmd="${CMDS[$i]}"
+  echo "→ $name"
+  bash -lc "$cmd" & PIDS+=($!)
+done
+
+echo "📜 PIDs: ${PIDS[*]}"
+echo "🟢 All services launched. Ctrl-C to stop."
+wait

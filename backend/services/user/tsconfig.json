@@ -1,9 +1,14 @@
 {
-  "extends": "../tsconfig.json",
   "compilerOptions": {
-    "typeRoots": ["../../node_modules/@types", "../../shared/types"],
-    "rootDir": "..",
-    "outDir": "../dist/user"
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "rootDir": "./src",
+    "outDir": "./dist"
   },
-  "include": ["index.ts", "src/**/*", "../shared/interfaces/User/IUser.ts"]
+  "include": ["src"]
 }

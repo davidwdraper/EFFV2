@@ -1,11 +1,14 @@
-// /backend/services/shared/tsconfig.json
 {
-  "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "types": ["node"],
-    "composite": false,
-    "declaration": false,
-    "skipLibCheck": true
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "rootDir": "./src",
+    "outDir": "./dist"
   },
-  "include": ["**/*.ts"]
+  "include": ["src"]
 }

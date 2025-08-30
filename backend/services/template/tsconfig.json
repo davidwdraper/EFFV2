@@ -1,22 +1,14 @@
-// backend/services/template/tsconfig.json
 {
-  "extends": "../../../tsconfig.json",
   "compilerOptions": {
+    "target": "ES2020",
     "module": "CommonJS",
-    "target": "ES2022",
-    "moduleResolution": "Node",
+    "moduleResolution": "node",
     "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
     "skipLibCheck": true,
-    "rootDir": "..",
-    "outDir": "./dist",
-    "types": ["node"]
+    "rootDir": "./src",
+    "outDir": "./dist"
   },
-  "ts-node": { "files": true },
-  "include": [
-    "src",
-    "index.ts",
-    "scripts/**/*.ts",
-    "types/**/*.d.ts",
-    "../shared/**/*.ts"
-  ]
+  "include": ["src"]
 }

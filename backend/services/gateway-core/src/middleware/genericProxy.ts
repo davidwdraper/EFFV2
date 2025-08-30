@@ -1,233 +1,125 @@
-// backend/services/gateway/src/middleware/genericProxy.ts
-import type { RequestHandler } from "express";
-import { logger } from "../../../shared/utils/logger";
-import { resolveUpstreamBase, isAllowedServiceSlug } from "../config";
-import http from "node:http";
-import https from "node:https";
-import { URL } from "node:url";
+// backend/services/gateway-core/src/middleware/genericProxy.ts
+import type { Request, Response } from "express";
+import httpProxy = require("http-proxy"); // CJS import for solid types
+import { resolveUpstreamBase } from "../config";
+import { mintS2S } from "../utils/s2s";
 
-/**
- * Generic reverse proxy that forwards /<svc>/<rest...> to ENV[<SVC>_SERVICE_URL]/<rest...>.
- * - Mounted at /api so first segment is the service slug.
- * - No baked URLs; resolveUpstreamBase reads env.
- * - Streams request/response (no buffering).
- * - Preserves querystring, method, headers; sets x-forwarded-* and x-request-id.
- * - Rejects if <svc> not in allowlist or env key missing.
- */
-export function genericProxy(): RequestHandler {
-  return (req, res) => {
-    // Because this is mounted at /api, req.url begins with "/<svc>/..."
-    const pathOnly = (req.url || "/").split("?")[0];
-    const segments = pathOnly.split("/").filter(Boolean);
-    const svc = segments[0] || "";
+const proxy = httpProxy.createProxyServer({ changeOrigin: true, xfwd: true });
 
-    logger.debug(
-      {
-        requestId: (req as any).id,
-        method: req.method,
-        originalUrl: req.originalUrl,
-        url: req.url,
-        svc,
-      },
+// If Express consumed the body, re-send it downstream.
+proxy.on("proxyReq", (proxyReq, req: any) => {
+  // Only for methods that may have a body
+  if (!req || !req.method || ["GET", "HEAD"].includes(req.method)) return;
+
+  // If body is already a buffer/string, pass as-is; else JSON-stringify object.
+  let bodyData: Buffer | string | undefined;
+  if (req.body instanceof Buffer) bodyData = req.body;
+  else if (typeof req.body === "string") bodyData = req.body;
+  else if (req.body && Object.keys(req.body).length > 0) {
+    bodyData = JSON.stringify(req.body);
+    proxyReq.setHeader("Content-Type", "application/json");
+  }
+
+  if (bodyData) {
+    const len = Buffer.isBuffer(bodyData)
+      ? bodyData.length
+      : Buffer.byteLength(bodyData);
+    proxyReq.setHeader("Content-Length", String(len));
+    // Some proxies need this to avoid chunked encoding with fixed length
+    if (proxyReq.getHeader("transfer-encoding"))
+      proxyReq.removeHeader("transfer-encoding");
+    proxyReq.write(bodyData);
+  }
+});
+
+// Bubble proxy errors as JSON
+proxy.on("error", (err, _req, res) => {
+  const r = res as any;
+  const body = JSON.stringify({
+    type: "about:blank",
+    title: "Bad Gateway",
+    status: 502,
+    detail: String((err as any)?.message || err),
+  });
+  try {
+    if (typeof r.writeHead === "function" && !r.headersSent) {
+      r.writeHead(502, { "Content-Type": "application/json" });
+    }
+    r.end(body);
+  } catch {}
+});
+
+// Optional: log upstream status for debugging
+proxy.on("proxyRes", (proxyRes, req: any) => {
+  const log = req?.log || console;
+  log.info({ upstreamStatus: proxyRes.statusCode }, "[gateway] proxy response");
+});
+
+export function genericProxy() {
+  console.log("[core] genericProxy impl:", __filename);
+  return (req: Request, res: Response) => {
+    // Mounted at /api — expect /api/<svc>/<rest>
+    const m = req.url.match(/^\/?([^/]+)\/(.*)$/);
+    if (!m) {
+      return res.status(400).json({
+        code: "BAD_REQUEST",
+        status: 400,
+        message: "Expected /api/<svc>/<rest>",
+      });
+    }
+
+    const svc = m[1].toLowerCase();
+    const rest = m[2] || "";
+
+    const log = (req as any).log || console;
+    log.info(
+      { svc, url: req.url, originalUrl: (req as any).originalUrl || req.url },
       "[gateway] inbound"
     );
 
-    if (!svc || !isAllowedServiceSlug(svc)) {
-      logger.warn(
-        {
-          requestId: (req as any).id,
-          svc,
-          reason: "unknown_or_disallowed_service",
-        },
-        "[gateway] reject"
-      );
-      res.status(404).json({
-        type: "about:blank",
-        title: "Not Found",
-        status: 404,
-        detail: "Unknown or disallowed service",
-        instance: (req as any).id,
-      });
-      return;
-    }
-
-    let upstream: { svcKey: string; base: string };
+    // Resolve strict upstream
+    let base: string, svcKey: string;
     try {
-      logger.debug(
-        { requestId: (req as any).id, svc },
-        "[gateway] resolving upstream"
-      );
-      upstream = resolveUpstreamBase(svc); // { svcKey, base }
-      logger.debug(
-        {
-          requestId: (req as any).id,
-          svc,
-          envKey: upstream.svcKey,
-          base: upstream.base,
-        },
-        "[gateway] resolved upstream"
-      );
-    } catch (e: any) {
-      logger.error(
-        {
-          requestId: (req as any).id,
-          svc,
-          err: e?.message || String(e),
-        },
-        "[gateway] resolveUpstreamBase error"
-      );
-      res.status(500).json({
+      const r = resolveUpstreamBase(svc);
+      svcKey = r.svcKey;
+      base = r.base;
+      log.info({ envKey: svcKey, base }, "[gateway] resolved upstream");
+    } catch (e) {
+      log.warn({ svc, err: String(e) }, "[gateway] missing upstream env");
+      return res.status(502).json({
         type: "about:blank",
-        title: "Internal Server Error",
-        status: 500,
-        detail: e?.message || "Missing upstream configuration",
-        instance: (req as any).id,
+        title: "Bad Gateway",
+        status: 502,
+        detail: `Upstream not configured for "${svc}"`,
       });
-      return;
     }
 
-    // Join base + rest of path
-    const restPath = "/" + segments.slice(1).join("/");
-    const qs = req.url.includes("?") ? "?" + req.url.split("?")[1] : "";
-    const targetUrl = upstream.base + restPath + qs;
+    const target = `${base}/${rest}`
+      .replace(/\/{2,}/g, "/")
+      .replace(":/", "://");
+    log.info({ target }, "[gateway] proxy enter");
 
-    // Prepare headers: drop hop-by-hop and set x-forwarded-*
-    const { headers } = req;
-    const hop = new Set([
-      "connection",
-      "keep-alive",
-      "proxy-authenticate",
-      "proxy-authorization",
-      "te",
-      "trailer",
-      "transfer-encoding",
-      "upgrade",
-      "host",
-    ]);
-    const outHeaders: Record<string, string> = {};
-    for (const [k, v] of Object.entries(headers)) {
-      if (!k) continue;
-      if (hop.has(k.toLowerCase())) continue;
-      if (Array.isArray(v)) {
-        outHeaders[k] = v.join(", ");
-      } else if (typeof v === "string") {
-        outHeaders[k] = v;
-      }
+    // Re-mint S2S as gateway-core for the worker
+    let s2s: string;
+    try {
+      s2s = mintS2S({ svc: "gateway-core" });
+    } catch (e) {
+      log.error({ err: String(e) }, "[gateway] failed to mint S2S");
+      return res
+        .status(500)
+        .json({
+          code: "S2S_MINT_FAIL",
+          status: 500,
+          message: "Failed to mint internal token",
+        });
     }
-    const xfHost = req.headers["x-forwarded-host"]
-      ? String(req.headers["x-forwarded-host"])
-      : String(req.headers["host"] || "");
-    outHeaders["x-forwarded-for"] = mergeForwardedFor(
-      req.headers["x-forwarded-for"],
-      req.socket?.remoteAddress
-    );
-    if (xfHost) outHeaders["x-forwarded-host"] = xfHost;
-    outHeaders["x-forwarded-proto"] = (req as any).protocol || "http";
-    outHeaders["x-request-id"] =
-      (req as any).id ||
-      (Array.isArray(req.headers["x-request-id"])
-        ? req.headers["x-request-id"][0]
-        : (req.headers["x-request-id"] as string)) ||
-      "";
 
-    logger.debug(
-      {
-        requestId: (req as any).id,
-        svc,
-        envKey: upstream.svcKey,
-        target: targetUrl,
-        method: req.method,
-        hasAuth: Boolean(outHeaders["authorization"]),
-      },
-      "[gateway] proxy enter"
-    );
+    // Don’t leak caller auth to worker
+    delete (req.headers as any).authorization;
 
-    // Make request
-    const urlObj = new URL(targetUrl);
-    const agent = urlObj.protocol === "https:" ? https : http;
-
-    const upstreamReq = agent.request(
-      {
-        protocol: urlObj.protocol,
-        hostname: urlObj.hostname,
-        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
-        method: req.method,
-        path: urlObj.pathname + urlObj.search,
-        headers: outHeaders,
-      },
-      (upstreamRes) => {
-        // Pass through status + headers (minus hop-by-hop)
-        const safeHeaders: Record<string, number | string | string[]> = {};
-        for (const [k, v] of Object.entries(upstreamRes.headers)) {
-          if (!k) continue;
-          if (hop.has(k.toLowerCase())) continue;
-          if (v !== undefined) safeHeaders[k] = v as any;
-        }
-
-        res.writeHead(upstreamRes.statusCode || 502, safeHeaders);
-        upstreamRes.pipe(res);
-        upstreamRes.on("end", () => {
-          logger.debug(
-            {
-              requestId: (req as any).id,
-              svc,
-              envKey: upstream.svcKey,
-              target: targetUrl,
-              status: upstreamRes.statusCode,
-            },
-            "[gateway] proxy exit"
-          );
-        });
-      }
-    );
-
-    upstreamReq.on("error", (err: any) => {
-      const code = String(err?.code || "");
-      const timeout =
-        code === "ECONNABORTED" ||
-        (typeof err?.message === "string" &&
-          err.message.toLowerCase().includes("timeout"));
-      const connErr =
-        code === "ECONNREFUSED" ||
-        code === "ECONNRESET" ||
-        code === "EHOSTUNREACH";
-      const status = timeout ? 504 : connErr ? 502 : 500;
-
-      logger.error(
-        {
-          requestId: (req as any).id,
-          svc,
-          envKey: upstream?.svcKey,
-          target: targetUrl,
-          err,
-        },
-        "[gateway] proxy error"
-      );
-      if (!res.headersSent) {
-        res.status(status).json({
-          type: "about:blank",
-          title: status === 504 ? "Gateway Timeout" : "Bad Gateway",
-          status,
-          detail: err?.message || "Upstream error",
-          instance: (req as any).id,
-        });
-      } else {
-        try {
-          res.end();
-        } catch {}
-      }
+    proxy.web(req as any, res as any, {
+      target,
+      headers: { authorization: `Bearer ${s2s}` },
     });
-
-    // Stream body
-    req.pipe(upstreamReq);
   };
-}
-
-function mergeForwardedFor(
-  existing: string | string[] | undefined,
-  addr?: string | null
-) {
-  const xs = Array.isArray(existing) ? existing.join(", ") : existing || "";
-  if (!addr) return xs || "";
-  return xs ? `${xs}, ${addr}` : String(addr);
 }

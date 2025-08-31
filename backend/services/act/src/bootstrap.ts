@@ -1,10 +1,7 @@
 // backend/services/act/src/bootstrap.ts
 
 import path from "path";
-import {
-  loadEnvFromFileOrThrow,
-  assertRequiredEnv,
-} from "../../shared/config/env";
+import { loadEnvFromFileOrThrow, assertRequiredEnv } from "@shared/config/env";
 
 // Default to .env.dev if ENV_FILE is not set
 const envFile =

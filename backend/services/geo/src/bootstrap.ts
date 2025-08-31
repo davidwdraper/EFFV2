@@ -1,9 +1,6 @@
 // backend/services/geo/src/bootstrap.ts
 import path from "path";
-import {
-  loadEnvFromFileOrThrow,
-  assertRequiredEnv,
-} from "../../shared/config/env";
+import { loadEnvFromFileOrThrow, assertRequiredEnv } from "@shared/config/env";
 
 const envFile =
   (process.env.ENV_FILE && process.env.ENV_FILE.trim()) || ".env.dev";

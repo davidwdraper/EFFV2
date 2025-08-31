@@ -1,88 +1,132 @@
-NowVibin Backend — New-Session SOP (Act-style + shared test harness) — v4
-
-Paste this at the start of each session. It keeps all services identical, audit-ready, and test harnesses consistent.
-
+NowVibin Backend — New-Session SOP (Template-style + Shared Test Harness) — v4 (Amended)
 Prime Directives
 
-Never overwrite unseen work. If a file already exists, you must paste the full, current file (with repo path in the first line) before I make changes. No guessing, no partials.
+Never overwrite unseen work. If a file exists, paste the full file with repo path before edits. No guessing, no splicing.
 
-State-of-the-art, fast, scalable, audit-ready.
+Single-concern source files. Shared logic only in services/shared.
 
-Single-concern source files; shared logic in services/shared.
+Full file drops only. No fragments. No “Option A / Option B.” Decide and deliver.
 
-Full file drops only. No fragments, no inline edits.
+No barrels, no shims.
 
-You never give me options. No "Option A / Option B". Decide and deliver.
+Env names only. Values come from env files (.env.dev, .env.test, .env.docker, etc.).
 
-All services mirror Act structure 1:1.
+Routes are one-liners. No logic in routes; import handlers only.
 
-Routes = one-liners. No logic in routes.
+Controllers are thin. Validate → parse DTO → repo → return domain. Push audit events to req.audit[].
 
-No large controller files. Routes import individual handlers located at src/controllers/<service name>/handlers/...
+Instrumentation everywhere. Pino for structured logs; audit all mutations; log entry/exit with requestId.
 
-No baked values. Env names only; values come from env files.
+Global error middleware. All errors flow through problem.ts + error sink.
 
-Instrumentation everywhere (pino / pino-http).
+Audit-ready. Explicit env validation, consistent logging, no silent fallbacks.
 
-Audit all mutations. Controllers push → req.audit[], flushed once.
+Canonical source of truth: Zod contract in services/shared/contracts/<entity>.contract.ts. Everything else adapts to it.
 
-try/catch everywhere that matters. asyncHandler + global error middleware.
+Route Convention (NEW — No Exceptions)
 
-Audit-ready: explicit env validation, consistent logging, no silent fallbacks.
+All service routes follow:
 
-Every file begins with repo path in a // comment.
+http(s)://<hostname><port>/api/<serverName>/<rest>
 
-Dev bootstrap may default ENV_FILE to .env.dev; prod must set explicitly.
+Health endpoints follow:
 
-No shims. If a contract/type isn’t ready, we build the real one in shared.
+http(s)://<hostname><port>/<healthRoute>
 
-No barrels. No index.ts re-exports, no export \*. Always import directly.
+<serverName> is always used to resolve environment-specific configuration for the target service.
 
-Canonical Service Layout (Act-style)
+No exceptions. Gateway, gateway-core, workers — all adhere to this pattern.
 
-(unchanged; omitted here for brevity — still the Act template with scripts, src, test, etc.)
+Template Service Directive
 
-Environment Policy
+Act refactor is complete. All new services are cloned from the Template Service (which mirrors Act 1:1).
 
-(unchanged)
+Pipeline:
 
-Bootstrap & Index
+Contract (canonical truth)
 
-(unchanged)
+services/shared/contracts/<entity>.contract.ts
+
+Zod schema + z.infer type.
+
+DTOs
+
+<svc>/src/validators/<entity>.dto.ts
+
+Derived with .pick() / .omit() / .partial().
+
+Mappers
+
+<svc>/src/mappers/<entity>.mapper.ts
+
+domainToDb() + dbToDomain().
+
+Model
+
+<svc>/src/models/<entity>.model.ts
+
+Persistence only. bufferCommands=false, indexes defined.
+
+Repo
+
+<svc>/src/repos/<entity>Repo.ts
+
+Returns domain objects only (no raw DB docs).
+
+Controllers
+
+Validate params → parse DTO → call repo → return domain.
+
+Push audits → req.audit[].
+
+Routes
+
+<svc>/src/routes/<entity>.routes.ts
+
+One-liners that import handlers only.
 
 Logging & Audit
 
-(unchanged)
+All via shared logger util.
 
-Performance / Ops Notes
+Debug logs on entry/exit with requestId.
 
-(unchanged)
+Global error middleware emits errors via error sink.
 
-Test Harness
+Safe Field Addition SOP
 
-(unchanged)
+Add to contract.
 
-Import Discipline (No Barrels)
+Update DTOs if exposed via API.
 
-(unchanged)
+Adjust mappers.
 
-Contracts (No Shims)
+Update model (indexes/required).
 
-(unchanged)
+Add/adjust 2 tests: mapper round-trip + one controller.
+→ Done. No ripple edits.
 
-Where We Left Off (Act)
+Testing Expectations
 
-(unchanged — still timestamps bug and repo fixes)
+Mapper unit tests: domain ↔ DB.
 
-Session-start Ritual
+Controller HTTP tests: 200/201/400/404.
+
+Repo CRUD with ephemeral Mongo.
+
+Coverage ≥70% during triage; restore ≥90% before merge.
+
+Tests must pass direct (service port) and via gateway (/api/<svc>/...).
+
+Session-Start Ritual
 
 Paste this SOP.
 
-Say which service we’re on.
+State which service we’re working on (Template-spawned service name).
 
-Paste existing files I must merge (full, with repo path).
+Paste full current files (with repo path headers).
 
-I deliver full drops, no options.
+I return full drops (merged, no options, no splicing).
 
 Quick Sanity Checklist
 
@@ -90,552 +134,66 @@ No logic in routes.
 
 Required envs asserted.
 
-bufferCommands=false; indexes in models.
+bufferCommands=false; indexes present.
 
-Request-ID logging.
+RequestId logging on all handlers (enter/exit).
 
-Audit events flushed.
+Audit events flushed once.
 
 .env.test present.
 
-Tests green via gateway (4000) + direct (4002).
+Tests green via gateway and direct.
 
-Coverage ≥90% all metrics.
+Coverage ≥90% across all metrics.
 
 Seeds idempotent + descriptive.
 
-No shims; no barrels.
+No barrels. No shims.
 
-Only shared contracts for shared shapes.
+Only shared contracts define shared shapes.
 
-All existing files pasted in full before modification.
+Addendum 1 — Logging & Audit
 
-End SOP v4
+Channels: LogSvc (DB sink), FS (NDJSON fallback), Pino (telemetry), Notify (stub).
 
-# NowVibin Logging & Audit SOP (Authoritative)
+Fire-and-forget; requests never block on logging.
 
-## Purpose
+FS rotation/limits: ≤LOG_CACHE_MAX_MB, ≤LOG_CACHE_MAX_DAYS. Flush on LogSvc recovery.
 
-Consistent, auditable logging across all services. Fire-and-forget. Filesystem is a **cache**, not the final sink.
+Prod errors: LogSvc only; Pino info/debug discarded unless explicitly enabled.
 
-## Channels
+Audit middleware flushes once per request.
 
-- **LogSvc** – Log microservice (DB sink)
-- **FS** – Append-only NDJSON cache (fallback only)
-- **Pino** – Structured stdout (runtime telemetry)
-- **Notify** – Stubbed notification (prod only, after grace period)
+Addendum 2 — Security & S2S Authorization
 
-## Environment Variables
+Only gateway is public. Gateway-core is internal.
 
-- `NODE_ENV` = `development` | `test` | `production`
-- `LOG_LEVEL` (pino required)
-- `LOG_SERVICE_URL`, `LOG_SERVICE_TOKEN_CURRENT`
-- `LOG_FS_DIR` (required)
-- `LOG_PING_INTERVAL_MS` (e.g., 15000)
-- `LOG_BREAKER_COOLDOWN_MS` (e.g., 30000)
-- `LOG_FLUSH_BATCH_SIZE` (e.g., 50)
-- `LOG_FLUSH_CONCURRENCY` (e.g., 4)
-- `LOG_CACHE_MAX_MB` (e.g., 256)
-- `LOG_CACHE_MAX_DAYS` (e.g., 7)
-- `LOG_ENABLE_INFO_DEBUG` (`"true"` enables Pino info/debug in prod)
-- `NOTIFY_STUB_ENABLED` (`"true"` enables stub in prod)
-- `NOTIFY_GRACE_MS` (how long LogSvc must remain down before stub fires, e.g., 300000)
+Every non-health worker call requires a valid S2S JWT minted by gateway/gateway-core.
 
-## Routing Matrix
+Workers mount health first, then verifyS2S.
 
-| Case           | dev / test                                    | production                                                                                  |
-| -------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **AUDIT**      | LogSvc; on failure → **FS + Pino**            | LogSvc; on failure → **FS**, and **Notify(stub)** only if down ≥ `NOTIFY_GRACE_MS`          |
-| **ERROR**      | **LogSvc + Pino**; on failure → **FS + Pino** | **LogSvc only**; on failure → **FS**, and **Notify(stub)** only if down ≥ `NOTIFY_GRACE_MS` |
-| **INFO/DEBUG** | **Pino**                                      | **Discard** unless `LOG_ENABLE_INFO_DEBUG=true` → Pino                                      |
+Gateway-core always overwrites outbound Authorization with a new S2S token.
 
-All emissions are **fire-and-forget**. No retries that block the request path.
+Env keys: S2S_JWT_SECRET, S2S_JWT_ISSUER, S2S_JWT_AUDIENCE, S2S_ALLOWED_ISSUERS, etc.
 
-## FS Cache (Fallback) Rules
+Tests: 401/403 on bad/missing tokens, happy path with valid S2S.
 
-- **Format**: NDJSON (one JSON object per line).  
-  Fields: `v`, `channel`, `eventId`, `timeCreated`, `service`, `level`, `payload`, `sourceFile`, `sourceLine`, `sourceFunction`, `requestId`, `userId`, `retry`.
-- **Filenames**:
-  - `audit-YYYY-MM-DD.log`
-  - `error-YYYY-MM-DD.log`
-- **Rotation/limits**: total size ≤ `LOG_CACHE_MAX_MB`, age ≤ `LOG_CACHE_MAX_DAYS`.  
-  On exceed, drop **oldest** files first and bump a drop counter.
-- **Flush**: when LogSvc deep-ping succeeds, stream `.replay` files and re-emit to LogSvc in batches. Keep failed lines; delete empty `.replay`. Never block requests.
-- **Circuit breaker**: when LogSvc call fails, open breaker. Deep-ping at most every `LOG_PING_INTERVAL_MS`. On success, close breaker and trigger flush.
+Addendum 3 — Dev HTTP Exception (Gateway)
 
-## Notification Stub (prod only)
+Dev/local: HTTP allowed, bound to 127.0.0.1.
 
-- Only enabled if `NOTIFY_STUB_ENABLED=true`.
-- Fires **only if** LogSvc has been down continuously for at least `NOTIFY_GRACE_MS`.
-- Emits one WARN per outage window (`NOTIFY_STUB: audit fallback` / `error fallback`), then backs off until breaker closes or grace lapses. No external calls yet.
+Staging/prod: HTTPS only; HSTS enforced; HTTP 308 → HTTPS.
 
-## Event Shapes
+Env keys:
 
-- **Audit**:  
-  `{ type, entity, entityId, message?, data?, requestId?, userId?, service, sourceFile, sourceLine, sourceFunction, timeCreated }`
-- **Error**:  
-  `{ code?, message, err?, requestId?, service, sourceFile, sourceLine, sourceFunction, path?, method?, status? }`
-- **Telemetry**:  
-  `{ level, message, meta?, requestId?, service }`
+FORCE_HTTPS (false in dev, true in prod).
 
-All events include `service`. **Audit/Error** always include caller metadata from `logMeta`.
+GATEWAY_BIND_ADDR (127.0.0.1 dev, 0.0.0.0 prod).
 
-## Usage Guidelines
+Where We Left Off
 
-### Controllers & Business Events
+Template Service is the blueprint.
 
-- ✅ Push business actions to `req.audit[]` during the request.
-- ✅ Rely on shared audit middleware to flush via `auditSink.emit(req.audit)`.
-- ❌ Don’t call LogSvc directly from controllers.
+Act is complete; do not reopen except for Safe Field Addition SOP.
 
-### Errors
-
-- ✅ Let the global error middleware emit via `errorSink.emit(...)`.
-- ❌ Don’t scatter `logger.error` in handlers unless also returning an error response.
-
-### Telemetry
-
-- ✅ Use info/debug sparingly. Goes to Pino (discarded in prod unless enabled).
-- ❌ Never log secrets; redaction is on, but don’t tempt fate.
-
-### Process Level
-
-- ✅ Trap `unhandledRejection` / `uncaughtException` once in `index.ts`.
-- ✅ Emit via error sink (not raw logger).
-- ✅ Exit process after logging if appropriate.
-
-### NEVER
-
-- ❌ Bypass the shared logger utilities.
-- ❌ Write arbitrary files under `LOG_FS_DIR`.
-- ❌ Emit the same error twice.
-- ❌ Leave “temporary” console logs in production code.
-
-## Acceptance Tests (per service)
-
-- LogSvc healthy: audit/error reach LogSvc; **no FS growth**.
-- LogSvc down: audit/error write to FS; in dev/test also see Pino; after deep-ping success, FS **flushes**.
-- Prod: error not printed to Pino; info/debug discarded unless flag enabled.
-- Notification stub: fires only after `NOTIFY_GRACE_MS` continuous outage; one WARN per outage.
-
-## Operational Guardrails
-
-- Ensure `LOG_FS_DIR` exists and is writable at boot; fail fast if missing.
-- Monitor disk usage; alert at ≥80%.
-- Surface metrics: breaker open time, FS append count, flush success/fail, dropped lines.
-
-We start back at the Act service where we need to refactor to make the Zod schema the source of truth.
-Also ensure that all audits and logging use the new refactored logger util.
-Make sure that every route has debug entry/exit logging.
-
-Not sure if I'm repeating this:
-
-Prime Directive
-
-One canonical source of truth per entity.
-Everything else adapts to it. No duplication, no parallel definitions.
-
-⸻
-
-Data Normalization Pattern
-    •    Canonical Contract:
-Zod schema in backend/services/shared/contracts/<entity>.contract.ts
-→ Export z.infer type as the single truth.
-    •    DTOs:
-Located in <svc>/src/validators/<entity>.dto.ts using .omit(), .pick(), .partial().
-    •    Mappers:
-In <svc>/src/mappers/<entity>.mapper.ts for domain ↔ DB conversion.
-Functions: domainToDb(entity) and dbToDomain(doc).
-    •    Model:
-In <svc>/src/models/<entity>.model.ts for persistence only (Mongoose).
-    •    Repo:
-In <svc>/src/repos/<entity>Repo.ts — always return domain objects via mapper.
-    •    Controller:
-Validate params → parse body via DTO → call repo → return domain.
-No business logic, no shortcuts.
-    •    Error/Logging:
-Shared problem.ts, asyncHandler.ts, logger.ts.
-Every controller logs entry/exit with request ID.
-
-⸻
-
-Service File Layout (inline)
-    •    backend/services//src/controllers
-    •    backend/services//src/repos
-    •    backend/services//src/models
-    •    backend/services//src/mappers
-    •    backend/services//src/validators
-    •    backend/services/shared/contracts
-    •    backend/services/shared/utils
-
-⸻
-
-Safe Field Addition SOP
-    1.    Add to shared/contracts/<entity>.contract.ts.
-    2.    Update DTOs if exposed to API.
-    3.    Adjust mappers.
-    4.    Update Mongoose model if required (index/required).
-    5.    Add/adjust 2 tests (mapper round-trip + one controller).
-→ Done. No ripple edits.
-
-⸻
-
-Testing Expectations
-    •    Mapper unit tests: domain ↔ DB.
-    •    Controller HTTP tests: 200/201/400/404.
-    •    Repo tests: CRUD with ephemeral Mongo.
-    •    70% coverage during triage; restore to 90%+ once green.
-
-⸻
-
-Pre-Release Rule: No Workarounds
-    •    No barrels (index.ts re-exports).
-    •    No shims/ad-hoc glue.
-    •    No brittle overrides.
-    •    No “just for now” hacks.
-If it feels like a shim, the blueprint is wrong — fix the seam, don’t patch it.
-
-V2 Rule: Performance shortcuts and convenience exports can be revisited post-MVP. Never before.
-
-⸻
-
-Hack Audit Rule
-    •    Before release, identify and remove all hacks:
-    •    Barrel exports under /src/index.ts.
-    •    Hand-rolled type casts or any.
-    •    One-off JSON responses not using problem.ts.
-    •    Controllers with hidden repo/DB logic.
-    •    Temporary flags or code marked with TODO/FIXME.
-    •    Every service passes an audit sweep:
-    •    Folder tree matches blueprint.
-    •    No orphan files.
-    •    No “helpers” that duplicate shared utils.
-
-⸻
-
-Cookie-Cutter Rule
-
-Every new service copies this exact blueprint.
-Contract → DTO → Mapper → Model → Repo → Controller.
-Nothing else. Consistency = speed.
-
-⸻
-
-Gateway service has been refactored to be generic, using 2nd path part to determine service.
-All api call should be api/<service>/<rest of path>
-
-gateway and act (both direct and via gateway) are responding to curl health check
-
-✅ End of SOP Addendum1
-
-Addundum 2 - security and authorization
-
-SOP Addendum — Uniform Service-to-Service (S2S) Authorization
-Scope
-
-Applies to all internal worker services (geo, act, place, log, etc.), the gateway (external), and gateway-core (internal). Establishes one way to authenticate and authorize every internal call. Health endpoints stay open.
-
-The Rule (non-negotiable)
-
-Only the gateway is externally reachable. The gateway-core has no external visibility.
-
-Every non-health request to a worker must carry a valid S2S JWT minted by a trusted issuer (the gateway or gateway-core).
-
-gateway-core always injects S2S to workers when proxying; never forward user tokens internally.
-
-Health endpoints (/health, /healthz, /readyz) remain open, constant-time, no fan-out.
-
-Token Format (now) & Upgrade Path
-
-Algo (now): HS256 (shared secret).
-
-Claims (required):
-
-iss: one of gateway or gateway-core
-
-aud: internal-services
-
-exp (≤ 60s), iat
-
-svc: caller identity (e.g., gateway, gateway-core, act)
-
-Optional (authZ): perm (e.g., geocode:resolve).
-
-Upgrade (later for money flows): switch to RS256/ES256 + JWKS with kid rotation.
-
-Required Env (standardize names)
-
-Minting services (gateway & gateway-core):
-
-S2S_JWT_SECRET=devlocal-core-internal
-S2S_JWT_ISSUER=gateway # on the external gateway
-S2S_JWT_AUDIENCE=internal-services
-S2S_TOKEN_TTL_SEC=60
-
-(On gateway-core, S2S_JWT_ISSUER=gateway-core.)
-
-Workers (verify S2S):
-
-S2S_JWT_SECRET=devlocal-core-internal
-S2S_JWT_AUDIENCE=internal-services
-S2S_ALLOWED_ISSUERS=gateway,gateway-core
-
-# Optional hardening per worker:
-
-S2S_ALLOWED_CALLERS=gateway,gateway-core,act
-REQUIRE_PERMISSIONS=false
-
-Responsibilities
-Gateway (external)
-
-Validates user auth (out of scope here).
-
-When calling a worker directly, mint S2S and set Authorization: Bearer <S2S>.
-
-gateway-core (internal)
-
-Proxies /api/<svc>/<rest> only; no external exposure.
-
-Always overwrite outbound Authorization with a fresh S2S token; do not forward user tokens.
-
-Per-caller rate limits and audit logging.
-
-Signer
-
-// src/utils/s2s.ts (in gateway-core)
-import jwt from "jsonwebtoken";
-export function mintS2SToken(caller="gateway-core", ttl=+process.env.S2S_TOKEN_TTL_SEC!||60){
-const now = Math.floor(Date.now()/1000);
-return jwt.sign(
-{ sub:"s2s", iss:process.env.S2S_JWT_ISSUER!, aud:process.env.S2S_JWT_AUDIENCE!,
-iat:now, exp:now+ttl, svc:caller },
-process.env.S2S_JWT_SECRET!, { algorithm:"HS256", noTimestamp:true }
-);
-}
-
-Proxy injection
-
-// before proxy.web(...)
-import { mintS2SToken } from "../utils/s2s";
-req.headers.authorization = `Bearer ${mintS2SToken("gateway-core")}`;
-req.headers["x-s2s-caller"] = "gateway-core";
-
-Workers (all internal services)
-
-Mount health first (open), then require S2S for everything else.
-
-// app.ts (worker)
-import { createHealthRouter } from "../../shared/health";
-import { verifyS2S } from "../../shared/middleware/verifyS2S";
-
-app.use(createHealthRouter({ service: "geo" })); // open
-app.use(verifyS2S); // protect the rest
-
-Shared verifier
-
-// shared/middleware/verifyS2S.ts
-import type { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
-const AUD = process.env.S2S_JWT_AUDIENCE || "internal-services";
-const ISS = (process.env.S2S_ALLOWED_ISSUERS||"").split(",").map(s=>s.trim()).filter(Boolean);
-const CALLERS = (process.env.S2S_ALLOWED_CALLERS||"").split(",").map(s=>s.trim()).filter(Boolean);
-const OPEN = new Set(["/","/health","/healthz","/readyz"]);
-
-export function verifyS2S(req:Request,res:Response,next:NextFunction){
-if (OPEN.has(req.path)) return next();
-const raw = req.headers.authorization||"";
-const tok = raw.startsWith("Bearer ")?raw.slice(7):"";
-if(!tok) return res.status(401).json({code:"UNAUTHORIZED",status:401,message:"Missing token"});
-try{
-const p = jwt.verify(tok, process.env.S2S_JWT_SECRET!, { audience: AUD }) as any;
-if(!ISS.includes(p.iss)) return res.status(401).json({code:"UNAUTHORIZED",status:401,message:"Bad issuer"});
-if(CALLERS.length && !CALLERS.includes(p.svc))
-return res.status(403).json({code:"FORBIDDEN",status:403,message:"Caller not allowed"});
-(req as any).s2s = p; next();
-}catch{ return res.status(401).json({code:"UNAUTHORIZED",status:401,message:"Invalid signature"}); }
-}
-
-Operational Guardrails
-
-Exposure: only the gateway has public ports. gateway-core is internal-only. Workers have no public ports.
-
-Paid APIs: egress via fixed NAT; lock provider keys to that IP; quotas + circuit breaker.
-
-Rate limit: by s2s.svc at gateway-core and workers.
-
-Audit: deny logs (no token/bad issuer/caller) with reqId, svc, endpoint, remote addr; alert on spikes.
-
-Secrets: .env for dev; secrets manager + rotation for prod.
-
-Tests (every worker)
-
-401 on missing/wrong/expired token; wrong aud; bad iss.
-
-403 when S2S_ALLOWED_CALLERS is set and caller not allowed.
-
-Happy path with valid S2S from gateway-core or gateway.
-
-Migration Plan
-
-Add verifyS2S to all workers (after health).
-
-Enable S2S injection in gateway-core proxy.
-
-Set envs: S2S_ALLOWED_ISSUERS=gateway,gateway-core and per-service S2S_ALLOWED_CALLERS.
-
-Verify: direct worker calls fail (401/403); via gateway-core succeed (or return provider errors).
-
-Lock provider keys to egress IP.
-
-Bottom line: Only the gateway is public. gateway-core is internal-only. Workers refuse non-health calls without a short-lived, gateway-minted S2S token.
-✅ End of SOP Addendum 2
-
-Addenum 3
-SOP Addendum — Dev HTTP Exception (Gateway)
-
-Purpose: Allow plain HTTP only in dev without weakening prod.
-
-Policy
-
-Dev/local: HTTP is allowed. Bind the gateway to 127.0.0.1. No HSTS. No redirect.
-
-Staging/Prod: HTTPS only. HSTS on. HTTP requests 308→HTTPS.
-
-gateway-core & workers: remain internal-only; unaffected.
-
-Env (copy/paste)
-
-# dev
-
-GATEWAY_PORT=4010
-GATEWAY_BIND_ADDR=127.0.0.1
-FORCE_HTTPS=false
-
-# prod
-
-GATEWAY_PORT=443
-GATEWAY_BIND_ADDR=0.0.0.0
-FORCE_HTTPS=true
-
-Gateway wiring (tiny)
-// bootstrap listen
-const PORT = +process.env.GATEWAY_PORT!;
-const BIND = process.env.GATEWAY_BIND_ADDR || "127.0.0.1";
-server.listen(PORT, BIND);
-
-// redirect middleware (enforce only when FORCE_HTTPS=true)
-app.set("trust proxy", true);
-app.use((req, res, next) => {
-if (process.env.FORCE_HTTPS !== "true") return next();
-const xf = String(req.headers["x-forwarded-proto"] || "");
-if (req.secure || xf === "https") return next();
-return res.redirect(308, `https://${req.headers.host}${req.originalUrl}`);
-});
-
-Quick checks
-
-Dev: curl -I http://127.0.0.1:4010/healthz → 200 OK (no redirect).
-
-Prod: curl -I http://<prod-host>/healthz → 308 Permanent Redirect to https://….
-
-That’s it: HTTP for dev convenience, HTTPS everywhere that matters.
-
-✅ End of SOP Addendum 3
-
-Here are your session startup instruction you wrote to yourself:
-
-Roger that. Here are my standing instructions to myself so we can pick up exactly here without wasting your time.
-
-Continuation Playbook (for me)
-
-No splicing, ever.
-When you ask for a change, I will return full file drops (entire file contents) inside code fences, with the path in the first comment line, ready to paste. No “insert here” nonsense.
-
-Ask for the file first.
-If I haven’t already seen the exact file in this session, I will ask you to paste it before proposing edits. No guessing.
-
-Gateway health fix — current target state (where we are now).
-
-gateway/src/app.ts must:
-
-Mount createHealthRouter at /health.
-
-Mount it before rateLimit, sensitiveLimiter, timeouts, circuitBreaker, and authGate.
-
-Keep readiness ping to ACT at /health/ready (or /health/live if that’s all ACT exposes).
-
-smoke.sh test [1] expects GET /health/live → 200.
-
-After any change touching shared or gateway:
-
-yarn -W build:shared
-(cd backend/services/gateway && ENV_FILE=.env.dev yarn dev)
-bash smoke.sh 1
-
-Shared package invariants.
-
-Buildable via: yarn workspace @eff/shared build.
-
-No stray \*.js outside shared/dist/. If present, I’ll provide a one-liner to purge them.
-
-Self-alias present in shared/tsconfig.json:
-
-"baseUrl": ".",
-"paths": { "@shared/_": ["./_"] }
-
-Services import built shared via:
-
-"paths": { "@shared/_": ["../shared/dist/_"] },
-"references": [{ "path": "../shared" }]
-
-Dev runner invariants (every service).
-
-Use ts-node-dev with paths registered:
-
-"dev": "NODE_ENV=dev ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts"
-
-Root-only tooling installs use yarn add -D -W ....
-Service runtime deps install inside the service (no -W).
-
-When you say “merge,” I will:
-
-Return the entire file after merging, not a diff.
-
-Keep imports sorted and consistent.
-
-Match your existing style and comments.
-
-Include a short Run & Verify block with exact commands.
-
-Triage order if /health/live still 404s:
-
-Confirm the router is mounted before auth/limits/breaker/timeouts.
-
-curl -v http://127.0.0.1:4000/health/live and check logs.
-
-Temporarily add a throwaway route above the health mount to ensure the app file is actually the one running:
-
-app.get("/\_\_ping", (\_req,res)=>res.send("ok"))
-
-If /\_\_ping 404s, we’re editing the wrong file or wrong process is running.
-
-If readiness fails because ACT lacks /health/ready, switch the probe to /health/live or stub readiness to { upstreams:{} } and re-test.
-
-Stop giving options unless you ask.
-I recommend one best-practice path and give you the exact artifacts to paste/run.
-
-Smoke test script contract.
-
---list shows numbered tests.
-
-1 is GET /health/live for gateway; 2 is gateway-core; 3 act; 4 geo; others as we defined.
-
-I will update the script for you if routes change.
-
-Commit message style (I’ll include when helpful):
-
-chore(gateway): mount health router at /health before auth/limits; align readiness to /health/ready
-build(shared): add self-alias; purge stray js; ensure dist-only imports from services
-chore(repo): add root script build:shared
-
-That’s the playbook. When you say “merge” next time, I’ll drop the entire updated file(s) and the exact commands to run, no back-and-forth.
+All new services spawn from Template and follow Route Convention strictly.

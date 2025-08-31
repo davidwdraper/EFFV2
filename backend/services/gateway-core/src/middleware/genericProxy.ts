@@ -52,7 +52,10 @@ proxy.on("error", (err, _req, res) => {
 // Optional: log upstream status for debugging
 proxy.on("proxyRes", (proxyRes, req: any) => {
   const log = req?.log || console;
-  log.info({ upstreamStatus: proxyRes.statusCode }, "[gateway] proxy response");
+  log.info(
+    { upstreamStatus: proxyRes.statusCode },
+    "[gateway-core] proxy response"
+  );
 });
 
 export function genericProxy() {
@@ -74,7 +77,7 @@ export function genericProxy() {
     const log = (req as any).log || console;
     log.info(
       { svc, url: req.url, originalUrl: (req as any).originalUrl || req.url },
-      "[gateway] inbound"
+      "[gateway-core] inbound"
     );
 
     // Resolve strict upstream
@@ -83,9 +86,9 @@ export function genericProxy() {
       const r = resolveUpstreamBase(svc);
       svcKey = r.svcKey;
       base = r.base;
-      log.info({ envKey: svcKey, base }, "[gateway] resolved upstream");
+      log.info({ envKey: svcKey, base }, "[gateway-core] resolved upstream");
     } catch (e) {
-      log.warn({ svc, err: String(e) }, "[gateway] missing upstream env");
+      log.warn({ svc, err: String(e) }, "[gateway-core] missing upstream env");
       return res.status(502).json({
         type: "about:blank",
         title: "Bad Gateway",
@@ -97,21 +100,19 @@ export function genericProxy() {
     const target = `${base}/${rest}`
       .replace(/\/{2,}/g, "/")
       .replace(":/", "://");
-    log.info({ target }, "[gateway] proxy enter");
+    log.info({ target }, "[gateway-core] proxy enter");
 
     // Re-mint S2S as gateway-core for the worker
     let s2s: string;
     try {
       s2s = mintS2S({ svc: "gateway-core" });
     } catch (e) {
-      log.error({ err: String(e) }, "[gateway] failed to mint S2S");
-      return res
-        .status(500)
-        .json({
-          code: "S2S_MINT_FAIL",
-          status: 500,
-          message: "Failed to mint internal token",
-        });
+      log.error({ err: String(e) }, "[gateway-core] failed to mint S2S");
+      return res.status(500).json({
+        code: "S2S_MINT_FAIL",
+        status: 500,
+        message: "Failed to mint internal token",
+      });
     }
 
     // Don’t leak caller auth to worker
@@ -119,6 +120,7 @@ export function genericProxy() {
 
     proxy.web(req as any, res as any, {
       target,
+      ignorePath: true, // 👈 critical fix: don’t append req.url again
       headers: { authorization: `Bearer ${s2s}` },
     });
   };

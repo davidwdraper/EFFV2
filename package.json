@@ -37,7 +37,8 @@
     "test:act:watch": "vitest -c backend/services/act/vitest.config.ts --watch",
     "test:act:e2e": "vitest run -c backend/tests/vitest.config.e2e.ts",
     "test:act": "yarn test:act:unit && yarn test:act:e2e",
-    "coverage:act": "vitest run --coverage -c backend/services/act/vitest.config.ts"
+    "coverage:act": "vitest run --coverage -c backend/services/act/vitest.config.ts",
+    "build:shared": "yarn workspace @eff/shared build"
   },
   "dependencies": {
     "axios": "^1.11.0",

@@ -4,7 +4,7 @@ import "./src/bootstrap"; // loads ENV_FILE (defaults to .env.dev) + asserts req
 import "./src/log.init";
 import { app } from "./src/app";
 import { PORT, SERVICE_NAME } from "./src/config";
-import { logger } from "../shared/utils/logger";
+import { logger } from "@shared/utils/logger";
 
 const NODE_ENV = process.env.NODE_ENV || "dev";
 // Bind policy: explicit env wins; otherwise loopback in non-prod, 0.0.0.0 in prod.

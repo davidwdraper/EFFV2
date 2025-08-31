@@ -6,8 +6,8 @@ import pinoHttp from "pino-http";
 import { randomUUID } from "crypto";
 import helmet from "helmet";
 
-import { createHealthRouter, ReadinessFn } from "../../shared/health";
-import { logger } from "../../shared/utils/logger";
+import { createHealthRouter, ReadinessFn } from "@shared/health";
+import { logger } from "@shared/utils/logger";
 
 import {
   serviceName,
@@ -28,12 +28,11 @@ import { timeoutsMiddleware } from "./middleware/timeouts";
 import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
 import { authGate } from "./middleware/authGate";
 import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
-// import { genericProxy } from "./middleware/genericProxy"; // ⬅️ REMOVED per SOP
 import { httpsOnly } from "./middleware/httpsOnly";
+import { serviceProxy } from "./middleware/serviceProxy"; // ⬅️ NEW
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ──────────────────────────────────────────────────────────────────────────────
 function sanitizeUrl(u: string): string {
   try {
     const [path, qs] = u.split("?", 2);
@@ -48,7 +47,6 @@ function sanitizeUrl(u: string): string {
 
 // ──────────────────────────────────────────────────────────────────────────────
 // App
-// ──────────────────────────────────────────────────────────────────────────────
 export const app = express();
 
 app.disable("x-powered-by");
@@ -57,7 +55,7 @@ app.set("trust proxy", true);
 // HTTPS policy: prod/stage only (dev/local sets FORCE_HTTPS=false)
 app.use(httpsOnly());
 if (process.env.FORCE_HTTPS === "true") {
-  app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true })); // ~180d
+  app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true }));
 }
 
 // CORS + body caps
@@ -107,9 +105,15 @@ app.use(
     autoLogging: {
       ignore: (req) =>
         req.url === "/health" ||
+        req.url === "/health/live" ||
+        req.url === "/health/ready" ||
         req.url === "/healthz" ||
         req.url === "/readyz" ||
-        req.url === "/favicon.ico",
+        req.url === "/live" ||
+        req.url === "/ready" ||
+        req.url === "/favicon.ico" ||
+        req.url === "/__core" || // 👀 DEBUG
+        req.url === "/__auth", // 👀 DEBUG
     },
     serializers: {
       req(req) {
@@ -127,26 +131,15 @@ app.use(
   })
 );
 
-// Problem+JSON envelope
+// Problem+JSON envelope (early)
 app.use(problemJsonMiddleware());
 
-// Rate limits, timeouts, breaker, auth
-app.use(rateLimitMiddleware(rateLimitCfg));
-app.use(sensitiveLimiter());
-app.use(timeoutsMiddleware(timeoutCfg));
-app.use(circuitBreakerMiddleware(breakerCfg));
-app.use(authGate());
-
-// Root
-app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
-
 // ──────────────────────────────────────────────────────────────────────────────
-// Health / Readiness
-// ──────────────────────────────────────────────────────────────────────────────
+// Health / Readiness — BEFORE limits/auth
 const ACT_URL = requireUpstreamByKey("ACT_SERVICE_URL");
 const readiness: ReadinessFn = async (_req) => {
   try {
-    const r = await axios.get(`${ACT_URL}/healthz`, {
+    const r = await axios.get(`${ACT_URL}/health/ready`, {
       timeout: 1500,
       validateStatus: () => true,
     });
@@ -157,18 +150,52 @@ const readiness: ReadinessFn = async (_req) => {
 };
 
 app.use(
+  "/",
   createHealthRouter({
     service: serviceName,
     readiness,
   })
 );
 
+// 👀 DEBUG: introspection endpoints (remove before release)
+app.get("/__core", (_req, res) => {
+  res.json({
+    NODE_ENV: process.env.NODE_ENV,
+    ENV_FILE: process.env.ENV_FILE,
+    GATEWAY_CORE_URL: process.env.GATEWAY_CORE_URL || null,
+    CORE_URL: process.env.CORE_URL || null,
+    CORE_HOST: process.env.CORE_HOST || null,
+    CORE_PORT: process.env.CORE_PORT || null,
+  });
+});
+app.get("/__auth", (_req, res) => {
+  const s = String(process.env.AUTH_JWT_SECRET || "");
+  res.json({
+    NODE_ENV: process.env.NODE_ENV,
+    AUTH_REQUIRE: process.env.AUTH_REQUIRE ?? null,
+    AUTH_JWKS_URL: process.env.AUTH_JWKS_URL || null,
+    AUTH_ISSUERS: process.env.AUTH_ISSUERS || null,
+    AUTH_AUDIENCE: process.env.AUTH_AUDIENCE || null,
+    AUTH_CLOCK_SKEW_SEC: process.env.AUTH_CLOCK_SKEW_SEC || null,
+    AUTH_BYPASS: process.env.AUTH_BYPASS || null,
+    AUTH_JWT_SECRET_PRESENT: s ? true : false,
+    AUTH_JWT_SECRET_LEN: s ? s.length : 0,
+  });
+});
+
+// Limits + timeouts + breaker + auth
+app.use(rateLimitMiddleware(rateLimitCfg));
+app.use(sensitiveLimiter());
+app.use(timeoutsMiddleware(timeoutCfg));
+app.use(circuitBreakerMiddleware(breakerCfg));
+app.use(authGate());
+
+// Public root
+app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
+
 // ──────────────────────────────────────────────────────────────────────────────
-// No public proxy plane in the external gateway (SOP)
-// ──────────────────────────────────────────────────────────────────────────────
-// app.use("/api", genericProxy()); // ⬅️ REMOVED
-// Optional belt-and-suspenders: make accidental /api hits explicit 404
-app.all(/^\/api(\/|$)/, (_req, res) => res.status(404).end());
+// Service proxy plane: forward "/<svc>/<rest>" to "<ENV>_SERVICE_URL/<rest>"
+app.use(serviceProxy());
 
 // 404 + error handlers
 app.use(notFoundHandler());

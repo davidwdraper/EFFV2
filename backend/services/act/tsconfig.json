@@ -13,8 +13,9 @@
 
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["../shared/*"]
+      "@shared/*": ["../shared/dist/*"]
     }
   },
+  "references": [{ "path": "../shared" }],
   "include": ["src"]
 }

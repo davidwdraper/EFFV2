@@ -71,18 +71,55 @@ TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }               # act→core
 # JSON helpers
 json() { printf '%s' "$1"; }
 
+# Minimal Act payload, now primed with required mock fields to satisfy model
 payload_act_minimal() {
   json '{
     "name": "SmokeTest Act Update",
     "websiteUrl": "https://example.test/smoke",
-    "tags": ["smoke","update"]
+    "tags": ["smoke","update"],
+    "actLoc": { "type": "Point", "coordinates": [-122.084, 37.422] },
+
+    "userCreateId": "mock-user-id",
+    "userOwnerId": "mock-user-id",
+
+    "homeTown": "Mountain View",
+    "state": "CA",
+    "homeTownId": "mock-town-id",
+
+    "actType": [1],
+    "genreList": ["rock"],
+    "blackoutDays": [false, false, false, false, false, false, false],
+
+    "actDuration": 60,
+    "breakLength": 15,
+    "numberOfBreaks": 1
   }'
 }
 
+# Same as above, but include a mailing address block to trigger geocode paths
 payload_act_with_address() {
   local a1="${MAIL_ADDR1}" a2="${MAIL_ADDR2}" c="${MAIL_CITY}" s="${MAIL_STATE}" z="${MAIL_ZIP}"
   json "{
     \"name\": \"SmokeTest Act Update With Address\",
+    \"websiteUrl\": \"https://example.test/smoke\",
+    \"tags\": [\"smoke\",\"update\"],
+    \"actLoc\": { \"type\": \"Point\", \"coordinates\": [-122.084, 37.422] },
+
+    \"userCreateId\": \"mock-user-id\",
+    \"userOwnerId\": \"mock-user-id\",
+
+    \"homeTown\": \"Mountain View\",
+    \"state\": \"CA\",
+    \"homeTownId\": \"mock-town-id\",
+
+    \"actType\": [1],
+    \"genreList\": [\"rock\"],
+    \"blackoutDays\": [false, false, false, false, false, false, false],
+
+    \"actDuration\": 60,
+    \"breakLength\": 15,
+    \"numberOfBreaks\": 1,
+
     \"mailingAddress\": {
       \"addr1\": \"${a1}\",
       \"addr2\": \"${a2}\",
@@ -113,7 +150,15 @@ declare -a TESTS=(
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests
 
-t1() { curl -sS "$GW/health/live" | pretty; }
+t1() {
+  echo "-- $GW/live";          curl -sS "$GW/live" | pretty
+  echo "-- $GW/ready";         curl -sS "$GW/ready" | pretty
+  echo "-- $GW/health/live";   curl -sS "$GW/health/live" | pretty
+  echo "-- $GW/health/ready";  curl -sS "$GW/health/ready" | pretty
+  echo "-- $GW/healthz";       curl -sS "$GW/healthz" | pretty
+  echo "-- $GW/readyz";        curl -sS "$GW/readyz" | pretty
+}
+
 t2() { curl -sS "$CORE/health/live" | pretty; }
 t3() { curl -sS "$ACT/health/live" | pretty; }
 t4() { curl -sS "$GEO/health/live" | pretty; }
@@ -250,4 +295,3 @@ SELECTION="$1"; shift || true
 mapfile -t IDS < <(parse_selection "$SELECTION")
 
 for id in "${IDS[@]}"; do run_one "$id"; done
-

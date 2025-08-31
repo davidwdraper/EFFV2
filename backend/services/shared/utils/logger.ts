@@ -10,7 +10,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { getCallerInfo } from "../../shared/utils/logMeta";
+import { getCallerInfo } from "./logMeta";
 
 /**
  * NowVibin — Shared Logger (merged & authoritative)

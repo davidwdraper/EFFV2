@@ -24,6 +24,8 @@ router.get("/:id", cacheGet("act", "ACT_CACHE_TTL_SEC"), findById);
 
 // Mutations invalidate the "act" namespace on success
 router.post("/", invalidateOnSuccess("act")(create));
+// NEW: support root PUT as upsert (aligns with smoke tests #7/#8/#10)
+router.put("/", invalidateOnSuccess("act")(create));
 router.patch("/:id", invalidateOnSuccess("act")(update));
 router.put("/:id", invalidateOnSuccess("act")(update));
 router.delete("/:id", invalidateOnSuccess("act")(remove));

@@ -542,9 +542,100 @@ That’s it: HTTP for dev convenience, HTTPS everywhere that matters.
 
 ✅ End of SOP Addendum 3
 
-We now have gateway-core.
-I want to build Geo-Service, that takes a mailing address and returns a lat and long.
-We will use the Google api for this. You will need to provide guidance on getting setup with google, and building the code for the service. The service will our SOP, based on the Act service, but with No DB integration.
-In the future this service can use a different 3rd party provider based on env configuration to determine provider at runtime.
+Here are your session startup instruction you wrote to yourself:
 
-Once the Geo-service is complete, we integrate it into the stub that was built within the Act service, for determining an Act's geoLocation based on a provided mailing address.
+Roger that. Here are my standing instructions to myself so we can pick up exactly here without wasting your time.
+
+Continuation Playbook (for me)
+
+No splicing, ever.
+When you ask for a change, I will return full file drops (entire file contents) inside code fences, with the path in the first comment line, ready to paste. No “insert here” nonsense.
+
+Ask for the file first.
+If I haven’t already seen the exact file in this session, I will ask you to paste it before proposing edits. No guessing.
+
+Gateway health fix — current target state (where we are now).
+
+gateway/src/app.ts must:
+
+Mount createHealthRouter at /health.
+
+Mount it before rateLimit, sensitiveLimiter, timeouts, circuitBreaker, and authGate.
+
+Keep readiness ping to ACT at /health/ready (or /health/live if that’s all ACT exposes).
+
+smoke.sh test [1] expects GET /health/live → 200.
+
+After any change touching shared or gateway:
+
+yarn -W build:shared
+(cd backend/services/gateway && ENV_FILE=.env.dev yarn dev)
+bash smoke.sh 1
+
+Shared package invariants.
+
+Buildable via: yarn workspace @eff/shared build.
+
+No stray \*.js outside shared/dist/. If present, I’ll provide a one-liner to purge them.
+
+Self-alias present in shared/tsconfig.json:
+
+"baseUrl": ".",
+"paths": { "@shared/_": ["./_"] }
+
+Services import built shared via:
+
+"paths": { "@shared/_": ["../shared/dist/_"] },
+"references": [{ "path": "../shared" }]
+
+Dev runner invariants (every service).
+
+Use ts-node-dev with paths registered:
+
+"dev": "NODE_ENV=dev ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts"
+
+Root-only tooling installs use yarn add -D -W ....
+Service runtime deps install inside the service (no -W).
+
+When you say “merge,” I will:
+
+Return the entire file after merging, not a diff.
+
+Keep imports sorted and consistent.
+
+Match your existing style and comments.
+
+Include a short Run & Verify block with exact commands.
+
+Triage order if /health/live still 404s:
+
+Confirm the router is mounted before auth/limits/breaker/timeouts.
+
+curl -v http://127.0.0.1:4000/health/live and check logs.
+
+Temporarily add a throwaway route above the health mount to ensure the app file is actually the one running:
+
+app.get("/\_\_ping", (\_req,res)=>res.send("ok"))
+
+If /\_\_ping 404s, we’re editing the wrong file or wrong process is running.
+
+If readiness fails because ACT lacks /health/ready, switch the probe to /health/live or stub readiness to { upstreams:{} } and re-test.
+
+Stop giving options unless you ask.
+I recommend one best-practice path and give you the exact artifacts to paste/run.
+
+Smoke test script contract.
+
+--list shows numbered tests.
+
+1 is GET /health/live for gateway; 2 is gateway-core; 3 act; 4 geo; others as we defined.
+
+I will update the script for you if routes change.
+
+Commit message style (I’ll include when helpful):
+
+chore(gateway): mount health router at /health before auth/limits; align readiness to /health/ready
+build(shared): add self-alias; purge stray js; ensure dist-only imports from services
+chore(repo): add root script build:shared
+
+That’s the playbook. When you say “merge” next time, I’ll drop the entire updated file(s) and the exact commands to run, no back-and-forth.

@@ -1,5 +1,4 @@
 // backend/services/shared/health.ts
-
 import express from "express";
 
 export type ReadinessDetails = Record<string, any>;
@@ -26,9 +25,13 @@ function getReqId(req: express.Request) {
 
 /**
  * Exposes:
- *   GET /health   -> legacy/compat liveness
- *   GET /healthz  -> k8s-style liveness
- *   GET /readyz   -> readiness; may include upstream details
+ *   GET /health         -> legacy/compat liveness
+ *   GET /health/live    -> explicit liveness
+ *   GET /health/ready   -> explicit readiness
+ *   GET /healthz        -> k8s-style liveness
+ *   GET /readyz         -> k8s-style readiness
+ *   GET /live           -> relative liveness (for smoke.sh convenience)
+ *   GET /ready          -> relative readiness (for smoke.sh convenience)
  */
 export function createHealthRouter(opts: Options) {
   const router = express.Router();
@@ -40,18 +43,13 @@ export function createHealthRouter(opts: Options) {
     gitSha: opts.gitSha,
   };
 
-  // Legacy liveness (compat with older scripts/monitors)
-  router.get("/health", (req, res) => {
+  // Liveness helpers
+  const liveness = (req: express.Request, res: express.Response) => {
     res.json({ ...base, ok: true, instance: getReqId(req) });
-  });
+  };
 
-  // Kubernetes liveness
-  router.get("/healthz", (req, res) => {
-    res.json({ ...base, ok: true, instance: getReqId(req) });
-  });
-
-  // Readiness (+ optional upstream checks)
-  router.get("/readyz", async (req, res) => {
+  // Readiness helpers
+  const readiness = async (req: express.Request, res: express.Response) => {
     try {
       const details = opts.readiness ? await opts.readiness(req) : {};
       res.json({ ...base, ok: true, instance: getReqId(req), ...details });
@@ -63,7 +61,16 @@ export function createHealthRouter(opts: Options) {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  });
+  };
+
+  // Routes
+  router.get("/health", liveness); // legacy
+  router.get("/health/live", liveness); // new absolute
+  router.get("/health/ready", readiness); // new absolute
+  router.get("/healthz", liveness); // k8s legacy
+  router.get("/readyz", readiness); // k8s legacy
+  router.get("/live", liveness); // relative
+  router.get("/ready", readiness); // relative
 
   return router;
 }

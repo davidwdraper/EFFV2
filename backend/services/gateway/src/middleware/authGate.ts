@@ -3,25 +3,39 @@ import type { Request, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 
 /**
- * Gateway Auth Gate — LOCAL verification (no per-request network to Auth)
+ * Client Auth Gate (inbound) — single, canonical env set. No fallbacks.
  *
- * RS256 via JWKS (preferred) using dynamic import('jose') so it works under CJS.
- * HS256 via AUTH_JWT_SECRET allowed in dev/test.
+ * Required env (no defaults):
+ *   CLIENT_AUTH_REQUIRE            ("true" | "false")
+ *   CLIENT_AUTH_BYPASS             ("true" | "false")
+ *   CLIENT_AUTH_JWKS_URL           (may be empty if bypassing)
+ *   CLIENT_AUTH_ISSUERS            (pipe- or comma-separated)
+ *   CLIENT_AUTH_AUDIENCE
+ *   CLIENT_AUTH_CLOCK_SKEW_SEC
+ *   CLIENT_AUTH_PUBLIC_PREFIXES
+ *   CLIENT_AUTH_PROTECTED_GET_PREFIXES
+ *   READ_ONLY_MODE                 ("true" | "false")
+ *   READ_ONLY_EXEMPT_PREFIXES
+ *
+ * Notes:
+ * - HS256 for client tokens is intentionally disabled to avoid confusion with S2S.
+ * - Misconfiguration returns 503 (never 500).
+ * - Client mistakes return 401/403.
  */
 
 function toList(v?: string) {
+  // accepts | or , separators
   return String(v || "")
-    .split("|")
+    .split(/[|,]/)
     .map((s) => s.trim())
     .filter(Boolean);
 }
 
 function startsWithAny(path: string, prefixes: string[]) {
-  const p = path.toLowerCase();
+  const p = (path || "/").toLowerCase();
   return prefixes.some((x) => x && p.startsWith(x.toLowerCase()));
 }
 
-/** Extract token from common headers/cookies. */
 function extractToken(req: Request): string | undefined {
   const hAuth =
     (req.headers["authorization"] as string | undefined) ??
@@ -46,17 +60,11 @@ function extractToken(req: Request): string | undefined {
   return undefined;
 }
 
-function tokensEqual(a?: string, b?: string) {
-  const raw = (x?: string) => (x ? x.replace(/^bearer\s+/i, "").trim() : "");
-  return raw(a) === raw(b);
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Dynamic jose loader (ESM under CJS) + JWKS cache
+// ESM under CJS — dynamic import for jose + JWKS
 let _jose: any | null = null;
 async function getJose() {
   if (_jose) return _jose;
-  _jose = await import("jose"); // ESM dynamic import works in CJS
+  _jose = await import("jose");
   return _jose;
 }
 
@@ -73,39 +81,41 @@ function createJWKSGetter(jwksUrl: string) {
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-
 export function authGate(): RequestHandler {
-  const readOnlyMode = String(process.env.READ_ONLY_MODE || "false") === "true";
+  // ── required env (no fallbacks) ────────────────────────────────────────────
+  const readOnlyMode =
+    String(process.env.READ_ONLY_MODE ?? "").toLowerCase() === "true";
   const authRequire =
-    String(process.env.AUTH_REQUIRE ?? "true").toLowerCase() === "true";
+    String(process.env.CLIENT_AUTH_REQUIRE ?? "").toLowerCase() === "true";
   const authBypass =
-    (process.env.AUTH_BYPASS === "true" || process.env.AUTH_BYPASS === "1") &&
-    process.env.NODE_ENV !== "production";
+    String(process.env.CLIENT_AUTH_BYPASS ?? "").toLowerCase() === "true";
 
   const protectedGetPrefixes = toList(
-    process.env.PUBLIC_GET_REQUIRE_AUTH_PREFIXES
+    process.env.CLIENT_AUTH_PROTECTED_GET_PREFIXES
   );
-  const authPublicPrefixes = toList(
-    process.env.AUTH_PUBLIC_PREFIXES ||
-      "/auth/login|/auth/create|/auth/password_reset|/auth/verify"
-  );
-  const readOnlyExemptPrefixes = toList(
-    process.env.READ_ONLY_EXEMPT_PREFIXES || "/auth/login|/auth/verify"
-  );
+  const authPublicPrefixes = toList(process.env.CLIENT_AUTH_PUBLIC_PREFIXES);
+  const readOnlyExempt = toList(process.env.READ_ONLY_EXEMPT_PREFIXES);
 
-  const jwksUrl = process.env.AUTH_JWKS_URL || "";
-  const issuers = toList(process.env.AUTH_ISSUERS);
-  const audience = process.env.AUTH_AUDIENCE || undefined;
-  const clockToleranceSec = Number(process.env.AUTH_CLOCK_SKEW_SEC || 60);
+  const jwksUrl = String(process.env.CLIENT_AUTH_JWKS_URL ?? "");
+  const issuers = toList(process.env.CLIENT_AUTH_ISSUERS);
+  const audience = String(process.env.CLIENT_AUTH_AUDIENCE ?? "");
+  const clockSkew = Number(process.env.CLIENT_AUTH_CLOCK_SKEW_SEC ?? NaN);
 
-  const hsSecret = process.env.AUTH_JWT_SECRET || "";
-  const isProd = process.env.NODE_ENV === "production";
+  // input validation — fail closed but cleanly (503 for misconfig)
+  const envInvalid =
+    ![true, false].includes(readOnlyMode) || // always boolean; sanity check redundant but harmless
+    Number.isNaN(clockSkew);
+
+  // JWKS required if auth required and not bypassing
+  const authMisconfigured =
+    authRequire &&
+    !authBypass &&
+    (!jwksUrl || issuers.length === 0 || !audience);
 
   let getJWKS: JWKSGetter | null = null;
   if (jwksUrl) {
     try {
-      // don’t await here; create a getter that lazy-loads jose + JWKS on first use
+      new URL(jwksUrl); // early validation
       getJWKS = createJWKSGetter(jwksUrl);
     } catch {
       getJWKS = null;
@@ -113,15 +123,25 @@ export function authGate(): RequestHandler {
   }
 
   return async (req, res, next) => {
+    if (envInvalid) {
+      return res.status(503).json({
+        type: "about:blank",
+        title: "Auth Misconfigured",
+        status: 503,
+        detail: "Invalid CLIENT_AUTH_* configuration.",
+        instance: (req as any).id,
+      });
+    }
+
     const method = (req.method || "GET").toUpperCase();
     const path = req.path || "/";
 
-    // Read-only mode
+    // read-only: block mutations unless exempt
     if (
       readOnlyMode &&
       method !== "GET" &&
       method !== "HEAD" &&
-      !startsWithAny(path, readOnlyExemptPrefixes)
+      !startsWithAny(path, readOnlyExempt)
     ) {
       return res.status(503).json({
         type: "about:blank",
@@ -133,6 +153,7 @@ export function authGate(): RequestHandler {
       });
     }
 
+    // does this route need auth?
     const isProtectedGet =
       method === "GET" && startsWithAny(path, protectedGetPrefixes);
     const isAuthPublic = startsWithAny(path, authPublicPrefixes);
@@ -143,6 +164,22 @@ export function authGate(): RequestHandler {
       : false;
 
     if (!needsAuth) return next();
+
+    if (authBypass) {
+      (req as any).user = { id: "bypass", roles: ["dev"], scopes: ["*"] };
+      return next();
+    }
+
+    if (authMisconfigured || !getJWKS) {
+      return res.status(503).json({
+        type: "about:blank",
+        title: "Auth Misconfigured",
+        status: 503,
+        detail:
+          "CLIENT_AUTH_JWKS_URL/ISSUERS/AUDIENCE required when CLIENT_AUTH_REQUIRE=true and CLIENT_AUTH_BYPASS=false.",
+        instance: (req as any).id,
+      });
+    }
 
     const token = extractToken(req);
     if (!token) {
@@ -155,44 +192,15 @@ export function authGate(): RequestHandler {
       });
     }
 
-    if (authBypass) {
-      (req as any).user = { id: "bypass", roles: ["dev"], scopes: ["*"] };
-      return next();
-    }
-
-    // E2E match passthrough
-    const e2eMode = process.env.E2E_REQUIRE_AUTH === "1";
-    const e2eBearer = process.env.E2E_BEARER;
-    if (e2eMode && e2eBearer && tokensEqual(token, e2eBearer)) {
-      (req as any).user = { id: "e2e-user", roles: ["tester"], scopes: ["*"] };
-      return next();
-    }
-
-    // Local verification
     try {
-      let payload: any = null;
-
-      if (getJWKS) {
-        const jose = await getJose();
-        const jwks = await getJWKS();
-        const verified = await jose.jwtVerify(token, jwks, {
-          issuer: issuers.length ? issuers : undefined,
-          audience,
-          clockTolerance: clockToleranceSec,
-        });
-        payload = verified.payload;
-      } else if (hsSecret && !isProd) {
-        payload = jwt.verify(token, hsSecret) as any;
-      } else {
-        return res.status(500).json({
-          type: "about:blank",
-          title: "Internal Server Error",
-          status: 500,
-          detail:
-            "Auth not configured: set AUTH_JWKS_URL (preferred) or AUTH_JWT_SECRET (dev/test).",
-          instance: (req as any).id,
-        });
-      }
+      const jose = await getJose();
+      const jwks = await getJWKS();
+      const verified = await jose.jwtVerify(token, jwks, {
+        issuer: issuers,
+        audience,
+        clockTolerance: clockSkew,
+      });
+      const payload: any = verified?.payload || {};
 
       (req as any).user = {
         id: (payload?.uid as string) || (payload?.sub as string) || "unknown",
@@ -200,7 +208,7 @@ export function authGate(): RequestHandler {
         scopes:
           (payload?.scopes as string[]) ||
           (typeof payload?.scope === "string"
-            ? payload?.scope.split(" ").filter(Boolean)
+            ? payload.scope.split(" ").filter(Boolean)
             : []),
         email: payload?.email as string | undefined,
         name: payload?.name as string | undefined,

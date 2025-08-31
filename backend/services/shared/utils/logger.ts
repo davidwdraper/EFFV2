@@ -6,17 +6,17 @@ import pino, {
   type LevelWithSilent,
   stdTimeFunctions,
 } from "pino";
-import fs from "node:fs";
+import fs from "node:fs"; // (kept for parity; fsp handles writes)
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getCallerInfo } from "./logMeta";
 
 /**
- * NowVibin — Shared Logger (merged & authoritative)
+ * NowVibin — Shared Logger (authoritative)
  *
- * ❗️No more auto-discovery of SERVICE_NAME.
- * ✅ Each service MUST call `initLogger(SERVICE_NAME)` at bootstrap.
+ * ❗️Each service MUST call `initLogger(SERVICE_NAME)` at bootstrap
+ *    BEFORE creating any request loggers (e.g., pino-http).
  *
  * Usage:
  *   import { SERVICE_NAME } from "./config";
@@ -45,13 +45,13 @@ const LOG_SERVICE_TOKEN_NEXT = process.env.LOG_SERVICE_TOKEN_NEXT?.trim() || "";
 const LOG_ENABLE_INFO_DEBUG =
   String(process.env.LOG_ENABLE_INFO_DEBUG || "").toLowerCase() === "true";
 const LOG_CACHE_MAX_MB = Number(process.env.LOG_CACHE_MAX_MB || 256);
-const LOG_CACHE_MAX_DAYS = Number(process.env.LOG_CACHE_MAX_DAYS || 7);
+const LOG_CACHE_MAX_DAYS = Number(process.env.LOG_CACHE_MAX_DAYS || 7); // reserved
 const LOG_PING_INTERVAL_MS = Number(process.env.LOG_PING_INTERVAL_MS || 15_000);
-const LOG_FLUSH_BATCH_SIZE = Number(process.env.LOG_FLUSH_BATCH_SIZE || 50);
-const LOG_FLUSH_CONCURRENCY = Number(process.env.LOG_FLUSH_CONCURRENCY || 4);
+const LOG_FLUSH_BATCH_SIZE = Number(process.env.LOG_FLUSH_BATCH_SIZE || 50); // reserved
+const LOG_FLUSH_CONCURRENCY = Number(process.env.LOG_FLUSH_CONCURRENCY || 4); // reserved
 const NOTIFY_STUB_ENABLED =
-  String(process.env.NOTIFY_STUB_ENABLED || "").toLowerCase() === "true";
-const NOTIFY_GRACE_MS = Number(process.env.NOTIFY_GRACE_MS || 300_000);
+  String(process.env.NOTIFY_STUB_ENABLED || "").toLowerCase() === "true"; // reserved
+const NOTIFY_GRACE_MS = Number(process.env.NOTIFY_GRACE_MS || 300_000); // reserved
 const LOG_SERVICE_HEALTH_URL =
   (process.env.LOG_SERVICE_HEALTH_URL &&
     process.env.LOG_SERVICE_HEALTH_URL.trim()) ||
@@ -74,21 +74,38 @@ if (!LOG_SERVICE_TOKEN_CURRENT && !LOG_SERVICE_TOKEN_NEXT) {
 }
 
 // ────────────────────────────── Service name & Pino init ──────────────────────
-let SERVICE_NAME = "unknown"; // set by initLogger()
+// NOTE: Avoid stamping "service":"unknown". Start with NO base.service.
+//       After initLogger(), we recreate the logger with base.service set.
+let SERVICE_NAME = ""; // set by initLogger()
+
 const pinoOptions: LoggerOptions = {
   level: LOG_LEVEL,
-  base: { service: SERVICE_NAME },
+  base: {}, // ← no "service" until initLogger() runs
   timestamp: stdTimeFunctions.isoTime,
   redact: {
     remove: true,
     paths: ["req.headers.authorization", "req.headers.cookie"],
   },
 };
+
 export let logger = pino(pinoOptions);
+
+/** Initialize the shared logger for this running service. Call once at bootstrap. */
 export function initLogger(serviceName: string): void {
   SERVICE_NAME = String(serviceName || "").trim();
   if (!SERVICE_NAME) throw new Error("initLogger requires serviceName");
   logger = pino({ ...pinoOptions, base: { service: SERVICE_NAME } });
+}
+
+/** Optional: expose current service name (after init) */
+export function currentServiceName(): string {
+  return SERVICE_NAME || "uninitialized";
+}
+
+/** Optional: set level dynamically (e.g., in tests) */
+export function setLogLevel(level: LevelWithSilent) {
+  if (!validLevels.has(level)) throw new Error(`Invalid LOG_LEVEL: "${level}"`);
+  logger.level = level;
 }
 
 // ───────────────────────────── Request context helper ─────────────────────────
@@ -105,12 +122,13 @@ export function extractLogContext(req: Request): Record<string, any> {
     entityId: req.params?.id,
     entityName: (req as any).entityName,
     ip: req.ip,
-    service: SERVICE_NAME,
+    service: SERVICE_NAME || undefined,
   };
 }
 
 // ─────────────────────────────── Types & Enrichment ───────────────────────────
 export type AuditEvent = Record<string, any>;
+
 function normalizeCaller(ci: any) {
   const c = ci || {};
   return {
@@ -119,6 +137,7 @@ function normalizeCaller(ci: any) {
     sourceFunction: c.functionName || c.func || c.method || c.name,
   };
 }
+
 function enrichEvent(e: AuditEvent): AuditEvent {
   const { sourceFile, sourceLine, sourceFunction } = normalizeCaller(
     getCallerInfo(3)
@@ -136,10 +155,11 @@ function enrichEvent(e: AuditEvent): AuditEvent {
 }
 
 // ───────────────────────────── Circuit breaker state ──────────────────────────
-let breakerOpen = false,
-  lastPingAt = 0,
-  outageStartAt = 0,
-  notifiedThisOutage = false;
+let breakerOpen = false;
+let lastPingAt = 0;
+let outageStartAt = 0;
+let notifiedThisOutage = false;
+
 function openBreaker() {
   breakerOpen = true;
   outageStartAt = outageStartAt || Date.now();
@@ -189,6 +209,7 @@ async function postToLogSvc(event: AuditEvent) {
     } else throw err;
   }
 }
+
 async function deepPing() {
   try {
     if (Date.now() - lastPingAt < LOG_PING_INTERVAL_MS) return false;
@@ -234,7 +255,7 @@ async function currentCacheSizeMB() {
   return total / (1024 * 1024);
 }
 async function pruneOldestIfNeeded() {
-  let size = await currentCacheSizeMB();
+  const size = await currentCacheSizeMB();
   if (size <= LOG_CACHE_MAX_MB) return;
   const files = (await safeReaddir(LOG_FS_DIR)).map((f) =>
     path.join(LOG_FS_DIR, f.name)
@@ -317,6 +338,7 @@ export function telemetry(
   if (IS_PROD && !LOG_ENABLE_INFO_DEBUG) return;
   (logger as any)[level]?.(meta || {}, msg);
 }
+
 export async function postAudit(evts: AuditEvent[] | AuditEvent) {
   const arr = Array.isArray(evts) ? evts : [evts];
   const errs = arr.filter((e) => e?.channel === "error");
@@ -324,6 +346,7 @@ export async function postAudit(evts: AuditEvent[] | AuditEvent) {
   if (audits.length) void emitAudit(audits);
   if (errs.length) void emitError(errs);
 }
+
 export async function postAuditStrict(evts: AuditEvent[] | AuditEvent) {
   for (const e of Array.isArray(evts) ? evts : [evts]) await postToLogSvc(e);
 }

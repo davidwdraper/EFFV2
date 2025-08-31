@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash smoke.sh --list
-#   bash smoke.sh <id|id,id|id-id|all>  [--no-jq]
+#   bash smoke.sh [--no-jq] [--silent] <id|id,id|id-id|all>
 #
 # Examples:
 #   bash smoke.sh 1
@@ -36,14 +36,26 @@ S2S_JWT_AUDIENCE="${S2S_JWT_AUDIENCE:-internal-services}"
 
 # Data defaults
 GEO_ADDRESS="${GEO_ADDRESS:-1600 Amphitheatre Parkway, Mountain View, CA}"
-MAIL_ADDR1="${MAIL_ADDR1:-}"
+MAIL_ADDR1="${MAIL_ADDR1:-36100 Date Palm Drive}"
 MAIL_ADDR2="${MAIL_ADDR2:-}"
-MAIL_CITY="${MAIL_CITY:-}"
-MAIL_STATE="${MAIL_STATE:-}"
-MAIL_ZIP="${MAIL_ZIP:-}"
+MAIL_CITY="${MAIL_CITY:-Cathedral City}"
+MAIL_STATE="${MAIL_STATE:-CA}"
+MAIL_ZIP="${MAIL_ZIP:-92234}"
 
 USE_JQ=1
-[[ "${1-}" == "--no-jq" ]] && USE_JQ=0 && shift || true
+QUIET=0
+
+# Flag parsing (order-agnostic)
+while [[ "${1-}" == --* ]]; do
+  case "${1-}" in
+    --no-jq) USE_JQ=0; shift;;
+    --silent|--quiet) QUIET=1; shift;;
+    --list)  # defer to later (after functions exist)
+      break;;
+    *) break;;
+  esac
+done
+
 JQ=${JQ:-jq}
 if [[ $USE_JQ -eq 1 ]] && ! command -v "$JQ" >/dev/null 2>&1; then
   echo "jq not found, falling back to raw output"; USE_JQ=0
@@ -65,7 +77,7 @@ mint_s2s () {
   printf '%s.%s.%s' "$hdr" "$pld" "$sig"
 }
 TOKEN_CORE()       { mint_s2s "gateway-core" "gateway-core" 300; }  # core→worker
-TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }               # act→core
+TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }               # act→core (client)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # JSON helpers
@@ -97,13 +109,13 @@ payload_act_minimal() {
 }
 
 # Same as above, but include a mailing address block to trigger geocode paths
+# NOTE: actLoc intentionally omitted so Geo result is applied by the service.
 payload_act_with_address() {
   local a1="${MAIL_ADDR1}" a2="${MAIL_ADDR2}" c="${MAIL_CITY}" s="${MAIL_STATE}" z="${MAIL_ZIP}"
   json "{
     \"name\": \"SmokeTest Act Update With Address\",
     \"websiteUrl\": \"https://example.test/smoke\",
     \"tags\": [\"smoke\",\"update\"],
-    \"actLoc\": { \"type\": \"Point\", \"coordinates\": [-122.084, 37.422] },
 
     \"userCreateId\": \"mock-user-id\",
     \"userOwnerId\": \"mock-user-id\",
@@ -132,6 +144,19 @@ payload_act_with_address() {
 
 pretty() { if [[ $USE_JQ -eq 1 ]]; then "$JQ"; else cat; fi }
 
+# helper: extract id from response (requires jq)
+extract_id() { ${JQ} -r '._id // .id // .data._id // empty'; }
+
+# helper: idempotent DELETE (accepts 200/202/204/404 as success)
+delete_ok() {
+  local url="$1"; shift
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$url" "$@")
+  case "$code" in 200|202|204|404) echo "✅ delete $url ($code)";;
+    *) echo "❌ delete $url failed ($code)"; exit 1;;
+  esac
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Test definitions
 declare -a TESTS=(
@@ -141,10 +166,10 @@ declare -a TESTS=(
   "4|geo health|t4"
   "5|geo resolve direct (4012, JWT core)|t5"
   "6|geo resolve via gateway-core (4011, JWT act)|t6"
-  "7|act PUT direct (4002) no address (JWT core)|t7"
-  "8|act PUT via gateway (4000) no address (JWT act)|t8"
-  "9|act PUT direct (4002) WITH address → geocode (JWT core)|t9"
-  "10|act PUT via gateway (4000) WITH address → geocode (JWT act)|t10"
+  "7|act PUT+GET+DELETE direct (4002) no address (JWT core)|t7"
+  "8|act PUT+GET+DELETE via gateway (4000) no address (JWT act)|t8"
+  "9|act PUT+GET+DELETE direct (4002) WITH address → geocode (JWT core)|t9"
+  "10|act PUT+GET+DELETE via gateway (4000) WITH address → geocode (JWT act)|t10"
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,7 +185,7 @@ t1() {
 }
 
 t2() { curl -sS "$CORE/health/live" | pretty; }
-t3() { curl -sS "$ACT/health/live" | pretty; }
+t3() { curl -sS "$ACT/health/live" | pretty; }   # health = exception (no /api)
 t4() { curl -sS "$GEO/health/live" | pretty; }
 
 t5() {
@@ -180,41 +205,77 @@ t6() {
 }
 
 t7() {
+  # Direct Act under /api (PUT + GET + DELETE)
   local TOKEN; TOKEN=$(TOKEN_CORE)
-  curl -sS -X PUT "$ACT/acts" \
+  local base="$ACT/api/acts"
+  local resp id
+  resp=$(curl -sS -X PUT "$base" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "$(payload_act_minimal)" | pretty
+    -d "$(payload_act_minimal)")
+  echo "$resp" | pretty
+  id=$(echo "$resp" | extract_id)
+  [[ -n "$id" ]] || { echo "❌ direct PUT did not return _id"; exit 1; }
+  echo "✅ created direct _id=$id"
+  curl -sS -H "Authorization: Bearer $TOKEN" "$base/$id" | pretty
+  delete_ok "$base/$id" -H "Authorization: Bearer $TOKEN"
 }
 
 t8() {
+  # Via gateway: /api/act/... (PUT + GET + DELETE). Client token is accepted; bypass may be on.
   local TOKEN; TOKEN=$(TOKEN_CALLER_ACT)
-  curl -sS -X PUT "$GW/act/acts" \
+  local base="$GW/api/act/acts"
+  local resp id
+  resp=$(curl -sS -X PUT "$base" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "$(payload_act_minimal)" | pretty
+    -d "$(payload_act_minimal)")
+  echo "$resp" | pretty
+  id=$(echo "$resp" | extract_id)
+  [[ -n "$id" ]] || { echo "❌ gateway PUT did not return _id"; exit 1; }
+  echo "✅ created via gateway _id=$id"
+  curl -sS -H "Authorization: Bearer $TOKEN" "$base/$id" | pretty
+  delete_ok "$base/$id" -H "Authorization: Bearer $TOKEN"
 }
 
 t9() {
+  # Direct Act WITH mailingAddress → geocode path (PUT + GET + DELETE)
   if [[ -z "${MAIL_ADDR1}${MAIL_CITY}${MAIL_STATE}${MAIL_ZIP}" ]]; then
     echo "⚠️  Provide MAIL_ADDR1/MAIL_CITY/MAIL_STATE/MAIL_ZIP to trigger geocode." >&2
   fi
   local TOKEN; TOKEN=$(TOKEN_CORE)
-  curl -sS -X PUT "$ACT/acts" \
+  local base="$ACT/api/acts"
+  local resp id
+  resp=$(curl -sS -X PUT "$base" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "$(payload_act_with_address)" | pretty
+    -d "$(payload_act_with_address)")
+  echo "$resp" | pretty
+  id=$(echo "$resp" | extract_id)
+  [[ -n "$id" ]] || { echo "❌ direct PUT+address did not return _id"; exit 1; }
+  echo "✅ created direct(with addr) _id=$id"
+  curl -sS -H "Authorization: Bearer $TOKEN" "$base/$id" | pretty
+  delete_ok "$base/$id" -H "Authorization: Bearer $TOKEN"
 }
 
 t10() {
+  # Via gateway WITH mailingAddress → geocode path (PUT + GET + DELETE)
   if [[ -z "${MAIL_ADDR1}${MAIL_CITY}${MAIL_STATE}${MAIL_ZIP}" ]]; then
     echo "⚠️  Provide MAIL_ADDR1/MAIL_CITY/MAIL_STATE/MAIL_ZIP to trigger geocode." >&2
   fi
   local TOKEN; TOKEN=$(TOKEN_CALLER_ACT)
-  curl -sS -X PUT "$GW/act/acts" \
+  local base="$GW/api/act/acts"
+  local resp id
+  resp=$(curl -sS -X PUT "$base" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "$(payload_act_with_address)" | pretty
+    -d "$(payload_act_with_address)")
+  echo "$resp" | pretty
+  id=$(echo "$resp" | extract_id)
+  [[ -n "$id" ]] || { echo "❌ gateway PUT+address did not return _id"; exit 1; }
+  echo "✅ created via gateway(with addr) _id=$id"
+  curl -sS -H "Authorization: Bearer $TOKEN" "$base/$id" | pretty
+  delete_ok "$base/$id" -H "Authorization: Bear_TOKEN"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,17 +291,18 @@ print_list() {
 
 help() {
   cat <<EOF
-Usage: bash smoke.sh [--list] [--no-jq] <id|id,id|id-id|all>
+Usage: bash smoke.sh [--list] [--no-jq] [--silent] <id|id,id|id-id|all>
 
 Options:
   --list     Show enumerated tests and exit
   --no-jq    Disable jq pretty-print (raw output)
+  --silent   Only print: [PASSED|FAILED] <num> <name> (and exit non-zero on any failure)
 
 Examples:
   bash smoke.sh --list
   bash smoke.sh 1
   bash smoke.sh 1,3,5-7
-  MAIL_ADDR1="1600 Amphitheatre Pkwy" MAIL_CITY="Mountain View" MAIL_STATE=CA MAIL_ZIP=94043 bash smoke.sh 10
+  MAIL_ADDR1="36100 Date Palm Drive" MAIL_CITY="Cathedral City" MAIL_STATE=CA MAIL_ZIP=92234 bash smoke.sh 10
 EOF
 }
 
@@ -271,9 +333,24 @@ run_one() {
     IFS='|' read -r tid name fn <<<"$row"
     if [[ "$tid" == "$id" ]]; then found=1; break; fi
   done
-  if [[ $found -eq 0 ]]; then echo "Unknown test id: $id" >&2; exit 64; fi
-  printf "\n===== [%s] %s =====\n" "$id" "$name"
-  "$fn"
+  if [[ $found -eq 0 ]]; then echo "Unknown test id: $id" >&2; return 64; fi
+
+  if [[ $QUIET -eq 1 ]]; then
+    local rc
+    set +e
+    "${fn}" >/dev/null 2>&1
+    rc=$?
+    set -e
+    if [[ $rc -eq 0 ]]; then
+      printf "[PASSED] %s %s\n" "$id" "$name"
+    else
+      printf "[FAILED] %s %s\n" "$id" "$name"
+    fi
+    return $rc
+  else
+    printf "\n===== [%s] %s =====\n" "$id" "$name"
+    "${fn}"
+  fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -294,4 +371,12 @@ fi
 SELECTION="$1"; shift || true
 mapfile -t IDS < <(parse_selection "$SELECTION")
 
-for id in "${IDS[@]}"; do run_one "$id"; done
+if [[ $QUIET -eq 1 ]]; then
+  overall=0
+  for id in "${IDS[@]}"; do
+    if ! run_one "$id"; then overall=1; fi
+  done
+  exit $overall
+else
+  for id in "${IDS[@]}"; do run_one "$id"; done
+fi

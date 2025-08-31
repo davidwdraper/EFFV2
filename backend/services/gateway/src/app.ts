@@ -1,8 +1,8 @@
 // backend/services/gateway/src/app.ts
 import express from "express";
 import cors from "cors";
-import axios from "axios";
 import pinoHttp from "pino-http";
+import axios from "axios";
 import { randomUUID } from "crypto";
 import helmet from "helmet";
 
@@ -29,7 +29,8 @@ import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
 import { authGate } from "./middleware/authGate";
 import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
 import { httpsOnly } from "./middleware/httpsOnly";
-import { serviceProxy } from "./middleware/serviceProxy"; // ⬅️ NEW
+import { serviceProxy } from "./middleware/serviceProxy";
+import { trace5xx } from "./middleware/trace5xx";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -58,10 +59,9 @@ if (process.env.FORCE_HTTPS === "true") {
   app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true }));
 }
 
-// CORS + body caps
+// CORS early (does not consume body)
 app.use(
   cors({
-    // TODO: restrict origin in prod
     origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
     allowedHeaders: [
@@ -73,16 +73,17 @@ app.use(
     ],
   })
 );
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+
+// ❗ No body parsers before proxy — keep raw stream intact.
 
 // Request ID first
 app.use(requestIdMiddleware());
 
-// pino-http logger
+// pino-http logger (bind service)
+const httpLogger = logger.child({ service: serviceName });
 app.use(
   pinoHttp({
-    logger,
+    logger: httpLogger,
     customLogLevel(_req, res, err) {
       if (err) return "error";
       const s = res.statusCode;
@@ -100,7 +101,7 @@ app.use(
       return String(id);
     },
     customProps(req) {
-      return { service: serviceName, reqId: (req as any).id };
+      return { reqId: (req as any).id };
     },
     autoLogging: {
       ignore: (req) =>
@@ -112,8 +113,8 @@ app.use(
         req.url === "/live" ||
         req.url === "/ready" ||
         req.url === "/favicon.ico" ||
-        req.url === "/__core" || // 👀 DEBUG
-        req.url === "/__auth", // 👀 DEBUG
+        req.url === "/__core" ||
+        req.url === "/__auth",
     },
     serializers: {
       req(req) {
@@ -131,8 +132,11 @@ app.use(
   })
 );
 
-// Problem+JSON envelope (early)
+// Problem+JSON envelope (does not consume request body)
 app.use(problemJsonMiddleware());
+
+// Trace where any 5xx is set (before guards/proxy)
+app.use(trace5xx("early"));
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Health / Readiness — BEFORE limits/auth
@@ -162,28 +166,32 @@ app.get("/__core", (_req, res) => {
   res.json({
     NODE_ENV: process.env.NODE_ENV,
     ENV_FILE: process.env.ENV_FILE,
-    GATEWAY_CORE_URL: process.env.GATEWAY_CORE_URL || null,
-    CORE_URL: process.env.CORE_URL || null,
-    CORE_HOST: process.env.CORE_HOST || null,
-    CORE_PORT: process.env.CORE_PORT || null,
   });
 });
 app.get("/__auth", (_req, res) => {
-  const s = String(process.env.AUTH_JWT_SECRET || "");
   res.json({
     NODE_ENV: process.env.NODE_ENV,
-    AUTH_REQUIRE: process.env.AUTH_REQUIRE ?? null,
-    AUTH_JWKS_URL: process.env.AUTH_JWKS_URL || null,
-    AUTH_ISSUERS: process.env.AUTH_ISSUERS || null,
-    AUTH_AUDIENCE: process.env.AUTH_AUDIENCE || null,
-    AUTH_CLOCK_SKEW_SEC: process.env.AUTH_CLOCK_SKEW_SEC || null,
-    AUTH_BYPASS: process.env.AUTH_BYPASS || null,
-    AUTH_JWT_SECRET_PRESENT: s ? true : false,
-    AUTH_JWT_SECRET_LEN: s ? s.length : 0,
+    // Client auth
+    CLIENT_AUTH_REQUIRE: process.env.CLIENT_AUTH_REQUIRE ?? null,
+    CLIENT_AUTH_BYPASS: process.env.CLIENT_AUTH_BYPASS ?? null,
+    CLIENT_AUTH_JWKS_URL: process.env.CLIENT_AUTH_JWKS_URL || null,
+    CLIENT_AUTH_ISSUERS: process.env.CLIENT_AUTH_ISSUERS || null,
+    CLIENT_AUTH_AUDIENCE: process.env.CLIENT_AUTH_AUDIENCE || null,
+    CLIENT_AUTH_CLOCK_SKEW_SEC: process.env.CLIENT_AUTH_CLOCK_SKEW_SEC || null,
+    // S2S
+    S2S_SECRET_PRESENT: !!(
+      process.env.S2S_SECRET && process.env.S2S_SECRET.length > 0
+    ),
+    S2S_ISSUER: process.env.S2S_ISSUER || null,
+    S2S_AUDIENCE: process.env.S2S_AUDIENCE || null,
+    S2S_MAX_TTL_SEC: process.env.S2S_MAX_TTL_SEC || null,
+    // Proxy pathing
+    INBOUND_STRIP_SEGMENTS: process.env.INBOUND_STRIP_SEGMENTS ?? null,
+    OUTBOUND_API_PREFIX: process.env.OUTBOUND_API_PREFIX ?? null,
   });
 });
 
-// Limits + timeouts + breaker + auth
+// Limits + timeouts + breaker + auth (none consume request body)
 app.use(rateLimitMiddleware(rateLimitCfg));
 app.use(sensitiveLimiter());
 app.use(timeoutsMiddleware(timeoutCfg));
@@ -194,8 +202,13 @@ app.use(authGate());
 app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Service proxy plane: forward "/<svc>/<rest>" to "<ENV>_SERVICE_URL/<rest>"
+// Service proxy plane — MUST be before any body parsers
 app.use(serviceProxy());
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Only after the proxy do we parse bodies for NON-proxied routes (admin, debug)
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
 // 404 + error handlers
 app.use(notFoundHandler());

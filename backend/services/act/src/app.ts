@@ -35,7 +35,7 @@ app.use(makeHttpLogger(SERVICE_NAME));
 app.use(entryExit());
 app.use(auditBuffer());
 
-// Health
+// Health (EXCEPTION: stays at root, not under /api)
 app.use(
   createHealthRouter({
     service: SERVICE_NAME,
@@ -43,15 +43,22 @@ app.use(
   })
 );
 
-// Test helpers
-addTestOnlyHelpers(app as any, ["/acts", "/towns"]);
+// --------------------------- API prefix --------------------------------------
+// Everything user-facing for this service lives under /api/*
+const api = express.Router();
 
-// Routes
-app.use("/acts", actRoutes);
-app.use("/towns", townRoutes);
+// Routes under /api
+api.use("/acts", actRoutes);
+api.use("/towns", townRoutes);
 
-// 404 + error handlers
-app.use(notFoundProblemJson(["/acts", "/towns", "/health"]));
+// Mount the API router
+app.use("/api", api);
+
+// Test helpers updated to match /api paths
+addTestOnlyHelpers(app as any, ["/api/acts", "/api/towns"]);
+
+// 404 + error handlers (limit known prefixes to /api/* and /health)
+app.use(notFoundProblemJson(["/api/acts", "/api/towns", "/health"]));
 app.use(errorProblemJson());
 
 export default app;

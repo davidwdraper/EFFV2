@@ -1,16 +1,20 @@
 // backend/services/gateway/index.ts
 
+// Boot order: env → logger → app
 import "./src/bootstrap"; // loads ENV_FILE (defaults to .env.dev) + asserts required envs
-import "./src/log.init";
+import "./src/log.init"; // initLogger(SERVICE_NAME) so all logs are correctly stamped
+
 import { app } from "./src/app";
 import { PORT, SERVICE_NAME } from "./src/config";
 import { logger } from "@shared/utils/logger";
 
 const NODE_ENV = process.env.NODE_ENV || "dev";
+
 // Bind policy: explicit env wins; otherwise loopback in non-prod, 0.0.0.0 in prod.
 const BIND_ADDR =
   process.env.GATEWAY_BIND_ADDR ||
   (NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
+
 const FORCE_HTTPS = process.env.FORCE_HTTPS === "true";
 
 async function start() {
@@ -22,11 +26,11 @@ async function start() {
       );
     });
 
-    // Optional: keep-alive + header timeouts (small DoS hardening at the socket layer)
+    // Optional: keep-alive + header timeouts (socket hardening)
     // @ts-ignore Node types may vary by version
-    server.keepAliveTimeout = 7000; // ms
+    server.keepAliveTimeout = 7_000; // ms
     // @ts-ignore
-    server.headersTimeout = 9000; // must be > keepAliveTimeout
+    server.headersTimeout = 9_000; // must be > keepAliveTimeout
 
     // Graceful shutdown
     const shutdown = (signal: string) => {
@@ -39,17 +43,17 @@ async function start() {
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));
 
-    server.on("error", (err: any) => {
+    server.on("error", (err: unknown) => {
       logger.error({ err }, `[${SERVICE_NAME}] server error`);
       process.exit(1);
     });
 
-    // Catch unhandleds (don’t let the process limp along)
-    process.on("unhandledRejection", (reason: any) => {
+    // Catch unhandleds — fail fast rather than limping along
+    process.on("unhandledRejection", (reason: unknown) => {
       logger.error({ reason }, `[${SERVICE_NAME}] unhandledRejection`);
       process.exit(1);
     });
-    process.on("uncaughtException", (err: any) => {
+    process.on("uncaughtException", (err: unknown) => {
       logger.error({ err }, `[${SERVICE_NAME}] uncaughtException`);
       process.exit(1);
     });

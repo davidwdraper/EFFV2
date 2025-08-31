@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # Each line: name|path|start-command
 # Comment out a line with '#' to disable a service.
 SERVICES=(
-  "gateway|backend/services/gateway|yarn dev"
+  # "gateway|backend/services/gateway|yarn dev"
   "gateway-core|backend/services/gateway-core|yarn dev"
   "geo|backend/services/geo|yarn dev"
   "act|backend/services/act|yarn dev"

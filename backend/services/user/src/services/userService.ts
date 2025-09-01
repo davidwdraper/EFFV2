@@ -5,19 +5,25 @@ import {
   upsertDirectory,
   deleteFromDirectory,
 } from "../services/directoryWriter";
-import { toUserDto, toUserWithPasswordDto } from "../dto/userDto";
+import { dbToDomain } from "../mappers/user.mapper";
+import type { User } from "@shared/contracts/user.contract";
 
+// Treat Mongo dup-key as conflict
 const isDupKey = (err: any) =>
   err && (err.code === 11000 || String(err?.message || "").includes("E11000"));
+
+/** Internal-only mapper for the private endpoint that returns password too. */
+function toUserWithPasswordDto(doc: any): User & { password: string } {
+  const domain = dbToDomain(doc as any);
+  return { ...domain, password: String(doc?.password ?? "") };
+}
 
 export async function createUser(raw: any) {
   const emailNorm = normalizeEmail(String(raw.email));
   const bucket = emailToBucket(emailNorm);
 
   const existing = await repo.findByEmail(emailNorm);
-  if (existing) {
-    return { conflict: true as const };
-  }
+  if (existing) return { conflict: true as const };
 
   const now = new Date();
   const doc = await repo.create({
@@ -33,7 +39,7 @@ export async function createUser(raw: any) {
     userStatus: 0,
     userType: 0,
     imageIds: [],
-    ...raw, // allow extra UI fields (model validators apply)
+    ...raw, // allow extra UI fields; model validators apply
   });
 
   await upsertDirectory({
@@ -49,19 +55,20 @@ export async function createUser(raw: any) {
     dateCreated: now.toISOString(),
   });
 
-  return { doc, dto: toUserDto(doc) };
+  return { doc, dto: dbToDomain(doc as any) };
 }
 
 export async function listUsers() {
   const docs = await repo.findAll();
-  return docs.map(toUserDto);
+  // Be explicit so TS doesn’t try to force a stricter callback signature
+  return docs.map((d) => dbToDomain(d as any));
 }
 
 export async function getUserById(id: string) {
   if (!repo.isValidId(id)) return { badId: true as const };
   const doc = await repo.findById(id);
   if (!doc) return { notFound: true as const };
-  return { dto: toUserDto(doc) };
+  return { dto: dbToDomain(doc as any) };
 }
 
 export async function replaceUser(id: string, body: any) {
@@ -77,7 +84,7 @@ export async function replaceUser(id: string, body: any) {
   };
 
   try {
-    // replace semantics: supply full patch; model validators will enforce required fields
+    // replace semantics; model validators enforce required fields
     const updated = await repo.updateById(id, patch);
     if (!updated) return { notFound: true as const };
 
@@ -93,7 +100,7 @@ export async function replaceUser(id: string, body: any) {
       country: (updated as any).country,
     });
 
-    return { dto: toUserDto(updated) };
+    return { dto: dbToDomain(updated as any) };
   } catch (err) {
     if (isDupKey(err)) return { conflict: true as const };
     throw err;
@@ -129,7 +136,7 @@ export async function patchUser(id: string, body: any) {
       country: (updated as any).country,
     });
 
-    return { dto: toUserDto(updated) };
+    return { dto: dbToDomain(updated as any) };
   } catch (err) {
     if (isDupKey(err)) return { conflict: true as const };
     throw err;
@@ -150,7 +157,7 @@ export async function getUserByEmail(email: string) {
   const emailNorm = normalizeEmail(String(email));
   const doc = await repo.findByEmail(emailNorm);
   if (!doc) return { notFound: true as const };
-  return { dto: toUserDto(doc) };
+  return { dto: dbToDomain(doc as any) };
 }
 
 export async function getUserByEmailWithPassword(email: string) {

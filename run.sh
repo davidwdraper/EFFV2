@@ -1,6 +1,26 @@
-#!/usr/bin/env bash
 # scripts/run.sh
+#!/usr/bin/env bash
 set -Eeuo pipefail
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NowVibin Dev Runner (services spawn with ENV_FILE propagated)
+# - MODE: dev | docker
+# - ENV_FILE: path to env file (default: .env.dev) — script-level default only
+# - Never hard-codes .env.dev in service code; only the runner sets it.
+# - NEW: Builds backend/services/shared before launching services.
+# ─────────────────────────────────────────────────────────────────────────────
+
+MODE="${1:-dev}"     # dev | docker
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$ROOT"
+
+# Allow override: ENV_FILE=/path/to/.env.something ./scripts/run.sh
+ENV_FILE="${ENV_FILE:-.env.dev}"
+# Normalize ENV_FILE to absolute path if relative
+if [[ "$ENV_FILE" != /* ]]; then ENV_FILE="$ROOT/$ENV_FILE"; fi
+
+echo "▶ run.sh starting MODE=$MODE (root=$ROOT)"
+echo "   ENV_FILE=$ENV_FILE"
 
 # ======= CONFIG: edit this list =======
 # Each line: name|path|start-command
@@ -12,15 +32,9 @@ SERVICES=(
   "act|backend/services/act|yarn dev"
   # "auth|backend/services/auth|yarn dev"
   # "image|backend/services/image|yarn dev"
-  # "user|backend/services/user|yarn dev"
+  "user|backend/services/user|yarn dev"
   # "log|backend/services/log|yarn dev"
 )
-
-MODE="${1:-dev}"   # dev | docker
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-cd "$ROOT"
-
-echo "▶ run.sh starting in MODE=$MODE (root=$ROOT)"
 
 # ======= Clean shutdown =======
 PIDS=()
@@ -45,7 +59,7 @@ trap 'echo "🛑 Caught signal"; cleanup; exit 0' INT TERM
 trap 'echo "💥 Error on line $LINENO"; cleanup; exit 1' ERR
 
 # ======= Helpers =======
-get_env() { # get key from .env.dev
+get_env() { # get key from env file without sourcing
   local file="$1" key="$2"
   [[ -f "$file" ]] || return 1
   grep -E "^${key}=" "$file" | tail -n1 | cut -d'=' -f2- || true
@@ -53,24 +67,54 @@ get_env() { # get key from .env.dev
 
 # ======= Docker mode =======
 if [[ "$MODE" == "docker" ]]; then
-  echo "🛳️  Starting docker compose..."
-  docker compose --env-file .env.docker up --build
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "❌ ENV_FILE not found: $ENV_FILE"
+    exit 1
+  fi
+  echo "🛳️  Starting docker compose with env file: $ENV_FILE"
+  docker compose --env-file "$ENV_FILE" up --build
   exit 0
 fi
 
 # ======= Dev mode =======
 if [[ "$MODE" != "dev" ]]; then
-  echo "❌ Invalid mode. Usage: ./scripts/run.sh [dev|docker]"
+  echo "❌ Invalid mode. Usage: ENV_FILE=.env.dev ./scripts/run.sh [dev|docker]"
   exit 1
 fi
 
-[[ -f ".env.dev" ]] || { echo "❌ .env.dev not found at repo root ($ROOT)"; exit 1; }
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "❌ ENV_FILE not found: $ENV_FILE"
+  exit 1
+fi
 
-# ----- Robust port cleanup (no fragile pipes) -----
-echo "🧹 Killing anything on ports from .env.dev..."
-ports="$(grep -E '^[A-Z0-9_]+_PORT=' .env.dev 2>/dev/null | sed -E 's/.*=//' | tr -d '"' | tr ' ' '\n' | grep -E '^[0-9]+$' || true)"
+# ----- Build shared before anything else -----
+SHARED_DIR="$ROOT/backend/services/shared"
+BUILD_HELPER="$ROOT/scripts/build-shared.sh"
+echo "🛠️  Building @shared..."
+if [[ -x "$BUILD_HELPER" ]]; then
+  "$BUILD_HELPER"
+else
+  if [[ -d "$SHARED_DIR" ]]; then
+    pushd "$SHARED_DIR" >/dev/null
+    if command -v yarn >/dev/null 2>&1; then
+      yarn tsc --build --clean
+      yarn tsc --build
+    else
+      npx tsc --build --clean
+      npx tsc --build
+    fi
+    popd >/dev/null
+    echo "✅ @shared built."
+  else
+    echo "⚠️  Shared package not found at $SHARED_DIR (skipping build)"
+  fi
+fi
+
+# ----- Robust port cleanup based on ENV_FILE -----
+echo "🧹 Killing anything on ports from $ENV_FILE ..."
+ports="$(grep -E '^[A-Z0-9_]+_PORT=' "$ENV_FILE" 2>/dev/null | sed -E 's/.*=//' | tr -d '"' | tr ' ' '\n' | grep -E '^[0-9]+$' || true)"
 if [[ -z "${ports}" ]]; then
-  echo "ℹ️  No *_PORT entries found in .env.dev"
+  echo "ℹ️  No *_PORT entries found in $(basename "$ENV_FILE")"
 else
   for p in ${ports}; do
     [[ -z "$p" ]] && continue
@@ -86,7 +130,7 @@ else
 fi
 
 # ----- Redis (optional local) -----
-REDIS_URL="$(get_env .env.dev REDIS_URL || true)"
+REDIS_URL="$(get_env "$ENV_FILE" REDIS_URL || true)"
 if [[ -z "${REDIS_URL:-}" ]]; then
   REDIS_URL="redis://localhost:6379"
   echo "ℹ️  REDIS_URL not set; assuming $REDIS_URL for dev."
@@ -129,7 +173,7 @@ else
   echo "ℹ️  REDIS_URL points to remote; not starting local Redis."
 fi
 
-# ----- Build command list from SERVICES (comments respected) -----
+# ----- Build command list from SERVICES -----
 NAMES=()
 CMDS=()
 
@@ -156,8 +200,8 @@ for line in "${SERVICES[@]}"; do
 
   echo "  • (enabled)  $name → $path :: $cmd"
   NAMES+=("$name")
-  # Use dotenv from repo root so all services share the same .env.dev
-  CMDS+=("cd \"$path\" && NODE_ENV=dev npx -y dotenv -e \"$ROOT/.env.dev\" -- $cmd")
+  # Pass ENV_FILE to services; let each service bootstrap load it (no npx dotenv).
+  CMDS+=("cd \"$path\" && ENV_FILE=\"$ENV_FILE\" NODE_ENV=dev $cmd")
 done
 
 if [[ "${#NAMES[@]}" -eq 0 ]]; then

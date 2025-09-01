@@ -3,7 +3,7 @@ import type { RequestHandler } from "express";
 import { asyncHandler } from "@shared/middleware/asyncHandler";
 import { prefixRe } from "../lib/search";
 import * as repo from "../repo/directoryRepo";
-import { toDirectoryDiscovery } from "../dto/directoryDto";
+import { dbToDirectoryDiscovery } from "src/mappers/user.directory.mapper";
 
 // GET /directory/search?q=Jane%20Sm&limit=20&offset=0
 export const search: RequestHandler = asyncHandler(async (req, res) => {
@@ -54,7 +54,7 @@ export const search: RequestHandler = asyncHandler(async (req, res) => {
   ]);
 
   // No emails returned; only discovery data
-  const safe = (items ?? []).map(toDirectoryDiscovery);
+  const safe = (items ?? []).map(dbToDirectoryDiscovery);
 
   res.json({ total, limit, offset, items: safe });
 });

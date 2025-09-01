@@ -2,7 +2,6 @@
 
 import express from "express";
 
-// Shared middleware & helpers (DRY across services)
 import { coreMiddleware } from "@shared/middleware/core";
 import { makeHttpLogger } from "@shared/middleware/httpLogger";
 import { entryExit } from "@shared/middleware/entryExit";
@@ -13,25 +12,22 @@ import {
 } from "@shared/middleware/problemJson";
 import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
 import { createHealthRouter } from "@shared/health";
+import { verifyS2S } from "@shared/middleware/verifyS2S";
 
-// Service routes
 import userRoutes from "./routes/userRoutes";
 import userPublicRoutes from "./routes/userPublicRoutes";
-import directoryRoutes from "./routes/directoryRoutes"; // friend-lookup search API
+import directoryRoutes from "./routes/directoryRoutes";
 
-// ── Env enforcement (no defaults, identical pattern across services)
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v || v.trim() === "")
-    throw new Error(`Missing required env var: ${name}`);
-  return v.trim();
-}
-const SERVICE_NAME = requireEnv("USER_SERVICE_NAME");
-requireEnv("USER_MONGO_URI");
-requireEnv("USER_PORT");
+import { SERVICE_NAME } from "./bootstrap";
+import { config } from "./config";
 
-// Express app
-export const app = express(); // named export (tests & other callers)
+// Parity checks with Act (explicit env presence)
+if (!config.mongoUri)
+  throw new Error("Missing required env var: USER_MONGO_URI");
+if (!config.port) throw new Error("Missing required env var: USER_PORT");
+
+// ── Express app ──────────────────────────────────────────────────────────────
+export const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", true);
 
@@ -41,7 +37,7 @@ app.use(makeHttpLogger(SERVICE_NAME));
 app.use(entryExit());
 app.use(auditBuffer());
 
-// Health (uniform across services)
+// Health (EXCEPTION: stays at root, not under /api)
 app.use(
   createHealthRouter({
     service: SERVICE_NAME,
@@ -49,17 +45,27 @@ app.use(
   })
 );
 
-// Test helpers (only under NODE_ENV=test)
-addTestOnlyHelpers(app as any, ["/users", "/directory"]);
+// Require S2S for everything after health (SOP Addendum 2)
+app.use(verifyS2S);
 
-// Routes (preserve existing behavior)
-app.use("/users", userRoutes); // auth-required CRUD (gateway enforces)
-app.use("/users", userPublicRoutes); // public names endpoint (legacy/compat)
-app.use("/directory", directoryRoutes);
+// --------------------------- API prefix --------------------------------------
+// Everything user-facing for this service lives under /api/*
+const api = express.Router();
 
-// 404 and error handler (Problem+JSON, SOP-standard)
-app.use(notFoundProblemJson(["/users", "/directory", "/health"]));
+// Canonical routes under /api/<serverName>/...
+// <serverName> for User is "user"
+api.use("/user", userRoutes); // auth-required CRUD
+api.use("/user", userPublicRoutes); // public names endpoint (compat)
+api.use("/user/directory", directoryRoutes); // friend-lookup/search API
+
+// Mount the API router (same pattern as Act)
+app.use("/api", api);
+
+// Test helpers updated to match /api paths
+addTestOnlyHelpers(app as any, ["/api/user", "/api/user/directory"]);
+
+// 404 + error handlers (limit known prefixes to /api/* and /health)
+app.use(notFoundProblemJson(["/api/user", "/api/user/directory", "/health"]));
 app.use(errorProblemJson());
 
-// keep default export too (future-proof for different import styles)
 export default app;

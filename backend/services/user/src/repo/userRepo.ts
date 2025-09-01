@@ -1,6 +1,6 @@
 // backend/services/user/src/repo/userRepo.ts
 import mongoose from "mongoose";
-import UserModel from "../models/User";
+import UserModel from "../models/user.model";
 
 export const isValidId = (id: string) => mongoose.isValidObjectId(id);
 

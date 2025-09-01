@@ -1,11 +1,16 @@
 // backend/services/user/src/routes/userPublicRoutes.ts
 import { Router } from "express";
-import * as c from "../controllers/userPublicController";
-import { cacheGet } from "../../../shared/utils/cache";
+import { cacheGet } from "@shared/utils/cache";
+import { publicNames } from "../controllers/user.public.controller";
 
-const r = Router();
+const router = Router();
 
+// Final path: GET /api/user/public/names?ids=...
 // Cache is fine here; TTL via USER_CACHE_TTL_SEC
-r.get("/public/names", cacheGet("user", "USER_CACHE_TTL_SEC"), c.publicNames);
+router.get(
+  "/public/names",
+  cacheGet("user", "USER_CACHE_TTL_SEC"),
+  publicNames
+);
 
-export default r;
+export default router;

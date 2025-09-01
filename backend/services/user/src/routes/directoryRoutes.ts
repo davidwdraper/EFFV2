@@ -1,11 +1,12 @@
 // backend/services/user/src/routes/directoryRoutes.ts
 import { Router } from "express";
-import * as c from "../controllers/directoryController";
-import { cacheGet } from "../../../shared/utils/cache";
+import { cacheGet } from "@shared/utils/cache";
+import { search } from "../controllers/user.directory.controller";
 
-const r = Router();
+const router = Router();
 
+// Final path: GET /api/user/directory/search?q=...
 // Directory lookups are read-only; safe to cache under a separate namespace
-r.get("/search", cacheGet("user-directory", "USER_CACHE_TTL_SEC"), c.search);
+router.get("/search", cacheGet("user-directory", "USER_CACHE_TTL_SEC"), search);
 
-export default r;
+export default router;

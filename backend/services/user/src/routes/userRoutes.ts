@@ -1,41 +1,50 @@
 // backend/services/user/src/routes/userRoutes.ts
 import { Router } from "express";
 import { authenticate } from "@shared/middleware/authenticate";
-import * as c from "../controllers/userController";
-import { cacheGet, invalidateOnSuccess } from "../../../shared/utils/cache";
+import { cacheGet, invalidateOnSuccess } from "@shared/utils/cache";
 
-const r = Router();
+// 🔧 Direct handler imports (no barrels)
+import { create } from "../controllers/handlers/create";
+import { list } from "../controllers/handlers/list";
+import { getUserByEmail } from "../controllers/handlers/getUserByEmail";
+import { getUserByEmailWithPassword } from "../controllers/handlers/getUserByEmailWithPassword";
+import { getById } from "../controllers/handlers/getById";
+import { replaceUser } from "../controllers/handlers/replaceUser";
+import { patchUser } from "../controllers/handlers/patchUser";
+import { remove } from "../controllers/handlers/remove";
+
+const router = Router();
 
 // PUBLIC
-r.post("/", invalidateOnSuccess(["user", "user-directory"])(c.create));
-r.get("/", cacheGet("user", "USER_CACHE_TTL_SEC"), c.list);
-r.get(
+router.post("/", invalidateOnSuccess(["user", "user-directory"])(create));
+router.get("/", cacheGet("user", "USER_CACHE_TTL_SEC"), list);
+router.get(
   "/email/:email",
   cacheGet("user", "USER_CACHE_TTL_SEC"),
-  c.getUserByEmail
+  getUserByEmail
 );
-r.get(
+router.get(
   "/private/email/:email",
   cacheGet("user", "USER_CACHE_TTL_SEC"),
-  c.getUserByEmailWithPassword
+  getUserByEmailWithPassword
 );
-r.get("/:id", cacheGet("user", "USER_CACHE_TTL_SEC"), c.getById);
+router.get("/:id", cacheGet("user", "USER_CACHE_TTL_SEC"), getById);
 
 // PROTECTED (mutations invalidate both user & directory namespaces)
-r.put(
-  "//:id",
+router.put(
+  "/:id",
   authenticate,
-  invalidateOnSuccess(["user", "user-directory"])(c.replaceUser)
+  invalidateOnSuccess(["user", "user-directory"])(replaceUser)
 );
-r.patch(
-  "//:id",
+router.patch(
+  "/:id",
   authenticate,
-  invalidateOnSuccess(["user", "user-directory"])(c.patchUser)
+  invalidateOnSuccess(["user", "user-directory"])(patchUser)
 );
-r.delete(
-  "//:id",
+router.delete(
+  "/:id",
   authenticate,
-  invalidateOnSuccess(["user", "user-directory"])(c.remove)
+  invalidateOnSuccess(["user", "user-directory"])(remove)
 );
 
-export default r;
+export default router;

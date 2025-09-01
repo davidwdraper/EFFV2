@@ -1,30 +1,28 @@
 // backend/services/user/src/config.ts
-import { requireEnv, requireNumber } from "../../shared/config/env";
+import { requireEnv, requireNumber } from "@shared/config/env";
 
-export const serviceName = requireEnv("USER_SERVICE_NAME");
-export const port = requireNumber("USER_PORT");
-export const mongoUri = requireEnv("USER_MONGO_URI");
-export const jwtSecret = requireEnv("JWT_SECRET"); // required, no fallback
-export const logLevel = requireEnv("LOG_LEVEL");
-export const logServiceUrl = requireEnv("LOG_SERVICE_URL");
-
-// Upstream helpers (if user service calls others — rare for entity tier)
-export function requireUpstream(
-  name:
-    | "ACT_SERVICE_URL"
-    | "PLACE_SERVICE_URL"
-    | "EVENT_SERVICE_URL"
-    | "LOG_SERVICE_URL"
-) {
-  return requireEnv(name);
-}
+// Service name is baked in bootstrap.ts; do NOT read USER_SERVICE_NAME here.
 
 export const config = {
-  serviceName,
-  port,
-  mongoUri,
-  jwtSecret,
-  logLevel,
-  logServiceUrl,
-  requireUpstream,
-};
+  port: requireNumber("USER_PORT"),
+  mongoUri: requireEnv("USER_MONGO_URI"),
+  jwtSecret: requireEnv("JWT_SECRET"),
+  logLevel: requireEnv("LOG_LEVEL"),
+  logServiceUrl: requireEnv("LOG_SERVICE_URL"),
+  gatewayCoreBaseUrl: requireEnv("GATEWAY_CORE_BASE_URL"),
+  cacheTtlSec: Number(process.env.USER_CACHE_TTL_SEC ?? "60"),
+
+  // Upstream helpers (if user service calls others — rare for entity tier)
+  requireUpstream(
+    name:
+      | "ACT_SERVICE_URL"
+      | "PLACE_SERVICE_URL"
+      | "EVENT_SERVICE_URL"
+      | "LOG_SERVICE_URL"
+  ) {
+    return requireEnv(name);
+  },
+} as const;
+
+// If you need the service name elsewhere, import from bootstrap:
+//   import { SERVICE_NAME } from "./bootstrap";

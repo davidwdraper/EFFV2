@@ -1,6 +1,7 @@
-// backend/services/user/src/models/Directory.ts
+// backend/services/user/src/models/user.directory.model.ts
 import mongoose, { Schema, Document } from "mongoose";
 
+// Persistence-only; a separate read-model for discovery searches
 export interface DirectoryDocument extends Document {
   userId: string;
   bucket: number;
@@ -14,15 +15,8 @@ export interface DirectoryDocument extends Document {
   city?: string;
   state?: string;
   country?: string;
-  dateCreated: string;
+  dateCreated: string; // kept as string for back-compat
   dateLastUpdated: string;
-}
-
-function fold(s?: string) {
-  return String(s || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase();
 }
 
 const schema = new Schema<DirectoryDocument>(
@@ -43,6 +37,7 @@ const schema = new Schema<DirectoryDocument>(
     dateLastUpdated: { type: String, required: true },
   },
   {
+    bufferCommands: false, // SOP
     toJSON: {
       virtuals: true,
       versionKey: false,

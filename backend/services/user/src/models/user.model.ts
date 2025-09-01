@@ -1,13 +1,30 @@
-// backend/services/user/src/models/User.ts
+// backend/services/user/src/models/user.model.ts
 import mongoose, { Schema, Document } from "mongoose";
-import { IUser } from "@shared/interfaces/User/IUser";
-import { normalizeEmail, emailToBucket } from "../../../shared/tenant/bucket";
+import { normalizeEmail, emailToBucket } from "@shared/tenant/bucket";
 
-// Export the document type so other modules can import it.
-export interface UserDocument extends Document, IUser {
-  // New fields for future partitioning (kept optional for existing docs)
+// Persistence-only document type (do not export to domain)
+export interface UserDocument extends Document {
+  dateCreated: Date;
+  dateLastUpdated: Date;
+
+  userStatus: number;
+  userType: number;
+
+  userEntryId?: string;
+  userOwnerId?: string;
+
+  lastname: string;
+  middlename?: string;
+  firstname: string;
+
+  email: string;
+  // Canonicalized/partition helpers
   emailNorm?: string;
   bucket?: number;
+
+  password: string;
+
+  imageIds: string[];
 }
 
 const userSchema = new Schema<UserDocument>(
@@ -18,8 +35,8 @@ const userSchema = new Schema<UserDocument>(
     userStatus: { type: Number, required: true, default: 0 },
     userType: { type: Number, required: true, default: 0 },
 
-    userEntryId: { type: String }, // populated post-save
-    userOwnerId: { type: String }, // populated post-save
+    userEntryId: { type: String },
+    userOwnerId: { type: String },
 
     lastname: { type: String, required: true, index: true },
     middlename: { type: String },
@@ -34,19 +51,15 @@ const userSchema = new Schema<UserDocument>(
       index: true,
     },
 
-    // ── Canonicalized fields (non-breaking; optional for legacy docs) ──
     emailNorm: { type: String, index: true },
     bucket: { type: Number, min: 0, index: true },
 
     password: { type: String, required: true },
 
-    // Removed the 10-item validation limit; keep array with default []
-    imageIds: {
-      type: [String],
-      default: [],
-    },
+    imageIds: { type: [String], default: [] },
   },
   {
+    bufferCommands: false, // SOP: disable buffering at model level
     timestamps: false,
     toJSON: {
       virtuals: true,
@@ -73,11 +86,8 @@ const userSchema = new Schema<UserDocument>(
   }
 );
 
-// Compound index for lastname + firstname (kept)
+// Indexes
 userSchema.index({ lastname: 1, firstname: 1 });
-
-// Future-proof uniqueness: when both emailNorm & bucket are present, enforce unique.
-// Partial so legacy docs without these fields won't block index creation.
 userSchema.index(
   { bucket: 1, emailNorm: 1 },
   {
@@ -89,23 +99,20 @@ userSchema.index(
   }
 );
 
-// Normalize email consistently and derive emailNorm + bucket.
-// Keep behavior backward-compatible: we always set email to normalized form,
-// and we also set emailNorm/bucket so controllers can start using them.
+// Email normalization + partition helpers
 userSchema.pre("validate", function (next) {
   const self = this as UserDocument & { email?: string };
 
   if (self.email) {
     const norm = normalizeEmail(self.email);
-    self.email = norm; // preserve your current single-field email canonicalization
-    self.emailNorm = norm; // canonical field for future use
+    self.email = norm;
+    self.emailNorm = norm;
     try {
-      self.bucket = emailToBucket(norm); // requires USER_BUCKETS; env is asserted at boot
+      self.bucket = emailToBucket(norm); // requires USER_BUCKETS env
     } catch {
-      // Let it bubble if env missing; fail-fast is desired per SOP.
+      // Let it bubble; env should be asserted at boot per SOP.
     }
   }
-
   next();
 });
 
@@ -122,6 +129,3 @@ userSchema.post("save", async function (doc) {
 
 const UserModel = mongoose.model<UserDocument>("User", userSchema);
 export default UserModel;
-
-// Optional DTO type for controller responses (no password)
-export type UserDTO = Omit<UserDocument, "password">;

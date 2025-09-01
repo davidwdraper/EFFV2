@@ -1,8 +1,9 @@
 // backend/services/user/src/services/directoryWriter.ts
-import Directory from "../models/Directory";
+import Directory from "../models/user.directory.model";
+import { clean } from "@shared/utils/clean";
 
 function fold(s?: string) {
-  return String(s || "")
+  return String(s ?? "")
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
@@ -21,36 +22,43 @@ export type DirectoryUpsertInput = {
   dateCreated?: string; // optional on upsert
 };
 
-export async function upsertDirectory(i: DirectoryUpsertInput) {
+/**
+ * Upsert the discovery read-model for a user (no PII beyond email).
+ * Writes only defined fields; preserves dateCreated on existing docs.
+ */
+export async function upsertDirectory(i: DirectoryUpsertInput): Promise<void> {
   const now = new Date().toISOString();
   const givenFold = i.givenName ? fold(i.givenName) : undefined;
   const familyFold = i.familyName ? fold(i.familyName) : undefined;
   const nameFold = fold([i.givenName, i.familyName].filter(Boolean).join(" "));
 
+  const setPayload = clean({
+    userId: i.userId,
+    bucket: i.bucket,
+    email: i.email,
+    emailNorm: i.emailNorm,
+    givenName: i.givenName,
+    familyName: i.familyName,
+    nameFold,
+    givenFold,
+    familyFold,
+    city: i.city,
+    state: i.state,
+    country: i.country,
+    dateLastUpdated: now,
+  });
+
   await Directory.updateOne(
     { userId: i.userId },
     {
-      $set: {
-        userId: i.userId,
-        bucket: i.bucket,
-        email: i.email,
-        emailNorm: i.emailNorm,
-        givenName: i.givenName,
-        familyName: i.familyName,
-        nameFold,
-        givenFold,
-        familyFold,
-        city: i.city,
-        state: i.state,
-        country: i.country,
-        dateLastUpdated: now,
-      },
+      $set: setPayload,
       $setOnInsert: { dateCreated: i.dateCreated || now },
     },
     { upsert: true, collation: { locale: "en", strength: 2 } }
-  );
+  ).exec();
 }
 
-export async function deleteFromDirectory(userId: string) {
-  await Directory.deleteOne({ userId });
+/** Remove the discovery record for a user (idempotent). */
+export async function deleteFromDirectory(userId: string): Promise<void> {
+  await Directory.deleteOne({ userId }).exec();
 }

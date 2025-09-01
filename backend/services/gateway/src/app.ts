@@ -46,6 +46,41 @@ function sanitizeUrl(u: string): string {
   }
 }
 
+// Public health passthrough helper (pre-auth, strips Authorization)
+function registerServiceHealthPassthrough(
+  app: express.Express,
+  publicBasePath: string, // e.g. "/user/health"
+  upstreamBaseUrl: string // e.g. "http://127.0.0.1:4001/health"
+) {
+  const mk =
+    (suffix: "live" | "ready") =>
+    async (req: express.Request, res: express.Response) => {
+      try {
+        // ensure no auth header is forwarded
+        delete req.headers.authorization;
+        const url = `${upstreamBaseUrl}/${suffix}`;
+        const r = await axios.get(url, {
+          timeout: 1500,
+          validateStatus: () => true,
+          // do not send any auth by default
+          headers: { "x-request-id": String((req as any).id || "") },
+        });
+        res.status(r.status).set(r.headers).send(r.data);
+      } catch {
+        res
+          .status(502)
+          .json({
+            code: "BAD_GATEWAY",
+            status: 502,
+            message: "Upstream health unavailable",
+          });
+      }
+    };
+
+  app.get(`${publicBasePath}/live`, mk("live"));
+  app.get(`${publicBasePath}/ready`, mk("ready"));
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // App
 export const app = express();
@@ -141,6 +176,8 @@ app.use(trace5xx("early"));
 // ──────────────────────────────────────────────────────────────────────────────
 // Health / Readiness — BEFORE limits/auth
 const ACT_URL = requireUpstreamByKey("ACT_SERVICE_URL");
+const USER_URL = requireUpstreamByKey("USER_SERVICE_URL"); // 👈 add user upstream
+
 const readiness: ReadinessFn = async (_req) => {
   try {
     const r = await axios.get(`${ACT_URL}/health/ready`, {
@@ -160,6 +197,13 @@ app.use(
     readiness,
   })
 );
+
+// Public per-service health passthroughs (NO /api, NO auth, NO Authorization)
+registerServiceHealthPassthrough(app, "/user/health", `${USER_URL}/health`);
+registerServiceHealthPassthrough(app, "/act/health", `${ACT_URL}/health`);
+// If you have GEO/CORE services with public health, add similarly:
+// const GEO_URL = requireUpstreamByKey("GEO_SERVICE_URL");
+// registerServiceHealthPassthrough(app, "/geo/health", `${GEO_URL}/health`);
 
 // 👀 DEBUG: introspection endpoints (remove before release)
 app.get("/__core", (_req, res) => {
@@ -184,7 +228,6 @@ app.get("/__auth", (_req, res) => {
     ),
     S2S_ISSUER: process.env.S2S_ISSUER || null,
     S2S_AUDIENCE: process.env.S2S_AUDIENCE || null,
-    S2S_MAX_TTL_SEC: process.env.S2S_MAX_TTL_SEC || null,
     // Proxy pathing
     INBOUND_STRIP_SEGMENTS: process.env.INBOUND_STRIP_SEGMENTS ?? null,
     OUTBOUND_API_PREFIX: process.env.OUTBOUND_API_PREFIX ?? null,

@@ -1,5 +1,6 @@
+# scripts/smoke.sh
 #!/usr/bin/env bash
-# smoke.sh — curl smoketests for gateway / core / act / geo
+# smoke.sh — curl smoketests for gateway / core / act / geo / user
 #
 # Usage:
 #   bash smoke.sh --list
@@ -29,6 +30,7 @@ GW=${GW:-http://127.0.0.1:4000}
 CORE=${CORE:-http://127.0.0.1:4011}
 GEO=${GEO:-http://127.0.0.1:4012}
 ACT=${ACT:-http://127.0.0.1:4002}
+USER=${USER:-http://127.0.0.1:4001}
 
 # S2S minting defaults (match your .env.dev)
 S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-core-internal}"
@@ -83,7 +85,6 @@ TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }               # act→core
 # JSON helpers
 json() { printf '%s' "$1"; }
 
-# Minimal Act payload, now primed with required mock fields to satisfy model
 payload_act_minimal() {
   json '{
     "name": "SmokeTest Act Update",
@@ -108,8 +109,6 @@ payload_act_minimal() {
   }'
 }
 
-# Same as above, but include a mailing address block to trigger geocode paths
-# NOTE: actLoc intentionally omitted so Geo result is applied by the service.
 payload_act_with_address() {
   local a1="${MAIL_ADDR1}" a2="${MAIL_ADDR2}" c="${MAIL_CITY}" s="${MAIL_STATE}" z="${MAIL_ZIP}"
   json "{
@@ -143,11 +142,8 @@ payload_act_with_address() {
 }
 
 pretty() { if [[ $USE_JQ -eq 1 ]]; then "$JQ"; else cat; fi }
-
-# helper: extract id from response (requires jq)
 extract_id() { ${JQ} -r '._id // .id // .data._id // empty'; }
 
-# helper: idempotent DELETE (accepts 200/202/204/404 as success)
 delete_ok() {
   local url="$1"; shift
   local code
@@ -170,6 +166,8 @@ declare -a TESTS=(
   "8|act PUT+GET+DELETE via gateway (4000) no address (JWT act)|t8"
   "9|act PUT+GET+DELETE direct (4002) WITH address → geocode (JWT core)|t9"
   "10|act PUT+GET+DELETE via gateway (4000) WITH address → geocode (JWT act)|t10"
+  "11|user health direct (4001)|t11"
+  "12|user health via gateway (4000, JWT act)|t12"
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -185,7 +183,7 @@ t1() {
 }
 
 t2() { curl -sS "$CORE/health/live" | pretty; }
-t3() { curl -sS "$ACT/health/live" | pretty; }   # health = exception (no /api)
+t3() { curl -sS "$ACT/health/live" | pretty; }
 t4() { curl -sS "$GEO/health/live" | pretty; }
 
 t5() {
@@ -205,7 +203,6 @@ t6() {
 }
 
 t7() {
-  # Direct Act under /api (PUT + GET + DELETE)
   local TOKEN; TOKEN=$(TOKEN_CORE)
   local base="$ACT/api/acts"
   local resp id
@@ -222,7 +219,6 @@ t7() {
 }
 
 t8() {
-  # Via gateway: /api/act/... (PUT + GET + DELETE). Client token is accepted; bypass may be on.
   local TOKEN; TOKEN=$(TOKEN_CALLER_ACT)
   local base="$GW/api/act/acts"
   local resp id
@@ -239,7 +235,6 @@ t8() {
 }
 
 t9() {
-  # Direct Act WITH mailingAddress → geocode path (PUT + GET + DELETE)
   if [[ -z "${MAIL_ADDR1}${MAIL_CITY}${MAIL_STATE}${MAIL_ZIP}" ]]; then
     echo "⚠️  Provide MAIL_ADDR1/MAIL_CITY/MAIL_STATE/MAIL_ZIP to trigger geocode." >&2
   fi
@@ -259,7 +254,6 @@ t9() {
 }
 
 t10() {
-  # Via gateway WITH mailingAddress → geocode path (PUT + GET + DELETE)
   if [[ -z "${MAIL_ADDR1}${MAIL_CITY}${MAIL_STATE}${MAIL_ZIP}" ]]; then
     echo "⚠️  Provide MAIL_ADDR1/MAIL_CITY/MAIL_STATE/MAIL_ZIP to trigger geocode." >&2
   fi
@@ -275,7 +269,15 @@ t10() {
   [[ -n "$id" ]] || { echo "❌ gateway PUT+address did not return _id"; exit 1; }
   echo "✅ created via gateway(with addr) _id=$id"
   curl -sS -H "Authorization: Bearer $TOKEN" "$base/$id" | pretty
-  delete_ok "$base/$id" -H "Authorization: Bear_TOKEN"
+  delete_ok "$base/$id" -H "Authorization: Bearer $TOKEN"
+}
+
+t11() { curl -sS "$USER/health/live" | pretty; }
+
+t12() {
+  local TOKEN; TOKEN=$(TOKEN_CALLER_ACT)
+  curl -sS "$GW/api/user/health/live" \
+    -H "Authorization: Bearer $TOKEN" | pretty
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -354,8 +356,7 @@ run_one() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entry
-
+# Entry (portable: no mapfile/process substitution)
 if [[ "${1-}" == "--list" ]]; then
   print_list
   exit 0
@@ -364,12 +365,19 @@ fi
 if [[ $# -lt 1 ]]; then
   help
   echo
-  print_list   # 👈 show list as a convenience
+  print_list
   exit 64
 fi
 
 SELECTION="$1"; shift || true
-mapfile -t IDS < <(parse_selection "$SELECTION")
+
+# Build IDS[] without mapfile or < <(...) to support macOS Bash 3.2
+IDS=()
+_selection_expanded="$(parse_selection "$SELECTION")"
+while IFS= read -r line; do
+  [[ -n "$line" ]] && IDS+=("$line")
+done <<< "$_selection_expanded"
+unset _selection_expanded
 
 if [[ $QUIET -eq 1 ]]; then
   overall=0

@@ -22,15 +22,18 @@ export interface UserDocument extends Document {
   emailNorm?: string;
   bucket?: number;
 
-  password: string;
+  password?: string; // not required on PUT create; hidden by default
 
   imageIds: string[];
 }
 
+const now = () => new Date();
+
 const userSchema = new Schema<UserDocument>(
   {
-    dateCreated: { type: Date, required: true },
-    dateLastUpdated: { type: Date, required: true },
+    // Dates: model stamps them (defaults + update hook below)
+    dateCreated: { type: Date, required: true, default: now },
+    dateLastUpdated: { type: Date, required: true, default: now },
 
     userStatus: { type: Number, required: true, default: 0 },
     userType: { type: Number, required: true, default: 0 },
@@ -38,14 +41,14 @@ const userSchema = new Schema<UserDocument>(
     userEntryId: { type: String },
     userOwnerId: { type: String },
 
-    lastname: { type: String, required: true, index: true },
-    middlename: { type: String },
-    firstname: { type: String, required: true, index: true },
+    lastname: { type: String, required: true, index: true, trim: true },
+    middlename: { type: String, trim: true },
+    firstname: { type: String, required: true, index: true, trim: true },
 
     email: {
       type: String,
       required: true,
-      unique: true, // keep global uniqueness today
+      unique: true, // global uniqueness (for now)
       lowercase: true,
       trim: true,
       index: true,
@@ -54,16 +57,19 @@ const userSchema = new Schema<UserDocument>(
     emailNorm: { type: String, index: true },
     bucket: { type: Number, min: 0, index: true },
 
-    password: { type: String, required: true },
+    // Credentials are NOT part of the domain contract.
+    // Hide by default; specific handlers may opt-in via .select('+password').
+    password: { type: String, select: false, required: false },
 
     imageIds: { type: [String], default: [] },
   },
   {
     bufferCommands: false, // SOP: disable buffering at model level
-    timestamps: false,
+    timestamps: false, // we control dates explicitly
     toJSON: {
       virtuals: true,
       versionKey: false,
+      getters: true, // apply getters so dates emit as ISO strings
       transform: (_doc, ret) => {
         ret.id = String(ret._id);
         delete ret._id;
@@ -74,6 +80,7 @@ const userSchema = new Schema<UserDocument>(
     toObject: {
       virtuals: true,
       versionKey: false,
+      getters: true, // apply getters on .toObject()
       transform: (_doc, ret) => {
         ret.id = String(ret._id);
         delete ret._id;
@@ -102,7 +109,6 @@ userSchema.index(
 // Email normalization + partition helpers
 userSchema.pre("validate", function (next) {
   const self = this as UserDocument & { email?: string };
-
   if (self.email) {
     const norm = normalizeEmail(self.email);
     self.email = norm;
@@ -110,10 +116,15 @@ userSchema.pre("validate", function (next) {
     try {
       self.bucket = emailToBucket(norm); // requires USER_BUCKETS env
     } catch {
-      // Let it bubble; env should be asserted at boot per SOP.
+      // Let env assertion fail at boot per SOP if misconfigured.
     }
   }
   next();
+});
+
+// Auto-update dateLastUpdated on any atomic update
+userSchema.pre("findOneAndUpdate", function () {
+  this.set({ dateLastUpdated: now() });
 });
 
 // Post-save: ensure owner/entry ids default to self if missing
@@ -122,10 +133,15 @@ userSchema.post("save", async function (doc) {
   if (!doc.userEntryId || !doc.userOwnerId) {
     await UserModel.updateOne(
       { _id: id },
-      { userEntryId: id, userOwnerId: id, dateLastUpdated: new Date() }
+      { userEntryId: id, userOwnerId: id, dateLastUpdated: now() }
     ).exec();
   }
 });
 
+// Getters so dates serialize as ISO strings (matches zIsoDate)
+userSchema.path("dateCreated").get((v: Date) => v?.toISOString());
+userSchema.path("dateLastUpdated").get((v: Date) => v?.toISOString());
+
+// Export model
 const UserModel = mongoose.model<UserDocument>("User", userSchema);
 export default UserModel;

@@ -9,14 +9,23 @@ import { list } from "../controllers/handlers/list";
 import { getUserByEmail } from "../controllers/handlers/getUserByEmail";
 import { getUserByEmailWithPassword } from "../controllers/handlers/getUserByEmailWithPassword";
 import { getById } from "../controllers/handlers/getById";
-import { replaceUser } from "../controllers/handlers/replaceUser";
 import { patchUser } from "../controllers/handlers/patchUser";
 import { remove } from "../controllers/handlers/remove";
 
 const router = Router();
 
-// PUBLIC
-router.post("/", invalidateOnSuccess(["user", "user-directory"])(create));
+/**
+ * Policy:
+ * - Create = PUT / (collection root). Mongo generates _id.
+ * - No POST / (back-compat removed).
+ * - No PUT /:id (replace-by-id forbidden).
+ * - PATCH /:id, DELETE /:id remain.
+ */
+
+// CREATE (collection root)
+router.put("/", invalidateOnSuccess(["user", "user-directory"])(create));
+
+// LIST + READ
 router.get("/", cacheGet("user", "USER_CACHE_TTL_SEC"), list);
 router.get(
   "/email/:email",
@@ -30,12 +39,7 @@ router.get(
 );
 router.get("/:id", cacheGet("user", "USER_CACHE_TTL_SEC"), getById);
 
-// PROTECTED (mutations invalidate both user & directory namespaces)
-router.put(
-  "/:id",
-  authenticate,
-  invalidateOnSuccess(["user", "user-directory"])(replaceUser)
-);
+// MUTATIONS (protected, invalidate caches)
 router.patch(
   "/:id",
   authenticate,

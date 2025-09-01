@@ -197,3 +197,41 @@ Template Service is the blueprint.
 Act is complete; do not reopen except for Safe Field Addition SOP.
 
 All new services spawn from Template and follow Route Convention strictly.
+
+Route Semantics — Create / Replace / Update
+
+Non-negotiable rules for entity endpoints:
+
+Create
+
+Always PUT to the collection root (e.g. PUT /api/user, PUT /api/act).
+
+No :id in the path; the service generates \_id (Mongo).
+
+Response must include the \_id so clients/tests can chain GET/DELETE.
+
+Mirrors our Act service contract.
+
+Replace
+
+PUT /api/<entity>/:id is not supported in our system.
+
+We never PUT with a known id (Mongo owns \_id).
+
+Any “replace” semantics happen as a PATCH-like flow (not full object replace).
+
+Update / Patch
+
+PATCH /api/<entity>/:id for partial updates.
+
+Must validate against z<Entity>Patch.
+
+Read
+
+GET /api/<entity>/:id returns the domain object.
+
+Delete
+
+DELETE /api/<entity>/:id removes the entity.
+
+DELETE must be idempotent: return 200/202/204 if deleted, 404 if already gone.

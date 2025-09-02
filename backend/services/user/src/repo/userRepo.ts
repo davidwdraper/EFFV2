@@ -2,10 +2,14 @@
 import mongoose from "mongoose";
 import UserModel from "../models/user.model";
 
+// Keep this repo thin. Model owns defaults/validation/dates.
+// Repo just routes calls and ensures lean gets getters/virtuals.
+
 export const isValidId = (id: string) => mongoose.isValidObjectId(id);
 
-// Always apply getters/virtuals with lean so dates are ISO strings and `id` is present.
-const L = { getters: true, virtuals: true };
+// Apply getters/virtuals so dates are ISO strings and `id` virtual exists.
+// (Also ensures password stays stripped by transform.)
+const L = { getters: true, virtuals: true } as const;
 
 export function findAll() {
   return UserModel.find().lean(L);
@@ -16,19 +20,18 @@ export function findById(id: string) {
 }
 
 export function findByEmail(emailNorm: string) {
-  // model lowercases/normalizes on write; normalize caller input upstream if needed
   return UserModel.findOne({ email: emailNorm }).lean(L);
 }
 
-// Create returns the created document with ISO dates and id
 export async function create(doc: any) {
+  // doc is validated upstream; model sets dateCreated/dateLastUpdated defaults
   const created = await UserModel.create(doc);
-  // convert via toObject to apply getters/virtuals consistently
+  // Convert to plain object with getters/virtuals (ISO dates, id, no password)
   return created.toObject();
 }
 
-// Patch-style update (partial); dateLastUpdated is bumped by model hook
 export function updateById(id: string, patch: any) {
+  // Model pre('findOneAndUpdate') bumps dateLastUpdated
   return UserModel.findByIdAndUpdate(id, patch, {
     new: true,
     runValidators: true,
@@ -47,7 +50,7 @@ export function findNamesByIds(ids: string[]) {
   ).lean(L);
 }
 
-/** Explicit opt-in path that needs hashed password (e.g., private login flow) */
+/** Explicit opt-in to read hashed password (auth flow only) */
 export function findByEmailWithPassword(emailNorm: string) {
-  return UserModel.findOne({ email: emailNorm }).select("+password").lean(); // no getters needed; caller knows what it's doing
+  return UserModel.findOne({ email: emailNorm }).select("+password").lean();
 }

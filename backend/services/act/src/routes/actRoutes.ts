@@ -13,6 +13,16 @@ import { remove } from "../controllers/act/handlers/remove";
 
 const router = Router();
 
+/**
+ * Policy (matches User):
+ * - Create = PUT /      (Mongo generates _id)
+ * - No POST /
+ * - No PUT /:id (replace-by-id forbidden)
+ * - Update = PATCH /:id (partial)
+ * - Delete = DELETE /:id
+ * - GETs are cacheable; mutations invalidate "act" namespace
+ */
+
 // one-liners only — no logic here
 router.get("/ping", ping);
 
@@ -23,11 +33,8 @@ router.get("/", cacheGet("act", "ACT_CACHE_TTL_SEC"), list);
 router.get("/:id", cacheGet("act", "ACT_CACHE_TTL_SEC"), findById);
 
 // Mutations invalidate the "act" namespace on success
-router.post("/", invalidateOnSuccess("act")(create));
-// NEW: support root PUT as upsert (aligns with smoke tests #7/#8/#10)
-router.put("/", invalidateOnSuccess("act")(create));
+router.put("/", invalidateOnSuccess("act")(create)); // canonical create
 router.patch("/:id", invalidateOnSuccess("act")(update));
-router.put("/:id", invalidateOnSuccess("act")(update));
 router.delete("/:id", invalidateOnSuccess("act")(remove));
 
 export default router;

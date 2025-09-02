@@ -14,6 +14,9 @@ import { serviceName } from "../config";
  * Mapping:
  *   /api/<service>/<rest>  →  <SERVICE_URL><OUTBOUND_API_PREFIX>/<rest>
  *
+ * Special-case:
+ *   /api/<service>/health/<rest> → <SERVICE_URL>/health/<rest>  (no auth header)
+ *
  * Required env (NO fallbacks):
  *   INBOUND_STRIP_SEGMENTS=1
  *   OUTBOUND_API_PREFIX=/api      # workers serve under /api
@@ -99,6 +102,11 @@ function joinPath(...parts: string[]): string {
     .filter((p) => p !== "");
   const joined = cleaned.join("/");
   return joined ? `/${joined}` : "/";
+}
+
+function isHealthRest(rest: string[]): boolean {
+  // Treat /api/<svc>/health/* as upstream /health/* (root)
+  return rest.length > 0 && rest[0] === "health";
 }
 
 // ── proxy instance ────────────────────────────────────────────────────────────
@@ -199,9 +207,9 @@ export function serviceProxy() {
     try {
       // Parse path + assert /api/<service>/...
       const qPos = rawUrl.indexOf("?");
-      const pathOnly = qPos >= 0 ? rawUrl.slice(0, qPos) : rawUrl; // e.g. /api/act/acts
+      const pathOnly = qPos >= 0 ? rawUrl.slice(0, qPos) : rawUrl; // e.g. /api/user/health/live
       const query = qPos >= 0 ? rawUrl.slice(qPos) : "";
-      const segments = pathOnly.replace(/^\/+/, "").split("/"); // ["api","act","acts"]
+      const segments = pathOnly.replace(/^\/+/, "").split("/"); // ["api","user","health","live"]
 
       // Enforce hard rule: first segment MUST be "api"
       if (segments[0] !== "api") {
@@ -210,7 +218,7 @@ export function serviceProxy() {
       }
 
       // Strip the mandatory "api" head (INBOUND_STRIP_SEGMENTS is asserted to be 1)
-      const stripped = segments.slice(INBOUND_STRIP_SEGMENTS); // ["act","acts", ...]
+      const stripped = segments.slice(INBOUND_STRIP_SEGMENTS); // ["user","health","live"]
       const [serviceSeg, ...rest] = stripped;
       if (!serviceSeg) return next(); // no service → not our route
 
@@ -228,33 +236,13 @@ export function serviceProxy() {
         });
       }
 
-      // Final URL = base + OUTBOUND_API_PREFIX + rest + query
-      const pathWithPrefix = joinPath(OUTBOUND_API_PREFIX, rest.join("/"));
-      const finalUrl = `${targetBase}${pathWithPrefix}${query}`;
+      // Health exception: /api/<svc>/health/* → <base>/health/*
+      const health = isHealthRest(rest);
+      const pathWithPrefix = health
+        ? joinPath("health", rest.slice(1).join("/"))
+        : joinPath(OUTBOUND_API_PREFIX, rest.join("/"));
 
-      // Mint S2S
-      let s2s = "";
-      try {
-        s2s = mintS2S();
-      } catch (e: any) {
-        logger.debug(
-          {
-            sentinel: "500DBG",
-            where: "mintS2S",
-            rid,
-            err: String(e?.message || e),
-          },
-          "500 about to be sent <<<500DBG>>>"
-        );
-        return res.status(503).json({
-          type: "about:blank",
-          title: "Gateway Auth Misconfigured",
-          status: 503,
-          detail:
-            "S2S mint failed: ensure S2S_SECRET, S2S_ISSUER, S2S_AUDIENCE, S2S_MAX_TTL_SEC are set.",
-          instance: (req as any).id,
-        });
-      }
+      const finalUrl = `${targetBase}${pathWithPrefix}${query}`;
 
       // Outbound headers
       const outHeaders = toStringHeaders(req.headers);
@@ -263,8 +251,32 @@ export function serviceProxy() {
       delete outHeaders["transfer-encoding"];
       delete outHeaders.host;
       if (outHeaders["accept-encoding"]) delete outHeaders["accept-encoding"];
-      outHeaders.authorization = `Bearer ${s2s}`;
       outHeaders["x-request-id"] = rid || randomUUID();
+
+      // Mint S2S ONLY for non-health /api calls
+      if (!health) {
+        try {
+          outHeaders.authorization = `Bearer ${mintS2S()}`;
+        } catch (e: any) {
+          logger.debug(
+            {
+              sentinel: "500DBG",
+              where: "mintS2S",
+              rid,
+              err: String(e?.message || e),
+            },
+            "500 about to be sent <<<500DBG>>>"
+          );
+          return res.status(503).json({
+            type: "about:blank",
+            title: "Gateway Auth Misconfigured",
+            status: 503,
+            detail:
+              "S2S mint failed: ensure S2S_SECRET, S2S_ISSUER, S2S_AUDIENCE, S2S_MAX_TTL_SEC are set.",
+            instance: (req as any).id,
+          });
+        }
+      }
 
       // Pre-proxy log
       logger.debug(
@@ -275,9 +287,12 @@ export function serviceProxy() {
           from: rawUrl,
           to: finalUrl,
           stripSegments: INBOUND_STRIP_SEGMENTS,
-          outboundPrefix: OUTBOUND_API_PREFIX,
+          outboundPrefix: health ? "<health-root>" : OUTBOUND_API_PREFIX,
           readableEnded: (req as any).readableEnded,
-          outHeaders,
+          outHeaders: {
+            ...outHeaders,
+            authorization: health ? "<omitted>" : "<s2s>",
+          },
         },
         "About to proxy"
       );

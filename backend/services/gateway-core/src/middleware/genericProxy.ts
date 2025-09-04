@@ -118,10 +118,17 @@ export function genericProxy() {
     // Don’t leak caller auth to worker
     delete (req.headers as any).authorization;
 
+    // Pass through user assertion if present from the original caller (keep original user bound)
+    const userAssertion =
+      (req.headers["x-nv-user-assertion"] as string | undefined) || undefined;
+
     proxy.web(req as any, res as any, {
       target,
       ignorePath: true, // 👈 critical fix: don’t append req.url again
-      headers: { authorization: `Bearer ${s2s}` },
+      headers: {
+        authorization: `Bearer ${s2s}`,
+        ...(userAssertion ? { "x-nv-user-assertion": userAssertion } : {}),
+      },
     });
   };
 }

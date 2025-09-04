@@ -17,6 +17,15 @@ USER_URL=${USER_URL:-http://127.0.0.1:4001}  # ← renamed (avoid clash with she
 S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-core-internal}"
 S2S_JWT_AUDIENCE="${S2S_JWT_AUDIENCE:-internal-services}"
 
+# End-user assertion defaults (dev/test)
+# These mirror the backend expectation:
+#   - HS256, shared secret across gateway, core, and services
+#   - aud=internal-users
+#   - iss = gateway (edge) or gateway-core (core hop). For direct-to-service smokes we use gateway-core.
+USER_ASSERTION_SECRET="${USER_ASSERTION_SECRET:-devlocal-users-internal}"
+USER_ASSERTION_AUDIENCE="${USER_ASSERTION_AUDIENCE:-internal-users}"
+USER_ASSERTION_ISSUER_CORE="${USER_ASSERTION_ISSUER_CORE:-gateway-core}"
+
 # Data defaults
 GEO_ADDRESS="${GEO_ADDRESS:-1600 Amphitheatre Parkway, Mountain View, CA}"
 MAIL_ADDR1="${MAIL_ADDR1:-36100 Date Palm Drive}"
@@ -52,6 +61,35 @@ mint_s2s () {
 }
 TOKEN_CORE()       { mint_s2s "gateway-core" "gateway-core" 300; }  # core→worker
 TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }               # act→core (client)
+
+# --- End-user assertion (X-NV-User-Assertion) -------------------------------
+# Minimal HS256 compact JWT with:
+#   sub=<uid>, iss=$USER_ASSERTION_ISSUER_CORE, aud=$USER_ASSERTION_AUDIENCE,
+#   iat, exp, jti
+# Optional roles/scopes can be added later; services only require a valid edge identity.
+mint_user_assertion_core() {
+  local uid="${1:-smoke-tests}" ttl="${2:-300}"
+  local now exp jti hdr pld sig
+  now=$(date +%s); exp=$((now + ttl))
+  # Random 128-bit jti (hex)
+  jti=$(openssl rand -hex 16 2>/dev/null)
+  hdr='{"alg":"HS256","typ":"JWT"}'
+  pld=$(printf '{"sub":"%s","iss":"%s","aud":"%s","iat":%s,"exp":%s,"jti":"%s"}' \
+        "$uid" "$USER_ASSERTION_ISSUER_CORE" "$USER_ASSERTION_AUDIENCE" "$now" "$exp" "$jti")
+  hdr=$(printf '%s' "$hdr" | b64url)
+  pld=$(printf '%s' "$pld" | b64url)
+  sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -binary -sha256 -hmac "$USER_ASSERTION_SECRET" | b64url)
+  printf '%s.%s.%s' "$hdr" "$pld" "$sig"
+}
+# Public helper used by tests
+ASSERT_USER() { mint_user_assertion_core "${1:-smoke-tests}" "${2:-300}"; }
+
+# Convenience: emit both headers for direct worker calls (Bash 3.2-safe)
+AUTH_HEADERS_CORE() {
+  local uid="${1:-smoke-tests}" ttl="${2:-300}"
+  printf '%s ' -H "Authorization: Bearer $(TOKEN_CORE)" \
+               -H "X-NV-User-Assertion: $(ASSERT_USER "$uid" "$ttl")"
+}
 
 extract_id() { ${JQ} -r '._id // .id // .data._id // empty'; }
 

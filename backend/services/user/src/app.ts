@@ -13,6 +13,7 @@ import {
 import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
 import { createHealthRouter } from "@shared/health";
 import { verifyS2S } from "@shared/middleware/verifyS2S";
+import { verifyUserAssertion } from "@shared/middleware/verifyUserAssertion"; // 👈 NEW
 
 import userRoutes from "./routes/userRoutes";
 import userPublicRoutes from "./routes/userPublicRoutes";
@@ -47,6 +48,11 @@ app.use(
 
 // Require S2S for everything after health (SOP Addendum 2)
 app.use(verifyS2S);
+
+// 👇 NEW: Require end-user assertion for mutations under /api/*
+// - GET/HEAD remain readable without an assertion (directory/search/public lookups).
+// - Non-GET/HEAD must include a valid X-NV-User-Assertion (minted at the edge).
+app.use((req, res, next) => verifyUserAssertion(req, res, next));
 
 // --------------------------- API prefix --------------------------------------
 // Everything user-facing for this service lives under /api/*

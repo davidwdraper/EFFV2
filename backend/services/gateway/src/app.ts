@@ -67,13 +67,11 @@ function registerServiceHealthPassthrough(
         });
         res.status(r.status).set(r.headers).send(r.data);
       } catch {
-        res
-          .status(502)
-          .json({
-            code: "BAD_GATEWAY",
-            status: 502,
-            message: "Upstream health unavailable",
-          });
+        res.status(502).json({
+          code: "BAD_GATEWAY",
+          status: 502,
+          message: "Upstream health unavailable",
+        });
       }
     };
 
@@ -105,6 +103,8 @@ app.use(
       "x-request-id",
       "x-correlation-id",
       "x-amzn-trace-id",
+      // 🔐 allow internal user assertion header through CORS preflight
+      "x-nv-user-assertion",
     ],
   })
 );
@@ -231,6 +231,15 @@ app.get("/__auth", (_req, res) => {
     // Proxy pathing
     INBOUND_STRIP_SEGMENTS: process.env.INBOUND_STRIP_SEGMENTS ?? null,
     OUTBOUND_API_PREFIX: process.env.OUTBOUND_API_PREFIX ?? null,
+    // User Assertion (internal end-user identity)
+    USER_ASSERTION_SECRET_PRESENT: !!(
+      process.env.USER_ASSERTION_SECRET &&
+      process.env.USER_ASSERTION_SECRET.length > 0
+    ),
+    USER_ASSERTION_AUDIENCE: process.env.USER_ASSERTION_AUDIENCE || null,
+    USER_ASSERTION_TTL_SEC: process.env.USER_ASSERTION_TTL_SEC || null,
+    USER_ASSERTION_CLOCK_SKEW_SEC:
+      process.env.USER_ASSERTION_CLOCK_SKEW_SEC || null,
   });
 });
 

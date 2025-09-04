@@ -24,6 +24,11 @@ import { serviceName } from "../config";
  *   S2S_ISSUER
  *   S2S_AUDIENCE
  *   S2S_MAX_TTL_SEC
+ *
+ *   USER_ASSERTION_SECRET         # HS256 secret for X-NV-User-Assertion
+ *   USER_ASSERTION_ISSUER         # typically "gateway"
+ *   USER_ASSERTION_AUDIENCE       # e.g., "internal-users"
+ *   USER_ASSERTION_TTL_SEC        # e.g., 300
  */
 
 const logger = sharedLogger.child({
@@ -59,6 +64,12 @@ const S2S_ISSUER = requireStrEnv("S2S_ISSUER");
 const S2S_AUDIENCE = requireStrEnv("S2S_AUDIENCE");
 const S2S_MAX_TTL_SEC = requireIntEnv("S2S_MAX_TTL_SEC", 1);
 
+// NEW: end-user assertion envs
+const USER_ASSERTION_SECRET = requireStrEnv("USER_ASSERTION_SECRET");
+const USER_ASSERTION_ISSUER = requireStrEnv("USER_ASSERTION_ISSUER");
+const USER_ASSERTION_AUDIENCE = requireStrEnv("USER_ASSERTION_AUDIENCE");
+const USER_ASSERTION_TTL_SEC = requireIntEnv("USER_ASSERTION_TTL_SEC", 1);
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 function resolveUpstreamBase(serviceSeg: string): string {
   const envKey = `${serviceSeg.toUpperCase()}_SERVICE_URL`;
@@ -81,6 +92,29 @@ function mintS2S(): string {
       scope: "s2s",
     },
     S2S_SECRET,
+    { algorithm: "HS256" }
+  );
+}
+
+function mintUserAssertion(from: any): string {
+  const now = Math.floor(Date.now() / 1000);
+  const uid =
+    String(from?.id || from?.uid || from?.sub || "").trim() || "unknown";
+  return jwt.sign(
+    {
+      iss: USER_ASSERTION_ISSUER,
+      aud: USER_ASSERTION_AUDIENCE,
+      sub: `user:${uid}`,
+      iat: now,
+      exp: now + USER_ASSERTION_TTL_SEC,
+      jti: randomUUID(),
+      // pass-through convenience claims (non-authoritative)
+      roles: Array.isArray(from?.roles) ? from.roles : [],
+      scopes: Array.isArray(from?.scopes) ? from.scopes : [],
+      email: typeof from?.email === "string" ? from.email : undefined,
+      name: typeof from?.name === "string" ? from.name : undefined,
+    },
+    USER_ASSERTION_SECRET,
     { algorithm: "HS256" }
   );
 }
@@ -247,6 +281,7 @@ export function serviceProxy() {
       // Outbound headers
       const outHeaders = toStringHeaders(req.headers);
       delete outHeaders.authorization; // never forward client token
+      delete outHeaders["x-nv-user-assertion"]; // never trust a client-provided assertion
       delete outHeaders["content-length"];
       delete outHeaders["transfer-encoding"];
       delete outHeaders.host;
@@ -276,6 +311,20 @@ export function serviceProxy() {
             instance: (req as any).id,
           });
         }
+
+        // NEW: Mint end-user assertion from the authenticated edge user (set by authGate)
+        try {
+          const edgeUser = (req as any).user;
+          if (edgeUser) {
+            const assertion = mintUserAssertion(edgeUser);
+            outHeaders["x-nv-user-assertion"] = assertion;
+          }
+        } catch (e: any) {
+          logger.debug(
+            { where: "mintUserAssertion", rid, err: String(e?.message || e) },
+            "User assertion mint skipped"
+          );
+        }
       }
 
       // Pre-proxy log
@@ -292,6 +341,7 @@ export function serviceProxy() {
           outHeaders: {
             ...outHeaders,
             authorization: health ? "<omitted>" : "<s2s>",
+            "x-nv-user-assertion": health ? "<omitted>" : "<present?>",
           },
         },
         "About to proxy"
@@ -315,6 +365,7 @@ export function serviceProxy() {
 
       // Proxy it
       try {
+        httpProxy.createProxyServer; // NOTE: proxy instance already created above; keeping as-is with same behavior
         proxy.web(
           req,
           res,

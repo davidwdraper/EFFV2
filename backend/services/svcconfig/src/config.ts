@@ -1,4 +1,4 @@
-// backend/services/act/src/config.ts
+// backend/services/svcconfig/src/config.ts
 
 /**
  * SOP-compliant config:
@@ -8,7 +8,7 @@
  */
 
 // ── Service identity ──────────────────────────────────────────────────────────
-export const SERVICE_NAME = "act" as const;
+export const SERVICE_NAME = "service-config" as const;
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -27,13 +27,39 @@ function requireNumber(name: string): number {
   return n;
 }
 
+function requireCsv(name: string): string[] {
+  return requireEnv(name)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   // pass-through (optional)
   env: process.env.NODE_ENV,
 
   // required
-  port: requireNumber("ACT_PORT"),
-  mongoUri: requireEnv("ACT_MONGO_URI"),
+  port: requireNumber("SERVICECONFIG_PORT"),
+  mongoUri: requireEnv("SERVICECONFIG_MONGO_URI"),
   logLevel: requireEnv("LOG_LEVEL"),
   logServiceUrl: requireEnv("LOG_SERVICE_URL"),
+
+  // S2S verification (required)
+  s2s: {
+    jwtSecret: requireEnv("S2S_JWT_SECRET"),
+    audience: requireEnv("S2S_AUDIENCE"),
+    allowedIssuers: requireCsv("S2S_ALLOWED_ISSUERS"),
+    allowedCallers: requireCsv("S2S_ALLOWED_CALLERS"),
+    clockSkewSec: requireNumber("S2S_CLOCK_SKEW_SEC"),
+  },
+
+  // Pub/Sub broadcast for gateway hot-reload (optional)
+  pubsub: {
+    redisUrl: process.env.REDIS_URL,
+    redisDisabled: process.env.REDIS_DISABLED,
+    channel: process.env.SVCCONFIG_CHANNEL,
+  },
+
+  // Health toggle (optional)
+  exposeHealth: process.env.EXPOSE_HEALTH,
 } as const;

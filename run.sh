@@ -8,6 +8,9 @@ set -Eeuo pipefail
 # - ENV_FILE: path to env file (default: .env.dev) — script-level default only
 # - Never hard-codes .env.dev in service code; only the runner sets it.
 # - NEW: Builds backend/services/shared before launching services.
+# - NEW: Sources root .env.dev (universal NODE_ENV, etc.).
+# - NEW: Per-service ENV_FILE support (defaults to root if service file missing).
+# - NEW: Port cleanup across root + per-service env files.
 # ─────────────────────────────────────────────────────────────────────────────
 
 MODE="${1:-dev}"     # dev | docker
@@ -25,7 +28,9 @@ echo "   ENV_FILE=$ENV_FILE"
 # ======= CONFIG: edit this list =======
 # Each line: name|path|start-command
 # Comment out a line with '#' to disable a service.
+# NOTE: svcconfig starts BEFORE gateway so registry is up first.
 SERVICES=(
+  "svcconfig|backend/services/svcconfig|yarn dev"
   "gateway|backend/services/gateway|yarn dev"
   "gateway-core|backend/services/gateway-core|yarn dev"
   "geo|backend/services/geo|yarn dev"
@@ -37,7 +42,7 @@ SERVICES=(
 )
 
 # ======= Clean shutdown =======
-PIDS=()
+PIDS=[]
 REDIS_PROC_PID=""
 REDIS_DOCKER_ID=""
 cleanup() {
@@ -87,7 +92,16 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-# ----- Build shared before anything else -----
+# ----- Load root env first (universal NODE_ENV, etc.) -----
+ROOT_ENV="$ROOT/.env.dev"
+if [[ -f "$ROOT_ENV" ]]; then
+  echo "📦 Loading root env: $ROOT_ENV"
+  set -a; source "$ROOT_ENV"; set +a
+else
+  echo "ℹ️  Root .env.dev not found; continuing without it."
+fi
+
+# ----- Build @shared before anything else -----
 SHARED_DIR="$ROOT/backend/services/shared"
 BUILD_HELPER="$ROOT/scripts/build-shared.sh"
 echo "🛠️  Building @shared..."
@@ -110,13 +124,54 @@ else
   fi
 fi
 
-# ----- Robust port cleanup based on ENV_FILE -----
-echo "🧹 Killing anything on ports from $ENV_FILE ..."
-ports="$(grep -E '^[A-Z0-9_]+_PORT=' "$ENV_FILE" 2>/dev/null | sed -E 's/.*=//' | tr -d '"' | tr ' ' '\n' | grep -E '^[0-9]+$' || true)"
-if [[ -z "${ports}" ]]; then
-  echo "ℹ️  No *_PORT entries found in $(basename "$ENV_FILE")"
+# ----- Determine per-service env files (prefer service-local .env.dev) -----
+SERVICE_ENV_FILES=() # array of unique files to scan for ports
+declare -A SERVICE_ENV_MAP
+
+for line in "${SERVICES[@]}"; do
+  # Skip empty/comment lines
+  if echo "$line" | grep -Eq '^[[:space:]]*$'; then continue; fi
+  if echo "$line" | grep -Eq '^[[:space:]]*#'; then continue; fi
+
+  name="${line%%|*}"; rest="${line#*|}"
+  path="${rest%%|*}"
+  # Prefer per-service env file if it exists; else fall back to global ENV_FILE
+  svc_env="$ROOT/$path/.env.dev"
+  if [[ -f "$svc_env" ]]; then
+    SERVICE_ENV_MAP["$name"]="$svc_env"
+  else
+    SERVICE_ENV_MAP["$name"]="$ENV_FILE"
+  fi
+done
+
+# Collect unique env files for port cleanup
+add_unique_env() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  for existing in "${SERVICE_ENV_FILES[@]:-}"; do
+    [[ "$existing" == "$f" ]] && return 0
+  done
+  SERVICE_ENV_FILES+=("$f")
+}
+# include the root-passed ENV_FILE and the root env
+add_unique_env "$ENV_FILE"
+add_unique_env "$ROOT_ENV"
+for k in "${!SERVICE_ENV_MAP[@]}"; do add_unique_env "${SERVICE_ENV_MAP[$k]}"; done
+
+# ----- Robust port cleanup across all env files -----
+echo "🧹 Killing anything on ports defined in:"
+for f in "${SERVICE_ENV_FILES[@]}"; do echo "   • $(basename "$f")"; done
+
+ports=""
+for f in "${SERVICE_ENV_FILES[@]}"; do
+  pf="$(grep -E '^[A-Z0-9_]+_PORT=' "$f" 2>/dev/null | sed -E 's/.*=//' | tr -d '"' | tr ' ' '\n' | grep -E '^[0-9]+$' || true)"
+  ports="$ports $pf"
+done
+
+if [[ -z "${ports// /}" ]]; then
+  echo "ℹ️  No *_PORT entries found in env files."
 else
-  for p in ${ports}; do
+  for p in $ports; do
     [[ -z "$p" ]] && continue
     pids_on_port="$(lsof -ti "tcp:$p" 2>/dev/null || true)"
     if [[ -n "$pids_on_port" ]]; then
@@ -130,7 +185,11 @@ else
 fi
 
 # ----- Redis (optional local) -----
-REDIS_URL="$(get_env "$ENV_FILE" REDIS_URL || true)"
+# Prefer svcconfig's REDIS_URL if present; else global; else localhost
+REDIS_URL="$(get_env "${SERVICE_ENV_MAP[svcconfig]:-$ENV_FILE}" REDIS_URL || true)"
+if [[ -z "${REDIS_URL:-}" ]]; then
+  REDIS_URL="$(get_env "$ENV_FILE" REDIS_URL || true)"
+fi
 if [[ -z "${REDIS_URL:-}" ]]; then
   REDIS_URL="redis://localhost:6379"
   echo "ℹ️  REDIS_URL not set; assuming $REDIS_URL for dev."
@@ -198,10 +257,12 @@ for line in "${SERVICES[@]}"; do
     continue
   fi
 
-  echo "  • (enabled)  $name → $path :: $cmd"
+  # choose ENV_FILE for this service
+  svc_env="${SERVICE_ENV_MAP[$name]:-$ENV_FILE}"
+  echo "  • (enabled)  $name → $path :: $cmd  [ENV_FILE=$(basename "$svc_env")]"
   NAMES+=("$name")
-  # Pass ENV_FILE to services; let each service bootstrap load it (no npx dotenv).
-  CMDS+=("cd \"$path\" && ENV_FILE=\"$ENV_FILE\" NODE_ENV=dev $cmd")
+  # Pass ENV_FILE to services; let each service bootstrap load it.
+  CMDS+=("cd \"$path\" && ENV_FILE=\"$svc_env\" $cmd")
 done
 
 if [[ "${#NAMES[@]}" -eq 0 ]]; then

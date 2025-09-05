@@ -2,9 +2,28 @@
 import "../../src/bootstrap";
 import mongoose from "mongoose";
 import SvcService from "../models/svcconfig.model";
-import { logger } from "@shared/utils/logger";
+// ⬇️ add this import
+import { connectDb, disconnectDb } from "../db";
+
+// Robust logger (prefer shared; fall back to console)
+type LoggerLike = {
+  info: (...a: any[]) => void;
+  warn: (...a: any[]) => void;
+  error: (...a: any[]) => void;
+};
+let logger: LoggerLike = console as any;
+try {
+  ({ logger } = require("@shared/utils/logger"));
+} catch {
+  console.warn(
+    "[svcconfig:seed] @shared/utils/logger not available; using console"
+  );
+}
 
 async function run() {
+  // ⬇️ open Mongo before doing anything
+  await connectDb();
+
   const items = [
     {
       slug: "user",
@@ -49,7 +68,7 @@ async function run() {
       overrides: { timeoutMs: 5000 },
       version: 1,
       updatedBy: "seed",
-      notes: "Core mini-orchestrator",
+      notes: "Core internal router",
     },
     // add geo/log/image/etc. as needed …
   ];
@@ -66,9 +85,13 @@ async function run() {
 }
 
 run()
-  .then(() => mongoose.disconnect())
+  .then(async () => {
+    await disconnectDb();
+  })
   .catch(async (err) => {
     console.error(err);
-    await mongoose.disconnect();
+    try {
+      await disconnectDb();
+    } catch {}
     process.exit(1);
   });

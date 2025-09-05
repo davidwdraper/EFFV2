@@ -6,7 +6,7 @@
     "start": "ts-node -r tsconfig-paths/register --project tsconfig.json index.ts",
     "dev": "TS_NODE_FILES=1 ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts",
     "build": "tsc -p tsconfig.json",
-    "seed": "TS_NODE_FILES=1 ts-node -r tsconfig-paths/register src/seeds/seed.ts",
+    "seed": "TS_NODE_FILES=1 ts-node -P tsconfig.json -r tsconfig-paths/register src/seeds/seed.ts",
     "test": "vitest run"
   },
   "dependencies": {

@@ -1,0 +1,22 @@
+// backend/services/svcconfig/tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+
+    "rootDir": "./src",
+    "outDir": "./dist",
+
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["../shared/dist/*", "../shared/src/*"]
+    }
+  },
+  "references": [{ "path": "../shared" }],
+  "include": ["src", "index.ts"]
+}

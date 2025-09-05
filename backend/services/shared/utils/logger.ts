@@ -34,9 +34,27 @@ function requireEnv(name: string): string {
 
 const NODE_ENV = (process.env.NODE_ENV || "development").trim();
 const IS_PROD = NODE_ENV === "production";
+
+// Global, required everywhere
 const LOG_LEVEL = requireEnv("LOG_LEVEL") as LevelWithSilent;
 const LOG_SERVICE_URL = requireEnv("LOG_SERVICE_URL");
-const LOG_FS_DIR = requireEnv("LOG_FS_DIR");
+
+// FS sink is **optional** for non-log services.
+// Only require LOG_FS_DIR if FS sink is enabled.
+const SERVICE_NAME_ENV = (process.env.SERVICE_NAME || "").trim();
+const LOG_CLIENT_DISABLE_FS =
+  String(process.env.LOG_CLIENT_DISABLE_FS || "").toLowerCase() === "true";
+
+// Enable FS sink if:
+//   - not explicitly disabled, AND
+//   - this is the log service (SERVICE_NAME=log) OR LOG_FS_DIR is explicitly provided
+const SHOULD_ENABLE_FS_SINK =
+  !LOG_CLIENT_DISABLE_FS &&
+  (SERVICE_NAME_ENV === "log" || !!process.env.LOG_FS_DIR);
+
+const LOG_FS_DIR = SHOULD_ENABLE_FS_SINK
+  ? requireEnv("LOG_FS_DIR") // only required when FS sink is enabled
+  : ""; // empty string ensures all FS helpers no-op
 
 const LOG_SERVICE_TOKEN_CURRENT =
   process.env.LOG_SERVICE_TOKEN_CURRENT?.trim() || "";
@@ -51,7 +69,6 @@ const LOG_FLUSH_BATCH_SIZE = Number(process.env.LOG_FLUSH_BATCH_SIZE || 50); // 
 const LOG_FLUSH_CONCURRENCY = Number(process.env.LOG_FLUSH_CONCURRENCY || 4); // reserved
 const NOTIFY_STUB_ENABLED =
   String(process.env.NOTIFY_STUB_ENABLED || "").toLowerCase() === "true"; // reserved
-const NOTIFY_GRACE_MS = Number(process.env.NOTIFY_GRACE_MS || 300_000); // reserved
 const LOG_SERVICE_HEALTH_URL =
   (process.env.LOG_SERVICE_HEALTH_URL &&
     process.env.LOG_SERVICE_HEALTH_URL.trim()) ||
@@ -235,6 +252,7 @@ function fileFor(ch: "audit" | "error", d = new Date()) {
   return path.join(LOG_FS_DIR, `${ch}-${dayStr(d)}.log`);
 }
 async function ensureFsDir() {
+  if (!LOG_FS_DIR) return;
   await fsp.mkdir(LOG_FS_DIR, { recursive: true });
 }
 async function safeReaddir(dir: string) {
@@ -245,6 +263,7 @@ async function safeReaddir(dir: string) {
   }
 }
 async function currentCacheSizeMB() {
+  if (!LOG_FS_DIR) return 0;
   let total = 0;
   for (const f of await safeReaddir(LOG_FS_DIR)) {
     if (!f.name.endsWith(".log") && !f.name.endsWith(".replay")) continue;
@@ -255,6 +274,7 @@ async function currentCacheSizeMB() {
   return total / (1024 * 1024);
 }
 async function pruneOldestIfNeeded() {
+  if (!LOG_FS_DIR) return;
   const size = await currentCacheSizeMB();
   if (size <= LOG_CACHE_MAX_MB) return;
   const files = (await safeReaddir(LOG_FS_DIR)).map((f) =>
@@ -267,6 +287,7 @@ async function pruneOldestIfNeeded() {
   }
 }
 async function appendNdjson(ch: "audit" | "error", ev: AuditEvent) {
+  if (!LOG_FS_DIR) return;
   await ensureFsDir();
   await pruneOldestIfNeeded();
   await fsp.appendFile(
@@ -314,6 +335,7 @@ async function emitError(evts: AuditEvent[] | AuditEvent) {
 
 // Flush cached files
 async function flushFsCache() {
+  if (!LOG_FS_DIR) return;
   await ensureFsDir();
   for (const f of (await safeReaddir(LOG_FS_DIR))
     .map((e) => e.name)

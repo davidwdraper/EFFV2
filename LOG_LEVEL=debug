@@ -1,0 +1,4 @@
+yarn run v1.22.22
+$ TS_NODE_FILES=1 ts-node -P tsconfig.json -r tsconfig-paths/register src/seeds/seed.ts
+[bootstrap:svcconfig] Loading env from: /Users/ddraper005/eff/backend/services/svcconfig/.env.dev
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.

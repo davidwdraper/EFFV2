@@ -1,3 +1,4 @@
+// backend/services/act/index.ts
 import "./src/bootstrap"; // loads env + sets SERVICE_NAME
 import "./src/log.init";
 import "tsconfig-paths/register";

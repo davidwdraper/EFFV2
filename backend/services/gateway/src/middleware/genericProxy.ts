@@ -1,6 +1,6 @@
 // backend/services/gateway/src/middleware/genericProxy.ts
 import type { RequestHandler } from "express";
-import { logger } from "../../../shared/utils/logger";
+import { logger } from "@shared/utils/logger";
 import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";

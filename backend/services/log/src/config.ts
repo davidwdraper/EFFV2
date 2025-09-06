@@ -1,5 +1,5 @@
 // backend/services/log/src/config.ts
-import { requireEnv, requireNumber } from "../../shared/config/env";
+import { requireEnv, requireNumber } from "@shared/env";
 
 /**
  * Canonical config: no defaults, no dotenv here.
@@ -17,7 +17,6 @@ const tokenPrevious =
     : null;
 
 export const config = {
-  serviceName: requireEnv("LOG_SERVICE_NAME"),
   port: requireNumber("LOG_PORT"),
   mongoUri: requireEnv("LOG_MONGO_URI"),
   logLevel: requireEnv("LOG_LEVEL"),

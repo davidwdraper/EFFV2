@@ -1,4 +1,4 @@
-// backend/services/shared/src/svcconfig/client.ts
+// backend/services/shared/svcconfig/client.ts
 import axios from "axios";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -10,18 +10,19 @@ import {
 } from "../contracts/svcconfig.contract";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// ENV (same keys for both gateways)
-// Required:
-//   SVCCONFIG_BASE_URL         e.g., http://svcconfig:4015  (no trailing slash)
-//   S2S_JWT_SECRET
-//   S2S_JWT_ISSUER             e.g., "gateway" or "gateway-core"
-//   S2S_JWT_AUDIENCE           e.g., "internal-services"
-// Optional:
-//   SVCCONFIG_POLL_MS          default 10000
-//   SVCCONFIG_LKG_PATH         default: CWD/.lkg/svcconfig.json
-//   REDIS_URL                  enable hot updates via pub/sub
-//   SVCCONFIG_CHANNEL          default "svcconfig:changed"
-
+/**
+ * ENV (same keys for both gateways)
+ * Required:
+ *   SVCCONFIG_BASE_URL         e.g., http://svcconfig:4015  (no trailing slash)
+ *   S2S_JWT_SECRET
+ *   S2S_JWT_ISSUER             e.g., "gateway" or "gateway-core"
+ *   S2S_JWT_AUDIENCE           e.g., "internal-services"
+ * Optional:
+ *   SVCCONFIG_POLL_MS          default 0 (disabled). Set >0 to enable polling.
+ *   SVCCONFIG_LKG_PATH         default: CWD/.lkg/svcconfig.json
+ *   REDIS_URL                  enable hot updates via pub/sub
+ *   SVCCONFIG_CHANNEL          default "svcconfig:changed"
+ */
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v || !String(v).trim()) throw new Error(`Missing required env: ${name}`);
@@ -33,10 +34,9 @@ const S2S_SECRET = requireEnv("S2S_JWT_SECRET");
 const S2S_ISSUER = requireEnv("S2S_JWT_ISSUER");
 const S2S_AUDIENCE = requireEnv("S2S_JWT_AUDIENCE");
 
-const POLL_MS = Math.max(
-  10_000,
-  Number(process.env.SVCCONFIG_POLL_MS || 10_000)
-);
+// Polling disabled by default; set >0 to enable
+const POLL_MS = Math.max(0, Number(process.env.SVCCONFIG_POLL_MS ?? 0));
+
 const LKG_PATH =
   process.env.SVCCONFIG_LKG_PATH ||
   path.resolve(process.cwd(), ".lkg/svcconfig.json");
@@ -54,7 +54,6 @@ export type SvcconfigSnapshot = {
 
 type State = {
   versionCounter: number;
-  etag: string | null; // reserved for future use if svcconfig adds ETag
   snapshot: SvcconfigSnapshot | null;
   lastFetchMs: number;
   source: "empty" | "cache" | "lkg";
@@ -62,7 +61,6 @@ type State = {
 
 const STATE: State = {
   versionCounter: 0,
-  etag: null,
   snapshot: null,
   lastFetchMs: 0,
   source: "empty",
@@ -96,19 +94,23 @@ function join(base: string, seg: string): string {
 }
 
 async function fetchAll(): Promise<ServiceConfig[]> {
-  const url = join(BASE, "/api/svcconfig/services");
+  // ⬇️ points at /api/svcconfig (list handler returns { items: [] })
+  const url = join(BASE, "/api/svcconfig");
   const r = await axios.get(url, {
     timeout: 3000,
     headers: { Authorization: `Bearer ${mintS2S(300)}` },
     validateStatus: () => true,
   });
 
-  if (!(r.status >= 200 && r.status < 300) || !Array.isArray(r.data)) {
+  if (
+    !(r.status >= 200 && r.status < 300) ||
+    !Array.isArray((r.data as any)?.items)
+  ) {
     throw new Error(`svcconfig list failed: HTTP ${r.status}`);
   }
 
   const out: ServiceConfig[] = [];
-  for (const raw of r.data as unknown[]) {
+  for (const raw of (r.data as any).items as unknown[]) {
     const p = SvcConfigSchema.safeParse(raw);
     if (p.success) {
       // enforce lowercase slug; other defaults handled by zod .default()
@@ -199,29 +201,34 @@ export async function startSvcconfigMirror(): Promise<void> {
             await writeLKG(STATE.snapshot!);
           } catch {}
         } catch {
-          // ignore; rely on next poll/LKG
+          // ignore; rely on next LKG or operator action
         }
       });
       client.on("error", () => {
-        /* ignore; poll will cover */
+        /* ignore; operator should notice Redis down */
       });
     } catch {
-      // ignore; will rely on polling
+      // ignore; no Redis, no hot updates
     }
   }
 
-  // Poll fallback (always on)
-  setInterval(async () => {
-    try {
-      const items = await fetchAll();
-      repopulate(items);
+  // Poll fallback — disabled unless POLL_MS > 0
+  if (POLL_MS > 0) {
+    console.info("[svcconfigClient] polling enabled", { intervalMs: POLL_MS });
+    setInterval(async () => {
       try {
-        await writeLKG(STATE.snapshot!);
-      } catch {}
-    } catch {
-      // ignore; keep last good snapshot/LKG
-    }
-  }, POLL_MS);
+        const items = await fetchAll();
+        repopulate(items);
+        try {
+          await writeLKG(STATE.snapshot!);
+        } catch {}
+      } catch {
+        // ignore; keep last good snapshot/LKG
+      }
+    }, POLL_MS);
+  } else {
+    console.info("[svcconfigClient] polling disabled");
+  }
 }
 
 export function getSvcconfigSnapshot(): SvcconfigSnapshot | null {

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# scripts/smoke/smoke.lib.sh
+#
 # Shared helpers for modular smoketests (one file per test)
 # macOS Bash 3.2 compatible (no associative arrays, no mapfile)
 

@@ -11,6 +11,7 @@ import logRoutes from "./routes/logRoutes";
 import { logger } from "../../shared/utils/logger";
 import { createHealthRouter } from "../../shared/health";
 import { config } from "./config";
+import { SERVICE_NAME } from "./bootstrap";
 
 const app = express();
 
@@ -41,7 +42,7 @@ app.use(
       return "info";
     },
     customProps(req) {
-      return { service: config.serviceName, route: (req as any).route?.path };
+      return { service: SERVICE_NAME, route: (req as any).route?.path };
     },
     autoLogging: {
       ignore: (req) =>
@@ -68,7 +69,7 @@ void connectDB();
 // Health endpoints
 app.use(
   createHealthRouter({
-    service: config.serviceName,
+    service: SERVICE_NAME,
     readiness: async () => ({ upstreams: { ok: true } }),
   })
 );
@@ -78,7 +79,7 @@ app.get("/health/deep", (_req, res) => {
   const ready = mongoose.connection.readyState === 1; // connected
   res.json({
     ok: ready,
-    service: config.serviceName,
+    service: SERVICE_NAME,
     db: {
       connected: ready,
       name: (mongoose.connection as any).name || undefined,

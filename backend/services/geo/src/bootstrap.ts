@@ -1,13 +1,13 @@
 // backend/services/geo/src/bootstrap.ts
 import path from "path";
-import { loadEnvFromFileOrThrow, assertRequiredEnv } from "@shared/config/env";
+import { loadEnvFileOrDie, assertRequiredEnv } from "@shared/env";
 
 const envFile =
   (process.env.ENV_FILE && process.env.ENV_FILE.trim()) || ".env.dev";
 const resolved = path.resolve(__dirname, "../../../..", envFile);
 
 console.log(`[bootstrap] Loading env from: ${resolved}`);
-loadEnvFromFileOrThrow(resolved);
+loadEnvFileOrDie();
 
 assertRequiredEnv([
   "LOG_LEVEL",

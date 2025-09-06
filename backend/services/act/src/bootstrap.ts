@@ -1,31 +1,26 @@
 // backend/services/act/src/bootstrap.ts
 
 import path from "path";
-import { loadEnvFromFileOrThrow, assertRequiredEnv } from "@shared/config/env";
+import { loadEnvFileOrDie, assertRequiredEnv } from "@shared/env";
 
-// ── Service identity (allowed to be baked in) ────────────────────────────────
+// ── Service identity ─────────────────────────────────────────────────────────
 export const SERVICE_NAME = "act" as const;
 
-// ── ENV file resolution ─────────────────────────────────────────────────────
-// Require ENV_FILE to be set externally (no defaults baked in).
-const envFile = process.env.ENV_FILE;
-if (!envFile || !envFile.trim()) {
-  throw new Error(
-    `[bootstrap:${SERVICE_NAME}] ENV_FILE is required (none provided)`
-  );
-}
+// ── ENV file resolution ──────────────────────────────────────────────────────
+// Use ENV_FILE if provided, otherwise default to ".env.dev" like geo.
+const envFile =
+  (process.env.ENV_FILE && process.env.ENV_FILE.trim()) || ".env.dev";
 
 // Always resolve relative to the monorepo root
 const resolved = path.resolve(__dirname, "../../../..", envFile);
 
-console.log(`[bootstrap:${SERVICE_NAME}] Loading env from: ${resolved}`);
-loadEnvFromFileOrThrow(resolved);
+console.log(`[bootstrap] Loading env from: ${resolved}`);
+loadEnvFileOrDie();
 
-// ── Required envs for this service ──────────────────────────────────────────
+// ── Required envs for this service ───────────────────────────────────────────
 assertRequiredEnv([
   "LOG_LEVEL",
   "LOG_SERVICE_URL",
   "ACT_MONGO_URI",
   "ACT_PORT",
-  "GATEWAY_CORE_BASE_URL",
 ]);

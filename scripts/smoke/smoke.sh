@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# scripts/smoke/smoke.sh
 # NowVibin — modular smoke test runner (one file per test)
 # macOS Bash 3.2 friendly
 # Usage:

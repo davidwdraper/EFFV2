@@ -1,3 +1,4 @@
+# scripts/seed-svcconfig.sh
 # from repo root
 LOG_LEVEL=debug \
 LOG_SERVICE_URL="$(grep -E '^LOG_SERVICE_URL=' .env.dev | cut -d= -f2-)" \

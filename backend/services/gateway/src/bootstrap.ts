@@ -1,10 +1,7 @@
 // backend/services/gateway/src/bootstrap.ts
 
 import path from "path";
-import {
-  loadEnvFromFileOrThrow,
-  assertRequiredEnv,
-} from "../../shared/config/env";
+import { loadEnvFileOrDie, assertRequiredEnv } from "@shared/env";
 
 // Dev-friendly default for local runs; override with ENV_FILE when needed.
 const envFile =
@@ -13,7 +10,7 @@ const envFile =
 // Always resolve from the monorepo root
 const resolved = path.resolve(__dirname, "../../../..", envFile);
 console.log(`[bootstrap] Loading env from: ${resolved}`);
-loadEnvFromFileOrThrow(resolved);
+loadEnvFileOrDie();
 
 // Validate only what the gateway itself truly needs at boot.
 // DO NOT require SERVICE_NAME; it's set in code (src/config.ts).

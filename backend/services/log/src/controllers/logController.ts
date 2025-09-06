@@ -1,10 +1,11 @@
 // backend/services/log/src/controllers/logController.ts
+
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { z } from "zod";
 import { LogContract } from "@shared/contracts/log";
 import Log from "../models/Log";
 import { domainToDb } from "../mappers/log.mapper";
 
+// Small helper to surface async errors to Express error middleware
 const asyncHandler =
   (fn: RequestHandler) =>
   (req: Request, res: Response, next: NextFunction): void => {
@@ -15,8 +16,15 @@ export const ping: RequestHandler = asyncHandler(async (_req, res) => {
   res.status(200).json({ ok: true, service: "log" });
 });
 
-// Accept single object or non-empty array
-const zIngestBody = z.union([LogContract, z.array(LogContract).min(1)]);
+/**
+ * Accept either:
+ *  - a single log object matching LogContract, or
+ *  - a non-empty array of LogContract
+ *
+ * IMPORTANT: Build the union from LogContract’s own Zod instance to avoid
+ * cross-instance type mismatches (the “_zod.version.minor” error).
+ */
+const zIngestBody = LogContract.or(LogContract.array().min(1));
 
 export const create: RequestHandler = asyncHandler(async (req, res) => {
   const parsed = zIngestBody.safeParse(req.body);
@@ -25,11 +33,15 @@ export const create: RequestHandler = asyncHandler(async (req, res) => {
       error: {
         code: "VALIDATION_ERROR",
         message: parsed.error.message,
-        details: parsed.error.flatten?.(),
+        details:
+          typeof parsed.error.flatten === "function"
+            ? parsed.error.flatten()
+            : undefined,
       },
     });
   }
 
+  // Optional user linkage if your auth middleware decorates req.user
   const userId =
     (req as any).user?._id || (req as any).user?.userId || undefined;
 
@@ -37,6 +49,7 @@ export const create: RequestHandler = asyncHandler(async (req, res) => {
     (e) => ({ ...e, userId })
   );
 
+  // Map domain → DB shape and insert
   const docs = await Log.insertMany(
     items.map((e) => domainToDb(e as any)),
     {

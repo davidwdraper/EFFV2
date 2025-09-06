@@ -24,7 +24,7 @@ export const AUDIT_ENABLED = process.env.AUDIT_ENABLED;
 export const LOG_SERVICE_URL = process.env.LOG_SERVICE_URL;
 
 // ── DB-driven service-config pointer (authoritative) ─────────────────────────
-export const SERVICECONFIG_URL = requireEnv("SVCCONFIG_SERVICE_URL");
+export const SVCCONFIG_URL = requireEnv("SVCCONFIG_BASE_URL");
 
 // Never fall back to *_SERVICE_URL envs (kill legacy behavior)
 export const GATEWAY_FALLBACK_ENV_ROUTES =

@@ -1,410 +1,198 @@
-// backend/services/gateway/src/middleware/serviceProxy.ts
-import type { Request, Response, NextFunction } from "express";
-import type { IncomingHttpHeaders } from "http";
-import httpProxy from "http-proxy";
-import { randomUUID } from "crypto";
-import jwt from "jsonwebtoken";
-import { logger as sharedLogger } from "@shared/utils/logger";
-import { serviceName } from "../config";
-import { upstreamBaseFor } from "../svcconfig/client";
+// services/gateway/src/middleware/serviceProxy.ts
+import type { RequestHandler } from "express";
+import http from "node:http";
+import https from "node:https";
+import { URL } from "node:url";
+import { logger } from "@shared/utils/logger";
+import { ROUTE_ALIAS } from "../config";
+
+import { getSvcconfigSnapshot } from "@shared/svcconfig/client";
+import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
 
 /**
- * Service Proxy (Gateway → Worker) — DB-driven (svcconfig)
+ * Reverse proxy mounted at /api that forwards:
+ *   /api/<svc>/<rest...>  ->  <cfg.baseUrl><cfg.outboundApiPrefix||/api>/<rest...>
  *
- * Rule: inbound must be `/api/<service>/<rest>` (health endpoints exposed at `/<svc>/health/*`).
- * Mapping:
- *   /api/<service>/<rest>  →  <baseUrl><outboundApiPrefix>/<rest>
- *
- * Required env (NO fallbacks):
- *   INBOUND_STRIP_SEGMENTS=1
- *   OUTBOUND_API_PREFIX=/api      # default when service lacks outboundApiPrefix
- *   S2S_SECRET
- *   S2S_ISSUER
- *   S2S_AUDIENCE
- *   S2S_MAX_TTL_SEC
- *
- *   USER_ASSERTION_SECRET         # HS256 secret for X-NV-User-Assertion
- *   USER_ASSERTION_ISSUER         # typically "gateway"
- *   USER_ASSERTION_AUDIENCE       # e.g., "internal-users"
- *   USER_ASSERTION_TTL_SEC        # e.g., 300
+ * Rules:
+ *  - Uses alias map + naive singularization to resolve canonical slug.
+ *  - Only proxies services present AND {enabled:true, allowProxy:true}.
+ *  - Streams request/response (no buffering).
+ *  - Preserves querystring and most headers; strips hop-by-hop ones.
+ *  - Sets x-forwarded-*, x-request-id.
  */
+export function serviceProxy(): RequestHandler {
+  return (req, res) => {
+    // Expect /api/<svc>/...
+    const segments = (req.url || "/").split("?")[0].split("/").filter(Boolean);
+    const seg = segments[0] || "";
+    const slug = resolveSlug(seg);
 
-const logger = sharedLogger.child({
-  service: serviceName,
-  scope: "serviceProxy",
-});
-
-// ── required config ───────────────────────────────────────────────────────────
-function requireIntEnv(name: string, min = 0) {
-  const v = process.env[name];
-  if (v === undefined) throw new Error(`${name} must be set`);
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < min)
-    throw new Error(`${name} must be >= ${min}`);
-  return n;
-}
-function requireStrEnvAllowEmpty(name: string) {
-  if (!(name in process.env))
-    throw new Error(`${name} must be set (can be empty)`);
-  return String(process.env[name] ?? "");
-}
-function requireStrEnv(name: string) {
-  const v = process.env[name];
-  if (v === undefined || String(v).trim() === "")
-    throw new Error(`${name} must be set`);
-  return String(v).trim();
-}
-
-const INBOUND_STRIP_SEGMENTS = requireIntEnv("INBOUND_STRIP_SEGMENTS", 1);
-const OUTBOUND_API_PREFIX_DEFAULT = requireStrEnvAllowEmpty(
-  "OUTBOUND_API_PREFIX"
-);
-const S2S_SECRET = requireStrEnv("S2S_SECRET");
-const S2S_ISSUER = requireStrEnv("S2S_ISSUER");
-const S2S_AUDIENCE = requireStrEnv("S2S_AUDIENCE");
-const S2S_MAX_TTL_SEC = requireIntEnv("S2S_MAX_TTL_SEC", 1);
-
-// NEW: end-user assertion envs
-const USER_ASSERTION_SECRET = requireStrEnv("USER_ASSERTION_SECRET");
-const USER_ASSERTION_ISSUER = requireStrEnv("USER_ASSERTION_ISSUER");
-const USER_ASSERTION_AUDIENCE = requireStrEnv("USER_ASSERTION_AUDIENCE");
-const USER_ASSERTION_TTL_SEC = requireIntEnv("USER_ASSERTION_TTL_SEC", 1);
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-function mintS2S(): string {
-  const now = Math.floor(Date.now() / 1000);
-  return jwt.sign(
-    {
-      iss: S2S_ISSUER,
-      aud: S2S_AUDIENCE,
-      sub: "service:gateway",
-      iat: now,
-      exp: now + S2S_MAX_TTL_SEC,
-      jti: randomUUID(),
-      scope: "s2s",
-    },
-    S2S_SECRET,
-    { algorithm: "HS256" }
-  );
-}
-
-function mintUserAssertion(from: any): string {
-  const now = Math.floor(Date.now() / 1000);
-  const uid =
-    String(from?.id || from?.uid || from?.sub || "").trim() || "unknown";
-  return jwt.sign(
-    {
-      iss: USER_ASSERTION_ISSUER,
-      aud: USER_ASSERTION_AUDIENCE,
-      sub: `user:${uid}`,
-      iat: now,
-      exp: now + USER_ASSERTION_TTL_SEC,
-      jti: randomUUID(),
-      // pass-through convenience claims (non-authoritative)
-      roles: Array.isArray(from?.roles) ? from.roles : [],
-      scopes: Array.isArray(from?.scopes) ? from.scopes : [],
-      email: typeof from?.email === "string" ? from.email : undefined,
-      name: typeof from?.name === "string" ? from.name : undefined,
-    },
-    USER_ASSERTION_SECRET,
-    { algorithm: "HS256" }
-  );
-}
-
-function toStringHeaders(h: IncomingHttpHeaders): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(h)) {
-    if (typeof v === "string") out[k] = v;
-    else if (Array.isArray(v)) out[k] = v.join(",");
-  }
-  return out;
-}
-
-function joinPath(...parts: string[]): string {
-  const cleaned = parts
-    .filter((p) => p != null)
-    .map((p) => String(p))
-    .map((p) => p.replace(/^\/+|\/+$/g, ""))
-    .filter((p) => p !== "");
-  const joined = cleaned.join("/");
-  return joined ? `/${joined}` : "/";
-}
-
-// ── proxy instance ────────────────────────────────────────────────────────────
-export function serviceProxy() {
-  const proxy = httpProxy.createProxyServer({
-    changeOrigin: true,
-    xfwd: true,
-    ignorePath: true,
-    selfHandleResponse: false,
-    preserveHeaderKeyCase: true,
-  });
-
-  proxy.on("error", (err, req, res) => {
-    const rid = String((req as any).headers?.["x-request-id"] || "");
-    logger.debug(
-      {
-        sentinel: "500DBG",
-        where: "proxy.on(error)",
-        rid,
-        err: String((err as any)?.message || err),
-      },
-      "500 about to be sent <<<500DBG>>>"
-    );
-    const resp = res as Response;
-    if (!resp.headersSent) {
-      resp.status(500).json({
+    const cfg = getService(slug);
+    if (!cfg) {
+      res.status(404).json({
         type: "about:blank",
-        title: "Proxy Error",
-        status: 500,
-        detail: String((err as any)?.message || err),
-      });
-    }
-  });
-
-  proxy.on("proxyReq", (proxyReq, req) => {
-    const rid = String((req as any).headers?.["x-request-id"] || "");
-    logger.debug(
-      {
-        rid,
-        method: (req as Request).method,
-        originalUrl: (req as Request).originalUrl,
-        targetPath: (proxyReq as any)?.path,
-        outHeaders: (proxyReq as any).getHeaders?.(),
-      },
-      "proxyReq"
-    );
-  });
-
-  proxy.on("proxyRes", (proxyRes, req) => {
-    const rid = String((req as any).headers?.["x-request-id"] || "");
-    const status = proxyRes.statusCode || 0;
-    if (status >= 400) {
-      const chunks: Buffer[] = [];
-      let total = 0;
-      const limit = 4096;
-      proxyRes.on("data", (c: Buffer) => {
-        if (total < limit) {
-          const slice = c.subarray(0, Math.min(c.length, limit - total));
-          chunks.push(slice);
-          total += slice.length;
-        }
-      });
-      proxyRes.on("end", () => {
-        const bodyPreview = Buffer.concat(chunks, total).toString("utf8");
-        logger.debug(
-          {
-            rid,
-            where: "proxyRes>=400",
-            upstreamStatus: status,
-            upstreamHeaders: proxyRes.headers,
-            bodyPreview,
-          },
-          "Upstream error"
-        );
-      });
-    } else {
-      logger.debug(
-        {
-          rid,
-          where: "proxyRes<400",
-          upstreamStatus: status,
-          upstreamHeaders: proxyRes.headers,
-        },
-        "Upstream ok"
-      );
-    }
-  });
-
-  // ── middleware ──────────────────────────────────────────────────────────────
-  return function serviceProxyMiddleware(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ) {
-    const rid = String(req.headers["x-request-id"] || "");
-    const rawUrl = req.originalUrl || req.url || "/";
-
-    try {
-      // Parse path + assert /api/<service>/...
-      const qPos = rawUrl.indexOf("?");
-      const pathOnly = qPos >= 0 ? rawUrl.slice(0, qPos) : rawUrl; // e.g. /api/user/profile
-      const query = qPos >= 0 ? rawUrl.slice(qPos) : "";
-      const segments = pathOnly.replace(/^\/+/, "").split("/"); // ["api","user","..."]
-
-      // Enforce hard rule: first segment MUST be "api"
-      if (segments[0] !== "api") {
-        // Let other routers handle non-/api paths
-        return next();
-      }
-
-      // Strip the mandatory "api" head (INBOUND_STRIP_SEGMENTS is asserted to be 1)
-      const stripped = segments.slice(INBOUND_STRIP_SEGMENTS); // ["user", ...]
-      const [serviceSeg, ...rest] = stripped;
-      if (!serviceSeg) return next(); // no service → not our route
-
-      const upstream = upstreamBaseFor(serviceSeg);
-      if (!upstream) {
-        return res.status(404).json({
-          type: "about:blank",
-          title: "Unknown Service",
-          status: 404,
-          detail: `Service "${serviceSeg}" not found or not proxyable (disabled)`,
-          instance: (req as any).id,
-        });
-      }
-
-      const outboundApiPrefix =
-        upstream.apiPrefix || OUTBOUND_API_PREFIX_DEFAULT;
-      const finalUrl = `${upstream.base}${joinPath(
-        outboundApiPrefix,
-        rest.join("/")
-      )}${query}`;
-
-      // Outbound headers
-      const outHeaders = toStringHeaders(req.headers);
-      delete outHeaders.authorization; // never forward client token
-      delete outHeaders["x-nv-user-assertion"]; // never trust a client-provided assertion
-      delete outHeaders["content-length"];
-      delete outHeaders["transfer-encoding"];
-      delete outHeaders.host;
-      if (outHeaders["accept-encoding"]) delete outHeaders["accept-encoding"];
-      outHeaders["x-request-id"] = rid || randomUUID();
-
-      // Mint S2S
-      try {
-        outHeaders.authorization = `Bearer ${mintS2S()}`;
-      } catch (e: any) {
-        logger.debug(
-          {
-            sentinel: "500DBG",
-            where: "mintS2S",
-            rid,
-            err: String(e?.message || e),
-          },
-          "500 about to be sent <<<500DBG>>>"
-        );
-        return res.status(503).json({
-          type: "about:blank",
-          title: "Gateway Auth Misconfigured",
-          status: 503,
-          detail:
-            "S2S mint failed: ensure S2S_SECRET, S2S_ISSUER, S2S_AUDIENCE, S2S_MAX_TTL_SEC are set.",
-          instance: (req as any).id,
-        });
-      }
-
-      // NEW: Mint end-user assertion from the authenticated edge user (set by authGate)
-      try {
-        const edgeUser = (req as any).user;
-        if (edgeUser) {
-          const assertion = mintUserAssertion(edgeUser);
-          outHeaders["x-nv-user-assertion"] = assertion;
-        }
-      } catch (e: any) {
-        logger.debug(
-          { where: "mintUserAssertion", rid, err: String(e?.message || e) },
-          "User assertion mint skipped"
-        );
-      }
-
-      // Pre-proxy log
-      logger.debug(
-        {
-          where: "pre-proxy",
-          rid,
-          method: req.method,
-          from: rawUrl,
-          to: finalUrl,
-          stripSegments: INBOUND_STRIP_SEGMENTS,
-          outboundPrefix: outboundApiPrefix || "<default>",
-          readableEnded: (req as any).readableEnded,
-          outHeaders: {
-            ...outHeaders,
-            authorization: "<s2s>",
-            "x-nv-user-assertion": "<present?>",
-          },
-        },
-        "About to proxy"
-      );
-
-      // Body must be untouched
-      if ((req as any).readableEnded === true) {
-        logger.debug(
-          { sentinel: "500DBG", where: "body-consumed", rid },
-          "500 about to be sent <<<500DBG>>>"
-        );
-        return res.status(500).json({
-          type: "about:blank",
-          title: "Gateway Misconfiguration",
-          status: 500,
-          detail:
-            "Request body was consumed before proxy. Mount serviceProxy() before any body parsers.",
-          instance: (req as any).id,
-        });
-      }
-
-      // Proxy it
-      try {
-        proxy.web(
-          req,
-          res,
-          { target: finalUrl, secure: false, headers: outHeaders },
-          (err) => {
-            logger.debug(
-              {
-                sentinel: "500DBG",
-                where: "proxy.web callback",
-                rid,
-                err: String((err as any)?.message || err),
-              },
-              "500 about to be sent <<<500DBG>>>"
-            );
-            if (!res.headersSent) {
-              res.status(500).json({
-                type: "about:blank",
-                title: "Proxy Error",
-                status: 500,
-                detail: String((err as any)?.message || err),
-                instance: (req as any).id,
-              });
-            }
-          }
-        );
-      } catch (e: any) {
-        logger.debug(
-          {
-            sentinel: "500DBG",
-            where: "proxy.web throw",
-            rid,
-            err: String(e?.message || e),
-          },
-          "500 about to be sent <<<500DBG>>>"
-        );
-        return res.status(500).json({
-          type: "about:blank",
-          title: "Proxy Error",
-          status: 500,
-          detail: "proxy invocation failed",
-          instance: (req as any).id,
-        });
-      }
-    } catch (e: any) {
-      logger.debug(
-        {
-          sentinel: "500DBG",
-          where: "middleware.try/catch",
-          err: String(e?.message || e),
-        },
-        "500 about to be sent <<<500DBG>>>"
-      );
-      return res.status(500).json({
-        type: "about:blank",
-        title: "Gateway Error",
-        status: 500,
-        detail: "Unhandled proxy exception",
+        title: "Not Found",
+        status: 404,
+        detail: "Unknown or disallowed service",
         instance: (req as any).id,
       });
+      return;
     }
+
+    const base = upstreamBase(cfg);
+    const restPath = "/" + segments.slice(1).join("/");
+    const qs = req.url.includes("?") ? "?" + req.url.split("?")[1] : "";
+    const targetUrl = base + restPath + qs;
+
+    // Prepare headers
+    const hop = new Set([
+      "connection",
+      "keep-alive",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "te",
+      "trailer",
+      "transfer-encoding",
+      "upgrade",
+      "host",
+    ]);
+    const outHeaders: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (!k) continue;
+      if (hop.has(k.toLowerCase())) continue;
+      if (Array.isArray(v)) outHeaders[k] = v.join(", ");
+      else if (typeof v === "string") outHeaders[k] = v;
+    }
+    const xfHost = req.headers["x-forwarded-host"]
+      ? String(req.headers["x-forwarded-host"])
+      : String(req.headers["host"] || "");
+    outHeaders["x-forwarded-for"] = mergeForwardedFor(
+      req.headers["x-forwarded-for"],
+      req.socket?.remoteAddress
+    );
+    if (xfHost) outHeaders["x-forwarded-host"] = xfHost;
+    outHeaders["x-forwarded-proto"] = req.protocol || "http";
+    outHeaders["x-request-id"] =
+      (req as any).id ||
+      (Array.isArray(req.headers["x-request-id"])
+        ? req.headers["x-request-id"][0]
+        : (req.headers["x-request-id"] as string)) ||
+      "";
+
+    // Dispatch
+    const urlObj = new URL(targetUrl);
+    const agent = urlObj.protocol === "https:" ? https : http;
+
+    const upstreamReq = agent.request(
+      {
+        protocol: urlObj.protocol,
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        method: req.method,
+        path: urlObj.pathname + urlObj.search,
+        headers: outHeaders,
+      },
+      (upstreamRes) => {
+        // Pass through status + headers (minus hop-by-hop)
+        const safeHeaders: Record<string, number | string | string[]> = {};
+        for (const [k, v] of Object.entries(upstreamRes.headers)) {
+          if (!k) continue;
+          if (hop.has(k.toLowerCase())) continue;
+          if (v !== undefined) safeHeaders[k] = v as any;
+        }
+        res.writeHead(upstreamRes.statusCode || 502, safeHeaders);
+        upstreamRes.pipe(res);
+        upstreamRes.on("end", () => {
+          logger.debug(
+            {
+              requestId: (req as any).id,
+              svc: slug,
+              target: targetUrl,
+              status: upstreamRes.statusCode,
+            },
+            "[gateway] proxy exit"
+          );
+        });
+      }
+    );
+
+    upstreamReq.on("error", (err: any) => {
+      const code = String(err?.code || "");
+      const timeout =
+        code === "ECONNABORTED" ||
+        (typeof err?.message === "string" &&
+          err.message.toLowerCase().includes("timeout"));
+      const connErr =
+        code === "ECONNREFUSED" ||
+        code === "ECONNRESET" ||
+        code === "EHOSTUNREACH";
+      const status = timeout ? 504 : connErr ? 502 : 500;
+
+      logger.error(
+        {
+          requestId: (req as any).id,
+          svc: slug,
+          target: targetUrl,
+          err,
+        },
+        "[gateway] proxy error"
+      );
+      if (!res.headersSent) {
+        res.status(status).json({
+          type: "about:blank",
+          title: status === 504 ? "Gateway Timeout" : "Bad Gateway",
+          status,
+          detail: err?.message || "Upstream error",
+          instance: (req as any).id,
+        });
+      } else {
+        try {
+          res.end();
+        } catch {}
+      }
+    });
+
+    // Stream body
+    req.pipe(upstreamReq);
+    logger.debug(
+      {
+        requestId: (req as any).id,
+        svc: slug,
+        target: targetUrl,
+        method: req.method,
+      },
+      "[gateway] proxy enter"
+    );
   };
+}
+
+function resolveSlug(seg: string): string {
+  const lower = String(seg || "").toLowerCase();
+  const aliased = (ROUTE_ALIAS as Record<string, string>)[lower] || lower;
+  return aliased.endsWith("s") ? aliased.slice(0, -1) : aliased;
+}
+
+function getService(slug: string): ServiceConfig | undefined {
+  const snap = getSvcconfigSnapshot();
+  if (!snap) return undefined;
+  const cfg = snap.services[slug];
+  if (!cfg) return undefined;
+  if (!cfg.enabled) return undefined;
+  if (!cfg.allowProxy) return undefined;
+  return cfg;
+}
+
+function upstreamBase(cfg: ServiceConfig): string {
+  const base = cfg.baseUrl.replace(/\/+$/, "");
+  const apiPrefix = (cfg.outboundApiPrefix || "/api").replace(/^\/?/, "/");
+  return `${base}${apiPrefix}`;
+}
+
+function mergeForwardedFor(
+  existing: string | string[] | undefined,
+  addr?: string | null
+) {
+  const xs = Array.isArray(existing) ? existing.join(", ") : existing || "";
+  if (!addr) return xs || "";
+  return xs ? `${xs}, ${addr}` : String(addr);
 }

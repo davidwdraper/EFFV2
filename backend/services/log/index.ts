@@ -1,13 +1,14 @@
 // backend/services/log/index.ts
 import "./src/bootstrap";
 import app from "./src/app";
-import { logger } from "../shared/utils/logger";
+import { logger } from "@shared/utils/logger";
 import { config } from "./src/config";
+import { SERVICE_NAME } from "./src/bootstrap";
 
 const server = app.listen(config.port, () => {
   logger.info(
-    { service: config.serviceName, port: config.port },
-    `${config.serviceName} listening`
+    { service: SERVICE_NAME, port: config.port },
+    `${SERVICE_NAME} listening`
   );
 });
 

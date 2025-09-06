@@ -1,26 +1,22 @@
 // backend/services/log/src/bootstrap.ts
-
 import path from "path";
-import {
-  loadEnvFromFileOrThrow,
-  assertRequiredEnv,
-} from "../../shared/config/env";
+import { loadServiceAndRootEnvOrThrow, assertRequiredEnv } from "@shared/env";
 
-// Default to .env.dev if ENV_FILE is not set
-const envFile =
-  (process.env.ENV_FILE && process.env.ENV_FILE.trim()) || ".env.dev";
+// ── Service identity ─────────────────────────────────────────────────────────
+export const SERVICE_NAME = "log" as const;
 
-// Always resolve relative to the monorepo root
-const resolved = path.resolve(__dirname, "../../../..", envFile);
+// Root first, then service overrides
+const rootEnv = path.resolve(__dirname, "../../../..", ".env.dev"); // /eff/.env.dev
+const svcEnv = path.resolve(__dirname, "..", ".env.dev"); // /eff/backend/services/log/.env.dev  ✅
 
-console.log(`[bootstrap] [log] Loading env from: ${resolved}`);
-loadEnvFromFileOrThrow(resolved);
+console.log(
+  `[bootstrap] [log] Loading env from (root→svc): ${rootEnv} , ${svcEnv}`
+);
+loadServiceAndRootEnvOrThrow(svcEnv, rootEnv);
 
-// Required envs for the Log service (no defaults, must be present)
 assertRequiredEnv([
   "LOG_LEVEL",
-  "LOG_SERVICE_NAME", // e.g., LOG_SERVICE_NAME=log
-  "LOG_MONGO_URI", // MongoDB connection for audit storage
-  "LOG_PORT", // port log service listens on
-  "LOG_SERVICE_TOKEN_CURRENT", // token clients use to post audits
+  "LOG_MONGO_URI",
+  "LOG_PORT",
+  "LOG_SERVICE_TOKEN_CURRENT",
 ]);

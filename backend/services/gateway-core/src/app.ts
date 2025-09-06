@@ -3,15 +3,44 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { genericProxy } from "./middleware/genericProxy";
 
+// svcconfig mirror (edge → core)
+import {
+  startSvcconfigMirror,
+  getSvcconfigReadiness,
+} from "./svcconfig/mirror-manager";
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Boot: start svcconfig mirror (ETag-aware; Redis subscribe if configured)
+void startSvcconfigMirror();
+
+// Grace period for /health/ready (ms)
+const GRACE_MS = Number(process.env.SVCCONFIG_GRACE_MS || 15_000);
+const START_TIME = Date.now();
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Minimal health endpoints (no shared deps required)
 const health = express.Router();
+
 health.get("/live", (_req, res) =>
   res.status(200).json({ ok: true, live: true })
 );
-health.get("/ready", (_req, res) =>
-  res.status(200).json({ ok: true, ready: true })
-);
+
+health.get("/ready", async (_req, res) => {
+  // Include svcconfig mirror readiness
+  const svcconfig = await getSvcconfigReadiness();
+  const ageSinceStart = Date.now() - START_TIME;
+
+  // Within grace period, report ready even if svcconfig not yet loaded
+  const ok = (svcconfig?.ok ?? false) || ageSinceStart < GRACE_MS;
+
+  return res.status(ok ? 200 : 503).json({
+    ok,
+    ready: ok,
+    graceMs: GRACE_MS,
+    uptimeMs: ageSinceStart,
+    svcconfig, // { ok, source:"cache"|"lkg"|"empty", version, ageMs, services[] }
+  });
+});
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Create app and mount in the correct order:

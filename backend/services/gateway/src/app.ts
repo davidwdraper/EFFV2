@@ -26,12 +26,16 @@ import { httpsOnly } from "./middleware/httpsOnly";
 import { serviceProxy } from "./middleware/serviceProxy";
 import { trace5xx } from "./middleware/trace5xx";
 
-// NEW: svcconfig client (db-driven routing)
+// svcconfig client (db-driven routing)
 import {
   initializeSvcConfig,
   healthUrlFor,
-  getService,
+  getSvcconfigSnapshot,
 } from "./svcconfig/client";
+
+// NEW: internal svcconfig endpoints
+import createSvcconfigInternalRouter from "./internal/svcconfig.internal";
+import { verifyS2S } from "./utils/s2s"; // ✅ inbound S2S verifier
 
 // kick off svcconfig load (fire-and-forget; readiness will report status)
 void initializeSvcConfig();
@@ -148,8 +152,7 @@ app.use(trace5xx("early"));
 // Health / Readiness — BEFORE limits/auth
 
 const readiness: ReadinessFn = async (_req) => {
-  // Confirm we have at least the core slugs present and responding (best-effort)
-  const must = ["user", "act"]; // adjust as you add more; purely advisory
+  const must = ["user", "act"]; // adjust as needed
   const upstreams: Record<string, { ok: boolean; url?: string }> = {};
 
   await Promise.all(
@@ -183,11 +186,8 @@ app.use(
 );
 
 // Public dynamic health passthroughs (NO /api, NO auth, NO Authorization)
-//    GET /user/health/live   → user base /health/live
-//    GET /user/health/ready  → user base /health/ready
 app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
   try {
-    // ensure no auth header is forwarded
     delete req.headers.authorization;
     const url = healthUrlFor(
       String(req.params.svc || ""),
@@ -215,7 +215,7 @@ app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
   }
 });
 
-// 👀 DEBUG: introspection endpoints (remove before release)
+// 👀 DEBUG: introspection endpoints
 app.get("/__core", (_req, res) => {
   res.json({
     NODE_ENV: process.env.NODE_ENV,
@@ -225,23 +225,19 @@ app.get("/__core", (_req, res) => {
 app.get("/__auth", (_req, res) => {
   res.json({
     NODE_ENV: process.env.NODE_ENV,
-    // Client auth
     CLIENT_AUTH_REQUIRE: process.env.CLIENT_AUTH_REQUIRE ?? null,
     CLIENT_AUTH_BYPASS: process.env.CLIENT_AUTH_BYPASS ?? null,
     CLIENT_AUTH_JWKS_URL: process.env.CLIENT_AUTH_JWKS_URL || null,
     CLIENT_AUTH_ISSUERS: process.env.CLIENT_AUTH_ISSUERS || null,
     CLIENT_AUTH_AUDIENCE: process.env.CLIENT_AUTH_AUDIENCE || null,
     CLIENT_AUTH_CLOCK_SKEW_SEC: process.env.CLIENT_AUTH_CLOCK_SKEW_SEC || null,
-    // S2S
     S2S_SECRET_PRESENT: !!(
       process.env.S2S_SECRET && process.env.S2S_SECRET.length > 0
     ),
     S2S_ISSUER: process.env.S2S_ISSUER || null,
     S2S_AUDIENCE: process.env.S2S_AUDIENCE || null,
-    // Proxy pathing
     INBOUND_STRIP_SEGMENTS: process.env.INBOUND_STRIP_SEGMENTS ?? null,
     OUTBOUND_API_PREFIX: process.env.OUTBOUND_API_PREFIX ?? null,
-    // User Assertion (internal end-user identity)
     USER_ASSERTION_SECRET_PRESENT: !!(
       process.env.USER_ASSERTION_SECRET &&
       process.env.USER_ASSERTION_SECRET.length > 0
@@ -253,7 +249,18 @@ app.get("/__auth", (_req, res) => {
   });
 });
 
-// Limits + timeouts + breaker + auth (none consume request body)
+// ──────────────────────────────────────────────────────────────────────────────
+// Internal svcconfig mirror — BEFORE limits/auth
+app.use(
+  "/__internal/svcconfig",
+  createSvcconfigInternalRouter({
+    verifyS2S,
+    getSvcconfigSnapshot,
+  })
+);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Limits + timeouts + breaker + auth
 app.use(rateLimitMiddleware(rateLimitCfg));
 app.use(sensitiveLimiter());
 app.use(timeoutsMiddleware(timeoutCfg));
@@ -264,11 +271,11 @@ app.use(authGate());
 app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Service proxy plane — MUST be before any body parsers
+// Service proxy plane
 app.use(serviceProxy());
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Only after the proxy do we parse bodies for NON-proxied routes (admin, debug)
+// Only after the proxy do we parse bodies for NON-proxied routes
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 

@@ -11,36 +11,20 @@ import {
   GATEWAY_FALLBACK_ENV_ROUTES,
 } from "../config";
 
-/** Shape stored in svcconfig DB (collection: service_configs) */
-export type ServiceConfig = {
-  slug: string;
-  enabled: boolean;
-  allowProxy: boolean;
-  baseUrl: string;
-  outboundApiPrefix?: string; // default: "/api"
-  healthPath?: string; // default: "/health"
-  exposeHealth?: boolean; // default: true
-  protectedGetPrefixes?: string[];
-  publicPrefixes?: string[];
-  overrides?: {
-    timeoutMs?: number;
-    breaker?: {
-      failureThreshold?: number;
-      halfOpenAfterMs?: number;
-      minRttMs?: number;
-    };
-    routeAliases?: Record<string, string>;
-  };
-  version: number;
-  updatedAt?: string;
-  updatedBy?: string;
-  notes?: string;
-};
+// ✅ Canonical shared contract
+import {
+  SvcConfigSchema,
+  ServiceConfig,
+} from "@shared/contracts/svcconfig.contract";
 
 const CACHE = new Map<string, ServiceConfig>(); // key = slug
 const LKG_PATH =
   process.env.GATEWAY_SVCCONFIG_LKG_PATH ||
   path.resolve(__dirname, "../../.svcconfig.lkg.json");
+
+// ── internal cache versioning for ETag/snapshot ───────────────────────────────
+let versionCounter = 0;
+let lastUpdatedAtMs = 0;
 
 // ── S2S mint (gateway → svcconfig) ───────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -80,10 +64,24 @@ async function fetchAll(): Promise<ServiceConfig[]> {
     headers: { Authorization: `Bearer ${token}` },
     validateStatus: () => true,
   });
-  if (r.status >= 200 && r.status < 300 && Array.isArray(r.data)) {
-    return r.data as ServiceConfig[];
+  if (!(r.status >= 200 && r.status < 300) || !Array.isArray(r.data)) {
+    throw new Error(`svcconfig list failed: ${r.status}`);
   }
-  throw new Error(`svcconfig list failed: ${r.status}`);
+
+  // Validate & normalize via shared Zod schema
+  const out: ServiceConfig[] = [];
+  for (const raw of r.data as unknown[]) {
+    const parsed = SvcConfigSchema.safeParse(raw);
+    if (parsed.success) {
+      out.push(normalize(parsed.data));
+    } else {
+      logger.warn(
+        { issues: parsed.error.issues },
+        "[gateway:svcconfig] dropping invalid config item"
+      );
+    }
+  }
+  return out;
 }
 
 // ── Cache ops / LKG ──────────────────────────────────────────────────────────
@@ -101,28 +99,38 @@ async function writeLKG(items: ServiceConfig[]) {
 async function readLKG(): Promise<ServiceConfig[] | null> {
   try {
     const raw = await fsp.readFile(LKG_PATH, "utf8");
-    const parsed = JSON.parse(raw) as { v: number; items: ServiceConfig[] };
-    if (parsed?.items && Array.isArray(parsed.items)) return parsed.items;
-    return null;
+    const parsed = JSON.parse(raw) as { v: number; items: unknown[] };
+    if (!parsed?.items || !Array.isArray(parsed.items)) return null;
+
+    const out: ServiceConfig[] = [];
+    for (const rawItem of parsed.items) {
+      const p = SvcConfigSchema.safeParse(rawItem);
+      if (p.success) out.push(normalize(p.data));
+    }
+    return out.length ? out : null;
   } catch {
     return null;
   }
 }
+
+function normalize(it: ServiceConfig): ServiceConfig {
+  // The schema already defaults optional fields; just enforce lowercase slug.
+  return {
+    ...it,
+    slug: it.slug.toLowerCase(),
+    // (outboundApiPrefix/healthPath/exposeHealth already defaulted by Zod .default())
+  };
+}
+
 function repopulate(items: ServiceConfig[]) {
   CACHE.clear();
   for (const it of items) {
     if (!it?.slug) continue;
     CACHE.set(it.slug.toLowerCase(), normalize(it));
   }
-}
-function normalize(it: ServiceConfig): ServiceConfig {
-  return {
-    ...it,
-    slug: it.slug.toLowerCase(),
-    outboundApiPrefix: it.outboundApiPrefix || "/api",
-    healthPath: it.healthPath || "/health",
-    exposeHealth: it.exposeHealth !== false,
-  };
+  // bump cache version + timestamp for ETag/snapshot semantics
+  versionCounter++;
+  lastUpdatedAtMs = Date.now();
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -136,6 +144,7 @@ export async function initializeSvcConfig(): Promise<void> {
     const lkg = await readLKG();
     if (lkg?.length) {
       repopulate(lkg);
+      await writeLKG(lkg); // keep LKG shape consistent
       logger.warn({ count: lkg.length }, "[gateway:svcconfig] using LKG cache");
     } else {
       logger.error({ err }, "[gateway:svcconfig] initial load failed (no LKG)");
@@ -202,4 +211,20 @@ export function healthUrlFor(
 /** Whether legacy env routes are allowed (should be false in dev/prod) */
 export function envFallbackAllowed(): boolean {
   return GATEWAY_FALLBACK_ENV_ROUTES === true;
+}
+
+/** Read-only snapshot for internal S2S mirror endpoints (ETag source = version) */
+export function getSvcconfigSnapshot(): {
+  version: string;
+  updatedAt: number;
+  services: Record<string, ServiceConfig>;
+} | null {
+  if (CACHE.size === 0) return null;
+  const services: Record<string, ServiceConfig> = {};
+  for (const [slug, cfg] of CACHE.entries()) services[slug] = cfg;
+  return {
+    version: String(versionCounter),
+    updatedAt: lastUpdatedAtMs,
+    services,
+  };
 }

@@ -1,17 +1,17 @@
 // backend/services/gateway-core/src/middleware/genericProxy.ts
 import type { Request, Response } from "express";
 import httpProxy = require("http-proxy"); // CJS import for solid types
-import { resolveUpstreamBase } from "../config";
+
+import { getSvcconfigSnapshot } from "@shared/svcconfig/client";
+import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
 import { mintS2S } from "../utils/s2s";
 
 const proxy = httpProxy.createProxyServer({ changeOrigin: true, xfwd: true });
 
 // If Express consumed the body, re-send it downstream.
 proxy.on("proxyReq", (proxyReq, req: any) => {
-  // Only for methods that may have a body
   if (!req || !req.method || ["GET", "HEAD"].includes(req.method)) return;
 
-  // If body is already a buffer/string, pass as-is; else JSON-stringify object.
   let bodyData: Buffer | string | undefined;
   if (req.body instanceof Buffer) bodyData = req.body;
   else if (typeof req.body === "string") bodyData = req.body;
@@ -25,7 +25,6 @@ proxy.on("proxyReq", (proxyReq, req: any) => {
       ? bodyData.length
       : Buffer.byteLength(bodyData);
     proxyReq.setHeader("Content-Length", String(len));
-    // Some proxies need this to avoid chunked encoding with fixed length
     if (proxyReq.getHeader("transfer-encoding"))
       proxyReq.removeHeader("transfer-encoding");
     proxyReq.write(bodyData);
@@ -59,7 +58,6 @@ proxy.on("proxyRes", (proxyRes, req: any) => {
 });
 
 export function genericProxy() {
-  console.log("[core] genericProxy impl:", __filename);
   return (req: Request, res: Response) => {
     // Mounted at /api — expect /api/<svc>/<rest>
     const m = req.url.match(/^\/?([^/]+)\/(.*)$/);
@@ -71,31 +69,31 @@ export function genericProxy() {
       });
     }
 
-    const svc = m[1].toLowerCase();
+    const slug = m[1].toLowerCase();
     const rest = m[2] || "";
 
     const log = (req as any).log || console;
     log.info(
-      { svc, url: req.url, originalUrl: (req as any).originalUrl || req.url },
+      {
+        svc: slug,
+        url: req.url,
+        originalUrl: (req as any).originalUrl || req.url,
+      },
       "[gateway-core] inbound"
     );
 
-    // Resolve strict upstream
-    let base: string, svcKey: string;
-    try {
-      const r = resolveUpstreamBase(svc);
-      svcKey = r.svcKey;
-      base = r.base;
-      log.info({ envKey: svcKey, base }, "[gateway-core] resolved upstream");
-    } catch (e) {
-      log.warn({ svc, err: String(e) }, "[gateway-core] missing upstream env");
-      return res.status(502).json({
+    // Resolve upstream from shared svcconfig snapshot
+    const cfg = getService(slug);
+    if (!cfg) {
+      log.warn({ svc: slug }, "[gateway-core] unknown or disallowed service");
+      return res.status(404).json({
         type: "about:blank",
-        title: "Bad Gateway",
-        status: 502,
-        detail: `Upstream not configured for "${svc}"`,
+        title: "Not Found",
+        status: 404,
+        detail: "Unknown or disallowed service",
       });
     }
+    const base = upstreamBase(cfg);
 
     const target = `${base}/${rest}`
       .replace(/\/{2,}/g, "/")
@@ -118,17 +116,32 @@ export function genericProxy() {
     // Don’t leak caller auth to worker
     delete (req.headers as any).authorization;
 
-    // Pass through user assertion if present from the original caller (keep original user bound)
     const userAssertion =
       (req.headers["x-nv-user-assertion"] as string | undefined) || undefined;
 
     proxy.web(req as any, res as any, {
       target,
-      ignorePath: true, // 👈 critical fix: don’t append req.url again
+      ignorePath: true,
       headers: {
         authorization: `Bearer ${s2s}`,
         ...(userAssertion ? { "x-nv-user-assertion": userAssertion } : {}),
       },
     });
   };
+}
+
+function getService(slug: string): ServiceConfig | undefined {
+  const snap = getSvcconfigSnapshot();
+  if (!snap) return undefined;
+  const cfg = snap.services[slug];
+  if (!cfg) return undefined;
+  if (!cfg.enabled) return undefined;
+  if (!cfg.allowProxy) return undefined;
+  return cfg;
+}
+
+function upstreamBase(cfg: ServiceConfig): string {
+  const base = cfg.baseUrl.replace(/\/+$/, "");
+  const apiPrefix = (cfg.outboundApiPrefix || "/api").replace(/^\/?/, "/");
+  return `${base}${apiPrefix}`;
 }

@@ -9,7 +9,13 @@ import helmet from "helmet";
 import { createHealthRouter, ReadinessFn } from "@shared/health";
 import { logger } from "@shared/utils/logger";
 
-import { serviceName, rateLimitCfg, timeoutCfg, breakerCfg } from "./config";
+import {
+  serviceName,
+  rateLimitCfg,
+  timeoutCfg,
+  breakerCfg,
+  ROUTE_ALIAS,
+} from "./config";
 
 import { requestIdMiddleware } from "./middleware/requestId";
 import {
@@ -26,19 +32,15 @@ import { httpsOnly } from "./middleware/httpsOnly";
 import { serviceProxy } from "./middleware/serviceProxy";
 import { trace5xx } from "./middleware/trace5xx";
 
-// svcconfig client (db-driven routing)
+// ✅ Shared svcconfig client (same as core)
 import {
-  initializeSvcConfig,
-  healthUrlFor,
+  startSvcconfigMirror,
   getSvcconfigSnapshot,
-} from "./svcconfig/client";
+} from "@shared/svcconfig/client";
+import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
 
-// NEW: internal svcconfig endpoints
-import createSvcconfigInternalRouter from "./internal/svcconfig.internal";
-import { verifyS2S } from "./utils/s2s"; // ✅ inbound S2S verifier
-
-// kick off svcconfig load (fire-and-forget; readiness will report status)
-void initializeSvcConfig();
+// Kick off svcconfig mirror (ETag-aware; Redis/poll handled inside shared)
+void startSvcconfigMirror();
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -52,6 +54,33 @@ function sanitizeUrl(u: string): string {
   } catch {
     return u;
   }
+}
+
+// Alias + singularize to canonical slug (matches previous behavior)
+function resolveSlug(seg: string): string {
+  const lower = String(seg || "").toLowerCase();
+  const aliased = (ROUTE_ALIAS as Record<string, string>)[lower] || lower;
+  return aliased.endsWith("s") ? aliased.slice(0, -1) : aliased;
+}
+
+// Lookup service by incoming path segment with allow/enable checks
+function getServiceBySegment(seg: string): ServiceConfig | undefined {
+  const snap = getSvcconfigSnapshot();
+  if (!snap) return undefined;
+  const slug = resolveSlug(seg);
+  const cfg = snap.services[slug];
+  if (!cfg) return undefined;
+  if (!cfg.enabled) return undefined;
+  if (!cfg.allowProxy) return undefined;
+  return cfg;
+}
+
+// Compute upstream health URL (if exposed)
+function healthUrlFor(seg: string, kind: "live" | "ready"): string | null {
+  const cfg = getServiceBySegment(seg);
+  if (!cfg || cfg.exposeHealth === false) return null;
+  const healthRoot = (cfg.healthPath || "/health").replace(/\/+$/, "");
+  return `${cfg.baseUrl.replace(/\/+$/, "")}${healthRoot}/${kind}`;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -248,16 +277,6 @@ app.get("/__auth", (_req, res) => {
       process.env.USER_ASSERTION_CLOCK_SKEW_SEC || null,
   });
 });
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Internal svcconfig mirror — BEFORE limits/auth
-app.use(
-  "/__internal/svcconfig",
-  createSvcconfigInternalRouter({
-    verifyS2S,
-    getSvcconfigSnapshot,
-  })
-);
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Limits + timeouts + breaker + auth

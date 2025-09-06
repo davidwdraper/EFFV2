@@ -1,26 +1,33 @@
 // backend/services/gateway/src/middleware/genericProxy.ts
 import type { RequestHandler } from "express";
 import { logger } from "../../../shared/utils/logger";
-import { resolveUpstreamBase, isAllowedServiceSlug } from "../config";
 import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";
 
+import { ROUTE_ALIAS } from "../config";
+import { getSvcconfigSnapshot } from "@shared/svcconfig/client";
+import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
+
 /**
- * Generic reverse proxy that forwards /<svc>/<rest...> to ENV[<SVC>_SERVICE_URL]/<rest...>.
+ * Generic reverse proxy that forwards /<svc>/<rest...> to
+ * <svc>.baseUrl + (outboundApiPrefix||/api) + /<rest...>
+ *
  * - Expects to be MOUNTED at /api so first segment is the service slug.
- * - Uses alias map and naive singularization for ENV keys.
+ * - Uses alias map and naive singularization to resolve canonical slug.
  * - Streams request/response (no buffering).
  * - Preserves querystring, method, headers; sets x-forwarded-* and x-request-id.
- * - Rejects if <svc> not in allowlist or env key missing.
+ * - Rejects if svc not present, !enabled, or !allowProxy.
  */
 export function genericProxy(): RequestHandler {
   return (req, res) => {
     // Because this is mounted at /api, req.url begins with "/<svc>/..."
     const segments = (req.url || "/").split("?")[0].split("/").filter(Boolean);
-    const svc = segments[0] || "";
+    const seg = segments[0] || "";
+    const slug = resolveSlug(seg);
 
-    if (!svc || !isAllowedServiceSlug(svc)) {
+    const cfg = getService(slug);
+    if (!cfg) {
       res.status(404).json({
         type: "about:blank",
         title: "Not Found",
@@ -31,24 +38,11 @@ export function genericProxy(): RequestHandler {
       return;
     }
 
-    let upstream;
-    try {
-      upstream = resolveUpstreamBase(svc); // { svcKey, base }
-    } catch (e: any) {
-      res.status(500).json({
-        type: "about:blank",
-        title: "Internal Server Error",
-        status: 500,
-        detail: e?.message || "Missing upstream configuration",
-        instance: (req as any).id,
-      });
-      return;
-    }
-
+    const base = upstreamBase(cfg);
     // Join base + rest of path
     const restPath = "/" + segments.slice(1).join("/");
     const qs = req.url.includes("?") ? "?" + req.url.split("?")[1] : "";
-    const targetUrl = upstream.base + restPath + qs;
+    const targetUrl = base + restPath + qs;
 
     // Prepare headers: drop hop-by-hop and set x-forwarded-*
     const { headers } = req;
@@ -117,8 +111,7 @@ export function genericProxy(): RequestHandler {
           logger.debug(
             {
               requestId: (req as any).id,
-              svc,
-              envKey: upstream.svcKey,
+              svc: slug,
               target: targetUrl,
               status: upstreamRes.statusCode,
             },
@@ -143,8 +136,7 @@ export function genericProxy(): RequestHandler {
       logger.error(
         {
           requestId: (req as any).id,
-          svc,
-          envKey: upstream?.svcKey,
+          svc: slug,
           target: targetUrl,
           err,
         },
@@ -170,14 +162,35 @@ export function genericProxy(): RequestHandler {
     logger.debug(
       {
         requestId: (req as any).id,
-        svc,
-        envKey: upstream.svcKey,
+        svc: slug,
         target: targetUrl,
         method: req.method,
       },
       "[gateway] proxy enter"
     );
   };
+}
+
+function resolveSlug(seg: string): string {
+  const lower = String(seg || "").toLowerCase();
+  const aliased = (ROUTE_ALIAS as Record<string, string>)[lower] || lower;
+  return aliased.endsWith("s") ? aliased.slice(0, -1) : aliased;
+}
+
+function getService(slug: string): ServiceConfig | undefined {
+  const snap = getSvcconfigSnapshot();
+  if (!snap) return undefined;
+  const cfg = snap.services[slug];
+  if (!cfg) return undefined;
+  if (!cfg.enabled) return undefined;
+  if (!cfg.allowProxy) return undefined;
+  return cfg;
+}
+
+function upstreamBase(cfg: ServiceConfig): string {
+  const base = cfg.baseUrl.replace(/\/+$/, "");
+  const apiPrefix = (cfg.outboundApiPrefix || "/api").replace(/^\/?/, "/");
+  return `${base}${apiPrefix}`;
 }
 
 function mergeForwardedFor(

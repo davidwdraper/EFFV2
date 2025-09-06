@@ -235,3 +235,57 @@ Delete
 DELETE /api/<entity>/:id removes the entity.
 
 DELETE must be idempotent: return 200/202/204 if deleted, 404 if already gone.
+
+Route & Slug Standard (NowVibin)
+Service Slugs
+
+Always singular.
+
+Match the service folder name and the slug field in svcconfig.
+
+Examples:
+
+user → backend/services/user
+
+act → backend/services/act
+
+place → backend/services/place
+
+event → backend/services/event
+
+REST Resource Paths
+
+Always plural for collections.
+
+Exposed by the service itself under /api.
+
+Examples:
+
+GET /api/users → list users
+
+POST /api/acts → create act
+
+GET /api/places/:id → fetch a place
+
+PUT /api/events/:id → update event
+
+Gateway Proxy Convention
+
+External path format:
+
+/api/<slug>/<resource...>
+
+Gateway strips the <slug>, then proxies the remainder to the service’s base URL from svcconfig.
+
+Example flow:
+
+Client: PUT /api/act/acts/123
+Gateway: slug=act → baseUrl=http://127.0.0.1:4002
+target=http://127.0.0.1:4002/api/acts/123
+Service: handles PUT /api/acts/:id
+
+Key Rule of Thumb
+
+Slug = singular = service identity
+
+Resource = plural = REST collection

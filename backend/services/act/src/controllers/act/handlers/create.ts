@@ -13,11 +13,21 @@ function requireEnv(name: string): string {
   if (!v || !v.trim()) throw new Error(`Missing required env var: ${name}`);
   return v.trim();
 }
-const CORE_BASE_URL = requireEnv("GATEWAY_CORE_BASE_URL"); // e.g. http://127.0.0.1:4011
+
+const CORE_BASE_URL = requireEnv("GATEWAY_CORE_BASE_URL"); // e.g., http://127.0.0.1:4011
 const S2S_JWT_SECRET = requireEnv("S2S_JWT_SECRET");
-const S2S_JWT_ISSUER = requireEnv("S2S_JWT_ISSUER");
+const S2S_JWT_ISSUER = requireEnv("S2S_JWT_ISSUER"); // should be "gateway-core" in dev
 const S2S_JWT_AUDIENCE = requireEnv("S2S_JWT_AUDIENCE");
 
+// Optional user assertion for core→geo hops if you ever need it from here.
+// (Not used when caller provides actLoc; kept for completeness.)
+const USER_ASSERTION_SECRET = process.env.USER_ASSERTION_SECRET || "";
+const USER_ASSERTION_ISSUER =
+  process.env.USER_ASSERTION_ISSUER || S2S_JWT_ISSUER || "gateway-core";
+const USER_ASSERTION_AUDIENCE =
+  process.env.USER_ASSERTION_AUDIENCE || "internal-users";
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Mint S2S for Core/Geo
 function mintS2S(ttlSec = 300): string {
   const now = Math.floor(Date.now() / 1000);
@@ -33,6 +43,22 @@ function mintS2S(ttlSec = 300): string {
   return jwt.sign(payload, S2S_JWT_SECRET, { algorithm: "HS256" });
 }
 
+// Optional: end-user assertion when calling core/geo (only if your geo requires it)
+function mintUserAssertion(sub = "act-service", ttlSec = 300): string | null {
+  if (!USER_ASSERTION_SECRET) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    sub,
+    iss: USER_ASSERTION_ISSUER,
+    aud: USER_ASSERTION_AUDIENCE,
+    iat: now,
+    exp: now + ttlSec,
+    jti: require("node:crypto").randomUUID(),
+  } as const;
+  return jwt.sign(payload, USER_ASSERTION_SECRET, { algorithm: "HS256" });
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 type MailingAddress = {
   addr1?: string;
   addr2?: string;
@@ -46,19 +72,24 @@ async function geocodeFromMailingAddress(
 ): Promise<{ lat: number; lng: number } | null> {
   if (!addr || !addr.addr1 || !addr.city || !addr.state || !addr.zip)
     return null;
-  const token = mintS2S(300);
+
+  const s2s = mintS2S(300);
+  const ua = mintUserAssertion("act-geocode", 300);
+
   const r = await axios.post(
     `${CORE_BASE_URL}/api/geo/resolve`,
     { address: `${addr.addr1}, ${addr.city}, ${addr.state} ${addr.zip}` },
     {
       timeout: 2000,
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${s2s}`,
         "Content-Type": "application/json",
+        ...(ua ? { "X-NV-User-Assertion": ua } : {}),
       },
       validateStatus: () => true,
     }
   );
+
   if (
     r.status >= 200 &&
     r.status < 300 &&
@@ -72,12 +103,11 @@ async function geocodeFromMailingAddress(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-
 export async function create(req: Request, res: Response, next: NextFunction) {
   const requestId = String(req.headers["x-request-id"] || "");
   logger.debug({ requestId }, "[ActHandlers.create] enter");
   try {
-    // Validate input
+    // ✅ Single-way: schema constant → .parse()
     const dto = createActDto.parse(req.body) as any;
 
     // If actLoc missing but mailingAddress is present, try Geo FIRST
@@ -112,7 +142,7 @@ export async function create(req: Request, res: Response, next: NextFunction) {
     }
 
     // Persist (repo may still derive remaining fields)
-    const created = await repo.create(dto); // repo fills/derives remaining fields
+    const created = await repo.create(dto);
 
     // Audit
     (req as any).audit?.push({

@@ -193,7 +193,11 @@ export async function startSvcconfigMirror(): Promise<void> {
       const { createClient } = await import("redis");
       const client = createClient({ url: REDIS_URL });
       await client.connect();
-      await client.subscribe(CHANNEL, async () => {
+      await client.subscribe(CHANNEL, async (payload) => {
+        console.info("[svcconfigClient] redis invalidation", {
+          channel: CHANNEL,
+          payload,
+        });
         try {
           const items = await fetchAll();
           repopulate(items);

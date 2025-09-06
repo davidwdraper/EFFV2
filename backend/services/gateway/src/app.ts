@@ -291,7 +291,7 @@ app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Service proxy plane
-app.use(serviceProxy());
+app.use("/api", serviceProxy());
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Only after the proxy do we parse bodies for NON-proxied routes

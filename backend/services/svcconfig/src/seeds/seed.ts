@@ -1,8 +1,9 @@
 // backend/services/svcconfig/src/seeds/seed.ts
 import "../../src/bootstrap";
 import mongoose from "mongoose";
+import axios from "axios";
 import SvcService from "../models/svcconfig.model";
-// ⬇️ add this import
+// ⬇️ open/close DB via shared helpers
 import { connectDb, disconnectDb } from "../db";
 
 // Robust logger (prefer shared; fall back to console)
@@ -19,6 +20,43 @@ try {
     "[svcconfig:seed] @shared/utils/logger not available; using console"
   );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Broadcast helpers (Redis first; HTTP fallback to svcconfig /broadcast)
+async function broadcastInvalidation(slug = "all") {
+  const channel = process.env.SVCCONFIG_CHANNEL || "svcconfig:changed";
+  const redisUrl = process.env.REDIS_URL || "";
+  if (redisUrl) {
+    try {
+      const { createClient } = await import("redis");
+      const pub = createClient({ url: redisUrl });
+      await pub.connect();
+      await pub.publish(channel, slug);
+      await pub.quit();
+      logger.info({ channel, slug }, "[svcconfig:seed] redis publish");
+      return;
+    } catch (e: any) {
+      logger.warn(
+        { err: e?.message },
+        "[svcconfig:seed] redis publish failed; will try HTTP"
+      );
+    }
+  }
+
+  const base = process.env.SVCCONFIG_BASE_URL || "http://127.0.0.1:4013";
+  try {
+    await axios.post(
+      `${base.replace(/\/+$/, "")}/api/svcconfig/broadcast`,
+      { slug },
+      { timeout: 2500 }
+    );
+    logger.info({ base, slug }, "[svcconfig:seed] http broadcast");
+  } catch (e: any) {
+    logger.warn({ err: e?.message }, "[svcconfig:seed] http broadcast failed");
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 async function run() {
   // ⬇️ open Mongo before doing anything
@@ -70,9 +108,26 @@ async function run() {
       updatedBy: "seed",
       notes: "Core internal router",
     },
-    // add geo/log/image/etc. as needed …
+    {
+      slug: "geo",
+      enabled: true,
+      allowProxy: true,
+      baseUrl: "http://127.0.0.1:4012",
+      outboundApiPrefix: "/api",
+      healthPath: "/health",
+      exposeHealth: true,
+      protectedGetPrefixes: [],
+      publicPrefixes: ["/geo/resolve"],
+      overrides: { timeoutMs: 5000 },
+      version: 1,
+      updatedBy: "seed",
+      notes: "Geo service",
+    },
+
+    // add user/image/etc. as needed …
   ];
 
+  // ⬇️ idempotent upserts keyed by slug
   for (const it of items) {
     await SvcService.updateOne(
       { slug: it.slug },
@@ -82,6 +137,9 @@ async function run() {
   }
 
   logger.info({ count: items.length }, "[svcconfig:seed] upserted");
+
+  // ⬇️ trigger cache invalidation so gateways refresh without restart
+  await broadcastInvalidation("all");
 }
 
 run()

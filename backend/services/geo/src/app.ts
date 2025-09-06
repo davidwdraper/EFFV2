@@ -20,13 +20,13 @@ export const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", true);
 
-// shared middleware
+// ── shared middleware
 app.use(coreMiddleware());
 app.use(makeHttpLogger(SERVICE_NAME));
 app.use(entryExit());
 app.use(auditBuffer());
 
-// health (open)
+// ── health (open)
 app.use(
   createHealthRouter({
     service: SERVICE_NAME,
@@ -34,17 +34,35 @@ app.use(
   })
 );
 
-// S2S protection for everything else
+// ── S2S protection for everything else
 app.use(verifyS2S);
 
-// test helpers (limit to real routes)
-addTestOnlyHelpers(app as any, ["/resolve", "/health", "/healthz", "/readyz"]);
+// ── test helpers (limit to real routes)
+addTestOnlyHelpers(app as any, [
+  "/resolve",
+  "/api/resolve", // ← include canonical path
+  "/health",
+  "/healthz",
+  "/readyz",
+]);
 
-// routes (root-mounted per SOP)
+// ── routes
+// Canonical mount (matches gateway-core forwarding: /api/<slug>/... → /api/...)
+app.use("/api", geoRoutes);
+
+// Back-compat alias (remove once callers stop using root-mounted paths)
 app.use("/", geoRoutes);
 
-// 404 + error
-app.use(notFoundProblemJson(["/health", "/healthz", "/readyz", "/resolve"]));
+// ── 404 + error
+app.use(
+  notFoundProblemJson([
+    "/resolve",
+    "/api/resolve", // ← include canonical path
+    "/health",
+    "/healthz",
+    "/readyz",
+  ])
+);
 app.use(errorProblemJson());
 
 export default app;

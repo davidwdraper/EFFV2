@@ -14,7 +14,8 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "4.19.2",
-    "http-proxy": "^1.18.1"
+    "http-proxy": "^1.18.1",
+    "redis": "^4"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

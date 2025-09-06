@@ -1,8 +1,8 @@
 {
   "v": 1,
   "snapshot": {
-    "version": "13",
-    "updatedAt": 1757190823473,
+    "version": "1",
+    "updatedAt": 1757201383841,
     "services": {
       "user": {
         "slug": "user",
@@ -65,6 +65,26 @@
         "updatedAt": "2025-09-06T19:57:32.800Z",
         "updatedBy": "seed",
         "notes": "Core internal router"
+      },
+      "geo": {
+        "slug": "geo",
+        "enabled": true,
+        "allowProxy": true,
+        "baseUrl": "http://127.0.0.1:4012",
+        "outboundApiPrefix": "/api",
+        "healthPath": "/health",
+        "exposeHealth": true,
+        "protectedGetPrefixes": [],
+        "publicPrefixes": [
+          "/geo/resolve"
+        ],
+        "overrides": {
+          "timeoutMs": 5000
+        },
+        "version": 1,
+        "updatedAt": "2025-09-06T21:12:28.278Z",
+        "updatedBy": "seed",
+        "notes": "Geo service - calls Google Places API"
       }
     }
   }

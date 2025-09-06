@@ -1,6 +1,6 @@
 // backend/services/act/src/models/Act.ts
 import { Schema, Document, model } from "mongoose";
-import { normalizeActName } from "../../../shared/utils/normalizeActName";
+import { normalizeActName } from "@shared/utils/normalizeActName";
 
 export type BlackoutDays = [
   boolean,

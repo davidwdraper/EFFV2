@@ -1,4 +1,4 @@
-// services/gateway/src/middleware/serviceProxy.ts
+// backend/services/gateway/src/middleware/serviceProxy.ts
 import type { RequestHandler } from "express";
 import http from "node:http";
 import https from "node:https";
@@ -22,11 +22,26 @@ import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
  */
 export function serviceProxy(): RequestHandler {
   return (req, res) => {
-    // Expect /api/<svc>/...
+    // Expect to be mounted at /api — so first segment is the slug
     const segments = (req.url || "/").split("?")[0].split("/").filter(Boolean);
     const seg = segments[0] || "";
-    const slug = resolveSlug(seg);
 
+    // Guard against mis-mounting at root (would give seg==="api")
+    if (seg === "api") {
+      logger.error(
+        { url: req.url, path: req.path },
+        "[gateway] serviceProxy mounted incorrectly at /"
+      );
+      return res.status(500).json({
+        type: "about:blank",
+        title: "Gateway Misconfiguration",
+        status: 500,
+        detail: "serviceProxy must be mounted at /api",
+        instance: (req as any).id,
+      });
+    }
+
+    const slug = resolveSlug(seg);
     const cfg = getService(slug);
     if (!cfg) {
       res.status(404).json({
@@ -177,8 +192,8 @@ function getService(slug: string): ServiceConfig | undefined {
   if (!snap) return undefined;
   const cfg = snap.services[slug];
   if (!cfg) return undefined;
-  if (!cfg.enabled) return undefined;
-  if (!cfg.allowProxy) return undefined;
+  if (cfg.enabled !== true) return undefined;
+  if (cfg.allowProxy !== true) return undefined;
   return cfg;
 }
 

@@ -6,20 +6,18 @@ import { randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { logger as sharedLogger } from "@shared/utils/logger";
 import { serviceName } from "../config";
+import { upstreamBaseFor } from "../svcconfig/client";
 
 /**
- * Service Proxy (Gateway → Worker)
+ * Service Proxy (Gateway → Worker) — DB-driven (svcconfig)
  *
- * Hard rule: inbound must be `/api/<service>/<rest>` (health endpoints excluded elsewhere).
+ * Rule: inbound must be `/api/<service>/<rest>` (health endpoints exposed at `/<svc>/health/*`).
  * Mapping:
- *   /api/<service>/<rest>  →  <SERVICE_URL><OUTBOUND_API_PREFIX>/<rest>
- *
- * Special-case:
- *   /api/<service>/health/<rest> → <SERVICE_URL>/health/<rest>  (no auth header)
+ *   /api/<service>/<rest>  →  <baseUrl><outboundApiPrefix>/<rest>
  *
  * Required env (NO fallbacks):
  *   INBOUND_STRIP_SEGMENTS=1
- *   OUTBOUND_API_PREFIX=/api      # workers serve under /api
+ *   OUTBOUND_API_PREFIX=/api      # default when service lacks outboundApiPrefix
  *   S2S_SECRET
  *   S2S_ISSUER
  *   S2S_AUDIENCE
@@ -58,7 +56,9 @@ function requireStrEnv(name: string) {
 }
 
 const INBOUND_STRIP_SEGMENTS = requireIntEnv("INBOUND_STRIP_SEGMENTS", 1);
-const OUTBOUND_API_PREFIX = requireStrEnvAllowEmpty("OUTBOUND_API_PREFIX");
+const OUTBOUND_API_PREFIX_DEFAULT = requireStrEnvAllowEmpty(
+  "OUTBOUND_API_PREFIX"
+);
 const S2S_SECRET = requireStrEnv("S2S_SECRET");
 const S2S_ISSUER = requireStrEnv("S2S_ISSUER");
 const S2S_AUDIENCE = requireStrEnv("S2S_AUDIENCE");
@@ -71,14 +71,6 @@ const USER_ASSERTION_AUDIENCE = requireStrEnv("USER_ASSERTION_AUDIENCE");
 const USER_ASSERTION_TTL_SEC = requireIntEnv("USER_ASSERTION_TTL_SEC", 1);
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-function resolveUpstreamBase(serviceSeg: string): string {
-  const envKey = `${serviceSeg.toUpperCase()}_SERVICE_URL`;
-  const val = process.env[envKey];
-  if (!val || !String(val).trim())
-    throw new Error(`Missing upstream URL: ${envKey}`);
-  return String(val).trim().replace(/\/+$/, "");
-}
-
 function mintS2S(): string {
   const now = Math.floor(Date.now() / 1000);
   return jwt.sign(
@@ -136,11 +128,6 @@ function joinPath(...parts: string[]): string {
     .filter((p) => p !== "");
   const joined = cleaned.join("/");
   return joined ? `/${joined}` : "/";
-}
-
-function isHealthRest(rest: string[]): boolean {
-  // Treat /api/<svc>/health/* as upstream /health/* (root)
-  return rest.length > 0 && rest[0] === "health";
 }
 
 // ── proxy instance ────────────────────────────────────────────────────────────
@@ -241,42 +228,38 @@ export function serviceProxy() {
     try {
       // Parse path + assert /api/<service>/...
       const qPos = rawUrl.indexOf("?");
-      const pathOnly = qPos >= 0 ? rawUrl.slice(0, qPos) : rawUrl; // e.g. /api/user/health/live
+      const pathOnly = qPos >= 0 ? rawUrl.slice(0, qPos) : rawUrl; // e.g. /api/user/profile
       const query = qPos >= 0 ? rawUrl.slice(qPos) : "";
-      const segments = pathOnly.replace(/^\/+/, "").split("/"); // ["api","user","health","live"]
+      const segments = pathOnly.replace(/^\/+/, "").split("/"); // ["api","user","..."]
 
       // Enforce hard rule: first segment MUST be "api"
       if (segments[0] !== "api") {
-        // Let health/other routers handle non-/api paths
+        // Let other routers handle non-/api paths
         return next();
       }
 
       // Strip the mandatory "api" head (INBOUND_STRIP_SEGMENTS is asserted to be 1)
-      const stripped = segments.slice(INBOUND_STRIP_SEGMENTS); // ["user","health","live"]
+      const stripped = segments.slice(INBOUND_STRIP_SEGMENTS); // ["user", ...]
       const [serviceSeg, ...rest] = stripped;
       if (!serviceSeg) return next(); // no service → not our route
 
-      // Resolve upstream base
-      let targetBase = "";
-      try {
-        targetBase = resolveUpstreamBase(serviceSeg);
-      } catch (e: any) {
-        return res.status(502).json({
+      const upstream = upstreamBaseFor(serviceSeg);
+      if (!upstream) {
+        return res.status(404).json({
           type: "about:blank",
-          title: "Bad Gateway",
-          status: 502,
-          detail: e?.message || "Unknown upstream",
+          title: "Unknown Service",
+          status: 404,
+          detail: `Service "${serviceSeg}" not found or not proxyable (disabled)`,
           instance: (req as any).id,
         });
       }
 
-      // Health exception: /api/<svc>/health/* → <base>/health/*
-      const health = isHealthRest(rest);
-      const pathWithPrefix = health
-        ? joinPath("health", rest.slice(1).join("/"))
-        : joinPath(OUTBOUND_API_PREFIX, rest.join("/"));
-
-      const finalUrl = `${targetBase}${pathWithPrefix}${query}`;
+      const outboundApiPrefix =
+        upstream.apiPrefix || OUTBOUND_API_PREFIX_DEFAULT;
+      const finalUrl = `${upstream.base}${joinPath(
+        outboundApiPrefix,
+        rest.join("/")
+      )}${query}`;
 
       // Outbound headers
       const outHeaders = toStringHeaders(req.headers);
@@ -288,43 +271,41 @@ export function serviceProxy() {
       if (outHeaders["accept-encoding"]) delete outHeaders["accept-encoding"];
       outHeaders["x-request-id"] = rid || randomUUID();
 
-      // Mint S2S ONLY for non-health /api calls
-      if (!health) {
-        try {
-          outHeaders.authorization = `Bearer ${mintS2S()}`;
-        } catch (e: any) {
-          logger.debug(
-            {
-              sentinel: "500DBG",
-              where: "mintS2S",
-              rid,
-              err: String(e?.message || e),
-            },
-            "500 about to be sent <<<500DBG>>>"
-          );
-          return res.status(503).json({
-            type: "about:blank",
-            title: "Gateway Auth Misconfigured",
-            status: 503,
-            detail:
-              "S2S mint failed: ensure S2S_SECRET, S2S_ISSUER, S2S_AUDIENCE, S2S_MAX_TTL_SEC are set.",
-            instance: (req as any).id,
-          });
-        }
+      // Mint S2S
+      try {
+        outHeaders.authorization = `Bearer ${mintS2S()}`;
+      } catch (e: any) {
+        logger.debug(
+          {
+            sentinel: "500DBG",
+            where: "mintS2S",
+            rid,
+            err: String(e?.message || e),
+          },
+          "500 about to be sent <<<500DBG>>>"
+        );
+        return res.status(503).json({
+          type: "about:blank",
+          title: "Gateway Auth Misconfigured",
+          status: 503,
+          detail:
+            "S2S mint failed: ensure S2S_SECRET, S2S_ISSUER, S2S_AUDIENCE, S2S_MAX_TTL_SEC are set.",
+          instance: (req as any).id,
+        });
+      }
 
-        // NEW: Mint end-user assertion from the authenticated edge user (set by authGate)
-        try {
-          const edgeUser = (req as any).user;
-          if (edgeUser) {
-            const assertion = mintUserAssertion(edgeUser);
-            outHeaders["x-nv-user-assertion"] = assertion;
-          }
-        } catch (e: any) {
-          logger.debug(
-            { where: "mintUserAssertion", rid, err: String(e?.message || e) },
-            "User assertion mint skipped"
-          );
+      // NEW: Mint end-user assertion from the authenticated edge user (set by authGate)
+      try {
+        const edgeUser = (req as any).user;
+        if (edgeUser) {
+          const assertion = mintUserAssertion(edgeUser);
+          outHeaders["x-nv-user-assertion"] = assertion;
         }
+      } catch (e: any) {
+        logger.debug(
+          { where: "mintUserAssertion", rid, err: String(e?.message || e) },
+          "User assertion mint skipped"
+        );
       }
 
       // Pre-proxy log
@@ -336,12 +317,12 @@ export function serviceProxy() {
           from: rawUrl,
           to: finalUrl,
           stripSegments: INBOUND_STRIP_SEGMENTS,
-          outboundPrefix: health ? "<health-root>" : OUTBOUND_API_PREFIX,
+          outboundPrefix: outboundApiPrefix || "<default>",
           readableEnded: (req as any).readableEnded,
           outHeaders: {
             ...outHeaders,
-            authorization: health ? "<omitted>" : "<s2s>",
-            "x-nv-user-assertion": health ? "<omitted>" : "<present?>",
+            authorization: "<s2s>",
+            "x-nv-user-assertion": "<present?>",
           },
         },
         "About to proxy"
@@ -365,7 +346,6 @@ export function serviceProxy() {
 
       // Proxy it
       try {
-        httpProxy.createProxyServer; // NOTE: proxy instance already created above; keeping as-is with same behavior
         proxy.web(
           req,
           res,

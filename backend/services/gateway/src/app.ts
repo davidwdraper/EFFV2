@@ -9,13 +9,7 @@ import helmet from "helmet";
 import { createHealthRouter, ReadinessFn } from "@shared/health";
 import { logger } from "@shared/utils/logger";
 
-import {
-  serviceName,
-  rateLimitCfg,
-  timeoutCfg,
-  breakerCfg,
-  requireUpstreamByKey,
-} from "./config";
+import { serviceName, rateLimitCfg, timeoutCfg, breakerCfg } from "./config";
 
 import { requestIdMiddleware } from "./middleware/requestId";
 import {
@@ -32,6 +26,16 @@ import { httpsOnly } from "./middleware/httpsOnly";
 import { serviceProxy } from "./middleware/serviceProxy";
 import { trace5xx } from "./middleware/trace5xx";
 
+// NEW: svcconfig client (db-driven routing)
+import {
+  initializeSvcConfig,
+  healthUrlFor,
+  getService,
+} from "./svcconfig/client";
+
+// kick off svcconfig load (fire-and-forget; readiness will report status)
+void initializeSvcConfig();
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
 function sanitizeUrl(u: string): string {
@@ -44,39 +48,6 @@ function sanitizeUrl(u: string): string {
   } catch {
     return u;
   }
-}
-
-// Public health passthrough helper (pre-auth, strips Authorization)
-function registerServiceHealthPassthrough(
-  app: express.Express,
-  publicBasePath: string, // e.g. "/user/health"
-  upstreamBaseUrl: string // e.g. "http://127.0.0.1:4001/health"
-) {
-  const mk =
-    (suffix: "live" | "ready") =>
-    async (req: express.Request, res: express.Response) => {
-      try {
-        // ensure no auth header is forwarded
-        delete req.headers.authorization;
-        const url = `${upstreamBaseUrl}/${suffix}`;
-        const r = await axios.get(url, {
-          timeout: 1500,
-          validateStatus: () => true,
-          // do not send any auth by default
-          headers: { "x-request-id": String((req as any).id || "") },
-        });
-        res.status(r.status).set(r.headers).send(r.data);
-      } catch {
-        res.status(502).json({
-          code: "BAD_GATEWAY",
-          status: 502,
-          message: "Upstream health unavailable",
-        });
-      }
-    };
-
-  app.get(`${publicBasePath}/live`, mk("live"));
-  app.get(`${publicBasePath}/ready`, mk("ready"));
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -175,19 +146,32 @@ app.use(trace5xx("early"));
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Health / Readiness — BEFORE limits/auth
-const ACT_URL = requireUpstreamByKey("ACT_SERVICE_URL");
-const USER_URL = requireUpstreamByKey("USER_SERVICE_URL"); // 👈 add user upstream
 
 const readiness: ReadinessFn = async (_req) => {
-  try {
-    const r = await axios.get(`${ACT_URL}/health/ready`, {
-      timeout: 1500,
-      validateStatus: () => true,
-    });
-    return { upstreams: { act: { ok: r.status === 200, url: ACT_URL } } };
-  } catch {
-    return { upstreams: { act: { ok: false, url: ACT_URL } } };
-  }
+  // Confirm we have at least the core slugs present and responding (best-effort)
+  const must = ["user", "act"]; // adjust as you add more; purely advisory
+  const upstreams: Record<string, { ok: boolean; url?: string }> = {};
+
+  await Promise.all(
+    must.map(async (slug) => {
+      try {
+        const h = healthUrlFor(slug, "ready");
+        if (!h) {
+          upstreams[slug] = { ok: false };
+          return;
+        }
+        const r = await axios.get(h, {
+          timeout: 1500,
+          validateStatus: () => true,
+        });
+        upstreams[slug] = { ok: r.status === 200, url: h };
+      } catch {
+        upstreams[slug] = { ok: false };
+      }
+    })
+  );
+
+  return { upstreams };
 };
 
 app.use(
@@ -198,12 +182,38 @@ app.use(
   })
 );
 
-// Public per-service health passthroughs (NO /api, NO auth, NO Authorization)
-registerServiceHealthPassthrough(app, "/user/health", `${USER_URL}/health`);
-registerServiceHealthPassthrough(app, "/act/health", `${ACT_URL}/health`);
-// If you have GEO/CORE services with public health, add similarly:
-// const GEO_URL = requireUpstreamByKey("GEO_SERVICE_URL");
-// registerServiceHealthPassthrough(app, "/geo/health", `${GEO_URL}/health`);
+// Public dynamic health passthroughs (NO /api, NO auth, NO Authorization)
+//    GET /user/health/live   → user base /health/live
+//    GET /user/health/ready  → user base /health/ready
+app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
+  try {
+    // ensure no auth header is forwarded
+    delete req.headers.authorization;
+    const url = healthUrlFor(
+      String(req.params.svc || ""),
+      req.params.kind as "live" | "ready"
+    );
+    if (!url) {
+      return res.status(404).json({
+        code: "NOT_FOUND",
+        status: 404,
+        message: "Service not found or health not exposed",
+      });
+    }
+    const r = await axios.get(url, {
+      timeout: 1500,
+      validateStatus: () => true,
+      headers: { "x-request-id": String((req as any).id || "") },
+    });
+    return res.status(r.status).set(r.headers).send(r.data);
+  } catch {
+    return res.status(502).json({
+      code: "BAD_GATEWAY",
+      status: 502,
+      message: "Upstream health unavailable",
+    });
+  }
+});
 
 // 👀 DEBUG: introspection endpoints (remove before release)
 app.get("/__core", (_req, res) => {

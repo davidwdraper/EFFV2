@@ -7,7 +7,7 @@ import { dbToDomain } from "../../../mappers/svcconfig.mapper";
 export async function read(req: Request, res: Response, next: NextFunction) {
   const requestId = String(req.headers["x-request-id"] || "");
   const { slug } = req.params;
-  logger.debug({ requestId, slug }, "[SrcServiceHandlers.read] enter");
+  logger.debug({ requestId, slug }, "[SvcConfigHandlers.read] enter");
   try {
     const doc = await repo.getBySlug(slug);
     if (!doc)
@@ -16,7 +16,7 @@ export async function read(req: Request, res: Response, next: NextFunction) {
         .json({ title: "Not Found", status: 404, detail: "Unknown slug" });
     res.json(dbToDomain(doc as any));
   } catch (err) {
-    logger.debug({ requestId, err }, "[SrcServiceHandlers.read] error");
+    logger.debug({ requestId, err }, "[SvcConfigHandlers.read] error");
     next(err);
   }
 }

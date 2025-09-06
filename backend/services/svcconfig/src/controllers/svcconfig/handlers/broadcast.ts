@@ -11,7 +11,7 @@ export async function broadcast(
 ) {
   const requestId = String(req.headers["x-request-id"] || "");
   const { slug } = (req.body || {}) as { slug?: string };
-  logger.debug({ requestId, slug }, "[SrcServiceHandlers.broadcast] enter");
+  logger.debug({ requestId, slug }, "[SvcConfigHandlers.broadcast] enter");
   try {
     if (slug) {
       const doc = await repo.getBySlug(slug);

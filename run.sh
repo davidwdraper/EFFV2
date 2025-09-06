@@ -1,16 +1,14 @@
-# scripts/run.sh
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NowVibin Dev Runner (services spawn with ENV_FILE propagated)
 # - MODE: dev | docker
-# - ENV_FILE: path to env file (default: .env.dev) — script-level default only
+# - ENV_FILE: path to env file (default: .env.dev)
 # - Never hard-codes .env.dev in service code; only the runner sets it.
-# - NEW: Builds backend/services/shared before launching services.
-# - NEW: Sources root .env.dev (universal NODE_ENV, etc.).
-# - NEW: Per-service ENV_FILE support (defaults to root if service file missing).
-# - NEW: Port cleanup across root + per-service env files.
+# - Builds backend/services/shared before launching services.
+# - Loads a SAFE subset of root .env.dev (no 'source' of pipes!).
+# - Portable (no associative arrays, works on macOS Bash 3.2).
 # ─────────────────────────────────────────────────────────────────────────────
 
 MODE="${1:-dev}"     # dev | docker
@@ -42,7 +40,7 @@ SERVICES=(
 )
 
 # ======= Clean shutdown =======
-PIDS=[]
+PIDS=()
 REDIS_PROC_PID=""
 REDIS_DOCKER_ID=""
 cleanup() {
@@ -92,11 +90,16 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-# ----- Load root env first (universal NODE_ENV, etc.) -----
+# ----- Load a SAFE subset from root env (no 'source' of pipes) -----
 ROOT_ENV="$ROOT/.env.dev"
 if [[ -f "$ROOT_ENV" ]]; then
-  echo "📦 Loading root env: $ROOT_ENV"
-  set -a; source "$ROOT_ENV"; set +a
+  echo "📦 Loading root globals from: $ROOT_ENV"
+  export NODE_ENV="$(get_env "$ROOT_ENV" NODE_ENV || echo dev)"
+  export LOG_LEVEL="$(get_env "$ROOT_ENV" LOG_LEVEL || echo debug)"
+  # Optional shared logger config used by non-log services:
+  export LOG_SERVICE_URL="$(get_env "$ROOT_ENV" LOG_SERVICE_URL || true)"
+  export LOG_SERVICE_TOKEN_CURRENT="$(get_env "$ROOT_ENV" LOG_SERVICE_TOKEN_CURRENT || true)"
+  export LOG_SERVICE_TOKEN_NEXT="$(get_env "$ROOT_ENV" LOG_SERVICE_TOKEN_NEXT || true)"
 else
   echo "ℹ️  Root .env.dev not found; continuing without it."
 fi
@@ -124,27 +127,38 @@ else
   fi
 fi
 
-# ----- Determine per-service env files (prefer service-local .env.dev) -----
-SERVICE_ENV_FILES=() # array of unique files to scan for ports
-declare -A SERVICE_ENV_MAP
+# ----- Determine per-service env files (portable, no assoc arrays) -----
+SERVICE_NAMES=()
+SERVICE_PATHS=()
+SERVICE_CMDS=()
+SERVICE_ENVFILES=()
 
-for line in "${SERVICES[@]}"; do
-  # Skip empty/comment lines
-  if echo "$line" | grep -Eq '^[[:space:]]*$'; then continue; fi
-  if echo "$line" | grep -Eq '^[[:space:]]*#'; then continue; fi
-
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  echo "$line" | grep -Eq '^[[:space:]]*#' && continue
   name="${line%%|*}"; rest="${line#*|}"
-  path="${rest%%|*}"
-  # Prefer per-service env file if it exists; else fall back to global ENV_FILE
-  svc_env="$ROOT/$path/.env.dev"
-  if [[ -f "$svc_env" ]]; then
-    SERVICE_ENV_MAP["$name"]="$svc_env"
-  else
-    SERVICE_ENV_MAP["$name"]="$ENV_FILE"
+  path="${rest%%|*}"; cmd="${rest#*|}"
+  name="$(echo "$name" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  path="$(echo "$path" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  cmd="$(echo "$cmd"  | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  [[ -z "$cmd" ]] && cmd="yarn dev"
+
+  if [[ ! -d "$path" ]]; then
+    echo "  • (missing)  $name → $path"
+    continue
   fi
-done
+
+  svc_env="$ROOT/$path/.env.dev"
+  if [[ ! -f "$svc_env" ]]; then svc_env="$ENV_FILE"; fi
+
+  SERVICE_NAMES+=("$name")
+  SERVICE_PATHS+=("$path")
+  SERVICE_CMDS+=("$cmd")
+  SERVICE_ENVFILES+=("$svc_env")
+done < <(printf "%s\n" "${SERVICES[@]}")
 
 # Collect unique env files for port cleanup
+SERVICE_ENV_FILES=()
 add_unique_env() {
   local f="$1"
   [[ -f "$f" ]] || return 0
@@ -153,10 +167,9 @@ add_unique_env() {
   done
   SERVICE_ENV_FILES+=("$f")
 }
-# include the root-passed ENV_FILE and the root env
 add_unique_env "$ENV_FILE"
 add_unique_env "$ROOT_ENV"
-for k in "${!SERVICE_ENV_MAP[@]}"; do add_unique_env "${SERVICE_ENV_MAP[$k]}"; done
+for f in "${SERVICE_ENVFILES[@]}"; do add_unique_env "$f"; done
 
 # ----- Robust port cleanup across all env files -----
 echo "🧹 Killing anything on ports defined in:"
@@ -164,7 +177,7 @@ for f in "${SERVICE_ENV_FILES[@]}"; do echo "   • $(basename "$f")"; done
 
 ports=""
 for f in "${SERVICE_ENV_FILES[@]}"; do
-  pf="$(grep -E '^[A-Z0-9_]+_PORT=' "$f" 2>/dev/null | sed -E 's/.*=//' | tr -d '"' | tr ' ' '\n' | grep -E '^[0-9]+$' || true)"
+  pf="$(grep -E '^[A-Z0-9_]+_PORT=' "$f" 2>/dev/null | sed -E 's/.*=//' | tr -d '\"' | tr ' ' '\n' | grep -E '^[0-9]+$' || true)"
   ports="$ports $pf"
 done
 
@@ -186,7 +199,13 @@ fi
 
 # ----- Redis (optional local) -----
 # Prefer svcconfig's REDIS_URL if present; else global; else localhost
-REDIS_URL="$(get_env "${SERVICE_ENV_MAP[svcconfig]:-$ENV_FILE}" REDIS_URL || true)"
+REDIS_URL=""
+for i in "${!SERVICE_NAMES[@]}"; do
+  if [[ "${SERVICE_NAMES[$i]}" == "svcconfig" ]]; then
+    REDIS_URL="$(get_env "${SERVICE_ENVFILES[$i]}" REDIS_URL || true)"
+    break
+  fi
+done
 if [[ -z "${REDIS_URL:-}" ]]; then
   REDIS_URL="$(get_env "$ENV_FILE" REDIS_URL || true)"
 fi
@@ -232,50 +251,22 @@ else
   echo "ℹ️  REDIS_URL points to remote; not starting local Redis."
 fi
 
-# ----- Build command list from SERVICES -----
-NAMES=()
-CMDS=()
-
+# ----- Start everything (background) -----
 echo "🧭 Services list:"
-for line in "${SERVICES[@]}"; do
-  # Skip empty or comment lines
-  if echo "$line" | grep -Eq '^[[:space:]]*$'; then continue; fi
-  if echo "$line" | grep -Eq '^[[:space:]]*#'; then
-    echo "  • (disabled) $line"
-    continue
-  fi
-
-  name="${line%%|*}"; rest="${line#*|}"
-  path="${rest%%|*}"; cmd="${rest#*|}"
-  name="$(echo "$name" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
-  path="$(echo "$path" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
-  cmd="$(echo "$cmd"  | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
-  [[ -z "$cmd" ]] && cmd="yarn dev"
-
-  if [[ ! -d "$path" ]]; then
-    echo "  • (missing)  $name → $path"
-    continue
-  fi
-
-  # choose ENV_FILE for this service
-  svc_env="${SERVICE_ENV_MAP[$name]:-$ENV_FILE}"
+for i in "${!SERVICE_NAMES[@]}"; do
+  name="${SERVICE_NAMES[$i]}"
+  path="${SERVICE_PATHS[$i]}"
+  cmd="${SERVICE_CMDS[$i]}"
+  svc_env="${SERVICE_ENVFILES[$i]}"
   echo "  • (enabled)  $name → $path :: $cmd  [ENV_FILE=$(basename "$svc_env")]"
-  NAMES+=("$name")
-  # Pass ENV_FILE to services; let each service bootstrap load it.
-  CMDS+=("cd \"$path\" && ENV_FILE=\"$svc_env\" $cmd")
 done
 
-if [[ "${#NAMES[@]}" -eq 0 ]]; then
-  echo "❌ No enabled services. Edit SERVICES in scripts/run.sh."
-  exit 1
-fi
-
-# ----- Start everything (background) -----
 echo "🚀 Starting services..."
-for i in "${!NAMES[@]}"; do
-  name="${NAMES[$i]}"; cmd="${CMDS[$i]}"
-  echo "→ $name"
-  bash -lc "$cmd" & PIDS+=($!)
+for i in "${!SERVICE_NAMES[@]}"; do
+  path="${SERVICE_PATHS[$i]}"
+  cmd="${SERVICE_CMDS[$i]}"
+  svc_env="${SERVICE_ENVFILES[$i]}"
+  bash -lc "cd \"$path\" && ENV_FILE=\"$svc_env\" $cmd" & PIDS+=($!)
 done
 
 echo "📜 PIDs: ${PIDS[*]}"

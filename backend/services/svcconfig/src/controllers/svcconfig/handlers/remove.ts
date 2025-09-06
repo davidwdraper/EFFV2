@@ -7,21 +7,21 @@ import { publishChanged } from "../../../pubsub";
 export async function remove(req: Request, res: Response, next: NextFunction) {
   const requestId = String(req.headers["x-request-id"] || "");
   const { slug } = req.params;
-  logger.debug({ requestId, slug }, "[SrcServiceHandlers.remove] enter");
+  logger.debug({ requestId, slug }, "[SvcConfigHandlers.remove] enter");
   try {
     const updated = await repo.disable(slug);
     if (updated) {
       (req as any).audit?.push({
         type: "SVCCONFIG_DISABLED",
-        entity: "SvcService",
+        entity: "SvcConfig",
         entityId: (updated as any)._id,
       });
       await publishChanged({ slug: updated.slug, version: updated.version! });
     }
-    logger.debug({ requestId, slug }, "[SrcServiceHandlers.remove] exit");
+    logger.debug({ requestId, slug }, "[SvcConfigHandlers.remove] exit");
     res.json({ ok: true });
   } catch (err) {
-    logger.debug({ requestId, err }, "[SrcServiceHandlers.remove] error");
+    logger.debug({ requestId, err }, "[SvcConfigHandlers.remove] error");
     next(err);
   }
 }

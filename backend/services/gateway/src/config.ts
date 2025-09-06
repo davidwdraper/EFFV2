@@ -23,13 +23,27 @@ export const REDACT_HEADERS = process.env.REDACT_HEADERS;
 export const AUDIT_ENABLED = process.env.AUDIT_ENABLED;
 export const LOG_SERVICE_URL = process.env.LOG_SERVICE_URL;
 
-// ── Generic upstream access (no service-specific knowledge here) ─────────────
-/** Require an upstream by exact ENV KEY, e.g. "ACT_SERVICE_URL". */
-export function requireUpstreamByKey(key: string): string {
-  return requireEnv(key);
-}
+// ── DB-driven service-config pointer (authoritative) ─────────────────────────
+export const SERVICECONFIG_URL = requireEnv("SVCCONFIG_SERVICE_URL");
 
-// ── Generic routing config ───────────────────────────────────────────────────
+// Never fall back to *_SERVICE_URL envs (kill legacy behavior)
+export const GATEWAY_FALLBACK_ENV_ROUTES =
+  String(process.env.GATEWAY_FALLBACK_ENV_ROUTES || "false").toLowerCase() ===
+  "true";
+
+// ── Redis/pubsub (optional; we still poll as a safety net) ───────────────────
+export const REDIS_URL = process.env.REDIS_URL || "";
+export const REDIS_DISABLED =
+  String(process.env.REDIS_DISABLED || "false").toLowerCase() === "true";
+export const SVCCONFIG_CHANNEL =
+  process.env.SVCCONFIG_CHANNEL || "svcconfig:changed";
+
+// Poll every N ms as safety net (even if Redis is off)
+export const SVCCONFIG_POLL_MS = Number(
+  process.env.SVCCONFIG_POLL_MS || 10_000
+);
+
+// ── Routing allowlist & aliases (still supported) ────────────────────────────
 // Allowlist (security). In production this MUST be set; in dev, '*' is allowed if unset.
 const rawAllowed = (process.env.GATEWAY_ALLOWED_SERVICES || "").trim();
 export const ALLOWED_SERVICES = rawAllowed
@@ -40,12 +54,11 @@ export const ALLOWED_SERVICES = rawAllowed
   : ["*"];
 
 /**
- * Aliases (env-driven only; no baked defaults).
+ * Aliases (env-controlled only).
  * Format: "segment:service,segment2:service2"
  * Example: GATEWAY_ROUTE_MAP="towns:act,images:image"
- *   - "/towns/*" → uses ACT_SERVICE_URL
- *   - "/images/*" → uses IMAGE_SERVICE_URL
- * Unspecified segments use identity ("/users/*" → USER_SERVICE_URL).
+ *   - "/towns/*" → resolves slug "act"
+ *   - "/images/*" → resolves slug "image"
  */
 function parseAliasMap(): Record<string, string> {
   const raw = (process.env.GATEWAY_ROUTE_MAP || "").trim();
@@ -69,35 +82,6 @@ export function isAllowedServiceSlug(slug: string): boolean {
     ALLOWED_SERVICES.includes(s) ||
     ALLOWED_SERVICES.includes(ROUTE_ALIAS[s] || s)
   );
-}
-
-/**
- * Compute the upstream base URL for the first path segment.
- * - Applies alias (env map)
- * - Naively singularizes for ENV key (users→USER, acts→ACT)
- * - Resolves ENV "<SERVICE>_SERVICE_URL"
- */
-export function resolveUpstreamBase(slugRaw: string): {
-  svcKey: string;
-  base: string;
-} {
-  const slug = slugRaw.toLowerCase();
-
-  // alias (e.g., "towns" → "act")
-  const alias = ROUTE_ALIAS[slug] || slug;
-
-  // singularize naive (users → user, images → image, acts → act)
-  const singular = alias.endsWith("s") ? alias.slice(0, -1) : alias;
-
-  // ENV key
-  const svcKey = `${singular.toUpperCase()}_SERVICE_URL`; // e.g., USER_SERVICE_URL
-  const base = process.env[svcKey];
-  if (!base || !base.trim()) {
-    throw new Error(
-      `Missing required env var: ${svcKey} for route segment "${slugRaw}"`
-    );
-  }
-  return { svcKey, base: base.replace(/\/+$/, "") };
 }
 
 // Structured configs (for direct import in app.ts)

@@ -1,4 +1,4 @@
-// backend/services/svcconfig/src/routes/svcservice.routes.ts
+// backend/services/svcconfig/src/routes/svcconfig.routes.ts
 import { Router } from "express";
 import { cacheGet, invalidateOnSuccess } from "@shared/utils/cache";
 
@@ -14,16 +14,9 @@ import { broadcast } from "../controllers/svcconfig/handlers/broadcast";
 const router = Router();
 
 /**
- * Policy (matches Act/User SOP):
- * - Create = PUT /          (Mongo generates _id; slug comes from body)
- * - No POST /
- * - No PUT /:slug (replace-by-id forbidden)
- * - Update = PATCH /:slug   (partial)
- * - Delete = DELETE /:slug
- * - GETs are cacheable; mutations invalidate "svcconfig" namespace
+ * Policy (matches Act/User SOP)
  */
 
-// one-liners only — no logic here
 router.get("/ping", ping);
 
 // Public GETs with cache (TTL via SVCCONFIG_CACHE_TTL_SEC)

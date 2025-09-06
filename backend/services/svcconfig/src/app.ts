@@ -12,7 +12,7 @@ import {
 import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
 import { createHealthRouter } from "@shared/health";
 
-import svcconfigRoutes from "./routes/svcservice.routes";
+import svcconfigRoutes from "./routes/svcconfig.routes";
 import { SERVICE_NAME, config } from "./config";
 
 // Ensure required envs (other than service name, which is from code)

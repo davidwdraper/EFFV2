@@ -1,34 +1,14 @@
-// backend/services/svcconfig/src/mappers/srcservice.mapper.ts
+// backend/services/svcconfig/src/mappers/svcconfig.mapper.ts
 import type { SvcConfigDoc } from "../models/svcconfig.model";
+import {
+  SvcConfigSchema,
+  type ServiceConfig,
+} from "@shared/contracts/svcconfig.contract";
 
-export type SvcConfigDomain = {
-  slug: string;
-  enabled: boolean;
-  allowProxy: boolean;
-  baseUrl: string;
-  outboundApiPrefix: string;
-  healthPath: string;
-  exposeHealth: boolean;
-  protectedGetPrefixes: string[];
-  publicPrefixes: string[];
-  overrides?: {
-    timeoutMs?: number;
-    breaker?: {
-      failureThreshold?: number;
-      halfOpenAfterMs?: number;
-      minRttMs?: number;
-    };
-    routeAliases?: Record<string, string>;
-  };
-  version: number;
-  updatedAt: string;
-  updatedBy: string;
-  notes?: string;
-};
-
-export function dbToDomain(doc: SvcConfigDoc | any): SvcConfigDomain {
+export function dbToDomain(doc: SvcConfigDoc | any): ServiceConfig {
   const o: any =
     typeof (doc as any).toObject === "function" ? (doc as any).toObject() : doc;
+
   const routeAliases = o?.overrides?.routeAliases
     ? Object.fromEntries(
         typeof o.overrides.routeAliases.entries === "function"
@@ -37,7 +17,7 @@ export function dbToDomain(doc: SvcConfigDoc | any): SvcConfigDomain {
       )
     : undefined;
 
-  return {
+  const shaped: ServiceConfig = {
     slug: o.slug,
     enabled: !!o.enabled,
     allowProxy: !!o.allowProxy,
@@ -45,8 +25,10 @@ export function dbToDomain(doc: SvcConfigDoc | any): SvcConfigDomain {
     outboundApiPrefix: o.outboundApiPrefix ?? "/api",
     healthPath: o.healthPath ?? "/health",
     exposeHealth: !!o.exposeHealth,
-    protectedGetPrefixes: o.protectedGetPrefixes ?? [],
-    publicPrefixes: o.publicPrefixes ?? [],
+    protectedGetPrefixes: Array.isArray(o.protectedGetPrefixes)
+      ? o.protectedGetPrefixes
+      : [],
+    publicPrefixes: Array.isArray(o.publicPrefixes) ? o.publicPrefixes : [],
     overrides: o.overrides
       ? {
           timeoutMs: o.overrides.timeoutMs,
@@ -68,4 +50,7 @@ export function dbToDomain(doc: SvcConfigDoc | any): SvcConfigDomain {
     updatedBy: o.updatedBy ?? "system",
     notes: o.notes,
   };
+
+  // Validate against the shared schema (defensive)
+  return SvcConfigSchema.parse(shaped);
 }

@@ -39,8 +39,8 @@ export const config = {
   env: process.env.NODE_ENV,
 
   // required
-  port: requireNumber("SERVICECONFIG_PORT"),
-  mongoUri: requireEnv("SERVICECONFIG_MONGO_URI"),
+  port: requireNumber("SVCCONFIG_PORT"),
+  mongoUri: requireEnv("SVCCONFIG_MONGO_URI"),
   logLevel: requireEnv("LOG_LEVEL"),
   logServiceUrl: requireEnv("LOG_SERVICE_URL"),
 

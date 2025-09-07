@@ -1,2 +1,0 @@
-cat backend/services/geo/package.json | rg -n '"dev"|dotenv|ts-node'
-cat backend/services/act/package.json  | rg -n '"dev"|dotenv|ts-node'

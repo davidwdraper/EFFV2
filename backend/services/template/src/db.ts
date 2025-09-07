@@ -1,4 +1,4 @@
-// backend/services/template/src/db.ts
+// backend/services/--template--/src/db.ts
 import mongoose from "mongoose";
 import { logger } from "@shared/utils/logger";
 
@@ -21,33 +21,30 @@ function redactMongoUri(uri: string): string {
 
 let connected = false;
 
-/**
- * Connect to MongoDB using TEMPLATE_MONGO_URI.
- * - bufferCommands=false to surface errors immediately
- * - strictQuery=true for predictable query parsing
- */
 export async function connectDb(): Promise<void> {
   if (connected) return;
 
   const uri = requireEnv("TEMPLATE_MONGO_URI");
 
+  // Be explicit; disable buffering so errors surface immediately
   mongoose.set("bufferCommands", false);
   mongoose.set("strictQuery", true);
 
+  // Avoid deprecation churn; Mongoose 7+ uses driver defaults
   logger.info(
     { msg: "mongo:connect", uri: redactMongoUri(uri) },
     "[template] connecting to Mongo"
   );
 
-  try {
-    await mongoose.connect(uri);
-  } catch (err) {
+  // Initiate and await actual socket open
+  await mongoose.connect(uri).catch((err) => {
     logger.error({ err }, "[template] mongoose.connect failed");
     throw err;
-  }
+  });
 
+  // Wait until the connection emits 'connected' (readyState === 1)
   if (mongoose.connection.readyState !== 1) {
-    await mongoose.connection.asPromise();
+    await mongoose.connection.asPromise(); // resolves when connected
   }
 
   connected = true;

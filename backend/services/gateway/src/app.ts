@@ -5,7 +5,6 @@ import pinoHttp from "pino-http";
 import axios from "axios";
 import { randomUUID } from "crypto";
 import helmet from "helmet";
-
 import { createHealthRouter, ReadinessFn } from "@shared/health";
 import { logger } from "@shared/utils/logger";
 
@@ -31,6 +30,7 @@ import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
 import { httpsOnly } from "./middleware/httpsOnly";
 import { serviceProxy } from "./middleware/serviceProxy";
 import { trace5xx } from "./middleware/trace5xx";
+import { injectUpstreamIdentity } from "./middleware/injectUpstreamIdentity";
 
 // ✅ Shared svcconfig client (same as core)
 import {
@@ -290,7 +290,9 @@ app.use(authGate());
 app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Service proxy plane
+// ── Service proxy plane ──
+// Inject gateway-issued identity for all upstream worker calls
+app.use("/api", injectUpstreamIdentity());
 app.use("/api", serviceProxy());
 
 // ──────────────────────────────────────────────────────────────────────────────

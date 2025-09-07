@@ -6,12 +6,12 @@ import { URL } from "node:url";
 import { logger } from "@shared/utils/logger";
 import { ROUTE_ALIAS } from "../config";
 
-import { getSvcconfigSnapshot } from "@shared/svcconfig/client";
+import { getSvcconfigSnapshot, mintS2S } from "@shared/svcconfig/client";
 import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
 
 /**
  * Reverse proxy mounted at /api that forwards:
- *   /api/<svc>/<rest...>  ->  <cfg.baseUrl><cfg.outboundApiPrefix||/api>/<rest...>
+ *   /api/<svc>/<rest...> -> <cfg.baseUrl><cfg.outboundApiPrefix||/api>/<rest...>
  *
  * Rules:
  *  - Uses alias map + naive singularization to resolve canonical slug.
@@ -19,6 +19,7 @@ import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
  *  - Streams request/response (no buffering).
  *  - Preserves querystring and most headers; strips hop-by-hop ones.
  *  - Sets x-forwarded-*, x-request-id.
+ *  - 🚨 Mints S2S Authorization for upstream (replaces client Authorization).
  */
 export function serviceProxy(): RequestHandler {
   return (req, res) => {
@@ -30,7 +31,7 @@ export function serviceProxy(): RequestHandler {
     if (seg === "api") {
       logger.error(
         { url: req.url, path: req.path },
-        "[gateway] serviceProxy mounted incorrectly at /"
+        "[gateway] serviceProxy mounted at root"
       );
       return res.status(500).json({
         type: "about:blank",
@@ -75,9 +76,26 @@ export function serviceProxy(): RequestHandler {
     for (const [k, v] of Object.entries(req.headers)) {
       if (!k) continue;
       if (hop.has(k.toLowerCase())) continue;
+      if (k.toLowerCase() === "authorization") continue; // 🚫 never forward client auth upstream
       if (Array.isArray(v)) outHeaders[k] = v.join(", ");
       else if (typeof v === "string") outHeaders[k] = v;
     }
+
+    // Always attach S2S Authorization for upstream
+    try {
+      outHeaders["authorization"] = `Bearer ${mintS2S(300)}`;
+    } catch (e) {
+      logger.error({ err: e }, "[gateway] failed to mint S2S token");
+      return res.status(500).json({
+        type: "about:blank",
+        title: "Internal Server Error",
+        status: 500,
+        detail: "Failed to prepare upstream authorization",
+        instance: (req as any).id,
+      });
+    }
+
+    // x-forwarded-* and request id
     const xfHost = req.headers["x-forwarded-host"]
       ? String(req.headers["x-forwarded-host"])
       : String(req.headers["host"] || "");
@@ -86,7 +104,7 @@ export function serviceProxy(): RequestHandler {
       req.socket?.remoteAddress
     );
     if (xfHost) outHeaders["x-forwarded-host"] = xfHost;
-    outHeaders["x-forwarded-proto"] = req.protocol || "http";
+    outHeaders["x-forwarded-proto"] = (req as any).protocol || "http";
     outHeaders["x-request-id"] =
       (req as any).id ||
       (Array.isArray(req.headers["x-request-id"])
@@ -144,12 +162,7 @@ export function serviceProxy(): RequestHandler {
       const status = timeout ? 504 : connErr ? 502 : 500;
 
       logger.error(
-        {
-          requestId: (req as any).id,
-          svc: slug,
-          target: targetUrl,
-          err,
-        },
+        { requestId: (req as any).id, svc: slug, target: targetUrl, err },
         "[gateway] proxy error"
       );
       if (!res.headersSent) {

@@ -1,0 +1,128 @@
+▶ run.sh starting MODE=dev (root=/Users/ddraper005/eff)
+   ENV_FILE=/Users/ddraper005/eff/.env.dev
+📦 Loading root globals from: /Users/ddraper005/eff/.env.dev
+🛠️  Building @shared...
+▶ Building @shared at: /Users/ddraper005/eff/backend/services/shared
+yarn run v1.22.22
+$ /Users/ddraper005/eff/node_modules/.bin/tsc --build --clean
+Done in 0.46s.
+yarn run v1.22.22
+$ /Users/ddraper005/eff/node_modules/.bin/tsc --build
+Done in 2.92s.
+✅ @shared built → /Users/ddraper005/eff/backend/services/shared/./dist
+🧹 Killing anything on ports defined in:
+   • .env.dev
+   • .env.dev
+   • .env.dev
+   • .env.dev
+   • .env.dev
+   • .env.dev
+   • .env.dev
+   • .env.dev
+  • No processes on :4003
+  • No processes on :4004
+  • No processes on :4005
+  • No processes on :4007
+  • No processes on :4008
+  • No processes on :4009
+  • No processes on :4010
+  • No processes on :4013
+  • No processes on :4000
+  • No processes on :4011
+  • No processes on :4012
+  • No processes on :4002
+  • No processes on :4001
+  • No processes on :4016
+🔎 Checking local Redis @ redis://127.0.0.1:6379...
+✅ Redis already running.
+🧭 Services list:
+  • (enabled)  svcconfig → backend/services/svcconfig :: yarn dev  [ENV_FILE=.env.dev]
+  • (enabled)  gateway → backend/services/gateway :: yarn dev  [ENV_FILE=.env.dev]
+  • (enabled)  gateway-core → backend/services/gateway-core :: yarn dev  [ENV_FILE=.env.dev]
+  • (enabled)  geo → backend/services/geo :: yarn dev  [ENV_FILE=.env.dev]
+  • (enabled)  act → backend/services/act :: yarn dev  [ENV_FILE=.env.dev]
+  • (enabled)  user → backend/services/user :: yarn dev  [ENV_FILE=.env.dev]
+  • (enabled)  log → backend/services/log :: yarn dev  [ENV_FILE=.env.dev]
+🚀 Starting services...
+📜 PIDs: 19784 19785 19786 19787 19788 19789 19790
+🟢 All services launched. Ctrl-C to stop.
+yarn run v1.22.22
+yarn run v1.22.22
+yarn run v1.22.22
+yarn run v1.22.22
+yarn run v1.22.22
+yarn run v1.22.22
+yarn run v1.22.22
+$ ts-node-dev -r tsconfig-paths/register --respawn --project tsconfig.json index.ts
+$ ts-node-dev -r tsconfig-paths/register --respawn --project tsconfig.json index.ts
+$ NODE_ENV=dev ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts
+$ NODE_ENV=dev ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts
+$ TS_NODE_FILES=1 ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts
+$ NODE_ENV=dev TS_NODE_FILES=1 ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts
+$ NODE_ENV=dev TS_NODE_FILES=1 ts-node-dev -r tsconfig-paths/register --respawn --transpile-only index.ts
+[INFO] 12:51:01 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.2)
+[INFO] 12:51:01 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.2)
+[INFO] 12:51:01 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.2)
+[bootstrap] Loading env from: /Users/ddraper005/eff/backend/services/gateway-core/.env.dev
+[dotenv@17.2.2] injecting env (19) from .env.dev -- tip: 📡 auto-backup env with Radar: https://dotenvx.com/radar
+[s2s] iss=gateway-core aud=internal-services
+[INFO] 12:51:01 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.2)
+[INFO] 12:51:02 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.2)
+[bootstrap] Loading env from: /Users/ddraper005/eff/backend/services/gateway/.env.dev
+[dotenv@17.2.2] injecting env (43) from .env.dev -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+{"level":30,"time":"2025-09-07T19:51:02.410Z","service":"gateway-core","port":4011,"msg":"[gateway-core] listening"}
+[bootstrap] Loading env from: /Users/ddraper005/eff/backend/services/act/.env.dev
+[dotenv@17.2.2] injecting env (20) from .env.dev -- tip: ⚙️  enable debug logging with { debug: true }
+[INFO] 12:51:02 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.2)
+{"level":20,"time":"2025-09-07T19:51:02.712Z","service":"act","msg":"[act] logger initialized"}
+[svcconfigClient] polling disabled
+[bootstrap] [log] Loading env from (root→svc): /Users/ddraper005/eff/.env.dev , /Users/ddraper005/eff/backend/services/log/.env.dev
+[dotenv@17.2.2] injecting env (33) from ../../../.env.dev -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.2.2] injecting env (9) from .env.dev -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[bootstrap:svcconfig] Loading env from: /Users/ddraper005/eff/backend/services/svcconfig/.env.dev
+[dotenv@17.2.2] injecting env (15) from .env.dev -- tip: ⚙️  enable debug logging with { debug: true }
+[INFO] 12:51:03 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.2)
+{"level":30,"time":"2025-09-07T19:51:03.198Z","port":4000,"bind":"127.0.0.1","env":"dev","forceHttps":false,"msg":"[gateway] listening"}
+[bootstrap] Loading env from: /Users/ddraper005/eff/backend/services/user/.env.dev
+[dotenv@17.2.2] injecting env (20) from .env.dev -- tip: ⚙️  suppress all logs with { quiet: true }
+✅ Express augmentation loaded
+[svcconfigClient] polling disabled
+[bootstrap] Loading env from: /Users/ddraper005/eff/backend/services/geo/.env.dev
+[dotenv@17.2.2] injecting env (11) from .env.dev -- tip: ⚙️  override existing env vars with { override: true }
+{"level":20,"time":"2025-09-07T19:51:03.305Z","service":"user","msg":"[user] logger initialized"}
+✅ Express augmentation loaded
+{"level":30,"time":"2025-09-07T19:51:03.770Z","service":"geo","service":"geo","port":4012,"msg":"service listening"}
+{"level":30,"time":"2025-09-07T19:51:03.804Z","msg":"mongo:connect","uri":"mongodb://127.0.0.1:27017/eff_act_db","msg":"[act] connecting to Mongo"}
+{"level":30,"time":"2025-09-07T19:51:03.848Z","msg":"[act] Mongo connected"}
+{"level":30,"time":"2025-09-07T19:51:03.852Z","service":"act","port":4002,"msg":"service listening"}
+{"level":30,"time":"2025-09-07T19:51:03.933Z","service":"service-config","msg":"mongo:connect","uri":"mongodb://127.0.0.1:27017/eff_svcconfig_db","msg":"[svcconfig] connecting to Mongo"}
+{"level":30,"time":"2025-09-07T19:51:03.980Z","service":"service-config","msg":"[svcconfig] Mongo connected"}
+{"level":30,"time":"2025-09-07T19:51:03.982Z","service":"service-config","service":"svcconfig","port":4013,"msg":"service listening"}
+{"level":30,"time":"2025-09-07T19:51:04.429Z","service":"log","port":4016,"msg":"log listening"}
+[MongoDB-log] Connected
+{"level":20,"time":"2025-09-07T19:51:05.101Z","service":"user","uri":"mongodb://127.0.0.1:27017/eff_user_db","msg":"[db] connecting"}
+{"level":30,"time":"2025-09-07T19:51:05.119Z","service":"user","msg":"[db] connected"}
+{"level":20,"time":"2025-09-07T19:51:05.124Z","service":"user","msg":"[db] connect resolved"}
+{"level":30,"time":"2025-09-07T19:51:05.125Z","service":"user","port":4001,"msg":"service listening"}
+{"level":20,"time":"2025-09-07T19:51:33.416Z","requestId":"003cc844-aae5-44d6-9e54-444864e8ffb5","svc":"user","target":"http://127.0.0.1:4001/api/users","method":"PUT","msg":"[gateway] proxy enter"}
+{"level":30,"time":"2025-09-07T19:51:33.429Z","req":{"id":"003cc844-aae5-44d6-9e54-444864e8ffb5","method":"PUT","url":"/api/users"},"service":"user","msg":"handler:start","method":"PUT","url":"/api/users","params":{},"query":{},"msg":"request entry"}
+{"level":40,"time":"2025-09-07T19:51:33.434Z","req":{"id":"003cc844-aae5-44d6-9e54-444864e8ffb5","method":"PUT","url":"/api/users"},"service":"user","res":{"statusCode":401},"responseTime":6,"msg":"request completed"}
+{"level":30,"time":"2025-09-07T19:51:33.434Z","req":{"id":"003cc844-aae5-44d6-9e54-444864e8ffb5","method":"PUT","url":"/api/users"},"service":"user","msg":"handler:finish","statusCode":401,"durationMs":5,"msg":"request exit"}
+{"level":20,"time":"2025-09-07T19:51:33.434Z","requestId":"003cc844-aae5-44d6-9e54-444864e8ffb5","svc":"user","target":"http://127.0.0.1:4001/api/users","status":401,"msg":"[gateway] proxy exit"}
+{"level":40,"time":"2025-09-07T19:51:33.435Z","service":"gateway","req":{"id":"003cc844-aae5-44d6-9e54-444864e8ffb5","method":"PUT","url":"/api/user/users"},"reqId":"003cc844-aae5-44d6-9e54-444864e8ffb5","res":{"statusCode":401},"responseTime":25,"msg":"request completed"}
+{"level":20,"time":"2025-09-07T19:51:33.452Z","requestId":"26a20cb3-bdfd-415e-8a6b-b09a4a2f4f31","svc":"user","target":"http://127.0.0.1:4001/api/users","method":"PUT","msg":"[gateway] proxy enter"}
+{"level":30,"time":"2025-09-07T19:51:33.453Z","req":{"id":"26a20cb3-bdfd-415e-8a6b-b09a4a2f4f31","method":"PUT","url":"/api/users"},"service":"user","msg":"handler:start","method":"PUT","url":"/api/users","params":{},"query":{},"msg":"request entry"}
+{"level":40,"time":"2025-09-07T19:51:33.455Z","req":{"id":"26a20cb3-bdfd-415e-8a6b-b09a4a2f4f31","method":"PUT","url":"/api/users"},"service":"user","res":{"statusCode":401},"responseTime":2,"msg":"request completed"}
+{"level":30,"time":"2025-09-07T19:51:33.455Z","req":{"id":"26a20cb3-bdfd-415e-8a6b-b09a4a2f4f31","method":"PUT","url":"/api/users"},"service":"user","msg":"handler:finish","statusCode":401,"durationMs":2,"msg":"request exit"}
+{"level":20,"time":"2025-09-07T19:51:33.455Z","requestId":"26a20cb3-bdfd-415e-8a6b-b09a4a2f4f31","svc":"user","target":"http://127.0.0.1:4001/api/users","status":401,"msg":"[gateway] proxy exit"}
+{"level":40,"time":"2025-09-07T19:51:33.456Z","service":"gateway","req":{"id":"26a20cb3-bdfd-415e-8a6b-b09a4a2f4f31","method":"PUT","url":"/api/user/users"},"reqId":"26a20cb3-bdfd-415e-8a6b-b09a4a2f4f31","res":{"statusCode":401},"responseTime":7,"msg":"request completed"}
+🛑 Caught signal
+🧹 Cleaning up...
+🧯 Stopping services: 19784 19785 19786 19787 19788 19789 19790
+{"level":30,"time":"2025-09-07T20:00:40.250Z","signal":"SIGINT","service":"act","msg":"shutting down service"}
+{"level":30,"time":"2025-09-07T20:00:40.250Z","signal":"SIGINT","service":"user","msg":"shutting down service"}
+{"level":30,"time":"2025-09-07T20:00:40.250Z","service":"geo","signal":"SIGINT","service":"geo","msg":"shutting down service"}
+{"level":30,"time":"2025-09-07T20:00:40.250Z","signal":"SIGINT","msg":"[gateway] shutting down…"}
+{"level":30,"time":"2025-09-07T20:00:40.250Z","service":"service-config","signal":"SIGINT","service":"svcconfig","msg":"shutting down service"}
+{"level":30,"time":"2025-09-07T20:00:40.250Z","msg":"SIGINT received, shutting down gracefully"}
+{"level":30,"time":"2025-09-07T20:00:40.250Z","service":"gateway-core","msg":"[gateway-core] SIGINT received, shutting down…"}

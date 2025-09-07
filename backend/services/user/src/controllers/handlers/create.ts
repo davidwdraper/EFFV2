@@ -2,6 +2,7 @@
 import { Request, Response, NextFunction } from "express";
 import { zUserReplace } from "@shared/contracts/user.contract";
 import * as repo from "../../repo/userRepo";
+import type { MongoServerError } from "mongodb";
 
 /**
  * Create via PUT /api/user (collection root)
@@ -38,6 +39,14 @@ export async function create(req: Request, res: Response, next: NextFunction) {
 
     res.status(201).json(created);
   } catch (err) {
+    const e = err as Partial<MongoServerError>;
+    if (e?.code === 11000 && e?.keyPattern?.email) {
+      return res.status(409).json({
+        code: "CONFLICT",
+        status: 409,
+        message: "Email already exists",
+      });
+    }
     next(err); // global problemJson middleware will shape this
   }
 }

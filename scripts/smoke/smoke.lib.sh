@@ -15,18 +15,19 @@ GEO=${GEO:-http://127.0.0.1:4012}
 ACT=${ACT:-http://127.0.0.1:4002}
 USER_URL=${USER_URL:-http://127.0.0.1:4001}  # ← renamed (avoid clash with shell $USER)
 
-# S2S defaults (match .env.dev)
+# S2S defaults (must match backend .env.dev)
 S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-core-internal}"
 S2S_JWT_AUDIENCE="${S2S_JWT_AUDIENCE:-internal-services}"
 
 # End-user assertion defaults (dev/test)
 # These mirror the backend expectation:
-#   - HS256, shared secret across gateway, core, and services
+#   - HS256 shared secret across gateway, core, and services
 #   - aud=internal-users
-#   - iss = gateway (edge) or gateway-core (core hop). For direct-to-service smokes we use gateway-core.
+#   - iss=gateway (edge) or gateway-core (core hop)
 USER_ASSERTION_SECRET="${USER_ASSERTION_SECRET:-devlocal-users-internal}"
 USER_ASSERTION_AUDIENCE="${USER_ASSERTION_AUDIENCE:-internal-users}"
 USER_ASSERTION_ISSUER_CORE="${USER_ASSERTION_ISSUER_CORE:-gateway-core}"
+USER_ASSERTION_ISSUER_GATEWAY="${USER_ASSERTION_ISSUER_GATEWAY:-gateway}"
 
 # Data defaults
 GEO_ADDRESS="${GEO_ADDRESS:-1600 Amphitheatre Parkway, Mountain View, CA}"
@@ -48,7 +49,12 @@ fi
 pretty() { if [[ ${NV_USE_JQ:-1} -eq 1 ]]; then "$JQ"; else cat; fi; }
 json() { printf '%s' "$1"; }
 
+# base64url (no padding)
 b64url() { openssl enc -base64 -A | tr '+/' '-_' | tr -d '='; }
+
+# ---- Tokens -----------------------------------------------------------------
+# S2S HS256 mint (compact JWT)
+# p1: iss, p2: svc, p3: ttl
 mint_s2s () {
   local iss="${1:-internal}" svc="${2:-act}" ttl="${3:-300}"
   local now exp hdr pld sig
@@ -61,19 +67,17 @@ mint_s2s () {
   sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -binary -sha256 -hmac "$S2S_JWT_SECRET" | b64url)
   printf '%s.%s.%s' "$hdr" "$pld" "$sig"
 }
-TOKEN_CORE()       { mint_s2s "gateway-core" "gateway-core" 300; }  # core→worker
-TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }               # act→core (client)
 
-# --- End-user assertion (X-NV-User-Assertion) -------------------------------
-# Minimal HS256 compact JWT with:
-#   sub=<uid>, iss=$USER_ASSERTION_ISSUER_CORE, aud=$USER_ASSERTION_AUDIENCE,
-#   iat, exp, jti
-# Optional roles/scopes can be added later; services only require a valid edge identity.
+# Convenience: tokens used by tests
+TOKEN_CORE()       { mint_s2s "gateway-core" "gateway-core" 300; }  # core→worker S2S
+TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }               # pretend "act" client
+TOKEN_GATEWAY() { mint_s2s "gateway" "gateway" 300; }
+
+# End-user assertion (compact JWT) — issuer = gateway-core
 mint_user_assertion_core() {
   local uid="${1:-smoke-tests}" ttl="${2:-300}"
   local now exp jti hdr pld sig
   now=$(date +%s); exp=$((now + ttl))
-  # Random 128-bit jti (hex)
   jti=$(openssl rand -hex 16 2>/dev/null)
   hdr='{"alg":"HS256","typ":"JWT"}'
   pld=$(printf '{"sub":"%s","iss":"%s","aud":"%s","iat":%s,"exp":%s,"jti":"%s"}' \
@@ -83,23 +87,51 @@ mint_user_assertion_core() {
   sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -binary -sha256 -hmac "$USER_ASSERTION_SECRET" | b64url)
   printf '%s.%s.%s' "$hdr" "$pld" "$sig"
 }
-# Public helper used by tests
 ASSERT_USER() { mint_user_assertion_core "${1:-smoke-tests}" "${2:-300}"; }
 
-# Convenience: emit both headers for direct worker calls (Bash 3.2-safe)
-AUTH_HEADERS_CORE() {
+# End-user assertion — issuer = gateway (public gateway)
+mint_user_assertion_gateway() {
   local uid="${1:-smoke-tests}" ttl="${2:-300}"
-  printf '%s ' -H "Authorization: Bearer $(TOKEN_CORE)" \
-               -H "X-NV-User-Assertion: $(ASSERT_USER "$uid" "$ttl")"
+  local now exp jti hdr pld sig
+  now=$(date +%s); exp=$((now + ttl))
+  jti=$(openssl rand -hex 16 2>/dev/null)
+  hdr='{"alg":"HS256","typ":"JWT"}'
+  pld=$(printf '{"sub":"%s","iss":"%s","aud":"%s","iat":%s,"exp":%s,"jti":"%s"}' \
+        "$uid" "$USER_ASSERTION_ISSUER_GATEWAY" "$USER_ASSERTION_AUDIENCE" "$now" "$exp" "$jti")
+  hdr=$(printf '%s' "$hdr" | b64url)
+  pld=$(printf '%s' "$pld" | b64url)
+  sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -binary -sha256 -hmac "$USER_ASSERTION_SECRET" | b64url)
+  printf '%s.%s.%s' "$hdr" "$pld" "$sig"
+}
+ASSERT_USER_GATEWAY() { mint_user_assertion_gateway "${1:-smoke-tests}" "${2:-300}"; }
+
+# ---- Safe header emitters (space-escaped for command substitution) ----------
+# Usage example:
+#   curl $(AUTH_HEADERS_CORE) "$URL"
+# or:
+#   curl $(AUTH_HEADERS_GATEWAY) "$URL"
+#
+# We escape spaces in header values so command substitution does not break them.
+AUTH_HEADERS_CORE() {
+  printf '%s ' \
+    -H "Authorization:\ Bearer\ $(TOKEN_CORE)" \
+    -H "X-NV-User-Assertion:\ $(ASSERT_USER smoke-tests 300)"
+}
+AUTH_HEADERS_GATEWAY() {
+  printf '%s ' \
+    -H "Authorization:\ Bearer\ $(TOKEN_GATEWAY)" \
+    -H "X-NV-User-Assertion:\ $(ASSERT_USER_GATEWAY smoke-tests 300)"
 }
 
+# ---- JSON helpers -----------------------------------------------------------
 extract_id() { ${JQ} -r '._id // .id // .data._id // empty'; }
 
 delete_ok() {
   local url="$1"; shift
   local code
   code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$url" "$@")
-  case "$code" in 200|202|204|404) echo "✅ delete $url ($code)";;
+  case "$code" in
+    200|202|204|404) echo "✅ delete $url ($code)";;
     *) echo "❌ delete $url failed ($code)"; exit 1;;
   esac
 }

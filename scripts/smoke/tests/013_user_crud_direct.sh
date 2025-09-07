@@ -1,22 +1,13 @@
+# scripts/smoke/tests/013_user_crud_direct.sh
 #!/usr/bin/env bash
-# user PUT(create) -> GET -> DELETE direct (4001), S2S (JWT core)
+# user PUT(create) -> GET -> DELETE directly against the user service (4001)
+# Contract: service exposes /api/users (plural)
+# Uses smoke.lib.sh helpers for token minting but avoids $(AUTH_HEADERS_CORE) word-splitting.
 
-# Single source of truth: one request, capture body+status together.
-_put_with_body_and_status() {
-  local url="$1" token="$2" body="$3"
-  # Print body, then last line is status
-  curl -sS -X PUT "$url" \
-    -H "Authorization: Bearer $token" \
-    -H "Content-Type: application/json" \
-    -d "$body" \
-    -w '\n%{http_code}'
-}
-
-_payload_user_replace() {
-  # Unique email every time
-  local ts rand; ts="$(date +%s%N)"; rand=$RANDOM
+_payload_user() {
+  local ts; ts="$(date +%s%N)"
   json "{
-    \"email\": \"smoke+${ts}${rand}@example.test\",
+    \"email\": \"smoke+${ts}@example.test\",
     \"firstname\": \"Smoke${ts}\",
     \"lastname\": \"Test${ts}\",
     \"userStatus\": 1,
@@ -26,26 +17,36 @@ _payload_user_replace() {
 }
 
 t13() {
-  local TOKEN; TOKEN=$(TOKEN_CORE)
-  local base="${USER_URL}/api/user"
-  local out body code id
+  # Mint tokens via helpers in smoke.lib.sh
+  local S2S; S2S="$(TOKEN_CORE)"
+  local UA;  UA="$(ASSERT_USER "smoke-tests" 300)"
 
-  # CREATE (single PUT, no preflight)
-  out="$(_put_with_body_and_status "$base" "$TOKEN" "$(_payload_user_replace)")"
-  code="${out##*$'\n'}"; body="${out%$'\n'*}"
-  if [[ ! "$code" =~ ^2 ]]; then
-    echo "$body" | pretty
-    echo "❌ PUT(create) failed (HTTP $code)"; exit 1
-  fi
-  echo "$body" | pretty
-  id=$(printf '%s' "$body" | extract_id)
-  [[ -n "$id" ]] || { echo "❌ PUT(create) did not return id/_id"; exit 1; }
+  # Base to the service (plural route)
+  local base="${USER_URL}/api/users"
+
+  # Create
+  local body resp id
+  body="$(_payload_user)"
+  resp=$(curl -fsS -X PUT "$base" \
+    -H "Authorization: Bearer ${S2S}" \
+    -H "X-NV-User-Assertion: ${UA}" \
+    -H "Content-Type: application/json" \
+    -d "$body")
+  echo "$resp" | pretty
+  id=$(echo "$resp" | extract_id)
+  [[ -n "$id" ]] || { echo "❌ direct PUT did not return id/_id"; exit 1; }
   echo "✅ created user (direct) id=$id"
 
-  # GET
-  curl -fsS -H "Authorization: Bearer $TOKEN" "$base/$id" | pretty
+  # Read
+  curl -fsS \
+    -H "Authorization: Bearer ${S2S}" \
+    -H "X-NV-User-Assertion: ${UA}" \
+    "$base/$id" | pretty
 
-  # DELETE
-  delete_ok "$base/$id" -H "Authorization: Bearer $TOKEN"
+  # Delete
+  delete_ok "$base/$id" \
+    -H "Authorization: Bearer ${S2S}" \
+    -H "X-NV-User-Assertion: ${UA}"
 }
-register_test 13 "user PUT+GET+DELETE direct (4001, S2S core)" t13
+
+register_test 13 "user PUT+GET+DELETE direct (4001) — plural /api/users" t13

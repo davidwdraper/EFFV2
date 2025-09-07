@@ -2,7 +2,7 @@
 import type { RequestHandler } from "express";
 import { asyncHandler } from "@shared/middleware/asyncHandler";
 import { zUserPatch } from "../../contracts/userContracts";
-import * as svc from "../../services/userService";
+import * as svc from "../../services/user.service";
 
 // PATCH /api/user/:id
 export const patchUser: RequestHandler = asyncHandler(async (req, res) => {

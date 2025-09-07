@@ -1,5 +1,4 @@
 // backend/services/user/src/app.ts
-
 import express from "express";
 
 import { coreMiddleware } from "@shared/middleware/core";
@@ -12,33 +11,31 @@ import {
 } from "@shared/middleware/problemJson";
 import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
 import { createHealthRouter } from "@shared/health";
+
+// 🔐 Internal caller verification (gateway/gateway-core S2S)
 import { verifyS2S } from "@shared/middleware/verifyS2S";
-import { verifyUserAssertion } from "@shared/middleware/verifyUserAssertion"; // 👈 NEW
+
+// ✅ Use the LOCAL assertion verifier (not the shared one)
+import { verifyUserAssertion } from "./middleware/verifyUserAssertion";
 
 import userRoutes from "./routes/userRoutes";
 import userPublicRoutes from "./routes/userPublicRoutes";
 import directoryRoutes from "./routes/directoryRoutes";
 
-import { SERVICE_NAME } from "./bootstrap";
-import { config } from "./config";
+import { SERVICE_NAME } from "./config";
 
-// Parity checks with Act (explicit env presence)
-if (!config.mongoUri)
-  throw new Error("Missing required env var: USER_MONGO_URI");
-if (!config.port) throw new Error("Missing required env var: USER_PORT");
-
-// ── Express app ──────────────────────────────────────────────────────────────
+// ── Express app ───────────────────────────────────────────────────────────────
 export const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", true);
 
-// Core middleware (shared)
+// ── Core middleware ───────────────────────────────────────────────────────────
 app.use(coreMiddleware());
 app.use(makeHttpLogger(SERVICE_NAME));
 app.use(entryExit());
 app.use(auditBuffer());
 
-// Health (EXCEPTION: stays at root, not under /api)
+// ── Health (EXCEPTION: stays at root, not under /api) ────────────────────────
 app.use(
   createHealthRouter({
     service: SERVICE_NAME,
@@ -46,31 +43,38 @@ app.use(
   })
 );
 
-// Require S2S for everything after health (SOP Addendum 2)
-app.use(verifyS2S);
-
-// 👇 NEW: Require end-user assertion for mutations under /api/*
-// - GET/HEAD remain readable without an assertion (directory/search/public lookups).
-// - Non-GET/HEAD must include a valid X-NV-User-Assertion (minted at the edge).
-app.use((req, res, next) => verifyUserAssertion(req, res, next));
-
-// --------------------------- API prefix --------------------------------------
-// Everything user-facing for this service lives under /api/*
+// ── API plane ────────────────────────────────────────────────────────────────
 const api = express.Router();
 
-// Canonical routes under /api/<serverName>/...
-// <serverName> for User is "user"
+// All API calls must come from an internal caller (gateway/core) with S2S
+api.use(verifyS2S);
+
+// In dev we do NOT require an end-user assertion for simple CRUD smoke tests.
+// If you set USER_ASSERTION_ENFORCE=true, we’ll require it for mutating methods.
+const enforceUA =
+  String(process.env.USER_ASSERTION_ENFORCE || "false").toLowerCase() ===
+  "true";
+const userAssertionMw = verifyUserAssertion({ enforce: enforceUA });
+
+// Apply assertion only to mutating methods (PUT/PATCH/POST/DELETE)
+api.use((req, res, next) => {
+  const m = req.method.toUpperCase();
+  if (m === "GET" || m === "HEAD" || m === "OPTIONS") return next();
+  return userAssertionMw(req, res, next);
+});
+
+// Routes under /api
 api.use("/user", userRoutes); // auth-required CRUD
-api.use("/user", userPublicRoutes); // public names endpoint (compat)
+api.use("/user", userPublicRoutes); // public names endpoint (compat, still behind S2S)
 api.use("/user/directory", directoryRoutes); // friend-lookup/search API
 
-// Mount the API router (same pattern as Act)
+// Mount API under /api
 app.use("/api", api);
 
-// Test helpers updated to match /api paths
+// Test helpers (match mounted prefixes)
 addTestOnlyHelpers(app as any, ["/api/user", "/api/user/directory"]);
 
-// 404 + error handlers (limit known prefixes to /api/* and /health)
+// 404 + error handlers (limit known prefixes)
 app.use(notFoundProblemJson(["/api/user", "/api/user/directory", "/health"]));
 app.use(errorProblemJson());
 

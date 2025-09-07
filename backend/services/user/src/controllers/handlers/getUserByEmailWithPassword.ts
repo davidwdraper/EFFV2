@@ -1,7 +1,7 @@
 // backend/services/user/src/controllers/handlers/getUserByEmailWithPassword.ts
 import type { RequestHandler } from "express";
 import { asyncHandler } from "@shared/middleware/asyncHandler";
-import * as svc from "../../services/userService";
+import * as svc from "../../services/user.service";
 
 // GET /api/user/private/email/:email
 export const getUserByEmailWithPassword: RequestHandler = asyncHandler(

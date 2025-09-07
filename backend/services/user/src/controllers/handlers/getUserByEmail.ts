@@ -1,7 +1,7 @@
 // backend/services/user/src/controllers/handlers/getUserByEmail.ts
 import type { RequestHandler } from "express";
 import { asyncHandler } from "@shared/middleware/asyncHandler";
-import * as svc from "../../services/userService";
+import * as svc from "../../services/user.service";
 
 // GET /api/user/email/:email
 export const getUserByEmail: RequestHandler = asyncHandler(async (req, res) => {

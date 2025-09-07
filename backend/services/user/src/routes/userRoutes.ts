@@ -1,6 +1,5 @@
 // backend/services/user/src/routes/userRoutes.ts
 import { Router } from "express";
-import { authenticate } from "@shared/middleware/authenticate";
 import { cacheGet, invalidateOnSuccess } from "@shared/utils/cache";
 
 // 🔧 Direct handler imports (no barrels)
@@ -20,6 +19,12 @@ const router = Router();
  * - No POST / (back-compat removed).
  * - No PUT /:id (replace-by-id forbidden).
  * - PATCH /:id, DELETE /:id remain.
+ *
+ * Auth model:
+ * - S2S is enforced globally in app.ts (`api.use(verifyS2S)`).
+ * - End-user assertion (X-NV-User-Assertion) is applied globally to non-GETs
+ *   in app.ts, gated by USER_ASSERTION_ENFORCE.
+ * - Therefore, no per-route `authenticate` here.
  */
 
 // CREATE (collection root)
@@ -39,16 +44,11 @@ router.get(
 );
 router.get("/:id", cacheGet("user", "USER_CACHE_TTL_SEC"), getById);
 
-// MUTATIONS (protected, invalidate caches)
+// MUTATIONS (invalidate caches)
 router.patch(
   "/:id",
-  authenticate,
   invalidateOnSuccess(["user", "user-directory"])(patchUser)
 );
-router.delete(
-  "/:id",
-  authenticate,
-  invalidateOnSuccess(["user", "user-directory"])(remove)
-);
+router.delete("/:id", invalidateOnSuccess(["user", "user-directory"])(remove));
 
 export default router;

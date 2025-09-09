@@ -1,9 +1,33 @@
 // backend/services/gateway/src/app.ts
+/**
+ * References:
+ * - NowVibin Backend — New-Session SOP v4 (Amended)
+ *   • “No logic in routes; controllers thin; instrumentation everywhere”
+ *   • “Only gateway is public; S2S to workers; Route convention /api/<slug>/<rest>”
+ *   • “Global error middleware. All errors flow through problem.ts + error sink.”
+ *   • “Audit-ready: WAL after guardrails; security telemetry separate from billing”
+ * - This session’s design decisions:
+ *   • Guardrails (rate limit, sensitive limiter, timeouts, circuit breaker, auth) log to SECURITY
+ *   • Billing-grade audit (`auditCapture` + WAL) only **after** guardrails
+ *   • `injectUpstreamIdentity` mints fresh S2S + user assertion before proxy
+ *   • `loggingMiddleware` centralizes pino-http wiring (instead of inline app code)
+ *
+ * Why:
+ * App assembly must reflect the pipeline ordering guarantees in SOP:
+ *   1) HTTPS/CORS/request-id/logging/problem-json/early 5xx tracing
+ *   2) Health (no auth, no audit)
+ *   3) Guardrails FIRST (deny paths emit SECURITY logs; never hit audit)
+ *   4) Billing-grade audit capture (WAL) for passed requests
+ *   5) Identity injection and proxy plane (transport only)
+ *   6) Tail parsing for non-proxied routes, then 404 + global error handler
+ *
+ * The file intentionally contains only assembly/glue — no business logic — and
+ * heavy “why” comments so future maintainers understand ordering invariants.
+ */
+
 import express from "express";
 import cors from "cors";
-import pinoHttp from "pino-http";
 import axios from "axios";
-import { randomUUID } from "crypto";
 import helmet from "helmet";
 import { createHealthRouter, ReadinessFn } from "@shared/health";
 import { logger } from "@shared/utils/logger";
@@ -22,6 +46,7 @@ import {
   notFoundHandler,
   errorHandler,
 } from "./middleware/problemJson";
+import { loggingMiddleware } from "./middleware/logging";
 import { rateLimitMiddleware } from "./middleware/rateLimit";
 import { timeoutsMiddleware } from "./middleware/timeouts";
 import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
@@ -32,19 +57,26 @@ import { serviceProxy } from "./middleware/serviceProxy";
 import { trace5xx } from "./middleware/trace5xx";
 import { injectUpstreamIdentity } from "./middleware/injectUpstreamIdentity";
 
-// ✅ Shared svcconfig client (same as core)
+// Shared svcconfig mirror (source of truth for upstreams)
 import {
   startSvcconfigMirror,
   getSvcconfigSnapshot,
 } from "@shared/svcconfig/client";
 import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
 
-// Kick off svcconfig mirror (ETag-aware; Redis/poll handled inside shared)
+// ▶ Billing-grade Audit (after guards)
+import { initWalFromEnv } from "./services/auditWal";
+import { auditCapture } from "./middleware/auditCapture";
+
+// Kick off svcconfig mirror (ETag-aware; polling/redis handled in shared)
+// WHY: do this early so readiness can query it.
 void startSvcconfigMirror();
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Helpers confined to app assembly (avoid barrels)
+
 function sanitizeUrl(u: string): string {
+  // WHY: keep pino logs free of PII; redact known email-like path segments.
   try {
     const [path, qs] = u.split("?", 2);
     const p = path
@@ -56,15 +88,15 @@ function sanitizeUrl(u: string): string {
   }
 }
 
-// Alias + singularize to canonical slug (matches previous behavior)
 function resolveSlug(seg: string): string {
+  // WHY: alias + naive singularization to canonical slug (matches gateway convention).
   const lower = String(seg || "").toLowerCase();
   const aliased = (ROUTE_ALIAS as Record<string, string>)[lower] || lower;
   return aliased.endsWith("s") ? aliased.slice(0, -1) : aliased;
 }
 
-// Lookup service by incoming path segment with allow/enable checks
 function getServiceBySegment(seg: string): ServiceConfig | undefined {
+  // WHY: health passthroughs only if upstream opted-in (enabled + allowProxy).
   const snap = getSvcconfigSnapshot();
   if (!snap) return undefined;
   const slug = resolveSlug(seg);
@@ -75,7 +107,6 @@ function getServiceBySegment(seg: string): ServiceConfig | undefined {
   return cfg;
 }
 
-// Compute upstream health URL (if exposed)
 function healthUrlFor(seg: string, kind: "live" | "ready"): string | null {
   const cfg = getServiceBySegment(seg);
   if (!cfg || cfg.exposeHealth === false) return null;
@@ -88,15 +119,16 @@ function healthUrlFor(seg: string, kind: "live" | "ready"): string | null {
 export const app = express();
 
 app.disable("x-powered-by");
-app.set("trust proxy", true);
+app.set("trust proxy", true); // WHY: respect X-Forwarded-* from LB/ingress
 
-// HTTPS policy: prod/stage only (dev/local sets FORCE_HTTPS=false)
+// HTTPS policy (prod/stage): redirect HTTP → HTTPS; dev/local opt-out via FORCE_HTTPS=false
 app.use(httpsOnly());
 if (process.env.FORCE_HTTPS === "true") {
+  // WHY: HSTS only when HTTPS enforced
   app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true }));
 }
 
-// CORS early (does not consume body)
+// CORS early; does not consume body
 app.use(
   cors({
     origin: "*",
@@ -107,7 +139,7 @@ app.use(
       "x-request-id",
       "x-correlation-id",
       "x-amzn-trace-id",
-      // 🔐 allow internal user assertion header through CORS preflight
+      // Allow internal user assertion header through preflight
       "x-nv-user-assertion",
     ],
   })
@@ -115,73 +147,22 @@ app.use(
 
 // ❗ No body parsers before proxy — keep raw stream intact.
 
-// Request ID first
+// Request ID must be *first* so every log/error/audit has a correlation key.
 app.use(requestIdMiddleware());
 
-// pino-http logger (bind service)
-const httpLogger = logger.child({ service: serviceName });
-app.use(
-  pinoHttp({
-    logger: httpLogger,
-    customLogLevel(_req, res, err) {
-      if (err) return "error";
-      const s = res.statusCode;
-      if (s >= 500) return "error";
-      if (s >= 400) return "warn";
-      return "info";
-    },
-    genReqId: (req, res) => {
-      const hdr =
-        req.headers["x-request-id"] ||
-        req.headers["x-correlation-id"] ||
-        req.headers["x-amzn-trace-id"];
-      const id = (Array.isArray(hdr) ? hdr[0] : hdr) || randomUUID();
-      res.setHeader("x-request-id", String(id));
-      return String(id);
-    },
-    customProps(req) {
-      return { reqId: (req as any).id };
-    },
-    autoLogging: {
-      ignore: (req) =>
-        req.url === "/health" ||
-        req.url === "/health/live" ||
-        req.url === "/health/ready" ||
-        req.url === "/healthz" ||
-        req.url === "/readyz" ||
-        req.url === "/live" ||
-        req.url === "/ready" ||
-        req.url === "/favicon.ico" ||
-        req.url === "/__core" ||
-        req.url === "/__auth",
-    },
-    serializers: {
-      req(req) {
-        return {
-          id: (req as any).id,
-          method: req.method,
-          url: sanitizeUrl(req.url),
-        };
-      },
-      res(res) {
-        return { statusCode: res.statusCode };
-      },
-    },
-    redact: { paths: [], remove: true },
-  })
-);
+// Centralized HTTP telemetry (pino-http) — lightweight, never blocking
+app.use(loggingMiddleware());
 
-// Problem+JSON envelope (does not consume request body)
+// Problem+JSON envelope (adds res.problem helper)
 app.use(problemJsonMiddleware());
 
-// Trace where any 5xx is set (before guards/proxy)
+// Trace where any 5xx is first set (observe-only)
 app.use(trace5xx("early"));
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Health / Readiness — BEFORE limits/auth
-
+// Health / Readiness — BEFORE guardrails (public, no auth, no audit)
 const readiness: ReadinessFn = async (_req) => {
-  const must = ["user", "act"]; // adjust as needed
+  const must = ["user", "act"]; // adjust per deployment
   const upstreams: Record<string, { ok: boolean; url?: string }> = {};
 
   await Promise.all(
@@ -215,9 +196,10 @@ app.use(
 );
 
 // Public dynamic health passthroughs (NO /api, NO auth, NO Authorization)
+// WHY: convenience endpoints to check worker health via gateway.
 app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
   try {
-    delete req.headers.authorization;
+    delete req.headers.authorization; // never forward client auth to health
     const url = healthUrlFor(
       String(req.params.svc || ""),
       req.params.kind as "live" | "ready"
@@ -244,7 +226,7 @@ app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
   }
 });
 
-// 👀 DEBUG: introspection endpoints
+// 👀 DEBUG: introspection endpoints (non-billable)
 app.get("/__core", (_req, res) => {
   res.json({
     NODE_ENV: process.env.NODE_ENV,
@@ -279,28 +261,33 @@ app.get("/__auth", (_req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Limits + timeouts + breaker + auth
+// Guardrails FIRST — denials log to SECURITY (not WAL)
 app.use(rateLimitMiddleware(rateLimitCfg));
 app.use(sensitiveLimiter());
-app.use(timeoutsMiddleware(timeoutCfg));
+app.use(timeoutsMiddleware(timeoutCfg)); // cfg shape: { gatewayMs: number }
 app.use(circuitBreakerMiddleware(breakerCfg));
 app.use(authGate());
 
-// Public root
+// ▶ BILLING-GRADE AUDIT — only after guards; before proxy
+// WHY: WAL must contain only legitimate, passed requests (billable).
+initWalFromEnv(); // idempotent init; boot-time replay runs here (non-blocking)
+app.use(auditCapture());
+
+// Lightweight public root
 app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
 // ──────────────────────────────────────────────────────────────────────────────
-// ── Service proxy plane ──
-// Inject gateway-issued identity for all upstream worker calls
+// Proxy plane — transport only, no business logic
+// WHY: ensure all proxied calls carry S2S + user assertion.
 app.use("/api", injectUpstreamIdentity());
 app.use("/api", serviceProxy());
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Only after the proxy do we parse bodies for NON-proxied routes
+// Body parsers ONLY for non-proxied routes after proxy
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
-// 404 + error handlers
+// Tail: 404 + global error handler (Problem+JSON)
 app.use(notFoundHandler());
 app.use(errorHandler());
 

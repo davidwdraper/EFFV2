@@ -1,4 +1,21 @@
 // backend/services/gateway/src/config.ts
+/**
+ * References:
+ * - NowVibin Backend — New-Session SOP v4 (Amended)
+ *   • “Audit-ready config: explicit env validation, no silent fallbacks”
+ *   • “Guardrails before audit; instrumentation everywhere”
+ * - Middleware contracts (this repo, current session)
+ *   • rateLimit.ts expects RateLimitCfg = { points, windowMs }
+ *   • timeouts.ts expects { gatewayMs }
+ *   • circuitBreaker.ts expects { failureThreshold, halfOpenAfterMs, minRttMs }
+ *
+ * Why:
+ * Centralized, *explicit* config loader with hard env assertions. This file is
+ * the single source of truth for app assembly to avoid type drift between
+ * middleware contracts and process env wiring. We keep names aligned with each
+ * middleware’s exported types (e.g., `points` not `max`) to prevent TS mismatch.
+ */
+
 import { requireEnum, requireNumber, requireEnv } from "../../shared/env";
 
 // ── Service identity ──────────────────────────────────────────────────────────
@@ -15,6 +32,7 @@ export const NODE_ENV = requireEnum("NODE_ENV", [
 export const PORT = requireNumber("GATEWAY_PORT");
 
 // Optional toggles (ok if missing — no defaults applied)
+// WHY: keep booleans string-based to avoid accidental truthiness.
 export const AUTH_ENABLED = (process.env.AUTH_ENABLED ?? "true") !== "false";
 export const LOG_LEVEL = process.env.LOG_LEVEL;
 export const TRACE_ENABLED = process.env.TRACE_ENABLED;
@@ -44,7 +62,7 @@ export const SVCCONFIG_POLL_MS = Number(
 );
 
 // ── Routing allowlist & aliases (still supported) ────────────────────────────
-// Allowlist (security). In production this MUST be set; in dev, '*' is allowed if unset.
+// WHY: In production, an explicit allowlist is required; in dev, '*' is tolerated.
 const rawAllowed = (process.env.GATEWAY_ALLOWED_SERVICES || "").trim();
 export const ALLOWED_SERVICES = rawAllowed
   ? rawAllowed
@@ -84,20 +102,27 @@ export function isAllowedServiceSlug(slug: string): boolean {
   );
 }
 
-// Structured configs (for direct import in app.ts)
+// ── Structured configs (imported by app.ts) ──────────────────────────────────
+// WHY: Keep names aligned with middleware types to avoid TS errors.
+
+// General rate limiter (global backstop):
+// rateLimit.ts expects: { points, windowMs }
 export const rateLimitCfg = {
   windowMs: requireNumber("RATE_LIMIT_WINDOW_MS"),
-  max: requireNumber("RATE_LIMIT_MAX"),
+  points: requireNumber("RATE_LIMIT_POINTS"), // ⬅️ renamed from MAX → POINTS to match contract
 };
 
+// Gateway hard timeout:
 export const timeoutCfg = {
   gatewayMs: requireNumber("TIMEOUT_GATEWAY_MS"),
 };
 
+// Circuit breaker thresholds:
 export const breakerCfg = {
   failureThreshold: requireNumber("BREAKER_FAILURE_THRESHOLD"),
   halfOpenAfterMs: requireNumber("BREAKER_HALFOPEN_AFTER_MS"),
   minRttMs: requireNumber("BREAKER_MIN_RTT_MS"),
 };
 
+// Back-compat alias (some files import serviceName)
 export const serviceName = SERVICE_NAME;

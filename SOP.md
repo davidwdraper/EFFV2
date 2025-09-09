@@ -289,3 +289,117 @@ Key Rule of Thumb
 Slug = singular = service identity
 
 Resource = plural = REST collection
+
+SOP.md addendum
+Gateway Timeouts
+
+Purpose: Prevent hung upstreams from consuming gateway resources.
+
+Env contract: gatewayMs passed to middleware; configured per environment.
+
+Behavior:
+
+If no response within gatewayMs, send 504 and log via SECURITY (reason=deadline_exceeded).
+
+Timer is cleared on both finish and close.
+
+Only fires if no headers sent.
+
+Placement: Mount before auditCapture, alongside other guardrails.
+
+Audit split: Timeout denials log SECURITY, not WAL audit.
+
+Logging Middleware (pino-http)
+
+Purpose: Provides operational telemetry, not billing or guardrail security logs.
+
+Placement: Mount early in app.ts after requestIdMiddleware.
+
+Behavior:
+
+Propagates or generates x-request-id for traceability.
+
+Severity mapping: 2xx/3xx=info, 4xx=warn, 5xx/error=error.
+
+Sanitizes URLs; excludes noisy endpoints (health, favicon).
+
+Bound to serviceName child logger for attribution.
+
+Audit separation: Audit WAL is billing-grade; SecurityLog is for guardrail denials; pino-http is for runtime ops telemetry.
+
+Upstream Identity Injection
+
+Every proxied request must include two tokens:
+
+S2S token minted by the gateway (mintS2S), always overwriting any inbound Authorization.
+
+User assertion (X-NV-User-Assertion) minted if missing, containing the end-user sub, iss, aud, and expiry.
+
+Never forward client tokens upstream. The gateway is the trust boundary.
+
+Env contract: USER_ASSERTION_SECRET, USER_ASSERTION_ISSUER, and USER_ASSERTION_AUDIENCE are required; startup must fail if missing.
+
+Placement: Mount injectUpstreamIdentity under /api before serviceProxy.
+
+Failure behavior: If identity minting fails, reject the request; never proxy without S2S+user identity.
+
+Client Auth Gate + Security Telemetry
+
+Guardrails log to SECURITY channel: authGate, rateLimit, timeouts, and circuitBreaker must call logSecurity(req, {...}) on every deny decision (and selective allow decisions such as bypass). These entries are not billable and must never enter the audit WAL.
+
+Misconfig vs client error: Return 503 for CLIENT*AUTH*\* misconfiguration; return 401/403 for client mistakes. Always include a short, non-PII reason in the security log.
+
+Auth policy: Public prefixes and protected GET prefixes are configured via env; CLIENT_AUTH_REQUIRE=true enforces auth except for declared public paths and HEAD/GET not listed as protected.
+
+Read-only mode: When READ_ONLY_MODE=true, block mutations (except READ_ONLY_EXEMPT_PREFIXES) with 503 and log to SECURITY with reason=read_only_mode.
+
+Audit split: Only requests that pass guardrails are captured by auditCapture and written to the WAL for billing/analytics. Guardrail denials never hit the WAL.
+
+5xx Trace Middleware
+
+Purpose: Pinpoint where a 5xx status was first set in the response lifecycle.
+
+Behavior: Shims res.status, res.sendStatus, and res.writeHead to log a compact, repo-local stack when a 5xx is first assigned. Emits a summary on finish if the status is 5xx.
+
+Signal: Logs carry sentinel <<<500DBG>>> with rid, method, url, phase, and code.
+
+Placement: Mount before guardrails and proxy (e.g., “early” tag). Optionally mount a second instance later (e.g., “late”) if you need finer attribution.
+
+Scope: Observability-only. Does not alter control flow or response bodies.
+
+Gateway App Assembly (Order Must Not Change)
+
+Transport & Telemetry: httpsOnly → cors → requestIdMiddleware → loggingMiddleware → problemJsonMiddleware → trace5xx("early")
+
+Health: Public health & readiness (no auth, no audit).
+
+Guardrails (SECURITY logs on denials): rateLimit, sensitiveLimiter, timeouts, circuitBreaker, authGate.
+
+Billing Audit: initWalFromEnv then auditCapture (only passed requests).
+
+Proxy Plane: injectUpstreamIdentity (S2S + user assertion) → serviceProxy.
+
+Tails: Body parsers for non-proxied routes → notFoundHandler → errorHandler.
+
+Never add business logic to app.ts or routes. Only mount middleware/handlers.
+Guardrail denials are SECURITY telemetry only (not billable). Audit WAL is for passed requests.
+
+Config Contracts (Do Not Drift)
+
+rateLimitCfg must expose { points, windowMs } and is sourced from RATE_LIMIT_POINTS, RATE_LIMIT_WINDOW_MS.
+
+timeoutCfg must expose { gatewayMs } from TIMEOUT_GATEWAY_MS.
+
+breakerCfg must expose { failureThreshold, halfOpenAfterMs, minRttMs } from BREAKER\_\*.
+
+If a middleware type changes, update config.ts in the same PR. No interim aliases.
+
+Audit WAL Env Contract (Gateway)
+
+WAL: WAL_DIR, WAL_FILE_MAX_MB, WAL_RETENTION_DAYS, WAL_RING_MAX_EVENTS, WAL_BATCH_SIZE, WAL_FLUSH_MS, WAL_MAX_RETRY_MS, WAL_DROP_AFTER_MB.
+
+Target: AUDIT_TARGET_SLUG, AUDIT_TARGET_PATH (batch PUT endpoint). Optionally AUDIT_TARGET_BASEURL to override svcconfig in dev.
+
+Do not block foreground traffic on WAL errors. Rotate/retry/replay; drop only beyond caps with WARN.
+
+Exactly-once at domain is achieved downstream via eventId dedupe; gateway provides at-least-once with idempotent batches.

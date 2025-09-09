@@ -1,41 +1,44 @@
 // backend/services/gateway/src/middleware/authGate.ts
-import type { Request, RequestHandler } from "express";
-import jwt from "jsonwebtoken";
-
 /**
- * Client Auth Gate (inbound) — single, canonical env set. No fallbacks.
+ * References:
+ * - NowVibin Backend — New-Session SOP v4 (Amended)
+ *   • “Only gateway is public; guardrails before proxy”
+ *   • “Audit-ready: instrumentation everywhere; never block on logging”
+ *   • “Only shared contracts define shared shapes”
+ * - This session’s design: “Security telemetry vs billing-grade audit”
+ *   • Guardrails emit SECURITY logs
+ *   • Only passed requests produce AuditEvent in WAL
  *
- * Required env (no defaults):
- *   CLIENT_AUTH_REQUIRE            ("true" | "false")
- *   CLIENT_AUTH_BYPASS             ("true" | "false")
- *   CLIENT_AUTH_JWKS_URL           (may be empty if bypassing)
- *   CLIENT_AUTH_ISSUERS            (pipe- or comma-separated)
- *   CLIENT_AUTH_AUDIENCE
- *   CLIENT_AUTH_CLOCK_SKEW_SEC
- *   CLIENT_AUTH_PUBLIC_PREFIXES
- *   CLIENT_AUTH_PROTECTED_GET_PREFIXES
- *   READ_ONLY_MODE                 ("true" | "false")
- *   READ_ONLY_EXEMPT_PREFIXES
- *
- * Notes:
- * - HS256 for client tokens is intentionally disabled to avoid confusion with S2S.
- * - Misconfiguration returns 503 (never 500).
- * - Client mistakes return 401/403.
+ * Why:
+ * Enforce client authentication consistently, with explicit, env-driven behavior
+ * and clean failure modes (503 for misconfig, 401/403 for client issues).
+ * We log *security telemetry* for all deny decisions (and selective allows)
+ * using `logSecurity`, so noisy or malicious traffic never pollutes the
+ * billing-grade audit WAL. This keeps the audit stream clean while giving ops
+ * visibility into attacks/misuse.
  */
 
+import type { Request, RequestHandler } from "express";
+import { logSecurity } from "../utils/securityLog";
+
+// NOTE: We deliberately avoid HS256 here to prevent confusing client auth with S2S.
+// JWKS/JWT verification is handled via `jose` (loaded lazily to keep cold starts fast).
+
+/** Accepts `|` or `,` separators and trims parts. */
 function toList(v?: string) {
-  // accepts | or , separators
   return String(v || "")
     .split(/[|,]/)
     .map((s) => s.trim())
     .filter(Boolean);
 }
 
+/** Case-insensitive prefix match. */
 function startsWithAny(path: string, prefixes: string[]) {
   const p = (path || "/").toLowerCase();
   return prefixes.some((x) => x && p.startsWith(x.toLowerCase()));
 }
 
+/** Extract a bearer token from common locations (headers/cookies). */
 function extractToken(req: Request): string | undefined {
   const hAuth =
     (req.headers["authorization"] as string | undefined) ??
@@ -60,7 +63,9 @@ function extractToken(req: Request): string | undefined {
   return undefined;
 }
 
-// ESM under CJS — dynamic import for jose + JWKS
+// ──────────────────────────────────────────────────────────────────────────────
+// Lazy jose import + remote JWKS cache
+
 let _jose: any | null = null;
 async function getJose() {
   if (_jose) return _jose;
@@ -74,6 +79,7 @@ function createJWKSGetter(jwksUrl: string) {
   return async () => {
     if (jwks) return jwks;
     const jose = await getJose();
+    // Why: cooldown to avoid hammering IdP; jose handles kid/alg selection.
     jwks = jose.createRemoteJWKSet(new URL(jwksUrl), {
       cooldownDuration: 30_000,
     });
@@ -81,8 +87,10 @@ function createJWKSGetter(jwksUrl: string) {
   };
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+
 export function authGate(): RequestHandler {
-  // ── required env (no fallbacks) ────────────────────────────────────────────
+  // Required env (no silent fallbacks)
   const readOnlyMode =
     String(process.env.READ_ONLY_MODE ?? "").toLowerCase() === "true";
   const authRequire =
@@ -101,21 +109,20 @@ export function authGate(): RequestHandler {
   const audience = String(process.env.CLIENT_AUTH_AUDIENCE ?? "");
   const clockSkew = Number(process.env.CLIENT_AUTH_CLOCK_SKEW_SEC ?? NaN);
 
-  // input validation — fail closed but cleanly (503 for misconfig)
-  const envInvalid =
-    ![true, false].includes(readOnlyMode) || // always boolean; sanity check redundant but harmless
-    Number.isNaN(clockSkew);
+  // Input validation — fail closed but cleanly (503 for misconfig).
+  const envInvalid = Number.isNaN(clockSkew);
 
-  // JWKS required if auth required and not bypassing
+  // JWKS required if auth required and not bypassing.
   const authMisconfigured =
     authRequire &&
     !authBypass &&
     (!jwksUrl || issuers.length === 0 || !audience);
 
+  // Pre-validate JWKS URL (early error) but don’t block if bypassing.
   let getJWKS: JWKSGetter | null = null;
   if (jwksUrl) {
     try {
-      new URL(jwksUrl); // early validation
+      new URL(jwksUrl); // validate URL format
       getJWKS = createJWKSGetter(jwksUrl);
     } catch {
       getJWKS = null;
@@ -124,6 +131,15 @@ export function authGate(): RequestHandler {
 
   return async (req, res, next) => {
     if (envInvalid) {
+      // Why: Config problem, not client’s fault; return 503 and log SECURITY.
+      logSecurity(req, {
+        kind: "input_validation",
+        reason: "env_invalid_clock_skew",
+        decision: "blocked",
+        status: 503,
+        route: req.path,
+        method: req.method,
+      });
       return res.status(503).json({
         type: "about:blank",
         title: "Auth Misconfigured",
@@ -136,13 +152,21 @@ export function authGate(): RequestHandler {
     const method = (req.method || "GET").toUpperCase();
     const path = req.path || "/";
 
-    // read-only: block mutations unless exempt
+    // READ-ONLY mode: block mutations unless exempt.
     if (
       readOnlyMode &&
       method !== "GET" &&
       method !== "HEAD" &&
       !startsWithAny(path, readOnlyExempt)
     ) {
+      logSecurity(req, {
+        kind: "forbidden",
+        reason: "read_only_mode",
+        decision: "blocked",
+        status: 503,
+        route: path,
+        method,
+      });
       return res.status(503).json({
         type: "about:blank",
         title: "Service Unavailable",
@@ -153,7 +177,7 @@ export function authGate(): RequestHandler {
       });
     }
 
-    // does this route need auth?
+    // Determine if this route needs auth.
     const isProtectedGet =
       method === "GET" && startsWithAny(path, protectedGetPrefixes);
     const isAuthPublic = startsWithAny(path, authPublicPrefixes);
@@ -163,14 +187,35 @@ export function authGate(): RequestHandler {
         : isProtectedGet
       : false;
 
-    if (!needsAuth) return next();
-
-    if (authBypass) {
-      (req as any).user = { id: "bypass", roles: ["dev"], scopes: ["*"] };
+    if (!needsAuth) {
+      // Not protected by policy; proceed (do NOT audit here; audit happens later).
       return next();
     }
 
+    // Bypass mode for dev/local — log as ALLOWED for visibility.
+    if (authBypass) {
+      (req as any).user = { id: "bypass", roles: ["dev"], scopes: ["*"] };
+      logSecurity(req, {
+        kind: "auth_failed",
+        reason: "bypass_enabled",
+        decision: "allowed", // explicitly allowed by config
+        status: 200,
+        route: path,
+        method,
+      });
+      return next();
+    }
+
+    // If auth is required but JWKS/issuers/audience are not valid, it’s a 503.
     if (authMisconfigured || !getJWKS) {
+      logSecurity(req, {
+        kind: "input_validation",
+        reason: "auth_misconfigured",
+        decision: "blocked",
+        status: 503,
+        route: path,
+        method,
+      });
       return res.status(503).json({
         type: "about:blank",
         title: "Auth Misconfigured",
@@ -183,6 +228,15 @@ export function authGate(): RequestHandler {
 
     const token = extractToken(req);
     if (!token) {
+      // Missing token on a protected route → 401.
+      logSecurity(req, {
+        kind: "auth_failed",
+        reason: "missing_token",
+        decision: "blocked",
+        status: 401,
+        route: path,
+        method,
+      });
       return res.status(401).json({
         type: "about:blank",
         title: "Unauthorized",
@@ -195,6 +249,7 @@ export function authGate(): RequestHandler {
     try {
       const jose = await getJose();
       const jwks = await getJWKS();
+      // Why: jose validates alg/kid and enforces issuer/audience + clock skew.
       const verified = await jose.jwtVerify(token, jwks, {
         issuer: issuers,
         audience,
@@ -202,6 +257,7 @@ export function authGate(): RequestHandler {
       });
       const payload: any = verified?.payload || {};
 
+      // Attach a normalized user shape for downstream usage.
       (req as any).user = {
         id: (payload?.uid as string) || (payload?.sub as string) || "unknown",
         roles: (payload?.roles as string[]) || [],
@@ -216,11 +272,22 @@ export function authGate(): RequestHandler {
         aud: payload?.aud as string | string[] | undefined,
       };
 
+      // Success path: no security log (keep noise low). Billing audit happens later.
       return next();
     } catch (err: any) {
       const message =
         err?.message ||
         (typeof err === "string" ? err : "Invalid or expired token");
+      // Invalid token → 401; log as SECURITY.
+      logSecurity(req, {
+        kind: "auth_failed",
+        reason: "jwt_invalid",
+        decision: "blocked",
+        status: 401,
+        route: path,
+        method,
+        // Never log token or claims; message is generic by design.
+      });
       return res.status(401).json({
         type: "about:blank",
         title: "Unauthorized",

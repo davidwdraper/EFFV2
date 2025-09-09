@@ -13,7 +13,7 @@
  *  - No service should redefine or shadow SERVICE_NAME elsewhere.
  */
 
-import { SERVICE_NAME } from "./bootstrap";
+import { SERVICE_NAME } from "./bootstrap/bootstrap";
 import { logger } from "@shared/utils/logger";
 
 try {

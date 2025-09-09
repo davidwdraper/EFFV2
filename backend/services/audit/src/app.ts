@@ -1,4 +1,4 @@
-// backend/services/--audit--/src/app.ts
+// backend/services/audit/src/app.ts
 import express from "express";
 
 import { coreMiddleware } from "@shared/middleware/core";
@@ -12,7 +12,7 @@ import {
 import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
 import { createHealthRouter } from "@shared/health";
 
-import auditRoutes from "./routes/auditRoutes";
+import auditRoutes from "./routes/auditEvent.routes";
 import { SERVICE_NAME, config } from "./config";
 
 // Ensure required envs (other than service name, which is from code)
@@ -35,6 +35,7 @@ app.use(entryExit());
 app.use(auditBuffer());
 
 // Health (EXCEPTION: stays at root, not under /api)
+// Tip: when you wire a real readiness check, plug it into `readiness`.
 app.use(
   createHealthRouter({
     service: SERVICE_NAME,
@@ -43,20 +44,15 @@ app.use(
 );
 
 // --------------------------- API prefix --------------------------------------
-// Everything user-facing for this service lives under /api/*
-const api = express.Router();
-
-// Routes under /api
-api.use("/audits", auditRoutes);
-
-// Mount the API router
-app.use("/api", api);
+// Convention: service exposes resources under /api/*
+// Gateway adds the slug externally: /api/audit/<resource…>
+app.use("/api", auditRoutes);
 
 // Test helpers updated to match /api paths
-addTestOnlyHelpers(app as any, ["/api/audits"]);
+addTestOnlyHelpers(app as any, ["/api/events"]);
 
 // 404 + error handlers (limit known prefixes to /api/* and /health)
-app.use(notFoundProblemJson(["/api/audits", "/health"]));
+app.use(notFoundProblemJson(["/api", "/health"]));
 app.use(errorProblemJson());
 
 export default app;

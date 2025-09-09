@@ -1,0 +1,6 @@
+{"eventId":"smoke-18-1757447693-a","ts":"2025-09-09T19:54:53Z","durationMs":123,"finalizeReason":"finish","requestId":"5e8b46ef1d8886b319809588","method":"PUT","path":"/api/acts","slug":"act","status":200,"billableUnits":1}
+{"eventId":"smoke-18-1757447693-b","ts":"2025-09-09T19:54:53Z","durationMs":456,"finalizeReason":"finish","requestId":"de3c5ed9281e9e38be18a029","method":"GET","path":"/api/acts/xyz","slug":"act","status":200,"billableUnits":1}
+{"eventId":"smoke-18-1757447898-a","ts":"2025-09-09T19:58:18Z","durationMs":123,"finalizeReason":"finish","requestId":"40e8a532489b29837bfc291c","method":"PUT","path":"/api/acts","slug":"act","status":200,"billableUnits":1}
+{"eventId":"smoke-18-1757447898-b","ts":"2025-09-09T19:58:18Z","durationMs":456,"finalizeReason":"finish","requestId":"813fd46795323362fdb8d44d","method":"GET","path":"/api/acts/xyz","slug":"act","status":200,"billableUnits":1}
+{"eventId":"smoke-18-1757448116-a","ts":"2025-09-09T20:01:56Z","durationMs":123,"finalizeReason":"finish","requestId":"f3e0ee0247a6c58a9a99a390","method":"PUT","path":"/api/acts","slug":"act","status":200,"billableUnits":1}
+{"eventId":"smoke-18-1757448116-b","ts":"2025-09-09T20:01:56Z","durationMs":456,"finalizeReason":"finish","requestId":"618acb190b7c3a6ac1b0b770","method":"GET","path":"/api/acts/xyz","slug":"act","status":200,"billableUnits":1}

@@ -1,66 +1,67 @@
-// backend/services/audit/src/bootstrap.ts
-import path from "path";
+// backend/services/audit/src/bootstrap/bootstrap.ts
+/**
+ * SOP bootstrap for Audit:
+ * 1) loadEnvFileOrDie()  — keep parity with other services (NODE_ENV-driven, walk-up single file)
+ * 2) Merge repo+service envs (missing ignored, last wins) so root LOG_LEVEL is picked up
+ * 3) Optional ENV_FILE override last
+ * 4) Assert required vars
+ */
 import fs from "fs";
-import dotenv from "dotenv";
+import path from "path";
 import { pino } from "pino";
+import {
+  loadEnvFileOrDie,
+  loadEnvFilesOrThrow,
+  assertRequiredEnv,
+} from "@shared/env";
 
-// ── Service identity ─────────────────────────────────────────────────────────
 export const SERVICE_NAME = "audit" as const;
 
-const log = pino({ level: process.env.LOG_LEVEL || "info" });
-
-function loadEnvFile(filePath: string, label: string) {
-  if (!fs.existsSync(filePath)) return false;
-  const res = dotenv.config({ path: filePath });
-  if (res.error) throw res.error;
-  log.info(`[bootstrap] Loaded ${label}: ${filePath}`);
-  return true;
-}
-
-function resolvePaths() {
-  // We expect to run from the service folder (recommended),
-  // but make this tolerant regardless of CWD.
-  const serviceDir = path.resolve(__dirname, ".."); // .../backend/services/audit/src -> /audit
-  const svcRoot = path.resolve(serviceDir, ".."); // .../backend/services/audit
-  const backendDir = path.resolve(svcRoot, ".."); // .../backend/services
-  const repoRoot = path.resolve(backendDir, ".."); // .../eff
-
-  // If ENV_FILE is absolute, we load ONLY that one (explicit override).
-  const envFileArg = process.env.ENV_FILE;
-  const envFile =
-    envFileArg && path.isAbsolute(envFileArg)
-      ? envFileArg
-      : envFileArg
-      ? path.resolve(process.cwd(), envFileArg)
-      : path.join(svcRoot, ".env.dev"); // default to service .env.dev
-
-  return {
-    repoEnv: path.join(repoRoot, ".env.dev"), // common/root env
-    svcEnv: envFile, // explicit or service-local env
-  };
-}
-
-function assertRequiredEnv(keys: string[]) {
-  const missing = keys.filter(
-    (k) => !process.env[k] || String(process.env[k]).trim() === ""
-  );
-  if (missing.length)
-    throw new Error(`Missing required env vars: ${missing.join(", ")}`);
-}
-
 (function bootstrap() {
-  const { repoEnv, svcEnv } = resolvePaths();
+  // This file lives at: backend/services/audit/src/bootstrap/bootstrap.ts
+  const serviceRoot = path.resolve(__dirname, "..", ".."); // …/backend/services/audit
+  const repoRoot = path.resolve(serviceRoot, "..", "..", ".."); // …/<repo>
 
-  // 1) Load root (common) first — optional; ignore if missing
-  loadEnvFile(repoEnv, "root env");
+  // 1) Keep behavior consistent with the rest of the fleet
+  //    (loads the nearest .env[.dev/.docker] based on NODE_ENV)
+  loadEnvFileOrDie();
 
-  // 2) Load service env second — required
-  const svcLoaded = loadEnvFile(svcEnv, "service env");
-  if (!svcLoaded) {
-    throw new Error(`[bootstrap] ENV_FILE not found: ${svcEnv}`);
+  // 2) Merge repo + service envs (missing ignored; last wins).
+  //    Order: repo .env, repo .env.dev, svc .env, svc .env.dev
+  const mergeList = [
+    path.join(repoRoot, ".env"),
+    path.join(repoRoot, ".env.dev"),
+    path.join(serviceRoot, ".env"),
+    path.join(serviceRoot, ".env.dev"),
+  ].filter((f) => fs.existsSync(f));
+
+  if (mergeList.length) {
+    loadEnvFilesOrThrow(mergeList, { allowMissing: true, order: "last-wins" });
   }
 
-  // ✅ Audit-only required keys (no ACT_* here)
+  // 3) Optional explicit override, loaded LAST
+  const envArg = process.env.ENV_FILE;
+  if (envArg) {
+    const override = path.isAbsolute(envArg)
+      ? envArg
+      : path.resolve(process.cwd(), envArg);
+    loadEnvFilesOrThrow([override], {
+      allowMissing: false,
+      order: "last-wins",
+    });
+  }
+
+  // Logger AFTER envs so LOG_LEVEL is honored
+  const log = pino({ level: process.env.LOG_LEVEL || "info" });
+  log.info(
+    {
+      merged: mergeList,
+      override: process.env.ENV_FILE || null,
+    },
+    "[bootstrap] env loaded (root+service merged; override last)"
+  );
+
+  // 4) Required vars for Audit (names only)
   assertRequiredEnv([
     "LOG_LEVEL",
     "LOG_SERVICE_URL",

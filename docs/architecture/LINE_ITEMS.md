@@ -16,3 +16,6 @@
 - 2025-09-08T23:53:04Z [ARCH][BE][AUDIT] Service starts AFTER WAL replay to avoid competing for DB IOPS.
 - 2025-09-09T00:09:05Z [ARCH][BE][AUDIT] Health stays out of auditEvent.routes; service uses shared createHealthRouter at root.
 - 2025-09-09T00:09:05Z [DESIGN][BE][AUDIT] preflightWALReplay(): run WAL replay before HTTP listen; idempotent upsert by eventId.
+- 2025-09-09T00:11:49Z [DESIGN][BE][AUDIT] Moved env/bootstrap to src/bootstrap/index.ts; all boot concerns live under src/bootstrap/* (incl. WAL replay).
+- 2025-09-09T00:12:51Z [DESIGN][BE][AUDIT] Service mounts routes at /api; router defines /events — external edge path becomes /api/audit/events via gateway slug.
+- 2025-09-09T00:12:51Z [ARCH][BE][AUDIT] WAL replay runs before HTTP listen; prevents DB contention with live ingestion.

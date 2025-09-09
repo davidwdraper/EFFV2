@@ -5,25 +5,20 @@
 # macOS Bash 3.2 compatible (no associative arrays, no mapfile)
 
 # ---- Globals / defaults -----------------------------------------------------
-# Store tests as "id|name|func" strings
-TESTS=()   # bash 3.2-friendly
+TESTS=()   # store as "id|name|func"
 
 # Endpoints (override via env)
 GW=${GW:-http://127.0.0.1:4000}
 CORE=${CORE:-http://127.0.0.1:4011}
 GEO=${GEO:-http://127.0.0.1:4012}
 ACT=${ACT:-http://127.0.0.1:4002}
-USER_URL=${USER_URL:-http://127.0.0.1:4001}  # ← renamed (avoid clash with shell $USER)
+USER_URL=${USER_URL:-http://127.0.0.1:4001}  # avoid clash with $USER
 
 # S2S defaults (must match backend .env.dev)
 S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-core-internal}"
 S2S_JWT_AUDIENCE="${S2S_JWT_AUDIENCE:-internal-services}"
 
 # End-user assertion defaults (dev/test)
-# These mirror the backend expectation:
-#   - HS256 shared secret across gateway, core, and services
-#   - aud=internal-users
-#   - iss=gateway (edge) or gateway-core (core hop)
 USER_ASSERTION_SECRET="${USER_ASSERTION_SECRET:-devlocal-users-internal}"
 USER_ASSERTION_AUDIENCE="${USER_ASSERTION_AUDIENCE:-internal-users}"
 USER_ASSERTION_ISSUER_CORE="${USER_ASSERTION_ISSUER_CORE:-gateway-core}"
@@ -48,13 +43,9 @@ fi
 # ---- Utilities --------------------------------------------------------------
 pretty() { if [[ ${NV_USE_JQ:-1} -eq 1 ]]; then "$JQ"; else cat; fi; }
 json() { printf '%s' "$1"; }
-
-# base64url (no padding)
-b64url() { openssl enc -base64 -A | tr '+/' '-_' | tr -d '='; }
+b64url() { openssl enc -base64 -A | tr '+/' '-_' | tr -d '='; }  # base64url
 
 # ---- Tokens -----------------------------------------------------------------
-# S2S HS256 mint (compact JWT)
-# p1: iss, p2: svc, p3: ttl
 mint_s2s () {
   local iss="${1:-internal}" svc="${2:-act}" ttl="${3:-300}"
   local now exp hdr pld sig
@@ -67,13 +58,10 @@ mint_s2s () {
   sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -binary -sha256 -hmac "$S2S_JWT_SECRET" | b64url)
   printf '%s.%s.%s' "$hdr" "$pld" "$sig"
 }
+TOKEN_CORE()       { mint_s2s "gateway-core" "gateway-core" 300; }
+TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }
+TOKEN_GATEWAY()    { mint_s2s "gateway" "gateway" 300; }
 
-# Convenience: tokens used by tests
-TOKEN_CORE()       { mint_s2s "gateway-core" "gateway-core" 300; }  # core→worker S2S
-TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }               # pretend "act" client
-TOKEN_GATEWAY() { mint_s2s "gateway" "gateway" 300; }
-
-# End-user assertion (compact JWT) — issuer = gateway-core
 mint_user_assertion_core() {
   local uid="${1:-smoke-tests}" ttl="${2:-300}"
   local now exp jti hdr pld sig
@@ -89,7 +77,6 @@ mint_user_assertion_core() {
 }
 ASSERT_USER() { mint_user_assertion_core "${1:-smoke-tests}" "${2:-300}"; }
 
-# End-user assertion — issuer = gateway (public gateway)
 mint_user_assertion_gateway() {
   local uid="${1:-smoke-tests}" ttl="${2:-300}"
   local now exp jti hdr pld sig
@@ -105,13 +92,7 @@ mint_user_assertion_gateway() {
 }
 ASSERT_USER_GATEWAY() { mint_user_assertion_gateway "${1:-smoke-tests}" "${2:-300}"; }
 
-# ---- Safe header emitters (space-escaped for command substitution) ----------
-# Usage example:
-#   curl $(AUTH_HEADERS_CORE) "$URL"
-# or:
-#   curl $(AUTH_HEADERS_GATEWAY) "$URL"
-#
-# We escape spaces in header values so command substitution does not break them.
+# ---- Safe header emitters ---------------------------------------------------
 AUTH_HEADERS_CORE() {
   printf '%s ' \
     -H "Authorization:\ Bearer\ $(TOKEN_CORE)" \
@@ -131,8 +112,8 @@ delete_ok() {
   local code
   code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$url" "$@")
   case "$code" in
-    200|202|204|404) echo "✅ delete $url ($code)";;
-    *) echo "❌ delete $url failed ($code)"; exit 1;;
+    200|202|204|404) echo "✅ delete $url ($code)"; return 0;;
+    *) echo "❌ delete $url failed ($code)"; return 1;;
   esac
 }
 
@@ -194,7 +175,6 @@ payload_act_with_address() {
 # ---- Registration & Runner --------------------------------------------------
 register_test() {
   local id="$1" name="$2" fn="$3"
-  # prevent duplicate IDs by linear scan (Bash 3.2-safe)
   local row tid
   for row in "${TESTS[@]}"; do
     IFS='|' read -r tid _ _ <<<"$row"
@@ -236,7 +216,7 @@ Env overrides:
   CORE=http://127.0.0.1:4011
   GEO=http://127.0.0.1:4012
   ACT=http://127.0.0.1:4002
-  USER_URL=http://127.0.0.1:4001   # ← user service base URL
+  USER_URL=http://127.0.0.1:4001   # user service base URL
 
 Options:
   --list     Show enumerated tests and exit
@@ -274,18 +254,33 @@ _nv_find_index_by_id() {
   echo ""; return 1
 }
 
-nv_run_one() {
+# Pretty name lookup
+nv_name_for_id() {
   local id="$1" idx
+  idx=$(_nv_find_index_by_id "$id") || true
+  if [[ -z "$idx" ]]; then printf "Unknown"; return 0; fi
+  IFS='|' read -r _ name _ <<<"${TESTS[$idx]}"
+  printf "%s" "$name"
+}
+
+# Run a single test by id in a SUBSHELL so any `exit` only kills that test
+nv_run_one() {
+  local id="$1" idx rc
   idx=$(_nv_find_index_by_id "$id") || true
   if [[ -z "$idx" ]]; then echo "Unknown test id: $id" >&2; return 64; fi
   IFS='|' read -r _ name fn <<<"${TESTS[$idx]}"
 
   if [[ ${NV_QUIET:-0} -eq 1 ]]; then
-    local rc; set +e; "$fn" >/dev/null 2>&1; rc=$?; set -e
-    if [[ $rc -eq 0 ]]; then printf "[PASSED] %s %s\n" "$id" "$name"; else printf "[FAILED] %s %s\n" "$id" "$name"; fi
+    ( set +e; "$fn" >/dev/null 2>&1 ); rc=$?
     return $rc
   else
     printf "\n===== [%s] %s =====\n" "$id" "$name"
-    "$fn"
+    ( set +e; "$fn" ); rc=$?
+    if [[ $rc -ne 0 ]]; then
+      printf "❌ FAILED [%s] %s (rc=%s)\n" "$id" "$name" "$rc"
+    else
+      printf "✅ PASSED [%s] %s\n" "$id" "$name"
+    fi
+    return $rc
   fi
 }

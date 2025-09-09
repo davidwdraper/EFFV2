@@ -36,7 +36,7 @@ SERVICES=(
   "act|backend/services/act|yarn dev"
   # "auth|backend/services/auth|yarn dev"
   # "image|backend/services/image|yarn dev"
-  #"user|backend/services/user|yarn dev"
+  "user|backend/services/user|yarn dev"
   "log|backend/services/log|yarn dev"
 )
 

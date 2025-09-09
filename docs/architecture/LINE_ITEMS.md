@@ -19,3 +19,5 @@
 - 2025-09-09T00:11:49Z [DESIGN][BE][AUDIT] Moved env/bootstrap to src/bootstrap/index.ts; all boot concerns live under src/bootstrap/* (incl. WAL replay).
 - 2025-09-09T00:12:51Z [DESIGN][BE][AUDIT] Service mounts routes at /api; router defines /events — external edge path becomes /api/audit/events via gateway slug.
 - 2025-09-09T00:12:51Z [ARCH][BE][AUDIT] WAL replay runs before HTTP listen; prevents DB contention with live ingestion.
+- 2025-09-09T20:07:52Z [DESIGN][GW][AUDIT][WAL] Next step: wire Audit sink into Gateway. Implement gateway-side WAL (mem+FS), batch sends to /api/events, flush on timer/size, retry+backoff, replay on boot, idempotent eventId.
+- 2025-09-09T20:07:52Z [DESIGN][GW][AUDIT] Capture requestId, finalizeReason{finish|timeout|client-abort|shutdown-replay}, durationMs at response end; include slug/path/method/status; S2S JWT (gateway-core) on dispatch.

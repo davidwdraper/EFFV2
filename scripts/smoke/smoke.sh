@@ -35,7 +35,6 @@ if [[ ! -f "$LIB" ]]; then echo "Missing $LIB" >&2; exit 1; fi
 if [[ ! -d "$TEST_DIR" ]]; then echo "Missing $TEST_DIR" >&2; exit 1; fi
 
 NV_TEST_FILES=()
-# process substitution is okay on Bash 3.2; avoiding mapfile
 while IFS= read -r f; do NV_TEST_FILES+=("$f"); done < <(LC_ALL=C ls -1 "$TEST_DIR"/*.sh 2>/dev/null || true)
 
 if [[ ${#NV_TEST_FILES[@]} -eq 0 ]]; then
@@ -73,12 +72,20 @@ _selection_expanded="$(nv_parse_selection "$SELECTION")"
 while IFS= read -r line; do [[ -n "$line" ]] && IDS+=("$line"); done <<< "$_selection_expanded"
 unset _selection_expanded
 
+overall=0
 if [[ $NV_QUIET -eq 1 ]]; then
-  overall=0
+  for id in "${IDS[@]}"; do
+    if nv_run_one "$id" >/dev/null 2>&1; then
+      printf "[PASSED] %s %s\n" "$id" "$(nv_name_for_id "$id")"
+    else
+      printf "[FAILED] %s %s\n" "$id" "$(nv_name_for_id "$id")"
+      overall=1
+    fi
+  done
+  exit $overall
+else
   for id in "${IDS[@]}"; do
     if ! nv_run_one "$id"; then overall=1; fi
   done
   exit $overall
-else
-  for id in "${IDS[@]}"; do nv_run_one "$id"; done
 fi

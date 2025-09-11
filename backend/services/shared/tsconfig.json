@@ -1,3 +1,4 @@
+// backend/services/shared/tsconfig.json
 {
   "compilerOptions": {
     "target": "ES2020",
@@ -8,18 +9,19 @@
     "strict": true,
     "skipLibCheck": true,
 
-    "rootDir": ".",
-    "outDir": "./dist",
+    "rootDir": "./src", // ⬅️ sources ONLY live under src
+    "outDir": "./dist", // ⬅️ build artifacts go to dist
 
     "declaration": true,
     "declarationMap": true,
     "composite": true,
 
-    "baseUrl": ".",
+    "baseUrl": ".", // ⬅️ ok to keep
     "paths": {
-      "@shared/*": ["./*"]
+      // Optional: allow @shared/* INSIDE shared during dev
+      "@shared/*": ["src/*"]
     }
   },
-  "include": ["**/*.ts"],
-  "exclude": ["dist", "node_modules"]
+  "include": ["src/**/*.ts"], // ⬅️ only compile sources
+  "exclude": ["dist", "node_modules", "**/*.test.ts", "**/__tests__/**"]
 }

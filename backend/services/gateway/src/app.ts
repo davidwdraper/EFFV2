@@ -23,7 +23,6 @@
 
 import express from "express";
 import cors from "cors";
-import axios from "axios";
 import helmet from "helmet";
 import { createHealthRouter, ReadinessFn } from "@shared/health";
 import { logger } from "@shared/utils/logger";
@@ -36,13 +35,17 @@ import {
   ROUTE_ALIAS,
 } from "./config";
 
-import { requestIdMiddleware } from "./middleware/requestId";
+// ✅ use shared middleware (no local clones)
+import { requestIdMiddleware } from "@shared/middleware/requestId";
 import {
   problemJsonMiddleware,
   notFoundHandler,
   errorHandler,
-} from "./middleware/problemJson";
-import { loggingMiddleware } from "./middleware/logging";
+} from "@shared/middleware/problemJson";
+import { makeHttpLogger as loggingMiddleware } from "@shared/middleware/httpLogger";
+import { trace5xx } from "@shared/middleware/trace5xx";
+
+// Edge-only middleware (lives in gateway)
 import { rateLimitMiddleware } from "./middleware/rateLimit";
 import { timeoutsMiddleware } from "./middleware/timeouts";
 import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
@@ -50,7 +53,6 @@ import { authGate } from "./middleware/authGate";
 import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
 import { httpsOnly } from "./middleware/httpsOnly";
 import { serviceProxy } from "./middleware/serviceProxy";
-import { trace5xx } from "./middleware/trace5xx";
 import { injectUpstreamIdentity } from "./middleware/injectUpstreamIdentity";
 
 // Shared svcconfig mirror (source of truth for upstreams)
@@ -63,6 +65,9 @@ import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
 // ▶ Billing-grade Audit (after guards)
 import { initWalFromEnv, walSnapshot } from "./services/auditWal";
 import { auditCapture } from "./middleware/auditCapture";
+
+// ✅ edge rule: only s2sClient may use axios/fetch internally
+import { s2sGet } from "./utils/s2sClient";
 
 // Kick off svcconfig mirror (ETag-aware; polling/redis handled in shared)
 void startSvcconfigMirror();
@@ -145,7 +150,7 @@ app.use(
 app.use(requestIdMiddleware());
 
 // Centralized HTTP telemetry (pino-http) — lightweight, never blocking
-app.use(loggingMiddleware());
+app.use(loggingMiddleware(serviceName));
 
 // Problem+JSON envelope (adds res.problem helper)
 app.use(problemJsonMiddleware());
@@ -167,7 +172,7 @@ const readiness: ReadinessFn = async (_req) => {
           upstreams[slug] = { ok: false };
           return;
         }
-        const r = await axios.get(h, {
+        const r = await s2sGet(h, {
           timeout: 1500,
           validateStatus: () => true,
         });
@@ -204,12 +209,15 @@ app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
         message: "Service not found or health not exposed",
       });
     }
-    const r = await axios.get(url, {
+    const r = await s2sGet(url, {
       timeout: 1500,
       validateStatus: () => true,
       headers: { "x-request-id": String((req as any).id || "") },
     });
-    return res.status(r.status).set(r.headers).send(r.data);
+    return res
+      .status(r.status)
+      .set(r.headers as any)
+      .send(r.data);
   } catch {
     return res.status(502).json({
       code: "BAD_GATEWAY",

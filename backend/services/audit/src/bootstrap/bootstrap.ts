@@ -13,7 +13,7 @@ import {
   loadEnvFileOrDie,
   loadEnvFilesOrThrow,
   assertRequiredEnv,
-} from "@shared/env";
+} from "@shared/src/env";
 
 export const SERVICE_NAME = "audit" as const;
 

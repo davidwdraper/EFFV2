@@ -27,7 +27,7 @@ import { describe, it, beforeAll, afterAll, expect } from "vitest";
 import type { Express } from "express";
 import { randomBytes } from "crypto";
 import { z } from "zod";
-import { zProblem } from "@shared/contracts/common";
+import { zProblem } from "@shared/src/contracts/common";
 
 // helper: valid-looking ObjectId (24 hex chars) that won’t exist in DB
 const hexOid = () => randomBytes(12).toString("hex");

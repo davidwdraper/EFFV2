@@ -8,7 +8,7 @@ import {
   respond,
   zActDto,
 } from "@shared/contracts";
-import { notFound } from "@shared/http/errors";
+import { notFound } from "@shared/src/http/errors";
 import * as repo from "../../../repo/actRepo";
 import { toActDto, toWire } from "../../../dto/actDto";
 import { zIdParam } from "./schemas";

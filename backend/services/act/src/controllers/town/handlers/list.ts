@@ -2,7 +2,7 @@
 import type { Request, Response } from "express";
 import { logger } from "../../../../../shared/utils/logger";
 import { asyncHandler } from "@shared/middleware/asyncHandler";
-import { zodBadRequest, respond } from "@shared/contracts/http";
+import { zodBadRequest, respond } from "@shared/src/contracts/http";
 import * as repo from "../../../repo/townRepo"; // <-- missing import added
 import { toTownListItem } from "../../../dto/townDto";
 import { zListQuery, zTownListItem } from "./schemas";

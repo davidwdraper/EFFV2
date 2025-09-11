@@ -5,7 +5,7 @@ import "tsconfig-paths/register";
 import app from "./src/app";
 import { config, SERVICE_NAME } from "./src/config";
 import { logger } from "../shared/utils/logger";
-import { startHttpService } from "../shared/bootstrap/startHttpService";
+import { startHttpService } from "../shared/src/bootstrap/startHttpService";
 
 // No DB for geo (proxy service)
 

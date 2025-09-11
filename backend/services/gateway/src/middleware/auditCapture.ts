@@ -24,7 +24,7 @@ import type { RequestHandler } from "express";
 import { randomUUID } from "node:crypto";
 import { logger } from "@shared/utils/logger";
 import { walEnqueue } from "../services/auditWal";
-import type { AuditEvent } from "@shared/contracts/auditEvent.contract";
+import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
 import { ROUTE_ALIAS } from "../config";
 
 // Exclude non-billable endpoints

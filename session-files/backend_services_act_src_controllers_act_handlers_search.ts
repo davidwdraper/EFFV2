@@ -9,7 +9,7 @@ import {
   clean,
   respond,
 } from "@shared/contracts";
-import { makeList } from "@shared/http/pagination";
+import { makeList } from "@shared/src/http/pagination";
 import { nameRegex, milesToRadians } from "../../../lib/search";
 import { toActDto } from "../../../dto/actDto";
 import * as repo from "../../../repo/actRepo";

@@ -20,7 +20,7 @@ import { describe, it, beforeAll, afterAll, afterEach, expect } from "vitest";
 import type { Express } from "express";
 import { z } from "zod";
 import { zActDto, zActListDto } from "@shared/contracts/act";
-import { zProblem } from "@shared/contracts/common";
+import { zProblem } from "@shared/src/contracts/common";
 
 let app: Express | undefined;
 let server: http.Server | undefined;

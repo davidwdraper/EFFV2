@@ -1,7 +1,7 @@
 // backend/services/act/src/bootstrap.ts
 
 import path from "path";
-import { loadEnvFileOrDie, assertRequiredEnv } from "@shared/env";
+import { loadEnvFileOrDie, assertRequiredEnv } from "@shared/src/env";
 
 // ── Service identity ─────────────────────────────────────────────────────────
 export const SERVICE_NAME = "act" as const;

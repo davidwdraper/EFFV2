@@ -1,5 +1,5 @@
 // backend/services/image/src/config.ts
-import { requireEnv, requireNumber } from "../../shared/env";
+import { requireEnv, requireNumber } from "../../shared/src/env";
 
 /**
  * Image service config (validated; no defaults baked in).

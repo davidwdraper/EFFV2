@@ -1,5 +1,5 @@
 // backend/services/gateway/src/routes/health.router.ts
-import { createHealthRouter } from "../../../shared/health";
+import { createHealthRouter } from "../../../shared/src/health";
 import { serviceName } from "../config";
 import { readiness } from "../readiness";
 

@@ -9,7 +9,7 @@ import {
   postAudit,
   extractLogContext,
 } from "../../shared/utils/logger";
-import { createHealthRouter } from "../../shared/health";
+import { createHealthRouter } from "../../shared/src/health";
 
 const app = express();
 app.disable("x-powered-by");
@@ -137,14 +137,12 @@ app.use(
   ) => {
     const status = Number(err?.status || err?.statusCode || 500);
     req.log?.error({ msg: "handler:error", err, status }, "request error");
-    res
-      .status(Number.isFinite(status) ? status : 500)
-      .json({
-        error: {
-          code: err?.code || "INTERNAL_ERROR",
-          message: err?.message || "Unexpected error",
-        },
-      });
+    res.status(Number.isFinite(status) ? status : 500).json({
+      error: {
+        code: err?.code || "INTERNAL_ERROR",
+        message: err?.message || "Unexpected error",
+      },
+    });
   }
 );
 

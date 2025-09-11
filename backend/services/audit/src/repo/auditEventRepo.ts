@@ -14,7 +14,7 @@
  */
 
 import { Types } from "mongoose";
-import type { AuditEvent } from "@shared/contracts/auditEvent.contract";
+import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
 import AuditEventModel from "../models/auditEvent.model";
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@
  * middleware’s exported types (e.g., `points` not `max`) to prevent TS mismatch.
  */
 
-import { requireEnum, requireNumber, requireEnv } from "../../shared/env";
+import { requireEnum, requireNumber, requireEnv } from "../../shared/src/env";
 
 // ── Service identity ──────────────────────────────────────────────────────────
 export const SERVICE_NAME = "gateway" as const;

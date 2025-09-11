@@ -14,7 +14,7 @@ import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 import readline from "readline";
-import type { AuditEvent } from "@shared/contracts/auditEvent.contract";
+import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
 import * as repo from "../repo/auditEventRepo";
 
 function isProd() {

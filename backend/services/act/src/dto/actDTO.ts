@@ -1,6 +1,6 @@
 // backend/services/act/src/dto/actDto.ts
 import { Types } from "mongoose";
-import { clean } from "@shared/contracts/clean";
+import { clean } from "@shared/src/contracts/clean";
 
 /**
  * Deep-normalize values for the wire:

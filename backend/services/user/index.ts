@@ -9,7 +9,7 @@ import { config } from "./src/config";
 import { SERVICE_NAME } from "./src/bootstrap";
 import { connectDb } from "./src/db";
 import { logger } from "@shared/utils/logger";
-import { startHttpService } from "@shared/bootstrap/startHttpService";
+import { startHttpService } from "@shared/src/bootstrap/startHttpService";
 
 process.on("unhandledRejection", (reason) => {
   logger.error({ reason }, "[user] Unhandled Promise Rejection");

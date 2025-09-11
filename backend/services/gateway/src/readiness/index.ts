@@ -1,6 +1,6 @@
 // backend/services/gateway/src/readiness/index.ts
 import axios from "axios";
-import type { ReadinessFn } from "../../../shared/health";
+import type { ReadinessFn } from "../../../shared/src/health";
 import { requireUpstreamByKey } from "../config";
 
 const ACT_URL = requireUpstreamByKey("ACT_SERVICE_URL");

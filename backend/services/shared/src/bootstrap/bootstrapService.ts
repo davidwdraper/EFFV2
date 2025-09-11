@@ -31,7 +31,7 @@ import {
   loadEnvCascadeForService,
   assertEnv,
   requireNumber,
-} from "@shared/env";
+} from "@shared/src/env";
 
 export type BootstrapOptions = {
   /** Slug like "act", "user" — used in logs and health output. */

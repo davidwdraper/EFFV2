@@ -1,5 +1,5 @@
 // backend/services/geo/src/mappers/geo.mapper.ts
-import type { GeoResponse } from "@shared/contracts/geo.contract";
+import type { GeoResponse } from "@shared/src/contracts/geo.contract";
 
 /**
  * Provider → domain mappers.

@@ -16,7 +16,7 @@ import { describe, it, beforeAll, afterAll, expect } from "vitest";
 import http from "node:http";
 import request from "supertest";
 import { app } from "../src/app";
-import { zProblem } from "@shared/contracts/common";
+import { zProblem } from "@shared/src/contracts/common";
 
 // Add a couple of test-only endpoints to exercise error/audit branches
 app.get("/__err-nonfinite", (_req, _res, next) =>

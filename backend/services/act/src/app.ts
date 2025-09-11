@@ -10,7 +10,7 @@ import {
   errorProblemJson,
 } from "@shared/middleware/problemJson";
 import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
-import { createHealthRouter } from "@shared/health";
+import { createHealthRouter } from "@shared/src/health";
 
 import actRoutes from "./routes/actRoutes";
 import townRoutes from "./routes/townRoutes";

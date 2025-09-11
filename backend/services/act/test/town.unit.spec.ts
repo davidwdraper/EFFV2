@@ -19,7 +19,7 @@ import { z } from "zod";
 
 // Contracts for Problem+JSON
 //import { zProblem } from "@shared/contracts/common";
-import { zProblem } from "../../shared/contracts/common";
+import { zProblem } from "../../shared/src/contracts/common";
 
 // Direct model access for seeding/cleanup (also raises Town.ts coverage)
 import Town from "../src/models/Town";

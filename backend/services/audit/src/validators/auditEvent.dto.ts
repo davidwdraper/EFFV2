@@ -1,6 +1,6 @@
 // backend/services/audit/src/validators/auditEvent.dto.ts
 import { z } from "zod";
-import { auditEventContract } from "@shared/contracts/auditEvent.contract";
+import { auditEventContract } from "@shared/src/contracts/auditEvent.contract";
 
 /**
  * WHY THIS FILE EXISTS

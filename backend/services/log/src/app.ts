@@ -9,7 +9,7 @@ import "@shared/types/express"; // req.user typing
 import { connectDB } from "./db";
 import logRoutes from "./routes/logRoutes";
 import { logger } from "../../shared/utils/logger";
-import { createHealthRouter } from "../../shared/health";
+import { createHealthRouter } from "../../shared/src/health";
 import { config } from "./config";
 import { SERVICE_NAME } from "./bootstrap";
 

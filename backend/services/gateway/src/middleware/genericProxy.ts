@@ -7,7 +7,7 @@ import { URL } from "node:url";
 
 import { ROUTE_ALIAS } from "../config";
 import { getSvcconfigSnapshot } from "@shared/svcconfig/client";
-import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
+import type { ServiceConfig } from "@shared/src/contracts/svcconfig.contract";
 
 /**
  * Generic reverse proxy that forwards /<svc>/<rest...> to

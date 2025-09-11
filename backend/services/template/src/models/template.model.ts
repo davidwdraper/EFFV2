@@ -1,6 +1,6 @@
 // backend/services/template/src/models/template.model.ts
 import mongoose, { Schema, Document, Model, Types } from "mongoose";
-import type { TemplateDomain } from "@shared/contracts/template.contract";
+import type { TemplateDomain } from "@shared/src/contracts/template.contract";
 
 /**
  * Mongoose schema matching templateContract.
@@ -14,13 +14,13 @@ export interface TemplateDoc extends Document, Omit<TemplateDomain, "_id"> {
 const templateSchema = new Schema<TemplateDoc>(
   {
     firstname: { type: String, required: true, index: true },
-    lastname:  { type: String, required: true, index: true },
-    email:     { type: String, required: true, index: true },
+    lastname: { type: String, required: true, index: true },
+    email: { type: String, required: true, index: true },
 
     userCreateId: { type: String, required: true, index: true },
-    userOwnerId:  { type: String, required: true, index: true },
+    userOwnerId: { type: String, required: true, index: true },
 
-    dateCreated:     { type: Date, required: true },
+    dateCreated: { type: Date, required: true },
     dateLastUpdated: { type: Date, required: true },
   },
   { collection: "templates", timestamps: false }
@@ -33,4 +33,5 @@ mongoose.set("bufferCommands", false);
 templateSchema.index({ email: 1 }, { unique: true });
 
 export const TemplateModel: Model<TemplateDoc> =
-  mongoose.models.Template || mongoose.model<TemplateDoc>("Template", templateSchema);
+  mongoose.models.Template ||
+  mongoose.model<TemplateDoc>("Template", templateSchema);

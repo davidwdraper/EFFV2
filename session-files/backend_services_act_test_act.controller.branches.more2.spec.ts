@@ -19,7 +19,7 @@ import request from "supertest";
 import { randomBytes } from "crypto";
 import { beforeAll, afterAll, afterEach, describe, it, expect } from "vitest";
 import type { Express } from "express";
-import { zProblem } from "@shared/contracts/common";
+import { zProblem } from "@shared/src/contracts/common";
 import { zActDto } from "@shared/contracts/act";
 
 // helper: 24-hex like Mongo ObjectId string

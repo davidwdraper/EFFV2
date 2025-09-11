@@ -28,7 +28,7 @@ import {
   getSvcconfigSnapshot,
   type SvcconfigSnapshot,
 } from "@shared/svcconfig/client";
-import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
+import type { ServiceConfig } from "@shared/src/contracts/svcconfig.contract";
 import { getInternalJson } from "./s2sClient";
 
 const logger = sharedLogger.child({ svc: "gateway", mod: "serviceResolver" });

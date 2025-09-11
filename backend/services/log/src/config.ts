@@ -1,5 +1,5 @@
 // backend/services/log/src/config.ts
-import { requireEnv, requireNumber } from "@shared/env";
+import { requireEnv, requireNumber } from "@shared/src/env";
 
 /**
  * Canonical config: no defaults, no dotenv here.

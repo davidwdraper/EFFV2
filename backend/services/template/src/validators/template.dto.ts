@@ -1,25 +1,29 @@
 // backend/services/template/src/validators/template.dto.ts
 import { z } from "zod";
-import { templateContract } from "@shared/contracts/template.contract";
+import { templateContract } from "@shared/src/contracts/template.contract";
 
 /**
  * CREATE (API surface): caller supplies only business fields.
  */
-export const createTemplateDto = templateContract.pick({
-  firstname: true,
-  lastname: true,
-  email: true,
-}).passthrough();
+export const createTemplateDto = templateContract
+  .pick({
+    firstname: true,
+    lastname: true,
+    email: true,
+  })
+  .passthrough();
 
 /**
  * UPDATE (API surface): partial allowed on business fields.
  * System fields are controlled by the service.
  */
-export const updateTemplateDto = templateContract.pick({
-  firstname: true,
-  lastname: true,
-  email: true,
-}).partial();
+export const updateTemplateDto = templateContract
+  .pick({
+    firstname: true,
+    lastname: true,
+    email: true,
+  })
+  .partial();
 
 /**
  * PARAMS: /:id

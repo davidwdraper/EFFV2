@@ -7,7 +7,7 @@ import { dbToDomain } from "../../../mappers/svcconfig.mapper";
 import {
   SvcConfigSchema,
   type ServiceConfig,
-} from "@shared/contracts/svcconfig.contract";
+} from "@shared/src/contracts/svcconfig.contract";
 import type { SvcConfigDoc } from "../../../models/svcconfig.model";
 
 // PATCH = partial; forbid slug-in-body (slug comes from :slug param)

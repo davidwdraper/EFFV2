@@ -1,7 +1,7 @@
 // backend/services/gateway/src/bootstrap.ts
 
 import path from "path";
-import { loadEnvFileOrDie, assertRequiredEnv } from "@shared/env";
+import { loadEnvFileOrDie, assertRequiredEnv } from "@shared/src/env";
 
 // Dev-friendly default for local runs; override with ENV_FILE when needed.
 const envFile =

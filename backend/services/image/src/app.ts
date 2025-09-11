@@ -10,7 +10,7 @@ import {
   postAudit,
   extractLogContext,
 } from "../../shared/utils/logger";
-import { createHealthRouter } from "../../shared/health";
+import { createHealthRouter } from "../../shared/src/health";
 
 const app = express();
 app.disable("x-powered-by");

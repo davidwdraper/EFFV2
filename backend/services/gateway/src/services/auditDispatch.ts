@@ -9,7 +9,7 @@
  * positive sends and retriable/poison failures in dev/test.
  */
 
-import type { AuditEvent } from "@shared/contracts/auditEvent.contract";
+import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
 import { putInternalJson } from "../utils/s2sClient";
 import { resolveInternalBase, joinUrl } from "../utils/serviceResolver";
 import { logger } from "@shared/utils/logger";

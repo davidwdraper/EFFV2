@@ -1,6 +1,6 @@
 // backend/services/log/src/models/Log.ts
 import mongoose, { Schema, Document } from "mongoose";
-import type { LogEvent } from "../../../shared/contracts/log";
+import type { LogEvent } from "../../../shared/src/contracts/log";
 
 export interface LogDocument extends Omit<LogEvent, "sourceLine">, Document {
   sourceLine?: number;

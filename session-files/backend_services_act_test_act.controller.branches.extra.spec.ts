@@ -19,7 +19,7 @@ import { randomBytes } from "crypto";
 import { describe, it, beforeAll, afterAll, afterEach, expect } from "vitest";
 import type { Express } from "express";
 import { zActDto } from "@shared/contracts/act";
-import { zProblem } from "@shared/contracts/common";
+import { zProblem } from "@shared/src/contracts/common";
 
 let app: Express;
 let server: http.Server;

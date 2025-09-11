@@ -5,7 +5,7 @@ import {
   zGeoResponse,
   type GeoRequest,
   type GeoResponse,
-} from "@shared/contracts/geo.contract";
+} from "@shared/src/contracts/geo.contract";
 
 /**
  * DTOs for Geo service.

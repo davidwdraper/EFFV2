@@ -1,6 +1,6 @@
 // backend/services/geo/src/repos/geo.repo.ts
 import axios from "axios";
-import type { GeoResponse } from "@shared/contracts/geo.contract";
+import type { GeoResponse } from "@shared/src/contracts/geo.contract";
 import { googleToDomain } from "../mappers/geo.mapper";
 
 /**

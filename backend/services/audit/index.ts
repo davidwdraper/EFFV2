@@ -23,7 +23,7 @@ import { config } from "./src/config";
 import { SERVICE_NAME } from "./src/bootstrap/bootstrap";
 import { connectDb, disconnectDb } from "./src/db";
 import { logger } from "@shared/utils/logger";
-import { startHttpService } from "@shared/bootstrap/startHttpService";
+import { startHttpService } from "@shared/src/bootstrap/startHttpService";
 import { preflightWALReplay } from "./src/bootstrap/walbootstrap";
 
 // ---- Top-level process guards ----------------------------------------------

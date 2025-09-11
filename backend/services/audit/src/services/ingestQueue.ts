@@ -22,7 +22,7 @@
  *   Retries create no duplicates.
  */
 
-import type { AuditEvent } from "@shared/contracts/auditEvent.contract";
+import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
 import * as repo from "../repo/auditEventRepo";
 
 // ---- Config (envs asserted at bootstrap per SOP) ----------------------------

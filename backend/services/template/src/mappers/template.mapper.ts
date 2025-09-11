@@ -1,5 +1,5 @@
 // backend/services/template/src/mappers/template.mapper.ts
-import type { TemplateDomain } from "@shared/contracts/template.contract";
+import type { TemplateDomain } from "@shared/src/contracts/template.contract";
 import type { TemplateDoc } from "../models/template.model";
 
 /**
@@ -9,7 +9,7 @@ import type { TemplateDoc } from "../models/template.model";
 export function dbToDomain(doc: TemplateDoc): TemplateDomain {
   const o = doc.toObject({ getters: true });
   return {
-    _id: (o._id && o._id.toString ? o._id.toString() : String(o._id)),
+    _id: o._id && o._id.toString ? o._id.toString() : String(o._id),
     firstname: o.firstname,
     lastname: o.lastname,
     email: o.email,
@@ -20,7 +20,9 @@ export function dbToDomain(doc: TemplateDoc): TemplateDomain {
   };
 }
 
-export function domainToDb(partial: Partial<TemplateDomain>): Record<string, unknown> {
+export function domainToDb(
+  partial: Partial<TemplateDomain>
+): Record<string, unknown> {
   const o: Record<string, unknown> = { ...partial };
   // DB-managed fields
   delete o._id;

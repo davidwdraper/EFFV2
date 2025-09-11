@@ -20,7 +20,7 @@ import fsp from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AuditEvent } from "@shared/contracts/auditEvent.contract";
+import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
 import { logger } from "@shared/utils/logger";
 import { sendBatch, nextBackoffMs } from "./auditDispatch";
 

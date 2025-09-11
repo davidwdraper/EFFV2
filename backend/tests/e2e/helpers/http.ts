@@ -7,7 +7,7 @@ import axios, {
 } from "axios";
 import { z } from "zod";
 import { expect } from "vitest";
-import { zProblem } from "@shared/contracts/common";
+import { zProblem } from "@shared/src/contracts/common";
 
 const E2E_BEARER = process.env.E2E_BEARER || "";
 const E2E_AUTH_DEBUG = process.env.E2E_AUTH_DEBUG === "1";

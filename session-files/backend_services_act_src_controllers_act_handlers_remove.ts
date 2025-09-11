@@ -2,7 +2,7 @@
 import type { RequestHandler } from "express";
 import { asyncHandler } from "@shared/middleware/asyncHandler";
 import { zodBadRequest } from "@shared/contracts";
-import { notFound } from "@shared/http/errors";
+import { notFound } from "@shared/src/http/errors";
 import * as repo from "../../../repo/actRepo";
 import { zIdParam } from "./schemas";
 

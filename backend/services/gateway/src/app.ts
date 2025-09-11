@@ -24,7 +24,7 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import { createHealthRouter, ReadinessFn } from "@shared/health";
+import { createHealthRouter, ReadinessFn } from "@shared/src/health";
 import { logger } from "@shared/utils/logger";
 
 import {
@@ -60,7 +60,7 @@ import {
   startSvcconfigMirror,
   getSvcconfigSnapshot,
 } from "@shared/svcconfig/client";
-import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
+import type { ServiceConfig } from "@shared/src/contracts/svcconfig.contract";
 
 // ▶ Billing-grade Audit (after guards)
 import { initWalFromEnv, walSnapshot } from "./services/auditWal";

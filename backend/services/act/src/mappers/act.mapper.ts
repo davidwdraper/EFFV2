@@ -1,5 +1,5 @@
 // backend/services/act/src/mappers/act.mapper.ts
-import type { Act } from "@shared/contracts/act.contract";
+import type { Act } from "@shared/src/contracts/act.contract";
 import type { ActDocument } from "../models/Act";
 
 // Domain ↔ DB mappers. Keep thin; no business logic here.

@@ -37,7 +37,7 @@ import { URL } from "node:url";
 import { logger } from "@shared/utils/logger";
 import { ROUTE_ALIAS } from "../config";
 import { getSvcconfigSnapshot, mintS2S } from "@shared/svcconfig/client";
-import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
+import type { ServiceConfig } from "@shared/src/contracts/svcconfig.contract";
 
 export function serviceProxy(): RequestHandler {
   return (req, res) => {

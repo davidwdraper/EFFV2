@@ -1,7 +1,10 @@
 // backend/services/gateway-core/src/routes/health.router.ts
 import type express from "express";
 import axios from "axios";
-import { createHealthRouter, type ReadinessFn } from "../../../shared/health";
+import {
+  createHealthRouter,
+  type ReadinessFn,
+} from "../../../shared/src/health";
 
 // ⬇️ default to shallow readiness (enumerate *_SERVICE_URL)
 // flip DEEP_PING=1 to probe upstreams quickly (timeout 500ms)

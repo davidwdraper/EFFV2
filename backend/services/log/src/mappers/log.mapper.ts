@@ -1,5 +1,5 @@
 // backend/services/log/src/mappers/log.mapper.ts
-import type { LogEvent } from "../../../shared/contracts/log";
+import type { LogEvent } from "../../../shared/src/contracts/log";
 import type { LogDocument } from "../models/Log";
 
 export function dbToDomain(doc: LogDocument): LogEvent {

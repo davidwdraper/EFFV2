@@ -1,6 +1,9 @@
 // backend/services/act/src/validators/act.dto.ts
 import { z } from "zod";
-import { actContract, timeStringSchema } from "@shared/contracts/act.contract";
+import {
+  actContract,
+  timeStringSchema,
+} from "@shared/src/contracts/act.contract";
 
 /**
  * CREATE (API surface):

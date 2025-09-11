@@ -2,6 +2,6 @@
 import {
   zDirectoryDiscovery,
   type DirectoryDiscovery,
-} from "@shared/contracts/user.directory.contract";
+} from "@shared/src/contracts/user.directory.contract";
 
 export { zDirectoryDiscovery, type DirectoryDiscovery };

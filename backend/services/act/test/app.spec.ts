@@ -28,7 +28,7 @@ import express, {
   type NextFunction,
 } from "express";
 import { beforeAll, afterAll, describe, it, expect } from "vitest";
-import { zProblem } from "@shared/contracts/common";
+import { zProblem } from "@shared/src/contracts/common";
 
 let outer: Express;
 let server: http.Server;

@@ -1,6 +1,9 @@
 // backend/services/log/src/bootstrap.ts
 import path from "path";
-import { loadServiceAndRootEnvOrThrow, assertRequiredEnv } from "@shared/env";
+import {
+  loadServiceAndRootEnvOrThrow,
+  assertRequiredEnv,
+} from "@shared/src/env";
 
 // ── Service identity ─────────────────────────────────────────────────────────
 export const SERVICE_NAME = "log" as const;

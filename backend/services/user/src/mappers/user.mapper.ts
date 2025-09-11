@@ -1,7 +1,7 @@
 // backend/services/user/src/mappers/user.mapper.ts
 import type { HydratedDocument, FlattenMaps, Types } from "mongoose";
 import type { UserDocument } from "../models/user.model";
-import type { User } from "@shared/contracts/user.contract";
+import type { User } from "@shared/src/contracts/user.contract";
 
 /**
  * Accept both hydrated and lean Mongoose documents.

@@ -2,7 +2,7 @@
 import type { RequestHandler } from "express";
 import { asyncHandler } from "@shared/middleware/asyncHandler";
 import { zodBadRequest, zActListDto, respond } from "@shared/contracts";
-import { makeList } from "@shared/http/pagination";
+import { makeList } from "@shared/src/http/pagination";
 import { escapeRe } from "../../../lib/search";
 import { toActDto } from "../../../dto/actDto";
 import * as repo from "../../../repo/actRepo";

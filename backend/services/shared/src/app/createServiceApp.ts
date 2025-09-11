@@ -35,7 +35,7 @@ import {
   errorProblemJson,
 } from "@shared/middleware/problemJson";
 import { trace5xx } from "@shared/middleware/trace5xx";
-import { createHealthRouter, type ReadinessFn } from "@shared/health";
+import { createHealthRouter, type ReadinessFn } from "@shared/src/health";
 import {
   readOnlyGate,
   type ReadOnlyGateOptions,

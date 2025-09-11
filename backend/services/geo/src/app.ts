@@ -9,7 +9,7 @@ import {
   errorProblemJson,
 } from "@shared/middleware/problemJson";
 import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
-import { createHealthRouter } from "@shared/health";
+import { createHealthRouter } from "@shared/src/health";
 import { verifyS2S } from "@shared/middleware/verifyS2S";
 import geoRoutes from "./routes/geo.routes";
 import { SERVICE_NAME, config } from "./config";

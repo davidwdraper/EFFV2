@@ -1,4 +1,4 @@
-import { requireEnum, requireNumber } from "../../shared/env";
+import { requireEnum, requireNumber } from "../../shared/src/env";
 
 export const SERVICE_NAME = "gateway-core" as const;
 export const serviceName = SERVICE_NAME;

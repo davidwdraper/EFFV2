@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # - MODE: dev | docker
 # - ENV_FILE: path to env file (default: .env.dev)
 # - Never hard-codes .env.dev in service code; only the runner sets it.
-# - Builds backend/services/shared before launching services.
+# - Builds backend/services/shared (@eff/shared) before launching services.
 # - Loads a SAFE subset of root .env.dev (no 'source' of pipes!).
 # - Portable (no associative arrays, works on macOS Bash 3.2).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,27 +106,56 @@ else
   echo "ℹ️  Root .env.dev not found; continuing without it."
 fi
 
-# ----- Build @shared before anything else -----
+# ----- Build @eff/shared before anything else -----
 SHARED_DIR="$ROOT/backend/services/shared"
-BUILD_HELPER="$ROOT/scripts/build-shared.sh"
-echo "🛠️  Building @shared..."
-if [[ -x "$BUILD_HELPER" ]]; then
-  "$BUILD_HELPER"
-else
-  if [[ -d "$SHARED_DIR" ]]; then
-    pushd "$SHARED_DIR" >/dev/null
-    if command -v yarn >/dev/null 2>&1; then
-      yarn tsc --build --clean
-      yarn tsc --build
-    else
-      npx tsc --build --clean
-      npx tsc --build
-    fi
-    popd >/dev/null
-    echo "✅ @shared built."
-  else
-    echo "⚠️  Shared package not found at $SHARED_DIR (skipping build)"
+echo "🛠️  Building @eff/shared..."
+if [[ -d "$SHARED_DIR" ]]; then
+  pushd "$SHARED_DIR" >/dev/null
+
+  # Validate package name
+  PKG_NAME="$(node -p "try{require('./package.json').name}catch(e){''}" 2>/dev/null || true)"
+  if [[ "$PKG_NAME" != "@eff/shared" ]]; then
+    echo "❌ backend/services/shared/package.json 'name' must be '@eff/shared' (found '$PKG_NAME')"
+    exit 1
   fi
+
+  # Ensure workspace deps are installed once
+  if [[ ! -d "$ROOT/node_modules" ]]; then
+    echo "📦 Installing workspace dependencies..."
+    (cd "$ROOT" && yarn install --silent)
+  fi
+
+  # Clean then build (prefer package scripts; fallback to tsc -b)
+  if yarn run -s clean >/dev/null 2>&1; then
+    yarn run -s clean || true
+  else
+    rm -rf dist || true
+  fi
+
+  if yarn run -s build >/dev/null 2>&1; then
+    yarn run -s build
+  else
+    # Fallback: project build in this package dir
+    if command -v yarn >/dev/null 2>&1; then
+      yarn tsc -b --clean || true
+      yarn tsc -b
+    else
+      npx tsc -b --clean || true
+      npx tsc -b
+    fi
+  fi
+
+  # Verify artifacts exist
+  if [[ ! -f "dist/index.js" ]]; then
+    echo "❌ @eff/shared build produced no dist/index.js"
+    exit 1
+  fi
+
+  popd >/dev/null
+  echo "✅ @eff/shared built."
+else
+  echo "❌ Shared package not found at $SHARED_DIR"
+  exit 1
 fi
 
 # ----- Determine per-service env files (portable, no assoc arrays) -----

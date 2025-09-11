@@ -1,6 +1,6 @@
 // backend/services/svcconfig/src/controllers/svcconfig/handlers/list.ts
 import type { Request, Response, NextFunction } from "express";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 import SvcConfigModel from "../../../models/svcconfig.model";
 import { dbToDomain } from "../../../mappers/svcconfig.mapper";
 

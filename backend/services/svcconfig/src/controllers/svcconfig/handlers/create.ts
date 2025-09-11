@@ -1,13 +1,13 @@
 // backend/services/svcconfig/src/controllers/svcconfig/handlers/create.ts
 import type { Request, Response, NextFunction } from "express";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 import * as repo from "../../../repo/svcconfig.repo";
 import { publishChanged } from "../../../pubsub";
 import { dbToDomain } from "../../../mappers/svcconfig.mapper";
 import {
   SvcConfigSchema,
   type ServiceConfig,
-} from "@shared/src/contracts/svcconfig.contract";
+} from "@eff/shared/src/contracts/svcconfig.contract";
 import type { SvcConfigDoc } from "../../../models/svcconfig.model";
 
 // Build a create schema from the shared one (server-managed fields omitted)

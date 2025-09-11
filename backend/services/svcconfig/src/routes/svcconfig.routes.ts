@@ -1,6 +1,6 @@
 // backend/services/svcconfig/src/routes/svcconfig.routes.ts
 import { Router } from "express";
-import { cacheGet, invalidateOnSuccess } from "@shared/utils/cache";
+import { cacheGet, invalidateOnSuccess } from "@eff/shared/src/utils/cache";
 
 // 🔧 Direct handler imports (no barrels, no adapters)
 import { ping } from "../controllers/svcconfig/handlers/ping";

@@ -1,6 +1,6 @@
 // services/shared/types/express.ts
 
-import { AuthPayload } from '@shared/types/AuthPayload';
+import { AuthPayload } from "../types/AuthPayload";
 
 declare global {
   namespace Express {
@@ -9,6 +9,6 @@ declare global {
     }
   }
 }
-console.log('✅ Express augmentation loaded');
+console.log("✅ Express augmentation loaded");
 
 export {}; // must be a module

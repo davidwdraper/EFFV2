@@ -22,7 +22,7 @@
  */
 
 import type { Request, Response, NextFunction } from "express";
-import { extractLogContext, postAudit } from "@shared/utils/logger";
+import { extractLogContext, postAudit } from "../utils/logger";
 
 const IS_PROD = String(process.env.NODE_ENV || "").trim() === "production";
 

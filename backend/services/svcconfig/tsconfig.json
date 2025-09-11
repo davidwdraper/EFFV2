@@ -3,20 +3,20 @@
     "target": "ES2020",
     "module": "CommonJS",
     "moduleResolution": "node",
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "strict": true,
-    "skipLibCheck": true,
-
-    "rootDir": "./src",
-    "outDir": "./dist",
 
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["../shared/dist/*"]
-    }
+      "@eff/shared": ["../shared/dist/index"],
+      "@eff/shared/*": ["../shared/dist/*"]
+    },
+
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+
+    "rootDir": ".", // <-- include service root so index.ts is valid
+    "outDir": "./dist"
   },
-  "references": [{ "path": "../shared" }],
-  "include": ["src/**/*"],
-  "exclude": ["dist", "node_modules", "index.ts"]
+  "include": ["index.ts", "src/**/*"], // <-- explicitly include the root entry + src/**
+  "exclude": ["dist", "node_modules", "**/*.test.ts", "**/__tests__/**"]
 }

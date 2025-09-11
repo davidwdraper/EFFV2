@@ -1,5 +1,5 @@
 // backend/services/svcconfig/src/seeds/seed.ts
-import "../../src/bootstrap";
+import "../bootstrap.ts.old";
 import mongoose from "mongoose";
 import axios from "axios";
 import SvcService from "../models/svcconfig.model";

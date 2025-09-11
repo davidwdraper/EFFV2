@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import {
   SvcConfigSchema,
   type ServiceConfig,
-} from "../src/contracts/svcconfig.contract";
+} from "../contracts/svcconfig.contract";
 
 // ──────────────────────────────────────────────────────────────────────────────
 /**

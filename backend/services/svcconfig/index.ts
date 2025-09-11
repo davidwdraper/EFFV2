@@ -1,35 +1,47 @@
 // backend/services/svcconfig/index.ts
-import "./src/bootstrap"; // loads env + sets SERVICE_NAME
-import "./src/log.init";
-import "tsconfig-paths/register";
+/**
+ * svcconfig entrypoint (root-level).
+ * Loads env + logger via shared bootstrap first, then lazy-loads modules
+ * that read env (config, db, etc). Keeps index.ts at repo convention.
+ */
 
-import app from "./src/app";
-import { config } from "./src/config";
-import { SERVICE_NAME } from "./src/bootstrap";
-import { connectDb } from "./src/db";
-import { logger } from "@shared/utils/logger";
-import { startHttpService } from "@shared/src/bootstrap/startHttpService";
+const SERVICE_NAME = "svcconfig";
 
-process.on("unhandledRejection", (reason) => {
-  logger.error({ reason }, `[${SERVICE_NAME}] Unhandled Promise Rejection`);
-});
-process.on("uncaughtException", (err) => {
-  logger.error({ err }, `[${SERVICE_NAME}] Uncaught Exception`);
-});
-
-async function start() {
+(async function main() {
   try {
-    await connectDb();
-    startHttpService({
-      app,
-      port: config.port, // SERVICECONFIG_PORT under the hood
+    // 1) Bootstrap: loads env cascade, validates required vars, inits logger
+    const {
+      bootstrapService,
+    } = require("@eff/shared/src/bootstrap/bootstrapService");
+    await bootstrapService({
       serviceName: SERVICE_NAME,
-      logger,
+      serviceRootAbs: __dirname,
+      // Lazily require the app so its deps only load after env is ready
+      createApp: () => require("./src/app").default,
+      portEnv: "SVCCONFIG_PORT",
+      // Assert DB env up-front (fail fast)
+      requiredEnv: ["SVCCONFIG_MONGO_URI"],
     });
+
+    // 2) Logger is safe to use now
+    const { logger } = require("@eff/shared/utils/logger");
+
+    // 3) Global process error handlers (after logger ready)
+    process.on("unhandledRejection", (reason: unknown) => {
+      logger.error({ reason }, `[${SERVICE_NAME}] Unhandled Promise Rejection`);
+    });
+    process.on("uncaughtException", (err: unknown) => {
+      logger.error({ err }, `[${SERVICE_NAME}] Uncaught Exception`);
+    });
+
+    // 4) Connect DB after env + logger are initialized
+    const { connectDb } = require("./src/db");
+    await connectDb();
+    logger.info({ svc: SERVICE_NAME }, "database connected");
   } catch (err) {
-    logger.error({ err }, `failed to start ${SERVICE_NAME} service`);
+    // Last-ditch console in case logger isn't ready
+    // eslint-disable-next-line no-console
+    console.error(`[${SERVICE_NAME}] fatal bootstrap error`, err);
     process.exit(1);
   }
-}
-
-start();
+})();

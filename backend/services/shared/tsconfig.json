@@ -1,27 +1,21 @@
-// backend/services/shared/tsconfig.json
 {
   "compilerOptions": {
     "target": "ES2020",
     "module": "CommonJS",
     "moduleResolution": "node",
+
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
     "skipLibCheck": true,
 
-    "rootDir": "./src", // ⬅️ sources ONLY live under src
-    "outDir": "./dist", // ⬅️ build artifacts go to dist
+    "rootDir": "./src",
+    "outDir": "./dist",
 
     "declaration": true,
     "declarationMap": true,
-    "composite": true,
-
-    "baseUrl": ".", // ⬅️ ok to keep
-    "paths": {
-      // Optional: allow @shared/* INSIDE shared during dev
-      "@shared/*": ["src/*"]
-    }
+    "composite": true
   },
-  "include": ["src/**/*.ts"], // ⬅️ only compile sources
+  "include": ["src/**/*.ts"],
   "exclude": ["dist", "node_modules", "**/*.test.ts", "**/__tests__/**"]
 }

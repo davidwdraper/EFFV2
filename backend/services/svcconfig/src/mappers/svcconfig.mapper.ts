@@ -3,7 +3,7 @@ import type { SvcConfigDoc } from "../models/svcconfig.model";
 import {
   SvcConfigSchema,
   type ServiceConfig,
-} from "@shared/src/contracts/svcconfig.contract";
+} from "@eff/shared/src/contracts/svcconfig.contract";
 
 export function dbToDomain(doc: SvcConfigDoc | any): ServiceConfig {
   const o: any =

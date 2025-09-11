@@ -27,11 +27,7 @@
 import type { Express } from "express";
 import type { StartedService } from "./startHttpService";
 import { startHttpService } from "./startHttpService";
-import {
-  loadEnvCascadeForService,
-  assertEnv,
-  requireNumber,
-} from "@shared/src/env";
+import { loadEnvCascadeForService, assertEnv, requireNumber } from "../env";
 
 export type BootstrapOptions = {
   /** Slug like "act", "user" — used in logs and health output. */
@@ -70,7 +66,7 @@ export async function bootstrapService(
   assertEnv([portEnv, ...requiredEnv]);
 
   // 3) Dynamically import logger AFTER envs are present (avoids import-time failures).
-  const { initLogger, logger } = await import("@shared/utils/logger");
+  const { initLogger, logger } = await import("../utils/logger");
   initLogger(serviceName);
 
   // 4) Build the app (use createServiceApp() in your caller).

@@ -1,6 +1,6 @@
 // backend/services/svcconfig/src/pubsub.ts
 import { createClient } from "redis";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 import { SERVICE_NAME, config } from "./config";
 
 let client: ReturnType<typeof createClient> | null = null;

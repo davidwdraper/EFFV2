@@ -1,6 +1,6 @@
 import axios from "axios";
 import { LRUCache } from "lru-cache";
-import { logger } from "@shared/utils/logger";
+import { logger } from "../utils/logger";
 
 // ---- ENV CONFIG ----
 const USER_SERVICE_URL =

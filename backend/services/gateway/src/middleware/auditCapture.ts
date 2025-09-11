@@ -1,70 +1,140 @@
 // backend/services/gateway/src/middleware/auditCapture.ts
-import type { Request, Response, NextFunction } from "express";
-import { randomUUID } from "crypto";
-import { enqueueAudit } from "../services/auditWal";
-import { auditEventContract } from "@shared/contracts/auditEvent.contract";
+/**
+ * References:
+ * - NowVibin SOP v4 — “Billing-grade audit AFTER guardrails; requestId correlation; fire-and-forget”
+ * - Canonical contract: @shared/contracts/auditEvent.contract (meta: Record<string,string>)
+ *
+ * Why:
+ * Capture a canonical AuditEvent for requests that pass guardrails, matching the
+ * shared contract exactly. Any extra breadcrumbs (callerIp, userId, component)
+ * are serialized into `meta: Record<string,string>` to avoid type drift.
+ *
+ * Contract-aligned fields emitted:
+ *   - Required: eventId, ts, durationMs, requestId, method, path, slug, status, billableUnits
+ *   - Optional: tsStart, durationReliable, finalizeReason, meta (string map)
+ *
+ * Finalize reason mapping:
+ *   res.finish      → "finish"
+ *   res.close       → "client-abort" if not writableEnded, else "finish"
+ *   res.error(504)  → "timeout"
+ *   other error     → undefined (still audits, just no finalizeReason)
+ */
 
-const HEALTH_PREFIXES = ["/health", "/ready", "/live"];
-const isHealth = (p: string) =>
-  HEALTH_PREFIXES.some((h) => p === h || p.startsWith(h + "/"));
+import type { RequestHandler } from "express";
+import { randomUUID } from "node:crypto";
+import { logger } from "@shared/utils/logger";
+import { walEnqueue } from "../services/auditWal";
+import type { AuditEvent } from "@shared/contracts/auditEvent.contract";
+import { ROUTE_ALIAS } from "../config";
 
-declare module "express-serve-static-core" {
-  interface Request {
-    _nvStartHr?: [number, number];
-    _nvRequestId?: string;
-  }
+// Exclude non-billable endpoints
+function isAuditEligible(url: string): boolean {
+  const u = (url || "").toLowerCase();
+  return ![
+    "/health",
+    "/health/live",
+    "/health/ready",
+    "/healthz",
+    "/readyz",
+    "/live",
+    "/ready",
+    "/favicon.ico",
+    "/__core",
+    "/__auth",
+    "/__audit",
+  ].includes(u);
 }
 
-export function auditCapture() {
-  return (req: Request, res: Response, next: NextFunction) => {
-    if (isHealth(req.path)) return next();
+// Derive service slug from /api/<slug>/... (alias + naive singular), else "gateway"
+function deriveSlug(originalUrl: string): string {
+  const path = (originalUrl || "").split("?")[0];
+  const parts = path.split("/").filter(Boolean);
+  if (parts[0] !== "api" || !parts[1]) return "gateway";
+  const seg = parts[1].toLowerCase();
+  const aliased = (ROUTE_ALIAS as Record<string, string>)[seg] || seg;
+  return aliased.endsWith("s") ? aliased.slice(0, -1) : aliased;
+}
 
-    req._nvStartHr = process.hrtime();
-    const incomingReqId =
-      (req.headers["x-request-id"] as string | undefined) ||
-      (req.headers["x-correlation-id"] as string | undefined);
-    const requestId = incomingReqId || randomUUID();
-    req._nvRequestId = requestId;
-    res.setHeader("x-request-id", requestId);
+// Map runtime signals to contract finalizeReason
+function mapFinalizeReason(
+  kind: "finish" | "close" | "error",
+  statusCode: number,
+  writableEnded: boolean
+): AuditEvent["finalizeReason"] {
+  if (kind === "finish") return "finish";
+  if (kind === "close") return writableEnded ? "finish" : "client-abort";
+  if (kind === "error" && statusCode === 504) return "timeout";
+  return undefined;
+}
 
-    const finalize = (finalizeReason: "normal" | "aborted" | "error") => {
-      try {
-        const diff = process.hrtime(req._nvStartHr);
-        const durationMs = Math.round((diff[0] * 1e9 + diff[1]) / 1e6);
+export function auditCapture(): RequestHandler {
+  return (req, res, next) => {
+    if (!isAuditEligible(req.path || "")) return next();
 
-        const event = {
-          eventId: randomUUID(),
-          requestId,
-          at: new Date().toISOString(),
-          method: req.method,
-          path: req.originalUrl || req.url,
-          status: res.statusCode || 0,
-          durationMs,
-          callerIp:
-            (req.headers["x-forwarded-for"] as string) ||
-            req.socket?.remoteAddress ||
-            undefined,
-          s2sCaller: (req.headers["x-s2s-caller"] as string) || "gateway",
-          finalizeReason,
-          // meta optional – keep PII out
-        };
+    const tsStartMs = Date.now();
+    const t0 = process.hrtime.bigint();
 
-        // Don’t ever block request flow: validate best-effort
-        try {
-          auditEventContract.parse(event);
-        } catch {
-          /* drop silently */
-        }
+    const finalize = (kind: "finish" | "close" | "error") => {
+      const durationMs = Number((process.hrtime.bigint() - t0) / 1_000_000n);
+      const finalizeReason = mapFinalizeReason(
+        kind,
+        res.statusCode || 0,
+        res.writableEnded
+      );
+      const durationReliable = finalizeReason === "finish";
 
-        enqueueAudit(event as any); // type matches contract
-      } catch {
-        // fire-and-forget; never throw
-      }
+      // Extras → meta (STRICT string map per contract)
+      const callerIpRaw = (
+        (req.headers["x-forwarded-for"] as string) ||
+        req.ip ||
+        ""
+      )
+        .split(",")[0]
+        .trim();
+      const userIdRaw = (req as any)?.user?.id as string | undefined;
+
+      const meta: Record<string, string> = {};
+      if (callerIpRaw) meta.callerIp = String(callerIpRaw);
+      if (userIdRaw) meta.userId = String(userIdRaw);
+      meta.s2sCaller = "gateway";
+
+      const ev: AuditEvent = {
+        eventId: randomUUID(),
+        ts: new Date().toISOString(),
+        tsStart: new Date(tsStartMs).toISOString(),
+        durationMs,
+        durationReliable,
+        requestId: (req as any).id || "",
+        method: req.method,
+        path: req.originalUrl || req.url || req.path || "",
+        slug: deriveSlug(req.originalUrl || req.url || req.path || ""),
+        status: res.statusCode || 0,
+        billableUnits: 1,
+        finalizeReason,
+        meta: Object.keys(meta).length ? meta : undefined,
+      };
+
+      logger.debug(
+        {
+          rid: ev.requestId,
+          eid: ev.eventId,
+          status: ev.status,
+          method: ev.method,
+          path: ev.path,
+          slug: ev.slug,
+          dur: ev.durationMs,
+          reason: ev.finalizeReason,
+        },
+        "[auditCapture] enqueue"
+      );
+
+      walEnqueue(ev);
     };
 
-    res.on("finish", () => finalize("normal"));
-    res.on("close", () => finalize("aborted"));
+    res.on("finish", () => finalize("finish"));
+    res.on("close", () => finalize("close"));
     res.on("error", () => finalize("error"));
+
     next();
   };
 }

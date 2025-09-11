@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# scripts/smoke/smoke.lib.sh
 #
 # Shared helpers for modular smoketests (one file per test)
 # macOS Bash 3.2 compatible (no associative arrays, no mapfile)
@@ -44,6 +43,14 @@ fi
 pretty() { if [[ ${NV_USE_JQ:-1} -eq 1 ]]; then "$JQ"; else cat; fi; }
 json() { printf '%s' "$1"; }
 b64url() { openssl enc -base64 -A | tr '+/' '-_' | tr -d '='; }  # base64url
+
+# Unique suffix for entity names to avoid 11000 (dupe key) across reruns
+nv_unique_suffix() {
+  local ts rand
+  ts=$(date +%Y%m%d%H%M%S)
+  rand=$( (openssl rand -hex 3 2>/dev/null) || printf '%04d' "$RANDOM" )
+  printf '%s-%s' "$ts" "$rand"
+}
 
 # ---- Tokens -----------------------------------------------------------------
 mint_s2s () {
@@ -92,20 +99,40 @@ mint_user_assertion_gateway() {
 }
 ASSERT_USER_GATEWAY() { mint_user_assertion_gateway "${1:-smoke-tests}" "${2:-300}"; }
 
-# ---- Safe header emitters ---------------------------------------------------
-AUTH_HEADERS_CORE() {
-  printf '%s ' \
-    -H "Authorization:\ Bearer\ $(TOKEN_CORE)" \
-    -H "X-NV-User-Assertion:\ $(ASSERT_USER smoke-tests 300)"
+# ---- SAFE header emitters (array form — use these) --------------------------
+# These populate NV_AUTH_HEADERS[@] with:
+#   -H "Authorization: Bearer <...>"  -H "X-NV-User-Assertion: <...>"
+AUTH_HEADERS_CORE_ARR() {
+  NV_AUTH_HEADERS=(
+    -H "Authorization: Bearer $(TOKEN_CORE)"
+    -H "X-NV-User-Assertion: $(ASSERT_USER smoke-tests 300)"
+  )
 }
-AUTH_HEADERS_GATEWAY() {
-  printf '%s ' \
-    -H "Authorization:\ Bearer\ $(TOKEN_GATEWAY)" \
-    -H "X-NV-User-Assertion:\ $(ASSERT_USER_GATEWAY smoke-tests 300)"
+AUTH_HEADERS_GATEWAY_ARR() {
+  NV_AUTH_HEADERS=(
+    -H "Authorization: Bearer $(TOKEN_GATEWAY)"
+    -H "X-NV-User-Assertion: $(ASSERT_USER_GATEWAY smoke-tests 300)"
+  )
 }
 
+# ---- Audit diag helpers -----------------------------------------------------
+# Returns raw JSON diag or empty on failure
+nv_audit_diag_json() {
+  curl -sS "${GW%/}/__audit" || true
+}
+# Extracts current WAL filepath using jq if available; else returns empty
+nv_audit_current_file() {
+  if [[ ${NV_USE_JQ:-1} -eq 1 ]] && command -v "${JQ:-jq}" >/dev/null 2>&1; then
+    nv_audit_diag_json | "${JQ:-jq}" -r '.currentFile // empty' 2>/dev/null || true
+  else
+    # fallback: try to grep a JSON key (naive)
+    nv_audit_diag_json | sed -n 's/.*"currentFile"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
+  fi
+}
+nv_file_bytes() { wc -c < "$1" 2>/dev/null || echo 0; }
+
 # ---- JSON helpers -----------------------------------------------------------
-extract_id() { ${JQ} -r '._id // .id // .data._id // empty'; }
+extract_id() { ${JQ} -r '._id // .id // .data._id // .data.id // .result._id // .result.id // empty'; }
 
 delete_ok() {
   local url="$1"; shift
@@ -141,6 +168,33 @@ payload_act_minimal() {
     "numberOfBreaks": 1
   }'
 }
+
+# Same as minimal but with a caller-provided name (to avoid 11000 dupe)
+payload_act_minimal_named() {
+  local nm="$1"
+  json "{
+    \"name\": \"${nm}\",
+    \"websiteUrl\": \"https://example.test/smoke\",
+    \"tags\": [\"smoke\",\"update\"],
+    \"actLoc\": { \"type\": \"Point\", \"coordinates\": [-122.084, 37.422] },
+
+    \"userCreateId\": \"mock-user-id\",
+    \"userOwnerId\": \"mock-user-id\",
+
+    \"homeTown\": \"Mountain View\",
+    \"state\": \"CA\",
+    \"homeTownId\": \"mock-town-id\",
+
+    \"actType\": [1],
+    \"genreList\": [\"rock\"],
+    \"blackoutDays\": [false, false, false, false, false, false, false],
+
+    \"actDuration\": 60,
+    \"breakLength\": 15,
+    \"numberOfBreaks\": 1
+  }"
+}
+
 payload_act_with_address() {
   json "{
     \"name\": \"SmokeTest Act Update With Address\",

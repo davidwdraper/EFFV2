@@ -1,100 +1,66 @@
 // backend/services/gateway/src/utils/s2sClient.ts
 //
-// The ONLY HTTP client the external gateway may use for internal worker calls.
-// - Injects a fresh S2S JWT on every request (never forwards user tokens)
-// - Adds tracing headers (x-request-id, x-s2s-caller=gateway)
-// - JSON helpers: GET/PUT (extend as needed)
-// - axios usage is confined to THIS file per SOP
+// References:
+// - SOP v4 — “Only gateway client for internal workers; overwrite Authorization with fresh S2S”
+// - Security/S2S — gateway mints S2S; never forward user tokens upstream
+//
+// Why:
+// A **single** axios instance for all internal calls. An interceptor injects a fresh
+// S2S token on each request so callers don’t have to think about auth. We expose
+// tiny helpers (`getInternalJson`, `putInternalJson`) so service code doesn’t deal
+// with axios minutiae.
+//
+// Notes:
+// - validateStatus is disabled; callers check status codes explicitly.
+// - Timeout is conservative — internal hops should be quick; tune per need.
+//
 
-import axios, {
-  AxiosHeaders,
-  type InternalAxiosRequestConfig,
-  type AxiosRequestConfig,
-} from "axios";
-import { randomUUID } from "crypto";
-import { mintS2S } from "./s2s";
+import axios, { AxiosHeaders, type InternalAxiosRequestConfig } from "axios";
+import { mintS2S } from "@shared/svcconfig/client"; // shared minter; uses S2S_* env
 
-// ===== Config =====
-const DEFAULT_TIMEOUT_MS = toInt(process.env.S2S_HTTP_TIMEOUT_MS, 8000);
-
-function toInt(v: any, d: number) {
-  const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : d;
-}
-
-// ===== Base client with S2S injection =====
 /** The ONLY client the gateway may use to call internal workers. */
 export const s2sClient = axios.create();
 
 s2sClient.interceptors.request.use((cfg: InternalAxiosRequestConfig) => {
   const headers = AxiosHeaders.from(cfg.headers);
-
   // Never forward any user token; always inject fresh S2S
   headers.delete("Authorization");
-  headers.set("Authorization", `Bearer ${mintS2S("gateway")}`);
-
-  // Trace headers (idempotent)
-  if (!headers.has("x-request-id")) {
-    headers.set("x-request-id", randomUUID());
-  }
-  headers.set("x-s2s-caller", "gateway");
-
-  // Ensure JSON defaults (callers can override)
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "application/json");
-  }
-
+  const ttlSec = Math.min(
+    Number(process.env.S2S_MAX_TTL_SEC || 300) || 300,
+    900
+  ); // clamp to sane upper bound
+  headers.set("Authorization", `Bearer ${mintS2S(ttlSec)}`);
   cfg.headers = headers;
-  // Sensible default timeout unless caller overrides
-  if (typeof cfg.timeout !== "number") {
-    cfg.timeout = DEFAULT_TIMEOUT_MS;
-  }
-
-  // We handle non-2xx at call sites
-  cfg.validateStatus = () => true;
-
   return cfg;
 });
 
-// ===== Internal helpers (JSON) =====
-async function requestJson<T = any>(
-  method: "GET" | "PUT" | "POST" | "DELETE",
+/** GET JSON over S2S (validateStatus disabled; check res.status yourself). */
+export async function getInternalJson(
   url: string,
-  body?: unknown,
-  headers?: Record<string, string>,
-  cfg?: AxiosRequestConfig
-): Promise<{ status: number; data: T }> {
-  const res = await s2sClient.request<T>({
-    method,
-    url,
-    data: body ?? undefined,
-    headers,
-    // allow per-call overrides
-    timeout: cfg?.timeout ?? DEFAULT_TIMEOUT_MS,
-    maxBodyLength: cfg?.maxBodyLength ?? Infinity,
-    maxContentLength: cfg?.maxContentLength ?? Infinity,
-    // validateStatus set by interceptor
+  headers?: Record<string, string>
+) {
+  return s2sClient.get(url, {
+    headers: {
+      accept: "application/json",
+      ...(headers || {}),
+    },
+    validateStatus: () => true,
+    timeout: 5000,
   });
-  return { status: res.status, data: res.data };
 }
 
-export async function getInternalJson<T = any>(
+/** PUT JSON over S2S (used by audit dispatch). */
+export async function putInternalJson<TBody extends object>(
   url: string,
-  headers?: Record<string, string>,
-  cfg?: AxiosRequestConfig
+  body: TBody,
+  headers?: Record<string, string>
 ) {
-  return requestJson<T>("GET", url, undefined, headers, cfg);
+  return s2sClient.put(url, body, {
+    headers: {
+      "content-type": "application/json",
+      ...(headers || {}),
+    },
+    validateStatus: () => true,
+    timeout: 5000,
+  });
 }
-
-export async function putInternalJson<T = any>(
-  url: string,
-  body: unknown,
-  headers?: Record<string, string>,
-  cfg?: AxiosRequestConfig
-) {
-  return requestJson<T>("PUT", url, body, headers, cfg);
-}
-
-// If/when needed later:
-// export async function postInternalJson<T=any>(...) { return requestJson("POST", ...); }
-// export async function deleteInternalJson<T=any>(...) { return requestJson("DELETE", ...); }

@@ -403,3 +403,26 @@ Target: AUDIT_TARGET_SLUG, AUDIT_TARGET_PATH (batch PUT endpoint). Optionally AU
 Do not block foreground traffic on WAL errors. Rotate/retry/replay; drop only beyond caps with WARN.
 
 Exactly-once at domain is achieved downstream via eventId dedupe; gateway provides at-least-once with idempotent batches.
+
+Service Resolution
+
+resolvePublicBase(slug) → requires {enabled:true, allowProxy:true}. Used only by public proxy.
+
+resolveInternalBase(slug) → requires {enabled:true}. Used for internal S2S (audit/log/etc.).
+
+Resolution order: local svcconfig mirror → in-memory cache → dev ENV overrides → optional fetch from gateway-core (GATEWAY_CORE_BASE_URL + SVCCONFIG_INTERNAL_PATH) to pre-warm.
+
+Never couple internal S2S to allowProxy. Internal workers may be non-public by design.
+
+Audit Event meta discipline
+
+meta MUST be a Record<string,string>; serialize all values to strings.
+
+Extras like callerIp, userId, component tags (s2sCaller) belong in meta.
+
+Never add fields to the top-level event shape outside the shared contract.
+
+File level documentation:
+
+- Standard for all future file drops:
+- Top-level doc block referencing design/ADR docs + rich “why” inline commentary so the next engineer understands the reasoning, not just the syntax.

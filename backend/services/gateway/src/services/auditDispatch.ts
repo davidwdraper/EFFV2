@@ -1,39 +1,94 @@
 // backend/services/gateway/src/services/auditDispatch.ts
-import type { AuditEvent, DispatchResult } from "../types/audit";
-import { logger as sharedLogger } from "@shared/utils/logger";
-import { putInternalJson } from "../utils/s2sClient"; // the ONLY place gateway does HTTP
-import { getServiceBaseUrl } from "../utils/serviceResolver"; // must exist in your gateway
+/**
+ * References:
+ * - SOP v4 — “Never block foreground; S2S; internal resolution (no allowProxy)”
+ * - This session — “Hard logging on success/failure so tests can assert”
+ *
+ * Why:
+ * Ship batches to internal worker. Adds INFO/WARN logs so we can see
+ * positive sends and retriable/poison failures in dev/test.
+ */
 
-const logger = sharedLogger.child({ svc: "gateway", mod: "auditDispatch" });
+import type { AuditEvent } from "@shared/contracts/auditEvent.contract";
+import { putInternalJson } from "../utils/s2sClient";
+import { resolveInternalBase, joinUrl } from "../utils/serviceResolver";
+import { logger } from "@shared/utils/logger";
 
-const TARGET_SLUG = process.env.AUDIT_TARGET_SLUG || "event";
-const TARGET_COLLECTION = process.env.AUDIT_TARGET_COLLECTION || "events"; // /api/event/events
+type DispatchResult =
+  | { ok: true; status: number }
+  | { ok: false; status: number; retriable: boolean; message?: string };
 
-export async function sendBatch(events: AuditEvent[]): Promise<DispatchResult> {
-  if (!events.length) return { ok: true, delivered: 0, retriable: false };
+const cfg = {
+  slug: process.env.AUDIT_TARGET_SLUG || "event",
+  path: process.env.AUDIT_TARGET_PATH || "/api/events",
+  baseOverride: process.env.AUDIT_TARGET_BASEURL || "",
+  maxRetryMs: num(process.env.WAL_MAX_RETRY_MS, 30000),
+};
 
-  try {
-    const baseUrl = await getServiceBaseUrl(TARGET_SLUG);
-    const url = `${baseUrl}/api/${TARGET_SLUG}/${TARGET_COLLECTION}`;
-    const { status } = await putInternalJson(url, events, {
-      "x-request-id": events[0]?.requestId || "",
-      "x-s2s-caller": "gateway",
-    });
+function num(v: string | undefined, d: number) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : d;
+}
+function jittered(expMs: number) {
+  const factor = 0.25 + Math.random() * 0.5;
+  return Math.floor(expMs * factor);
+}
 
-    const ok = status >= 200 && status < 300;
-    if (ok) {
-      logger.debug({ delivered: events.length }, "audit batch delivered");
-      return { ok: true, delivered: events.length, retriable: false, status };
-    }
-    const retriable = status >= 500 || status === 429;
+/** Resolve final target URL from env + svcconfig. Throws if unavailable. */
+export function resolveAuditUrl(): string {
+  const path = cfg.path.startsWith("/") ? cfg.path : `/${cfg.path}`;
+  if (cfg.baseOverride) return joinUrl(cfg.baseOverride, path);
+  const base = resolveInternalBase(cfg.slug); // internal resolution only
+  if (!base)
+    throw new Error(`[auditDispatch] target service '${cfg.slug}' unavailable`);
+  return joinUrl(base, path);
+}
+
+export async function sendBatch(
+  events: AuditEvent[],
+  requestId?: string
+): Promise<DispatchResult> {
+  if (!Array.isArray(events) || events.length === 0) {
+    return { ok: true, status: 204 };
+  }
+  const url = resolveAuditUrl();
+
+  const res = await putInternalJson(
+    url,
+    events,
+    requestId ? { "x-request-id": requestId } : undefined
+  );
+  const status = res.status;
+
+  if (status >= 200 && status < 300) {
+    logger.info({ url, status, count: events.length }, "[auditDispatch] sent");
+    return { ok: true, status };
+  }
+  if (status >= 400 && status < 500) {
+    logger.warn(
+      { url, status, count: events.length },
+      "[auditDispatch] non-retriable"
+    );
     return {
       ok: false,
-      delivered: 0,
-      retriable,
       status,
-      error: `status ${status}`,
+      retriable: false,
+      message: `non-retriable ${status}`,
     };
-  } catch (error: any) {
-    return { ok: false, delivered: 0, retriable: true, error };
   }
+
+  logger.warn(
+    { url, status, count: events.length },
+    "[auditDispatch] retriable failure"
+  );
+  return { ok: false, status, retriable: true, message: `retriable ${status}` };
+}
+
+/** Backoff helper; cap by WAL_MAX_RETRY_MS. */
+export function nextBackoffMs(attempt: number): number {
+  const base = Math.min(
+    cfg.maxRetryMs,
+    Math.pow(2, Math.max(0, attempt)) * 100
+  );
+  return Math.min(cfg.maxRetryMs, jittered(base));
 }

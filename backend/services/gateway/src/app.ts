@@ -2,27 +2,23 @@
 /**
  * References:
  * - NowVibin Backend — New-Session SOP v4 (Amended)
- *   • “No logic in routes; controllers thin; instrumentation everywhere”
- *   • “Only gateway is public; S2S to workers; Route convention /api/<slug>/<rest>”
- *   • “Global error middleware. All errors flow through problem.ts + error sink.”
- *   • “Audit-ready: WAL after guardrails; security telemetry separate from billing”
- * - This session’s design decisions:
- *   • Guardrails (rate limit, sensitive limiter, timeouts, circuit breaker, auth) log to SECURITY
- *   • Billing-grade audit (`auditCapture` + WAL) only **after** guardrails
- *   • `injectUpstreamIdentity` mints fresh S2S + user assertion before proxy
- *   • `loggingMiddleware` centralizes pino-http wiring (instead of inline app code)
+ *   • Guardrails before audit; instrumentation everywhere; global error middleware
+ *   • Only gateway is public; S2S to workers; /api/<slug>/<rest> convention
+ *   • Audit-ready: WAL after guardrails; security telemetry separate from billing
+ * - Session decisions:
+ *   • Guardrails log to SECURITY; billing audit comes AFTER guardrails
+ *   • injectUpstreamIdentity mints fresh S2S + user assertion before proxy
+ *   • loggingMiddleware centralizes pino-http
+ *   • /__audit is a safe, non-billable diag to confirm capture→WAL→dispatch pipeline
  *
  * Why:
- * App assembly must reflect the pipeline ordering guarantees in SOP:
+ * Assembly reflects SOP ordering guarantees:
  *   1) HTTPS/CORS/request-id/logging/problem-json/early 5xx tracing
  *   2) Health (no auth, no audit)
- *   3) Guardrails FIRST (deny paths emit SECURITY logs; never hit audit)
+ *   3) Guardrails FIRST (denials → SECURITY logs; no WAL)
  *   4) Billing-grade audit capture (WAL) for passed requests
- *   5) Identity injection and proxy plane (transport only)
- *   6) Tail parsing for non-proxied routes, then 404 + global error handler
- *
- * The file intentionally contains only assembly/glue — no business logic — and
- * heavy “why” comments so future maintainers understand ordering invariants.
+ *   5) Identity injection + proxy plane (transport only)
+ *   6) Tail parsers → 404 → global error handler
  */
 
 import express from "express";
@@ -65,11 +61,10 @@ import {
 import type { ServiceConfig } from "@shared/contracts/svcconfig.contract";
 
 // ▶ Billing-grade Audit (after guards)
-import { initWalFromEnv } from "./services/auditWal";
+import { initWalFromEnv, walSnapshot } from "./services/auditWal";
 import { auditCapture } from "./middleware/auditCapture";
 
 // Kick off svcconfig mirror (ETag-aware; polling/redis handled in shared)
-// WHY: do this early so readiness can query it.
 void startSvcconfigMirror();
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -124,7 +119,6 @@ app.set("trust proxy", true); // WHY: respect X-Forwarded-* from LB/ingress
 // HTTPS policy (prod/stage): redirect HTTP → HTTPS; dev/local opt-out via FORCE_HTTPS=false
 app.use(httpsOnly());
 if (process.env.FORCE_HTTPS === "true") {
-  // WHY: HSTS only when HTTPS enforced
   app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true }));
 }
 
@@ -196,7 +190,6 @@ app.use(
 );
 
 // Public dynamic health passthroughs (NO /api, NO auth, NO Authorization)
-// WHY: convenience endpoints to check worker health via gateway.
 app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
   try {
     delete req.headers.authorization; // never forward client auth to health
@@ -226,7 +219,7 @@ app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
   }
 });
 
-// 👀 DEBUG: introspection endpoints (non-billable)
+// 👀 DEBUG: introspection endpoints (non-billable; excluded from audit)
 app.get("/__core", (_req, res) => {
   res.json({
     NODE_ENV: process.env.NODE_ENV,
@@ -260,6 +253,15 @@ app.get("/__auth", (_req, res) => {
   });
 });
 
+// NEW: WAL diag snapshot (lets us prove capture/flush without touching DB)
+app.get("/__audit", (_req, res) => {
+  const snap = walSnapshot();
+  res.json({
+    ok: !!snap,
+    ...(snap || { note: "WAL not initialized yet" }),
+  });
+});
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Guardrails FIRST — denials log to SECURITY (not WAL)
 app.use(rateLimitMiddleware(rateLimitCfg));
@@ -269,8 +271,7 @@ app.use(circuitBreakerMiddleware(breakerCfg));
 app.use(authGate());
 
 // ▶ BILLING-GRADE AUDIT — only after guards; before proxy
-// WHY: WAL must contain only legitimate, passed requests (billable).
-initWalFromEnv(); // idempotent init; boot-time replay runs here (non-blocking)
+initWalFromEnv(); // idempotent init; boot-time replay (non-blocking)
 app.use(auditCapture());
 
 // Lightweight public root
@@ -278,7 +279,6 @@ app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Proxy plane — transport only, no business logic
-// WHY: ensure all proxied calls carry S2S + user assertion.
 app.use("/api", injectUpstreamIdentity());
 app.use("/api", serviceProxy());
 

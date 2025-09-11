@@ -1,16 +1,39 @@
 // backend/services/shared/env.ts
+
+/**
+ * Docs:
+ * - Design: docs/design/backend/config/env-loading.md
+ * - Architecture: docs/architecture/backend/CONFIG.md
+ * - ADRs:
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *
+ * Why:
+ * - New services often failed to boot because envs were defined at the repo root
+ *   (or the service family dir) and not copied into the service’s folder.
+ * - Fix: load env files **by layer** with deterministic precedence:
+ *     1) repo root  → base/project-wide defaults
+ *     2) service family dir (e.g., backend/services) → team/service-class defaults
+ *     3) service root (e.g., backend/services/user) → service-specific overrides
+ *   Within each layer: try the **mode-specific** file first (e.g., .env.dev),
+ *   then fall back to `.env`. **Later loads always override earlier ones.**
+ *
+ * Notes:
+ * - In production we prefer injected env; `.env` files are optional.
+ * - Dev/docker modes require their files somewhere in the cascade or we fail fast.
+ * - We use dotenv-expand so `${VAR}` references work across files.
+ */
+
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import dotenvExpand from "dotenv-expand";
 
-/** Find the first existing file walking up from start, trying each candidate name in order. */
-function findUp(start: string, candidates: string[]): string | null {
-  let dir = start;
+/** Find the first directory upward from `start` that contains any of the markers. */
+function findRootWithMarkers(start: string, markers: string[]): string | null {
+  let dir = path.resolve(start);
   for (;;) {
-    for (const name of candidates) {
-      const p = path.join(dir, name);
-      if (fs.existsSync(p)) return p;
+    for (const m of markers) {
+      if (fs.existsSync(path.join(dir, m))) return dir;
     }
     const parent = path.dirname(dir);
     if (parent === dir) return null;
@@ -18,39 +41,107 @@ function findUp(start: string, candidates: string[]): string | null {
   }
 }
 
-/** Load one or more .env files. Later files win by default (override earlier). */
+/** Load a single env file if it exists; expand vars; return true if loaded. */
+function loadIfExists(absPath: string): boolean {
+  if (!fs.existsSync(absPath)) return false;
+  const parsed = dotenv.config({ path: absPath });
+  if (parsed.error) {
+    throw new Error(
+      `Failed to load env file: ${absPath} — ${String(parsed.error)}`
+    );
+  }
+  dotenvExpand.expand(parsed);
+  return true;
+}
+
+/** Load several files in order, later files override earlier ones. Throws if none loaded (unless allowMissing). */
 export function loadEnvFilesOrThrow(
   files: string[],
-  opts: { allowMissing?: boolean; order?: "first-wins" | "last-wins" } = {}
+  opts: { allowMissing?: boolean } = {}
 ) {
-  const order = opts.order ?? "last-wins";
-  const list = order === "last-wins" ? files : [...files].reverse();
-
   let loadedAny = false;
-  for (const f of list) {
+  for (const f of files) {
     const abs = path.resolve(f);
-    if (!fs.existsSync(abs)) {
-      if (opts.allowMissing) continue;
-      throw new Error(`Env file not found: ${abs}`);
-    }
-    const parsed = dotenv.config({ path: abs });
-    if (parsed.error) {
-      throw new Error(
-        `Failed to load env file: ${abs} — ${String(parsed.error)}`
-      );
-    }
-    dotenvExpand.expand(parsed);
-    loadedAny = true;
+    loadedAny = loadIfExists(abs) || loadedAny;
   }
-  if (!loadedAny) throw new Error("No env files loaded");
+  if (!loadedAny && !opts.allowMissing) {
+    throw new Error(`No env files loaded from: ${files.join(", ")}`);
+  }
 }
 
 /**
- * NODE_ENV-driven loader:
- * - dev     -> .env.dev
- * - docker  -> .env.docker
- * - default -> .env  (prod may rely on injected env and can skip file)
- * Searches upward from cwd for the first matching file.
+ * NEW: Cascading loader for a service.
+ *
+ * Order (always):
+ *   repoRoot → serviceFamilyDir → serviceRoot
+ * At each layer we try: [modeFile, fallbackFile].
+ *   - dev:    modeFile=".env.dev",     fallbackFile=".env"
+ *   - docker: modeFile=".env.docker",  fallbackFile=".env"
+ *   - other:  modeFile=".env" (only)
+ *
+ * Examples:
+ *   <repo>/.env.dev
+ *   <repo>/backend/services/.env.dev
+ *   <repo>/backend/services/<svc>/.env.dev
+ *   (then fallbacks to .env in the same three locations)
+ */
+export function loadEnvCascadeForService(
+  serviceRootAbs: string,
+  opts: { allowMissingInProd?: boolean } = {}
+) {
+  const mode = (process.env.NODE_ENV || "").trim();
+  if (!mode)
+    throw new Error("NODE_ENV is required (dev | docker | production).");
+
+  const serviceRoot = path.resolve(serviceRootAbs);
+  const serviceFamilyDir = path.dirname(serviceRoot);
+
+  // repoRoot: look upward for common markers
+  const repoRoot =
+    findRootWithMarkers(serviceRoot, [
+      ".git",
+      "pnpm-workspace.yaml",
+      "package.json",
+    ]) || path.resolve(serviceRoot, "..", ".."); // last-ditch guess
+
+  const modeFiles =
+    mode === "dev"
+      ? [".env.dev", ".env"]
+      : mode === "docker"
+      ? [".env.docker", ".env"]
+      : [".env"]; // production: only .env if present (optional)
+
+  const layers = [repoRoot, serviceFamilyDir, serviceRoot];
+
+  const candidates: string[] = [];
+  for (const dir of layers) {
+    for (const name of modeFiles) {
+      const abs = path.join(dir, name);
+      candidates.push(abs);
+    }
+  }
+
+  // Load in declared order; later files overwrite earlier ones.
+  let loadedAny = false;
+  for (const p of candidates) {
+    loadedAny = loadIfExists(p) || loadedAny;
+  }
+
+  // Dev/docker must load **something**; prod may rely on injected env.
+  const allowMissing =
+    mode === "production" && (opts.allowMissingInProd ?? true);
+
+  if (!loadedAny && !allowMissing) {
+    throw new Error(
+      `No env files found for mode="${mode}". Looked in:\n` +
+        candidates.map((p) => `  - ${p}`).join("\n")
+    );
+  }
+}
+
+/**
+ * DEPRECATED: single-file loader by NODE_ENV.
+ * Prefer `loadEnvCascadeForService(serviceRootAbs)` for new services.
  */
 export function loadEnvFileOrDie() {
   const mode = process.env.NODE_ENV;
@@ -59,49 +150,58 @@ export function loadEnvFileOrDie() {
 
   const preferred =
     mode === "docker"
-      ? [".env.docker"]
+      ? [".env.docker", ".env"]
       : mode === "dev"
-      ? [".env.dev"]
+      ? [".env.dev", ".env"]
       : [".env"];
 
-  const envPath = findUp(process.cwd(), preferred);
-  if (!envPath && mode !== "production") {
+  const cwd = process.cwd();
+  // Walk upward for the first match, then load that one file.
+  let toLoad: string | null = null;
+  let dir = cwd;
+  outer: for (;;) {
+    for (const name of preferred) {
+      const p = path.join(dir, name);
+      if (fs.existsSync(p)) {
+        toLoad = p;
+        break outer;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  if (!toLoad && mode !== "production") {
     throw new Error(
-      `Required env file not found (looked for ${preferred.join(
+      `Required env file not found (searched up from ${cwd}: ${preferred.join(
         ", "
-      )}) from ${process.cwd()}`
+      )})`
     );
   }
-  if (envPath) {
-    const parsed = dotenv.config({ path: envPath });
-    if (parsed.error) {
-      throw new Error(
-        `Failed to load env file: ${envPath} — ${String(parsed.error)}`
-      );
-    }
-    dotenvExpand.expand(parsed);
-  }
+  if (toLoad) loadIfExists(toLoad);
 }
 
-/** Convenience: merge service-local and repo-root envs (root first, service overrides). */
+/** Convenience (older call sites): merge exactly these two, root then service overrides. */
 export function loadServiceAndRootEnvOrThrow(
   serviceEnvAbs: string,
   repoRootEnvAbs: string
 ) {
-  // Root first, then service overrides
-  loadEnvFilesOrThrow([repoRootEnvAbs, serviceEnvAbs], {
-    allowMissing: true,
-    order: "last-wins",
-  });
+  loadEnvFilesOrThrow([repoRootEnvAbs, serviceEnvAbs], { allowMissing: true });
 }
 
-/** Assertions / getters (superset of both old files) */
+/** Assertions / getters */
 export function assertRequiredEnv(keys: string[]) {
   const missing = keys.filter(
     (k) => !process.env[k] || !String(process.env[k]).trim()
   );
   if (missing.length)
     throw new Error(`Missing required env vars: ${missing.join(", ")}`);
+}
+
+/** Alias retained for SOP/compat: */
+export function assertEnv(keys: string[]) {
+  return assertRequiredEnv(keys);
 }
 
 export function requireEnv(name: string): string {
@@ -156,7 +256,7 @@ export function requireJson<T = unknown>(name: string): T {
   }
 }
 
-/** Redact helper for logging maps of envs */
+/** Redact helper for logging maps of envs (never dump real values to logs). */
 export function redactEnv(
   obj: Record<string, unknown>
 ): Record<string, string> {

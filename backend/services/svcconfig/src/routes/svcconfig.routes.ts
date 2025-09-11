@@ -1,6 +1,5 @@
-// backend/services/svcconfig/src/routes/svcconfig.routes.ts
 import { Router } from "express";
-import { cacheGet, invalidateOnSuccess } from "@eff/shared/src/utils/cache";
+import { cacheGet, invalidateOnSuccess } from "@eff/shared/utils/cache"; // ← no /src
 
 // 🔧 Direct handler imports (no barrels, no adapters)
 import { ping } from "../controllers/svcconfig/handlers/ping";
@@ -19,8 +18,13 @@ const router = Router();
 
 router.get("/ping", ping);
 
-// Public GETs with cache (TTL via SVCCONFIG_CACHE_TTL_SEC)
+// Collection routes FIRST so '/services' doesn't fall into '/:slug'
+router.get("/services", cacheGet("svcconfig", "SVCCONFIG_CACHE_TTL_SEC"), list);
+
+// Root collection (kept for backward-compat)
 router.get("/", cacheGet("svcconfig", "SVCCONFIG_CACHE_TTL_SEC"), list);
+
+// Item routes AFTER collection paths
 router.get("/:slug", cacheGet("svcconfig", "SVCCONFIG_CACHE_TTL_SEC"), read);
 
 // Mutations invalidate the "svcconfig" namespace on success

@@ -29,7 +29,7 @@ echo "   ENV_FILE=$ENV_FILE"
 # NOTE: svcconfig starts BEFORE gateway so registry is up first.
 SERVICES=(
   "svcconfig|backend/services/svcconfig|yarn dev"
-  #"audit|backend/services/audit|yarn dev"
+  "audit|backend/services/audit|yarn dev"
   "gateway|backend/services/gateway|yarn dev"
   #"gateway-core|backend/services/gateway-core|yarn dev"
   #"geo|backend/services/geo|yarn dev"

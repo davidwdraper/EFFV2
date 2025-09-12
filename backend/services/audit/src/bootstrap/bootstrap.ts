@@ -1,75 +1,41 @@
 // backend/services/audit/src/bootstrap/bootstrap.ts
 /**
- * SOP bootstrap for Audit:
- * 1) loadEnvFileOrDie()  — keep parity with other services (NODE_ENV-driven, walk-up single file)
- * 2) Merge repo+service envs (missing ignored, last wins) so root LOG_LEVEL is picked up
- * 3) Optional ENV_FILE override last
- * 4) Assert required vars
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - Boot: docs/architecture/backend/BOOTSTRAP.md
+ * - ADRs:
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0003-shared-app-builder.md
+ *
+ * Why:
+ * - Load envs via the shared cascade (repo → family → service), then assert
+ *   required vars. No custom loaders, no local options.
+ *
+ * Notes:
+ * - Index.ts still controls DB connect, WAL replay, HTTP start. This file only
+ *   loads/validates env and sets the service identity.
  */
-import fs from "fs";
+
 import path from "path";
-import { pino } from "pino";
-import {
-  loadEnvFileOrDie,
-  loadEnvFilesOrThrow,
-  assertRequiredEnv,
-} from "@shared/src/env";
+import { loadEnvCascadeForService, assertEnv } from "@eff/shared/src/env";
 
-export const SERVICE_NAME = "audit" as const;
+// Service identity (used by logs and elsewhere)
+export const SERVICE_NAME = "audit";
 
-(function bootstrap() {
-  // This file lives at: backend/services/audit/src/bootstrap/bootstrap.ts
-  const serviceRoot = path.resolve(__dirname, "..", ".."); // …/backend/services/audit
-  const repoRoot = path.resolve(serviceRoot, "..", "..", ".."); // …/<repo>
+// Service root for env cascade: /backend/services/audit/src → service root is one up
+const serviceRootAbs = path.resolve(__dirname, "..");
 
-  // 1) Keep behavior consistent with the rest of the fleet
-  //    (loads the nearest .env[.dev/.docker] based on NODE_ENV)
-  loadEnvFileOrDie();
+// 1) Load envs in the shared cascade (later files override earlier ones)
+loadEnvCascadeForService(serviceRootAbs);
 
-  // 2) Merge repo + service envs (missing ignored; last wins).
-  //    Order: repo .env, repo .env.dev, svc .env, svc .env.dev
-  const mergeList = [
-    path.join(repoRoot, ".env"),
-    path.join(repoRoot, ".env.dev"),
-    path.join(serviceRoot, ".env"),
-    path.join(serviceRoot, ".env.dev"),
-  ].filter((f) => fs.existsSync(f));
+// 2) Validate required envs early (fail fast)
+assertEnv([
+  "AUDIT_PORT",
+  "AUDIT_MONGO_URI",
+  // S2S required for internal-only services
+  "S2S_JWT_SECRET",
+  // audience/issuers can be configured via lists; audience is still required
+  "S2S_JWT_AUDIENCE",
+]);
 
-  if (mergeList.length) {
-    loadEnvFilesOrThrow(mergeList, { allowMissing: true, order: "last-wins" });
-  }
-
-  // 3) Optional explicit override, loaded LAST
-  const envArg = process.env.ENV_FILE;
-  if (envArg) {
-    const override = path.isAbsolute(envArg)
-      ? envArg
-      : path.resolve(process.cwd(), envArg);
-    loadEnvFilesOrThrow([override], {
-      allowMissing: false,
-      order: "last-wins",
-    });
-  }
-
-  // Logger AFTER envs so LOG_LEVEL is honored
-  const log = pino({ level: process.env.LOG_LEVEL || "info" });
-  log.info(
-    {
-      merged: mergeList,
-      override: process.env.ENV_FILE || null,
-    },
-    "[bootstrap] env loaded (root+service merged; override last)"
-  );
-
-  // 4) Required vars for Audit (names only)
-  assertRequiredEnv([
-    "LOG_LEVEL",
-    "LOG_SERVICE_URL",
-    "AUDIT_PORT",
-    "AUDIT_MONGO_URI",
-    "S2S_JWT_SECRET",
-    "S2S_JWT_ISSUER",
-    "S2S_JWT_AUDIENCE",
-    "S2S_ALLOWED_ISSUERS",
-  ]);
-})();
+// This module has no exports beyond SERVICE_NAME; its side-effect is env loading.

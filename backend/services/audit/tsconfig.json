@@ -1,3 +1,18 @@
+// backend/services/audit/tsconfig.json
+/**
+ * Docs:
+ * - Architecture: docs/architecture/backend/MICROSERVICES.md
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
+ *
+ * Why:
+ * - DEV: resolve all @eff/shared imports to shared **src** so ts-node-dev works without prebuilds.
+ * - RUNTIME (built JS): Node uses @eff/shared package exports, where "./src/*" is mapped to "./dist/*".
+ */
 {
   "compilerOptions": {
     "target": "ES2020",
@@ -13,7 +28,8 @@
 
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["../shared/dist/*"]
+      "@eff/shared/src/*": ["../shared/src/*"],
+      "@eff/shared/*": ["../shared/src/*"] // ← was ../shared/dist/* (caused dev to expect dist)
     }
   },
   "references": [{ "path": "../shared" }],

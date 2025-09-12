@@ -1,6 +1,6 @@
 // backend/services/--audit--/src/db.ts
 import mongoose from "mongoose";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 
 function requireEnv(name: string): string {
   const v = process.env[name];

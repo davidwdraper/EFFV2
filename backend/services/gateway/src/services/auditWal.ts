@@ -1,27 +1,23 @@
 // backend/services/gateway/src/services/auditWal.ts
+
 /**
- * References:
- * - SOP v4 — WAL durability + replay; never block foreground traffic
- * - Session — expose walSnapshot() for /__audit; visible debug/info logs on activity
+ * Docs:
+ * - Design: docs/design/backend/gateway/audit-wal.md
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0017-environment-loading-and-validation.md
  *
  * Why:
- * Durable write-ahead log for billable audit:
- *   • Append NDJSON per event (non-blocking), ring buffer for batching
- *   • Daily/size rotation, .offset cursor, crash-safe replay on boot
- *   • Fire-and-forget dispatch with backoff; never stalls user requests
- *
- * Type note:
- * Node’s `FileHandle` type is in `fs/promises`, not `fs`. We import it from
- * `"node:fs/promises"` and use it wherever we do positioned reads.
+ * - Durable, non-blocking audit WAL with rotation, retention, and crash-safe replay.
+ * - At-least-once semantics; downstream does idempotent dedupe.
  */
-
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
-import { logger } from "@shared/utils/logger";
+import type { AuditEvent } from "@eff/shared/src/contracts/auditEvent.contract";
+import { logger } from "@eff/shared/src/utils/logger";
 import { sendBatch, nextBackoffMs } from "./auditDispatch";
 
 type WalCfg = {
@@ -72,7 +68,6 @@ class AuditWal {
     logger.info({ dir: cfg.dir }, "[auditWal] initialized");
   }
 
-  /** Snapshot for /__audit diagnostics (non-billable). */
   snapshot() {
     return {
       dir: cfg.dir,
@@ -89,12 +84,10 @@ class AuditWal {
   }
 
   enqueue(ev: AuditEvent) {
-    // Append NDJSON line (non-blocking write stream)
     const line = JSON.stringify(ev) + "\n";
     this.ensureWriter();
     this.writer!.write(line);
 
-    // Ring buffer for batching
     this.ring.push(ev);
     if (this.ring.length > cfg.ringMaxEvents) {
       this.ring.shift();
@@ -158,8 +151,6 @@ class AuditWal {
     })();
   }
 
-  // ── Boot replay from .offset ────────────────────────────────────────────────
-
   private async replayFromCursor() {
     try {
       const { file, startPos } = await this.cursorInfo();
@@ -207,8 +198,6 @@ class AuditWal {
     }
   }
 
-  // ── Writers, rotation, cursor ──────────────────────────────────────────────
-
   private ensureWriter() {
     if (this.writer && !this.writer.closed) return;
     this.rotateIfNeeded().catch((err) => {
@@ -246,7 +235,7 @@ class AuditWal {
       this.writer!.once("error", (e) => reject(e));
     });
 
-    // fsync on rotate boundary (best-effort)
+    // Best-effort fsync at rotation boundary
     try {
       const fd = await fsp.open(file, "r+");
       await fd.sync();
@@ -342,8 +331,7 @@ class AuditWal {
   }
 }
 
-// ── File helpers ─────────────────────────────────────────────────────────────
-
+// Helpers
 function fmtYmd(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -351,10 +339,6 @@ function fmtYmd(d: Date): string {
   return `${y}${m}${day}`;
 }
 
-/**
- * Read up to `maxLines` NDJSON lines from file descriptor starting at byte `pos`.
- * Returns the lines and the byte offset of the next unread position.
- */
 async function readLines(fd: FileHandle, pos: number, maxLines: number) {
   const CHUNK = 64 * 1024;
   let buf = Buffer.alloc(CHUNK);
@@ -384,8 +368,7 @@ async function readLines(fd: FileHandle, pos: number, maxLines: number) {
   return { lines, nextPos: offset - Buffer.byteLength(acc, "utf8") };
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
-
+// Public API (singleton)
 let walSingleton: AuditWal | null = null;
 
 export function initWalFromEnv() {

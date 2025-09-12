@@ -1,12 +1,15 @@
 // backend/services/gateway/src/log.init.ts
-import { initLogger } from "../../shared/utils/logger";
-import { SERVICE_NAME } from "./config";
 
 /**
- * Side-effect module: initializes the shared logger with this service's name.
- * Import this ONCE at the very start of your gateway entrypoint:
- *   import "./src/log.init";
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADR: docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *
- * Ensures gateway logs carry { service: "gateway" } consistently.
+ * Why:
+ * - Side-effect init so logs carry { service: "gateway" } everywhere.
  */
+
+import { initLogger } from "@eff/shared/src/utils/logger";
+import { SERVICE_NAME } from "./config";
+
 initLogger(SERVICE_NAME);

@@ -1,18 +1,25 @@
 // backend/services/gateway/src/services/auditDispatch.ts
+
 /**
- * References:
- * - SOP v4 — “Never block foreground; S2S; internal resolution (no allowProxy)”
- * - This session — “Hard logging on success/failure so tests can assert”
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *
  * Why:
- * Ship batches to internal worker. Adds INFO/WARN logs so we can see
- * positive sends and retriable/poison failures in dev/test.
+ * - Dispatch audit batches to an internal worker using **internal resolution**
+ *   (does not depend on `allowProxy`). Emits INFO/WARN so tests can assert.
+ *
+ * Behavior:
+ * - Target URL: env override > svcconfig internal base + AUDIT_TARGET_PATH
+ * - 2xx → ok; 4xx → non-retriable (drop); 5xx/other → retriable w/ backoff
  */
-
-import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
+import type { AuditEvent } from "@eff/shared/src/contracts/auditEvent.contract";
 import { putInternalJson } from "../utils/s2sClient";
 import { resolveInternalBase, joinUrl } from "../utils/serviceResolver";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 
 type DispatchResult =
   | { ok: true; status: number }
@@ -38,7 +45,7 @@ function jittered(expMs: number) {
 export function resolveAuditUrl(): string {
   const path = cfg.path.startsWith("/") ? cfg.path : `/${cfg.path}`;
   if (cfg.baseOverride) return joinUrl(cfg.baseOverride, path);
-  const base = resolveInternalBase(cfg.slug); // internal resolution only
+  const base = resolveInternalBase(cfg.slug);
   if (!base)
     throw new Error(`[auditDispatch] target service '${cfg.slug}' unavailable`);
   return joinUrl(base, path);

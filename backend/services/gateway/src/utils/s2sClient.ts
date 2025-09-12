@@ -1,22 +1,20 @@
 // backend/services/gateway/src/utils/s2sClient.ts
-//
-// References:
-// - SOP v4 — “Only gateway client for internal workers; overwrite Authorization with fresh S2S”
-// - Security/S2S — gateway mints S2S; never forward user tokens upstream
-//
-// Why:
-// A **single** axios instance for all internal calls. An interceptor injects a fresh
-// S2S token on each request so callers don’t have to think about auth. We expose
-// tiny helpers (`getInternalJson`, `putInternalJson`) so service code doesn’t deal
-// with axios minutiae.
-//
-// Notes:
-// - validateStatus is disabled; callers check status codes explicitly.
-// - Timeout is conservative — internal hops should be quick; tune per need.
-//
+
+/**
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0014-s2s-jwt-verification-for-internal-services.md
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *
+ * Why:
+ * - Single axios client for internal S2S hops. Always overwrites Authorization
+ *   with a freshly minted S2S token; never forwards user tokens.
+ * - Exposes tiny helpers. Added `s2sGet` adapter to match legacy imports.
+ */
 
 import axios, { AxiosHeaders, type InternalAxiosRequestConfig } from "axios";
-import { mintS2S } from "@shared/svcconfig/client"; // shared minter; uses S2S_* env
+import { mintS2S } from "@eff/shared/src/svcconfig/client"; // shared minter (HS256)
 
 /** The ONLY client the gateway may use to call internal workers. */
 export const s2sClient = axios.create();
@@ -28,7 +26,7 @@ s2sClient.interceptors.request.use((cfg: InternalAxiosRequestConfig) => {
   const ttlSec = Math.min(
     Number(process.env.S2S_MAX_TTL_SEC || 300) || 300,
     900
-  ); // clamp to sane upper bound
+  );
   headers.set("Authorization", `Bearer ${mintS2S(ttlSec)}`);
   cfg.headers = headers;
   return cfg;
@@ -40,10 +38,7 @@ export async function getInternalJson(
   headers?: Record<string, string>
 ) {
   return s2sClient.get(url, {
-    headers: {
-      accept: "application/json",
-      ...(headers || {}),
-    },
+    headers: { accept: "application/json", ...(headers || {}) },
     validateStatus: () => true,
     timeout: 5000,
   });
@@ -56,11 +51,11 @@ export async function putInternalJson<TBody extends object>(
   headers?: Record<string, string>
 ) {
   return s2sClient.put(url, body, {
-    headers: {
-      "content-type": "application/json",
-      ...(headers || {}),
-    },
+    headers: { "content-type": "application/json", ...(headers || {}) },
     validateStatus: () => true,
     timeout: 5000,
   });
 }
+
+/** Compatibility shim: old code imports `s2sGet` — keep it working. */
+export const s2sGet = getInternalJson;

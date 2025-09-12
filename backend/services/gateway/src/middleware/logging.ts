@@ -19,7 +19,7 @@
 
 import pinoHttp from "pino-http";
 import { randomUUID } from "crypto";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 import { serviceName } from "../config";
 import { sanitizeUrl } from "../utils/sanitizeUrl";
 

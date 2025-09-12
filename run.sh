@@ -30,7 +30,7 @@ echo "   ENV_FILE=$ENV_FILE"
 SERVICES=(
   "svcconfig|backend/services/svcconfig|yarn dev"
   #"audit|backend/services/audit|yarn dev"
-  #"gateway|backend/services/gateway|yarn dev"
+  "gateway|backend/services/gateway|yarn dev"
   #"gateway-core|backend/services/gateway-core|yarn dev"
   #"geo|backend/services/geo|yarn dev"
   #"act|backend/services/act|yarn dev"

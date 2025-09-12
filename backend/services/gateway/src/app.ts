@@ -1,51 +1,45 @@
 // backend/services/gateway/src/app.ts
+
 /**
- * References:
- * - NowVibin Backend — New-Session SOP v4 (Amended)
- *   • Guardrails before audit; instrumentation everywhere; global error middleware
- *   • Only gateway is public; S2S to workers; /api/<slug>/<rest> convention
- *   • Audit-ready: WAL after guardrails; security telemetry separate from billing
- * - Session decisions:
- *   • Guardrails log to SECURITY; billing audit comes AFTER guardrails
- *   • injectUpstreamIdentity mints fresh S2S + user assertion before proxy
- *   • loggingMiddleware centralizes pino-http
- *   • /__audit is a safe, non-billable diag to confirm capture→WAL→dispatch pipeline
+ * Docs:
+ * - Design: docs/design/backend/gateway/app.md
+ * - Architecture: docs/architecture/backend/MICROSERVICES.md
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0010-5xx-first-assignment-tracing.md
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0019-read-only-mode-guardrail.md
+ *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
+ *   - docs/adr/0024-extract-readiness-from-app-assembly-for-separation-of-concerns.md
  *
  * Why:
- * Assembly reflects SOP ordering guarantees:
- *   1) HTTPS/CORS/request-id/logging/problem-json/early 5xx tracing
- *   2) Health (no auth, no audit)
- *   3) Guardrails FIRST (denials → SECURITY logs; no WAL)
- *   4) Billing-grade audit capture (WAL) for passed requests
- *   5) Identity injection + proxy plane (transport only)
- *   6) Tail parsers → 404 → global error handler
+ * - Assembly order follows SOP: httpsOnly → cors → requestId → http logger →
+ *   trace5xx(early) → health → guardrails (SECURITY logs) → audit (WAL) →
+ *   identity injection → proxy → tails (404/error).
+ * - Problem+JSON formatting comes from shared middleware for single source of truth.
+ * - No body parsers before proxy; keep streams zero-copy.
  */
 
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import { createHealthRouter, ReadinessFn } from "@shared/src/health";
-import { logger } from "@shared/utils/logger";
+import { createHealthRouter } from "@eff/shared/src/health";
+import { logger } from "@eff/shared/src/utils/logger";
 
+import { serviceName, rateLimitCfg, timeoutCfg, breakerCfg } from "./config";
+
+// Shared middleware
+import { requestIdMiddleware } from "@eff/shared/src/middleware/requestId";
+import { makeHttpLogger as loggingMiddleware } from "@eff/shared/src/middleware/httpLogger";
 import {
-  serviceName,
-  rateLimitCfg,
-  timeoutCfg,
-  breakerCfg,
-  ROUTE_ALIAS,
-} from "./config";
+  notFoundProblemJson,
+  errorProblemJson,
+} from "@eff/shared/src/middleware/problemJson";
 
-// ✅ use shared middleware (no local clones)
-import { requestIdMiddleware } from "@shared/middleware/requestId";
-import {
-  problemJsonMiddleware,
-  notFoundHandler,
-  errorHandler,
-} from "@shared/middleware/problemJson";
-import { makeHttpLogger as loggingMiddleware } from "@shared/middleware/httpLogger";
-import { trace5xx } from "@shared/middleware/trace5xx";
-
-// Edge-only middleware (lives in gateway)
+// Edge-only (local) middleware
+import { trace5xx } from "./middleware/trace5xx";
 import { rateLimitMiddleware } from "./middleware/rateLimit";
 import { timeoutsMiddleware } from "./middleware/timeouts";
 import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
@@ -55,79 +49,32 @@ import { httpsOnly } from "./middleware/httpsOnly";
 import { serviceProxy } from "./middleware/serviceProxy";
 import { injectUpstreamIdentity } from "./middleware/injectUpstreamIdentity";
 
-// Shared svcconfig mirror (source of truth for upstreams)
-import {
-  startSvcconfigMirror,
-  getSvcconfigSnapshot,
-} from "@shared/svcconfig/client";
-import type { ServiceConfig } from "@shared/src/contracts/svcconfig.contract";
+// Svcconfig mirror (non-blocking boot)
+import { startSvcconfigMirror } from "@eff/shared/src/svcconfig/client";
 
-// ▶ Billing-grade Audit (after guards)
+// Audit WAL
 import { initWalFromEnv, walSnapshot } from "./services/auditWal";
 import { auditCapture } from "./middleware/auditCapture";
 
-// ✅ edge rule: only s2sClient may use axios/fetch internally
-import { s2sGet } from "./utils/s2sClient";
+// Readiness (SoC)
+import { readiness } from "./readiness";
 
-// Kick off svcconfig mirror (ETag-aware; polling/redis handled in shared)
+// ──────────────────────────────────────────────────────────────────────────────
+// Kick off svcconfig mirror (poll/redis handled in shared)
 void startSvcconfigMirror();
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Helpers confined to app assembly (avoid barrels)
-
-function sanitizeUrl(u: string): string {
-  // WHY: keep pino logs free of PII; redact known email-like path segments.
-  try {
-    const [path, qs] = u.split("?", 2);
-    const p = path
-      .replace(/(\/users\/email\/)[^/]+/i, "$1<redacted>")
-      .replace(/(\/users\/private\/email\/)[^/]+/i, "$1<redacted>");
-    return qs ? `${p}?${qs}` : p;
-  } catch {
-    return u;
-  }
-}
-
-function resolveSlug(seg: string): string {
-  // WHY: alias + naive singularization to canonical slug (matches gateway convention).
-  const lower = String(seg || "").toLowerCase();
-  const aliased = (ROUTE_ALIAS as Record<string, string>)[lower] || lower;
-  return aliased.endsWith("s") ? aliased.slice(0, -1) : aliased;
-}
-
-function getServiceBySegment(seg: string): ServiceConfig | undefined {
-  // WHY: health passthroughs only if upstream opted-in (enabled + allowProxy).
-  const snap = getSvcconfigSnapshot();
-  if (!snap) return undefined;
-  const slug = resolveSlug(seg);
-  const cfg = snap.services[slug];
-  if (!cfg) return undefined;
-  if (!cfg.enabled) return undefined;
-  if (!cfg.allowProxy) return undefined;
-  return cfg;
-}
-
-function healthUrlFor(seg: string, kind: "live" | "ready"): string | null {
-  const cfg = getServiceBySegment(seg);
-  if (!cfg || cfg.exposeHealth === false) return null;
-  const healthRoot = (cfg.healthPath || "/health").replace(/\/+$/, "");
-  return `${cfg.baseUrl.replace(/\/+$/, "")}${healthRoot}/${kind}`;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // App
 export const app = express();
 
 app.disable("x-powered-by");
-app.set("trust proxy", true); // WHY: respect X-Forwarded-* from LB/ingress
+app.set("trust proxy", true);
 
-// HTTPS policy (prod/stage): redirect HTTP → HTTPS; dev/local opt-out via FORCE_HTTPS=false
+// Transport & Telemetry
 app.use(httpsOnly());
 if (process.env.FORCE_HTTPS === "true") {
   app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true }));
 }
 
-// CORS early; does not consume body
 app.use(
   cors({
     origin: "*",
@@ -138,54 +85,19 @@ app.use(
       "x-request-id",
       "x-correlation-id",
       "x-amzn-trace-id",
-      // Allow internal user assertion header through preflight
       "x-nv-user-assertion",
     ],
   })
 );
 
-// ❗ No body parsers before proxy — keep raw stream intact.
+// No body parsers before proxy (streaming path)
 
-// Request ID must be *first* so every log/error/audit has a correlation key.
+// Request ID → HTTP logger → 5xx trace (early)
 app.use(requestIdMiddleware());
-
-// Centralized HTTP telemetry (pino-http) — lightweight, never blocking
 app.use(loggingMiddleware(serviceName));
-
-// Problem+JSON envelope (adds res.problem helper)
-app.use(problemJsonMiddleware());
-
-// Trace where any 5xx is first set (observe-only)
 app.use(trace5xx("early"));
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Health / Readiness — BEFORE guardrails (public, no auth, no audit)
-const readiness: ReadinessFn = async (_req) => {
-  const must = ["user", "act"]; // adjust per deployment
-  const upstreams: Record<string, { ok: boolean; url?: string }> = {};
-
-  await Promise.all(
-    must.map(async (slug) => {
-      try {
-        const h = healthUrlFor(slug, "ready");
-        if (!h) {
-          upstreams[slug] = { ok: false };
-          return;
-        }
-        const r = await s2sGet(h, {
-          timeout: 1500,
-          validateStatus: () => true,
-        });
-        upstreams[slug] = { ok: r.status === 200, url: h };
-      } catch {
-        upstreams[slug] = { ok: false };
-      }
-    })
-  );
-
-  return { upstreams };
-};
-
+// Health/readiness (public; unauthenticated; not audited)
 app.use(
   "/",
   createHealthRouter({
@@ -194,109 +106,36 @@ app.use(
   })
 );
 
-// Public dynamic health passthroughs (NO /api, NO auth, NO Authorization)
-app.get("/:svc/health/:kind(live|ready)", async (req, res) => {
-  try {
-    delete req.headers.authorization; // never forward client auth to health
-    const url = healthUrlFor(
-      String(req.params.svc || ""),
-      req.params.kind as "live" | "ready"
-    );
-    if (!url) {
-      return res.status(404).json({
-        code: "NOT_FOUND",
-        status: 404,
-        message: "Service not found or health not exposed",
-      });
-    }
-    const r = await s2sGet(url, {
-      timeout: 1500,
-      validateStatus: () => true,
-      headers: { "x-request-id": String((req as any).id || "") },
-    });
-    return res
-      .status(r.status)
-      .set(r.headers as any)
-      .send(r.data);
-  } catch {
-    return res.status(502).json({
-      code: "BAD_GATEWAY",
-      status: 502,
-      message: "Upstream health unavailable",
-    });
-  }
-});
-
-// 👀 DEBUG: introspection endpoints (non-billable; excluded from audit)
-app.get("/__core", (_req, res) => {
-  res.json({
-    NODE_ENV: process.env.NODE_ENV,
-    ENV_FILE: process.env.ENV_FILE,
-  });
-});
-app.get("/__auth", (_req, res) => {
-  res.json({
-    NODE_ENV: process.env.NODE_ENV,
-    CLIENT_AUTH_REQUIRE: process.env.CLIENT_AUTH_REQUIRE ?? null,
-    CLIENT_AUTH_BYPASS: process.env.CLIENT_AUTH_BYPASS ?? null,
-    CLIENT_AUTH_JWKS_URL: process.env.CLIENT_AUTH_JWKS_URL || null,
-    CLIENT_AUTH_ISSUERS: process.env.CLIENT_AUTH_ISSUERS || null,
-    CLIENT_AUTH_AUDIENCE: process.env.CLIENT_AUTH_AUDIENCE || null,
-    CLIENT_AUTH_CLOCK_SKEW_SEC: process.env.CLIENT_AUTH_CLOCK_SKEW_SEC || null,
-    S2S_SECRET_PRESENT: !!(
-      process.env.S2S_SECRET && process.env.S2S_SECRET.length > 0
-    ),
-    S2S_ISSUER: process.env.S2S_ISSUER || null,
-    S2S_AUDIENCE: process.env.S2S_AUDIENCE || null,
-    INBOUND_STRIP_SEGMENTS: process.env.INBOUND_STRIP_SEGMENTS ?? null,
-    OUTBOUND_API_PREFIX: process.env.OUTBOUND_API_PREFIX ?? null,
-    USER_ASSERTION_SECRET_PRESENT: !!(
-      process.env.USER_ASSERTION_SECRET &&
-      process.env.USER_ASSERTION_SECRET.length > 0
-    ),
-    USER_ASSERTION_AUDIENCE: process.env.USER_ASSERTION_AUDIENCE || null,
-    USER_ASSERTION_TTL_SEC: process.env.USER_ASSERTION_TTL_SEC || null,
-    USER_ASSERTION_CLOCK_SKEW_SEC:
-      process.env.USER_ASSERTION_CLOCK_SKEW_SEC || null,
-  });
-});
-
-// NEW: WAL diag snapshot (lets us prove capture/flush without touching DB)
+// WAL diagnostics (safe, non-billable)
 app.get("/__audit", (_req, res) => {
   const snap = walSnapshot();
-  res.json({
-    ok: !!snap,
-    ...(snap || { note: "WAL not initialized yet" }),
-  });
+  res.json({ ok: !!snap, ...(snap || { note: "WAL not initialized yet" }) });
 });
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Guardrails FIRST — denials log to SECURITY (not WAL)
+// Guardrails (SECURITY logs on denials; not WAL)
 app.use(rateLimitMiddleware(rateLimitCfg));
 app.use(sensitiveLimiter());
-app.use(timeoutsMiddleware(timeoutCfg)); // cfg shape: { gatewayMs: number }
+app.use(timeoutsMiddleware(timeoutCfg));
 app.use(circuitBreakerMiddleware(breakerCfg));
 app.use(authGate());
 
-// ▶ BILLING-GRADE AUDIT — only after guards; before proxy
-initWalFromEnv(); // idempotent init; boot-time replay (non-blocking)
+// Billing-grade audit (only passed requests)
+initWalFromEnv(); // idempotent; starts replay
 app.use(auditCapture());
 
-// Lightweight public root
+// Lightweight root
 app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Proxy plane — transport only, no business logic
+// Proxy plane — inject identities then stream upstream
 app.use("/api", injectUpstreamIdentity());
 app.use("/api", serviceProxy());
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Body parsers ONLY for non-proxied routes after proxy
+// Tail parsers (for any non-proxied routes; none by default)
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
-// Tail: 404 + global error handler (Problem+JSON)
-app.use(notFoundHandler());
-app.use(errorHandler());
+// Global tails: 404 + error (RFC7807)
+app.use(notFoundProblemJson(["/api", "/health", "/__"]));
+app.use(errorProblemJson());
 
 export default app;

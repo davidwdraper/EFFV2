@@ -7,7 +7,7 @@ import app from "./src/app";
 import { config } from "./src/config";
 import { SERVICE_NAME } from "./src/bootstrap";
 import { connectDb } from "./src/db";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@shared/src/utils/logger";
 import { startHttpService } from "@shared/src/bootstrap/startHttpService";
 
 process.on("unhandledRejection", (reason) => {

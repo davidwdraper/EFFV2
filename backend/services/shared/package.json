@@ -2,14 +2,42 @@
   "name": "@eff/shared",
   "version": "1.0.0",
   "private": true,
+  "sideEffects": false,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "scripts": {
     "clean": "rimraf dist tsconfig.tsbuildinfo",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./bootstrap/bootstrapService": {
+      "types": "./dist/bootstrap/bootstrapService.d.ts",
+      "default": "./dist/bootstrap/bootstrapService.js"
+    },
+    "./bootstrap/startHttpService": {
+      "types": "./dist/bootstrap/startHttpService.d.ts",
+      "default": "./dist/bootstrap/startHttpService.js"
+    },
+    "./utils/logger": {
+      "types": "./dist/utils/logger.d.ts",
+      "default": "./dist/utils/logger.js"
+    },
+    "./middleware/problemJson": {
+      "types": "./dist/middleware/problemJson.d.ts",
+      "default": "./dist/middleware/problemJson.js"
+    },
+    "./health": {
+      "types": "./dist/health.d.ts",
+      "default": "./dist/health.js"
+    },
+    "./svcconfig/client": {
+      "types": "./dist/svcconfig/client.d.ts",
+      "default": "./dist/svcconfig/client.js"
+    },
+    "./src/*": "./dist/*",
+    "./package.json": "./package.json"
   }
 }

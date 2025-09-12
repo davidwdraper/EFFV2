@@ -1,106 +1,140 @@
-// backend/services/shared/middleware/problemJson.ts
+// backend/services/shared/src/middleware/problemJson.ts
 
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
- *   • “Global error middleware. All errors flow through problem.ts + error sink.”
- *   • “Audit-ready. No silent fallbacks.”
  * - Design: docs/design/backend/observability/problem-json.md
+ * - ADRs:
+ *   - docs/adr/0010-5xx-first-assignment-tracing.md
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *
  * Why:
- * - We standardize error responses as RFC 7807 Problem+JSON so clients/tests
- *   can rely on a stable shape across all services.
- * - Every error should emit a structured error event to our logging pipeline
- *   (LogSvc or FS fallback) without blocking the request lifecycle.
- * - 404s are common and noisy; we only format them as Problem+JSON for routes
- *   under known prefixes to avoid turning static/probe noise into JSON bodies.
- *
- * Notes:
- * - This middleware is *transport-level* formatting, not business logic.
- * - We keep error detail minimal by default to avoid leaking internals.
- * - In non-prod, we also log the error to pino for local visibility.
+ * - Canonical, **shared** RFC7807 formatting with zero gateway deps.
+ * - Adds `res.problem(status, body)`, prefix-aware 404, and global error formatter.
+ * - Guardrail denials (auth/rate-limit/breaker/timeouts) log via SECURITY elsewhere.
  */
 
-import type { Request, Response, NextFunction } from "express";
-import { extractLogContext, postAudit } from "../utils/logger";
+import type {
+  Request,
+  Response,
+  NextFunction,
+  RequestHandler,
+  ErrorRequestHandler,
+} from "express";
+import { logger } from "../utils/logger"; // relative import to avoid self-aliasing
 
-const IS_PROD = String(process.env.NODE_ENV || "").trim() === "production";
-
-/**
- * 404 formatter: only emits Problem+JSON for known API/health prefixes.
- * Everything else returns a bare 404 to keep noise down for static assets, etc.
- */
-export function notFoundProblemJson(validPrefixes: string[]) {
-  return (req: Request, res: Response) => {
-    // WHY: Only treat as “API 404” if path is under a known prefix.
-    if (validPrefixes.some((p) => req.path.startsWith(p))) {
-      return res
-        .status(404)
-        .type("application/problem+json")
-        .json({
-          type: "about:blank",
-          title: "Not Found",
-          status: 404,
-          detail: "Route not found",
-          instance: (req as any).id,
-        });
+// Extend Response with `res.problem`
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Response {
+      problem?: (status: number, body: Record<string, any>) => void;
     }
-    /* c8 ignore next 2 */
-    return res.status(404).end();
+  }
+}
+
+function ridOf(req: Request): string {
+  return (
+    (req as any).id ||
+    (req.headers["x-request-id"] as string) ||
+    (req.headers["x-correlation-id"] as string) ||
+    (req.headers["x-amzn-trace-id"] as string) ||
+    ""
+  );
+}
+
+/** Attaches `res.problem(status, body)`; does not alter normal JSON responses. */
+export function problemJsonMiddleware(): RequestHandler {
+  return (_req: Request, res: Response, next: NextFunction) => {
+    res.problem = (status: number, body: Record<string, any>) => {
+      res.status(Number.isFinite(status) ? status : 500);
+      res.type("application/problem+json");
+      res.json(body);
+    };
+    next();
   };
 }
 
 /**
- * Error formatter: converts any thrown/next(err) into Problem+JSON and
- * emits a non-blocking error event to LogSvc (with FS fallback via logger util).
+ * 404 tail with RFC7807 shape for **API-ish** paths only.
+ * Everything else returns a bare 404 to avoid JSON-ifying static/probe noise.
  */
-export function errorProblemJson() {
+export function notFoundProblemJson(validPrefixes: string[]): RequestHandler {
+  const prefixes = (validPrefixes || []).map((p) => (p || "").toLowerCase());
+  return (req: Request, res: Response) => {
+    const path = (req.path || "").toLowerCase();
+    const apiish = prefixes.length
+      ? prefixes.some((p) => p && path.startsWith(p))
+      : true;
+    if (!apiish) return res.status(404).end();
+    (res.problem ?? res.status.bind(res))(404, {
+      type: "about:blank",
+      title: "Not Found",
+      status: 404,
+      detail: "Route not found",
+      instance: ridOf(req),
+    });
+  };
+}
+
+/** Global error handler that logs trimmed context and returns RFC7807. */
+export function errorProblemJson(): ErrorRequestHandler {
   return (err: any, req: Request, res: Response, _next: NextFunction) => {
-    // WHY: Normalize status code; never trust arbitrary values.
     const status = Number(err?.statusCode || err?.status || 500);
-    const safe = Number.isFinite(status) ? status : /* c8 ignore next */ 500;
 
-    // WHY: Build a minimal, safe error event. The logger util enriches with callsite.
-    const ctx = extractLogContext(req);
-    const event = {
-      channel: "error",
-      level: "error",
-      code: err?.code,
-      message: err?.message || "Unhandled error",
-      status: safe,
-      path: req.originalUrl,
-      method: req.method,
-      ...ctx,
-    };
+    if (res.headersSent) {
+      // Can’t reshape — just log for operators.
+      logger.debug(
+        {
+          sentinel: "500DBG",
+          where: "errorProblemJson(headersSent)",
+          rid: ridOf(req),
+          method: req.method,
+          url: req.originalUrl,
+          status,
+          name: err?.name,
+          message: err?.message,
+          stack: String(err?.stack || "")
+            .split("\n")
+            .slice(0, 8),
+        },
+        "error after headers sent"
+      );
+      return;
+    }
 
-    // Fire-and-forget to Log Service; util handles FS fallback/rotation.
-    void postAudit(event);
-
-    // Dev/test: also emit to pino for local visibility (quiet in prod regardless of flags).
-    if (!IS_PROD) {
-      req.log?.error(
-        { status: safe, path: req.originalUrl, err },
-        "request error"
+    if (status >= 500) {
+      logger.debug(
+        {
+          sentinel: "500DBG",
+          where: "errorProblemJson",
+          rid: ridOf(req),
+          method: req.method,
+          url: req.originalUrl,
+          status,
+          name: err?.name,
+          message: err?.message,
+          stack: String(err?.stack || "")
+            .split("\n")
+            .slice(0, 8),
+        },
+        "500 about to be sent <<<500DBG>>>"
       );
     }
 
-    /* c8 ignore start */
-    // WHY: Keep response minimal; prefer caller-provided RFC7807 fields if they exist.
-    const type = err?.type || "about:blank";
-    const title =
-      err?.title || (safe >= 500 ? "Internal Server Error" : "Request Error");
-    const detail = err?.message || "Unexpected error";
-    /* c8 ignore stop */
-
-    res
-      .status(safe)
-      .type("application/problem+json")
-      .json({
-        type,
-        title,
-        status: safe,
-        detail,
-        instance: (req as any).id,
-      });
+    (res.problem ?? res.status.bind(res))(
+      Number.isFinite(status) ? status : 500,
+      {
+        type: err?.type || "about:blank",
+        title:
+          err?.title || (status >= 500 ? "Internal Server Error" : "Error"),
+        status: Number.isFinite(status) ? status : 500,
+        detail: err?.message || "Unexpected error",
+        instance: ridOf(req),
+      }
+    );
   };
 }

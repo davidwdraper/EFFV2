@@ -1,4 +1,4 @@
-// backend/services/shared/bootstrap/bootstrapService.ts
+// backend/services/shared/src/bootstrap/bootstrapService.ts
 
 /**
  * Docs:
@@ -9,18 +9,16 @@
  *   - docs/adr/0017-environment-loading-and-validation.md
  *   - docs/adr/0003-shared-app-builder.md
  *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *
  * Why:
- * - New services should start the same way: load envs with the **cascade order**
- *   (repo → family → service), **fail fast** on required envs, bind the shared
- *   logger to the service identity, and start HTTP cleanly.
- * - We **do not** import the logger module until *after* envs load, because
- *   the logger’s module init reads required env vars at import time. Dynamic
- *   import here prevents “missing LOG_* env” at bootstrap.
+ * - New services boot the same way: load env (cascade), assert required envs,
+ *   init shared logger with service identity, start HTTP cleanly.
+ * - We dynamically import the logger *after* envs load because the logger’s
+ *   module init reads env at import time. This prevents "missing LOG_* env".
  *
  * Notes:
- * - Single concern: env + logger init + start HTTP. Business wiring belongs in
- *   your factory (use createServiceApp()).
+ * - Single concern: env + logger init + start HTTP.
  * - No edge guardrails here. Gateway owns rate-limit/timeouts/breaker/auth.
  */
 

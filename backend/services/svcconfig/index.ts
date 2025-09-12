@@ -1,18 +1,23 @@
 // backend/services/svcconfig/index.ts
+
 /**
  * svcconfig entrypoint (root-level).
  * Loads env + logger via shared bootstrap first, then lazy-loads modules
  * that read env (config, db, etc). Keeps index.ts at repo convention.
+ *
+ * Why:
+ * - Use shared bootstrap (loads env cascade, asserts required vars, inits logger).
+ * - Keep app/db requires lazy so they only execute after env + logger are ready.
+ * - No direct /dist imports; rely on @eff/shared subpaths with tsconfig path mapping in dev.
  */
+
+import { bootstrapService } from "@eff/shared/bootstrap/bootstrapService";
 
 const SERVICE_NAME = "svcconfig";
 
 (async function main() {
   try {
     // 1) Bootstrap: loads env cascade, validates required vars, inits logger
-    const {
-      bootstrapService,
-    } = require("@eff/shared/src/bootstrap/bootstrapService");
     await bootstrapService({
       serviceName: SERVICE_NAME,
       serviceRootAbs: __dirname,
@@ -23,8 +28,8 @@ const SERVICE_NAME = "svcconfig";
       requiredEnv: ["SVCCONFIG_MONGO_URI"],
     });
 
-    // 2) Logger is safe to use now
-    const { logger } = require("@eff/shared/utils/logger");
+    // 2) Logger is safe to use now (load after bootstrap)
+    const { logger } = require("@eff/shared/src/utils/logger");
 
     // 3) Global process error handlers (after logger ready)
     process.on("unhandledRejection", (reason: unknown) => {

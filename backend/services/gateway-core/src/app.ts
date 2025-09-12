@@ -1,83 +1,65 @@
 // backend/services/gateway-core/src/app.ts
-import express from "express";
-import type { Request, Response, NextFunction } from "express";
+/**
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ *   - docs/adr/0026-gateway-core-on-createServiceApp.md
+ *
+ * Why:
+ * - gateway-core is a strictly internal S2S relay: verify inbound S2S, mirror
+ *   svcconfig, mint outbound S2S in the proxy handler, and forward. No edge guardrails.
+ *
+ * Assembly (shared builder):
+ *   requestId → httpLogger → problemJson → trace5xx(early)
+ *   → health (open, includes svcconfig readiness with grace)
+ *   → verifyS2S (inbound)
+ *   → parsers
+ *   → routes (/api → genericProxy)
+ *   → 404 → error
+ */
+
+import { createServiceApp } from "@eff/shared/src/app/createServiceApp";
+import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
+import type express from "express";
 import { genericProxy } from "./middleware/genericProxy";
 
-// 🔄 Shared svcconfig client (same as edge gateway)
+// Shared svcconfig client (mirror from svcconfig service; ETag-aware)
 import {
   startSvcconfigMirror,
   getSvcconfigReadiness,
-} from "@shared/svcconfig/client";
+} from "@eff/shared/src/svcconfig/client";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Boot: start svcconfig mirror (directly from svcconfig service; ETag-aware)
+// Boot: start svcconfig mirror on module load
 void startSvcconfigMirror();
 
-// Grace period for /health/ready (ms)
+// Grace period for /health/ready (ms) to avoid flapping during warmup
 const GRACE_MS = Number(process.env.SVCCONFIG_GRACE_MS || 15_000);
 const START_TIME = Date.now();
 
-// ──────────────────────────────────────────────────────────────────────────────
-const health = express.Router();
-
-health.get("/live", (_req, res) =>
-  res.status(200).json({ ok: true, live: true })
-);
-
-health.get("/ready", async (_req, res) => {
+// Readiness function (used by shared health router)
+async function readiness() {
   const svcconfig = getSvcconfigReadiness();
-  const ageSinceStart = Date.now() - START_TIME;
+  const uptimeMs = Date.now() - START_TIME;
+  const ok = (svcconfig?.ok ?? false) || uptimeMs < GRACE_MS;
+  return { ok, uptimeMs, graceMs: GRACE_MS, svcconfig };
+}
 
-  // Within grace period, report ready even if svcconfig not yet loaded
-  const ok = (svcconfig?.ok ?? false) || ageSinceStart < GRACE_MS;
+// Mount routes (one-liners only)
+function mountRoutes(api: express.Router) {
+  // All gateway-core traffic is proxied under /api
+  api.use("/", genericProxy());
+}
 
-  return res.status(ok ? 200 : 503).json({
-    ok,
-    ready: ok,
-    graceMs: GRACE_MS,
-    uptimeMs: ageSinceStart,
-    svcconfig, // { ok, source:"cache"|"lkg"|"empty", version, ageMs, services[] }
-  });
+const app = createServiceApp({
+  serviceName: "gateway-core",
+  apiPrefix: "/api",
+  verifyS2S, // internal-only: require valid S2S for everything except health
+  readiness, // exposes /health, /healthz, /readyz, etc. with svcconfig status
+  mountRoutes,
 });
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Create app and mount in the correct order:
-// 1) health
-// 2) /api proxy (BEFORE parsers!)
-// 3) parsers
-// 4) 404 + error handlers
-export const app = express();
-
-// 1) health
-app.use("/health", health);
-
-// 2) raw proxy BEFORE any body parsers
-app.use("/api", genericProxy());
-
-// 3) parsers (safe after proxy)
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: false }));
-
-// 4a) 404
-app.use((req: Request, res: Response) => {
-  res.status(404).json({
-    type: "about:blank",
-    title: "Not Found",
-    status: 404,
-    detail: "Route not found",
-    instance: req.headers["x-request-id"] ?? undefined,
-  });
-});
-
-// 4b) error handler (Problem+JSON style)
-app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
-  const status = typeof err?.status === "number" ? err.status : 500;
-  const title = status === 500 ? "Internal Server Error" : "Bad Request";
-  res.status(status).json({
-    type: "about:blank",
-    title,
-    status,
-    detail: String(err?.message ?? err),
-    instance: req.headers["x-request-id"] ?? undefined,
-  });
-});
+export default app;

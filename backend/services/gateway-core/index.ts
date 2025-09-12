@@ -1,9 +1,9 @@
 // backend/services/gateway-core/index.ts
 import "./src/bootstrap"; // load ENV_FILE + assert envs first
 import "./src/log.init";
-import { app } from "./src/app";
+import app from "./src/app";
 import { PORT, SERVICE_NAME } from "./src/config";
-import { logger } from "../shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 
 async function start() {
   try {

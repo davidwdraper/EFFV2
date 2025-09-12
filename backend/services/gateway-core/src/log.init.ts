@@ -1,5 +1,5 @@
 // backend/services/gateway-core/src/log.init.ts
-import { initLogger } from "../../shared/utils/logger";
+import { initLogger } from "@eff/shared/src/utils/logger";
 import { SERVICE_NAME } from "./config";
 
 /**

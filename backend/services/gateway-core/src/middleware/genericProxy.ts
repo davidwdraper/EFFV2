@@ -2,8 +2,8 @@
 import type { Request, Response } from "express";
 import httpProxy = require("http-proxy"); // CJS import for solid types
 
-import { getSvcconfigSnapshot } from "@shared/svcconfig/client";
-import type { ServiceConfig } from "@shared/src/contracts/svcconfig.contract";
+import { getSvcconfigSnapshot } from "@eff/shared/src/svcconfig/client";
+import type { ServiceConfig } from "@eff/shared/src/contracts/svcconfig.contract";
 import { mintS2S } from "../utils/s2s";
 
 const proxy = httpProxy.createProxyServer({ changeOrigin: true, xfwd: true });

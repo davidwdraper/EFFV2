@@ -6,13 +6,15 @@
  * - ADRs:
  *   - docs/adr/0017-environment-loading-and-validation.md
  *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
+ *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
  *
  * Why:
- * - Centralize explicit env parsing with hard assertions; avoid drift with
- *   middleware contracts by matching field names 1:1.
+ * - Runtime config for gateway internals. The **port** is bound by bootstrap,
+ *   not read here—so no PORT/GATEWAY_PORT assertion in this module.
+ * - Keep strict envs for middleware policies and svcconfig access.
  */
 
-import { requireEnum, requireNumber, requireEnv } from "@eff/shared/env";
+import { requireEnum, requireNumber, requireEnv } from "@eff/shared/src/env";
 
 export const SERVICE_NAME = "gateway" as const;
 
@@ -21,7 +23,6 @@ export const NODE_ENV = requireEnum("NODE_ENV", [
   "docker",
   "production",
 ]);
-export const PORT = requireNumber("GATEWAY_PORT");
 
 // Optional toggles
 export const AUTH_ENABLED = (process.env.AUTH_ENABLED ?? "true") !== "false";
@@ -35,6 +36,7 @@ export const LOG_SERVICE_URL = process.env.LOG_SERVICE_URL;
 // Svcconfig (authoritative)
 export const SVCCONFIG_URL = requireEnv("SVCCONFIG_BASE_URL");
 
+// Fallback route/env toggles
 export const GATEWAY_FALLBACK_ENV_ROUTES =
   String(process.env.GATEWAY_FALLBACK_ENV_ROUTES || "false").toLowerCase() ===
   "true";
@@ -73,16 +75,7 @@ function parseAliasMap(): Record<string, string> {
 }
 export const ROUTE_ALIAS: Record<string, string> = parseAliasMap();
 
-export function isAllowedServiceSlug(slug: string): boolean {
-  const s = slug.toLowerCase();
-  if (ALLOWED_SERVICES.includes("*")) return true;
-  return (
-    ALLOWED_SERVICES.includes(s) ||
-    ALLOWED_SERVICES.includes(ROUTE_ALIAS[s] || s)
-  );
-}
-
-// Structured configs
+// Structured configs (env-asserted here because they control guardrails)
 export const rateLimitCfg = {
   windowMs: requireNumber("RATE_LIMIT_WINDOW_MS"),
   points: requireNumber("RATE_LIMIT_POINTS"),

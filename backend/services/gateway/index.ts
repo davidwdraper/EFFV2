@@ -2,74 +2,47 @@
 
 /**
  * Docs:
- * - Design: docs/design/backend/gateway/app.md
- * - SOP: docs/architecture/backend/SOP.md
+ * - Arch/SOP: docs/architecture/backend/SOP.md
+ * - Boot: docs/architecture/backend/BOOTSTRAP.md
  * - ADRs:
+ *   - docs/adr/0003-shared-app-builder.md
  *   - docs/adr/0017-environment-loading-and-validation.md
  *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
+ *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
  *
  * Why:
- * - Boot in strict order: env → logger → app; bind per env; fail fast on unhandleds.
- * - Keep server hardening predictable (keepAliveTimeout/headersTimeout).
+ * - Use shared bootstrapService to bind the port and start HTTP.
+ * - Lazy-require app *after* envs load so config.ts reads the right envs.
  */
 
-import "./src/bootstrap"; // loads ENV_FILE + asserts required envs
-import "./src/log.init"; // init logger with service name
+import "tsconfig-paths/register";
+import path from "node:path";
+import { bootstrapService } from "@eff/shared/src/bootstrap/bootstrapService";
 
-import { app } from "./src/app";
-import { PORT, SERVICE_NAME } from "./src/config";
-import { logger } from "@eff/shared/src/utils/logger";
+const SERVICE_NAME = "gateway" as const;
 
-const NODE_ENV = process.env.NODE_ENV || "dev";
-
-// Bind policy: loopback in non-prod unless overridden; 0.0.0.0 in prod.
-const BIND_ADDR =
-  process.env.GATEWAY_BIND_ADDR ||
-  (NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
-
-const FORCE_HTTPS = process.env.FORCE_HTTPS === "true";
-
-async function start() {
-  try {
-    const server = app.listen(PORT, BIND_ADDR, () => {
-      logger.info(
-        { port: PORT, bind: BIND_ADDR, env: NODE_ENV, forceHttps: FORCE_HTTPS },
-        `[${SERVICE_NAME}] listening`
-      );
-    });
-
-    // Socket hardening
-    // @ts-ignore
-    server.keepAliveTimeout = 7_000;
-    // @ts-ignore
-    server.headersTimeout = 9_000;
-
-    const shutdown = (signal: string) => {
-      logger.info({ signal }, `[${SERVICE_NAME}] shutting down…`);
-      server.close(() => process.exit(0));
-      setTimeout(() => process.exit(1), 10_000).unref();
-    };
-
-    process.on("SIGTERM", () => shutdown("SIGTERM"));
-    process.on("SIGINT", () => shutdown("SIGINT"));
-
-    server.on("error", (err: unknown) => {
-      logger.error({ err }, `[${SERVICE_NAME}] server error`);
-      process.exit(1);
-    });
-
-    process.on("unhandledRejection", (reason: unknown) => {
-      logger.error({ reason }, `[${SERVICE_NAME}] unhandledRejection`);
-      process.exit(1);
-    });
-    process.on("uncaughtException", (err: unknown) => {
-      logger.error({ err }, `[${SERVICE_NAME}] uncaughtException`);
-      process.exit(1);
-    });
-  } catch (err) {
-    logger.error({ err }, `[${SERVICE_NAME}] failed to start`);
-    process.exit(1);
-  }
-}
-
-start();
+void bootstrapService({
+  serviceName: SERVICE_NAME,
+  serviceRootAbs: path.resolve(__dirname, "src"),
+  createApp: () => {
+    // Lazy import so env cascade is already applied before app/config loads
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require("./src/app");
+    return mod.default;
+  },
+  portEnv: "GATEWAY_PORT",
+  requiredEnv: [
+    "LOG_LEVEL",
+    "LOG_SERVICE_URL",
+    // svcconfig snapshot inputs
+    "SVCCONFIG_BASE_URL",
+    "SVCCONFIG_LKG_PATH",
+    // guardrail configs asserted in config.ts at import time:
+    "RATE_LIMIT_WINDOW_MS",
+    "RATE_LIMIT_POINTS",
+    "TIMEOUT_GATEWAY_MS",
+    "BREAKER_FAILURE_THRESHOLD",
+    "BREAKER_HALFOPEN_AFTER_MS",
+    "BREAKER_MIN_RTT_MS",
+  ],
+});

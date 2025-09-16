@@ -31,7 +31,7 @@ SERVICES=(
   "svcconfig|backend/services/svcconfig|yarn dev"
   "audit|backend/services/audit|yarn dev"
   "gateway|backend/services/gateway|yarn dev"
-  #"geo|backend/services/geo|yarn dev"
+  "geo|backend/services/geo|yarn dev"
   "act|backend/services/act|yarn dev"
   # "auth|backend/services/auth|yarn dev"
   # "image|backend/services/image|yarn dev"

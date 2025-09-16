@@ -11,9 +11,12 @@
  * Why:
  * - Minimal shared S2S HTTP client for worker→worker calls.
  * - Always mints short-lived S2S and attaches Authorization. Optional user-assertion passthrough.
+ *
+ * Notes:
+ * - Inside shared, use **relative** imports to avoid self-aliasing.
  */
 
-import { mintS2S, MintS2SOptions } from "@eff/shared/src/utils/s2s/mintS2S";
+import { mintS2S, type MintS2SOptions } from "./mintS2S";
 
 export interface S2SRequestOptions<TBody = unknown> {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";

@@ -1,10 +1,13 @@
 // backend/services/geo/src/controllers/geo/handlers/geo.resolve.ts
 import type { Request, Response, NextFunction } from "express";
 import axios from "axios";
-import { logger } from "../../../../../shared/utils/logger";
-import { zGeoRequest, zGeoResponse } from "@shared/src/contracts/geo.contract";
-import { respond, zodBadRequest } from "@shared/src/contracts/http";
-import { googleToDomain } from "../../../mappers/geo.mapper";
+import { logger } from "@eff/shared/src/utils/logger";
+import {
+  zGeoRequest,
+  zGeoResponse,
+} from "@eff/shared/src/contracts/geo.contract";
+import { respond, zodBadRequest } from "@eff/shared/src/contracts/http";
+import { googleToDomain } from "../mappers/geo.mapper";
 
 const GOOGLE_URL = "https://maps.googleapis.com/maps/api/geocode/json";
 

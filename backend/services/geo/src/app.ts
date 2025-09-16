@@ -1,68 +1,54 @@
 // backend/services/geo/src/app.ts
-import express from "express";
-import { coreMiddleware } from "@shared/middleware/core";
-import { makeHttpLogger } from "@shared/middleware/httpLogger";
-import { entryExit } from "@shared/middleware/entryExit";
-import { auditBuffer } from "@shared/middleware/audit";
-import {
-  notFoundProblemJson,
-  errorProblemJson,
-} from "@shared/middleware/problemJson";
-import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
-import { createHealthRouter } from "@shared/src/health";
-import { verifyS2S } from "@shared/middleware/verifyS2S";
+
+/**
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - SOP:  docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0003-shared-app-builder.md
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
+ *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
+ *
+ * Why:
+ * - Use the shared app builder for consistent assembly:
+ *   requestId → httpLogger → problemJson → trace5xx(early) →
+ *   health (open) → verifyS2S (everything else) → parsers → routes → 404 → error.
+ * - No back-compat mounts; canonical paths only.
+ *
+ * Notes:
+ * - Routes are one-liners; no logic in routes.
+ * - Health is mounted by the app builder; readiness is provided below.
+ */
+
+import type express from "express";
+import { createServiceApp } from "@eff/shared/src/app/createServiceApp";
+import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
+import { addTestOnlyHelpers } from "@eff/shared/src/middleware/testHelpers";
+
 import geoRoutes from "./routes/geo.routes";
-import { SERVICE_NAME, config } from "./config";
+import { SERVICE_NAME } from "./config";
 
-if (!config.port) throw new Error("Missing required env var: GEO_PORT");
+// Readiness (geo has no DB; report simple upstream check hooks if added later)
+async function readiness() {
+  return { upstreams: {} };
+}
 
-export const app = express();
-app.disable("x-powered-by");
-app.set("trust proxy", true);
+// One-liner route mounting under the API router
+function mountRoutes(api: express.Router) {
+  // Canonical: service exposes /api/... (gateway strips /api/<slug>/)
+  api.use("/", geoRoutes); // → POST /api/resolve
+}
 
-// ── shared middleware
-app.use(coreMiddleware());
-app.use(makeHttpLogger(SERVICE_NAME));
-app.use(entryExit());
-app.use(auditBuffer());
+const app = createServiceApp({
+  serviceName: SERVICE_NAME,
+  apiPrefix: "/api",
+  verifyS2S, // protect everything except health
+  readiness,
+  mountRoutes,
+});
 
-// ── health (open)
-app.use(
-  createHealthRouter({
-    service: SERVICE_NAME,
-    readiness: async () => ({ upstreams: { google: true } }),
-  })
-);
-
-// ── S2S protection for everything else
-app.use(verifyS2S);
-
-// ── test helpers (limit to real routes)
-addTestOnlyHelpers(app as any, [
-  "/resolve",
-  "/api/resolve", // ← include canonical path
-  "/health",
-  "/healthz",
-  "/readyz",
-]);
-
-// ── routes
-// Canonical mount (matches gateway-core forwarding: /api/<slug>/... → /api/...)
-app.use("/api", geoRoutes);
-
-// Back-compat alias (remove once callers stop using root-mounted paths)
-app.use("/", geoRoutes);
-
-// ── 404 + error
-app.use(
-  notFoundProblemJson([
-    "/resolve",
-    "/api/resolve", // ← include canonical path
-    "/health",
-    "/healthz",
-    "/readyz",
-  ])
-);
-app.use(errorProblemJson());
+// Test helpers aligned to canonical API paths
+addTestOnlyHelpers(app as any, ["/api/resolve"]);
 
 export default app;

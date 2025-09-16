@@ -1,37 +1,49 @@
 // backend/services/user/index.ts
-import "./src/bootstrap"; // loads ENV_FILE + sets SERVICE_NAME
-import "@eff/shared/src/types/express"; // <-- include Express request augmentation
-import "./src/log.init";
+
+/**
+ * Docs:
+ * - Arch/SOP: docs/architecture/backend/SOP.md
+ * - Boot: docs/architecture/backend/BOOTSTRAP.md
+ * - ADRs:
+ *   - docs/adr/0003-shared-app-builder.md
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
+ *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
+ *
+ * Why:
+ * - Standardize boot with shared `bootstrapService`: env cascade (+ safe repo-root fallback in non-prod),
+ *   optional early svcconfig mirror, logger init, then start HTTP.
+ * - Keeps user in lockstep with gateway/act boot flow.
+ *
+ * Notes:
+ * - `serviceRootAbs` is the service root (this folder), not /src.
+ * - `portEnv` is assumed to be USER_PORT; if your service uses a different name,
+ *   update the value here to match your env contract.
+ */
+
 import "tsconfig-paths/register";
+import path from "node:path";
+import { bootstrapService } from "@eff/shared/src/bootstrap/bootstrapService";
 
-import app from "./src/app";
-import { config } from "./src/config";
-import { SERVICE_NAME } from "./src/bootstrap";
-import { connectDb } from "./src/db";
-import { logger } from "@eff/shared/src/utils/logger";
-import { startHttpService } from "@eff/shared/src/bootstrap/startHttpService";
+const SERVICE_NAME = "user" as const;
 
-process.on("unhandledRejection", (reason) => {
-  logger.error({ reason }, "[user] Unhandled Promise Rejection");
+void bootstrapService({
+  serviceName: SERVICE_NAME,
+  serviceRootAbs: path.resolve(__dirname), // ← service root
+  createApp: () => {
+    // Lazy import so env cascade is applied before app/config loads
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require("./src/app");
+    return mod.default;
+  },
+  portEnv: "USER_PORT",
+  requiredEnv: [
+    "LOG_LEVEL",
+    "LOG_SERVICE_URL",
+    // If user service needs DB or other hard requirements, add them here:
+    // "USER_MONGO_URI",
+    // "S2S_JWT_SECRET",
+    // "S2S_JWT_AUDIENCE",
+  ],
+  // repoEnvFallback + startSvcconfig are enabled by default inside bootstrapService
 });
-process.on("uncaughtException", (err) => {
-  logger.error({ err }, "[user] Uncaught Exception");
-});
-
-async function start() {
-  try {
-    await connectDb();
-
-    startHttpService({
-      app,
-      port: config.port, // supports PORT=0 in tests
-      serviceName: SERVICE_NAME,
-      logger,
-    });
-  } catch (err) {
-    logger.error({ err }, "failed to start User service");
-    process.exit(1);
-  }
-}
-
-start();

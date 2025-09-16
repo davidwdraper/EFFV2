@@ -1,6 +1,6 @@
 // backend/services/geo/src/routes/geo.routes.ts
 import { Router } from "express";
-import { geoResolve } from "../controllers/geo/handlers/geo.resolve";
+import { geoResolve } from "../handlers/geo.resolve";
 
 const r = Router();
 

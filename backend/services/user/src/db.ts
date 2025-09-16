@@ -1,6 +1,6 @@
 // backend/services/user/src/db.ts
 import mongoose from "mongoose";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 import { config } from "./config";
 import { SERVICE_NAME } from "./bootstrap";
 

@@ -9,7 +9,7 @@ import {
   type UserCreate,
   type UserReplace,
   type UserPatch,
-} from "@shared/src/contracts/user.contract";
+} from "@eff/shared/src/contracts/user.contract";
 
 export {
   zUser as zUserDTO,

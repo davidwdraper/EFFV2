@@ -1,6 +1,6 @@
 // backend/services/user/src/routes/userRoutes.ts
 import { Router } from "express";
-import { cacheGet, invalidateOnSuccess } from "@shared/utils/cache";
+import { cacheGet, invalidateOnSuccess } from "@eff/shared/src/utils/cache";
 
 // 🔧 Direct handler imports (no barrels)
 import { create } from "../controllers/handlers/create";

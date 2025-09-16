@@ -1,7 +1,7 @@
 // backend/services/user/src/mappers/user.directory.mapper.ts
 import type { DirectoryDocument } from "../models/user.directory.model";
-import { clean } from "@shared/utils/clean";
-import type { DirectoryDiscovery } from "@shared/src/contracts/user.directory.contract";
+import { clean } from "@eff/shared/src/utils/clean";
+import type { DirectoryDiscovery } from "@eff/shared/src/contracts/user.directory.contract";
 
 /** Map DB document → safe discovery DTO (no email). */
 export function dbToDirectoryDiscovery(

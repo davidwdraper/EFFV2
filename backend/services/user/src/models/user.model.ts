@@ -1,6 +1,6 @@
 // backend/services/user/src/models/user.model.ts
 import mongoose, { Schema, Document } from "mongoose";
-import { normalizeEmail, emailToBucket } from "@shared/tenant/bucket";
+import { normalizeEmail, emailToBucket } from "@eff/shared/src/tenant/bucket";
 
 // Persistence-only document type (do not export to domain)
 export interface UserDocument extends Document {

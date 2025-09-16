@@ -1,6 +1,6 @@
 // backend/services/user/src/controllers/userPublicController.ts
 import type { RequestHandler } from "express";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
+import { asyncHandler } from "@eff/shared/src/middleware/asyncHandler";
 import { NAME_LOOKUP_MAX_IDS } from "../config/public";
 import * as repo from "../repo/userRepo";
 import { parseIdList, filterValidObjectIds } from "../lib/ids";

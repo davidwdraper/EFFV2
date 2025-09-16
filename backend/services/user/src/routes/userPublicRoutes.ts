@@ -1,6 +1,6 @@
 // backend/services/user/src/routes/userPublicRoutes.ts
 import { Router } from "express";
-import { cacheGet } from "@shared/utils/cache";
+import { cacheGet } from "@eff/shared/src/utils/cache";
 import { publicNames } from "../controllers/user.public.controller";
 
 const router = Router();

@@ -1,6 +1,6 @@
 // backend/services/user/src/bootstrap.ts
 import path from "path";
-import { loadEnvFileOrDie, assertRequiredEnv } from "@shared/src/env";
+import { loadEnvFileOrDie, assertRequiredEnv } from "@eff/shared/src/env";
 
 // ── Service identity ─────────────────────────────────────────────────────────
 export const SERVICE_NAME = "user" as const;

@@ -1,8 +1,8 @@
 // backend/services/user/src/controllers/handlers/replaceUser.ts
 import type { RequestHandler } from "express";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
+import { asyncHandler } from "@eff/shared/src/middleware/asyncHandler";
 import { zUserReplace } from "../../contracts/userContracts";
-import * as svc from "../../services/userService";
+import * as svc from "../../services/user.service";
 
 // PUT /api/user/:id
 export const replaceUser: RequestHandler = asyncHandler(async (req, res) => {

@@ -1,6 +1,6 @@
 // backend/services/user/src/controllers/handlers/patchUser.ts
 import type { RequestHandler } from "express";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
+import { asyncHandler } from "@eff/shared/src/middleware/asyncHandler";
 import { zUserPatch } from "../../contracts/userContracts";
 import * as svc from "../../services/user.service";
 

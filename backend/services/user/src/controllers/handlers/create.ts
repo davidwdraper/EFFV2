@@ -1,6 +1,6 @@
 // backend/services/user/src/controllers/handlers/create.ts
 import { Request, Response, NextFunction } from "express";
-import { zUserReplace } from "@shared/src/contracts/user.contract";
+import { zUserReplace } from "@eff/shared/src/contracts/user.contract";
 import * as repo from "../../repo/userRepo";
 import type { MongoServerError } from "mongodb";
 

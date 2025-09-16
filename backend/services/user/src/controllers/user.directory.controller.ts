@@ -1,6 +1,6 @@
 // backend/services/user/src/controllers/directoryController.ts
 import type { RequestHandler } from "express";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
+import { asyncHandler } from "@eff/shared/src/middleware/asyncHandler";
 import { prefixRe } from "../lib/search";
 import * as repo from "../repo/directoryRepo";
 import { dbToDirectoryDiscovery } from "src/mappers/user.directory.mapper";

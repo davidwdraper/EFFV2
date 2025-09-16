@@ -1,6 +1,6 @@
 // backend/services/user/index.ts
 import "./src/bootstrap"; // loads ENV_FILE + sets SERVICE_NAME
-import "@shared/types/express"; // <-- include Express request augmentation
+import "@eff/shared/src/types/express"; // <-- include Express request augmentation
 import "./src/log.init";
 import "tsconfig-paths/register";
 
@@ -8,8 +8,8 @@ import app from "./src/app";
 import { config } from "./src/config";
 import { SERVICE_NAME } from "./src/bootstrap";
 import { connectDb } from "./src/db";
-import { logger } from "@shared/utils/logger";
-import { startHttpService } from "@shared/src/bootstrap/startHttpService";
+import { logger } from "@eff/shared/src/utils/logger";
+import { startHttpService } from "@eff/shared/src/bootstrap/startHttpService";
 
 process.on("unhandledRejection", (reason) => {
   logger.error({ reason }, "[user] Unhandled Promise Rejection");

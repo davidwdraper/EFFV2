@@ -1,18 +1,18 @@
 // backend/services/user/src/app.ts
 import express from "express";
 
-import { coreMiddleware } from "@shared/middleware/core";
-import { makeHttpLogger } from "@shared/middleware/httpLogger";
-import { entryExit } from "@shared/middleware/entryExit";
-import { auditBuffer } from "@shared/middleware/audit";
+import { coreMiddleware } from "@eff/shared/src/middleware/core";
+import { makeHttpLogger } from "@eff/shared/src/middleware/httpLogger";
+import { entryExit } from "@eff/shared/src/middleware/entryExit";
+import { auditBuffer } from "@eff/shared/src/middleware/audit";
 import {
   notFoundProblemJson,
   errorProblemJson,
-} from "@shared/middleware/problemJson";
-import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
-import { createHealthRouter } from "@shared/src/health";
+} from "@eff/shared/src/middleware/problemJson";
+import { addTestOnlyHelpers } from "@eff/shared/src/middleware/testHelpers";
+import { createHealthRouter } from "@eff/shared/src/health";
 
-import { verifyS2S } from "@shared/middleware/verifyS2S";
+import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
 import { verifyUserAssertion } from "./middleware/verifyUserAssertion";
 
 import userRoutes from "./routes/userRoutes";

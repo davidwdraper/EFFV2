@@ -1,6 +1,6 @@
 // backend/services/user/src/routes/directoryRoutes.ts
 import { Router } from "express";
-import { cacheGet } from "@shared/utils/cache";
+import { cacheGet } from "@eff/shared/src/utils/cache";
 import { search } from "../controllers/user.directory.controller";
 
 const router = Router();

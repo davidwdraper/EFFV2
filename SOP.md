@@ -426,3 +426,9 @@ File level documentation:
 
 - Standard for all future file drops:
 - Top-level doc block referencing design/ADR docs + rich “why” inline commentary so the next engineer understands the reasoning, not just the syntax.
+
+A few things moving forward:
+
+1. path/filename as a comment at the top of each file is required
+2. If an ADR is required in the source file, ask for the next # before generating code and place a proper reference in the comment header. Remember the ADR number and increment for each ADR needed throughout the session.
+3. Provide the ADR insertion script with full details, immediately after the code block

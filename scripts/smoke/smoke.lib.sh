@@ -1,3 +1,4 @@
+# /scripts/smoke/smoke.lib.sh
 #!/usr/bin/env bash
 #
 # Shared helpers for modular smoketests (one file per test)
@@ -14,13 +15,12 @@ ACT=${ACT:-http://127.0.0.1:4002}
 USER_URL=${USER_URL:-http://127.0.0.1:4001}  # avoid clash with $USER
 
 # S2S defaults (must match backend .env.dev)
-S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-core-internal}"
+S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-s2s-secret}"
 S2S_JWT_AUDIENCE="${S2S_JWT_AUDIENCE:-internal-services}"
 
 # End-user assertion defaults (dev/test)
 USER_ASSERTION_SECRET="${USER_ASSERTION_SECRET:-devlocal-users-internal}"
 USER_ASSERTION_AUDIENCE="${USER_ASSERTION_AUDIENCE:-internal-users}"
-USER_ASSERTION_ISSUER_CORE="${USER_ASSERTION_ISSUER_CORE:-gateway-core}"
 USER_ASSERTION_ISSUER_GATEWAY="${USER_ASSERTION_ISSUER_GATEWAY:-gateway}"
 
 # Data defaults
@@ -43,6 +43,7 @@ fi
 pretty() { if [[ ${NV_USE_JQ:-1} -eq 1 ]]; then "$JQ"; else cat; fi; }
 json() { printf '%s' "$1"; }
 b64url() { openssl enc -base64 -A | tr '+/' '-_' | tr -d '='; }  # base64url
+b64url_decode() { tr '_-' '/+' | base64 -D 2>/dev/null || base64 -d 2>/dev/null; }
 
 # Unique suffix for entity names to avoid 11000 (dupe key) across reruns
 nv_unique_suffix() {
@@ -54,35 +55,28 @@ nv_unique_suffix() {
 
 # ---- Tokens -----------------------------------------------------------------
 mint_s2s () {
-  local iss="${1:-internal}" svc="${2:-act}" ttl="${3:-300}"
+  local iss="${1:-gateway}" svc="${2:-smoke}" ttl="${3:-300}"
   local now exp hdr pld sig
   now=$(date +%s); exp=$((now + ttl))
   hdr='{"alg":"HS256","typ":"JWT"}'
-  pld=$(printf '{"sub":"s2s","iss":"%s","aud":"%s","exp":%s,"svc":"%s"}' \
-        "$iss" "$S2S_JWT_AUDIENCE" "$exp" "$svc")
+  # include iat (some verifiers require it)
+  pld=$(printf '{"sub":"s2s","iss":"%s","aud":"%s","iat":%s,"exp":%s,"svc":"%s"}' \
+        "$iss" "$S2S_JWT_AUDIENCE" "$now" "$exp" "$svc")
   hdr=$(printf '%s' "$hdr" | b64url)
   pld=$(printf '%s' "$pld" | b64url)
   sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -binary -sha256 -hmac "$S2S_JWT_SECRET" | b64url)
   printf '%s.%s.%s' "$hdr" "$pld" "$sig"
 }
-TOKEN_CORE()       { mint_s2s "gateway-core" "gateway-core" 300; }
-TOKEN_CALLER_ACT() { mint_s2s "internal" "act" 300; }
-TOKEN_GATEWAY()    { mint_s2s "gateway" "gateway" 300; }
 
-mint_user_assertion_core() {
-  local uid="${1:-smoke-tests}" ttl="${2:-300}"
-  local now exp jti hdr pld sig
-  now=$(date +%s); exp=$((now + ttl))
-  jti=$(openssl rand -hex 16 2>/dev/null)
-  hdr='{"alg":"HS256","typ":"JWT"}'
-  pld=$(printf '{"sub":"%s","iss":"%s","aud":"%s","iat":%s,"exp":%s,"jti":"%s"}' \
-        "$uid" "$USER_ASSERTION_ISSUER_CORE" "$USER_ASSERTION_AUDIENCE" "$now" "$exp" "$jti")
-  hdr=$(printf '%s' "$hdr" | b64url)
-  pld=$(printf '%s' "$pld" | b64url)
-  sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -binary -sha256 -hmac "$USER_ASSERTION_SECRET" | b64url)
-  printf '%s.%s.%s' "$hdr" "$pld" "$sig"
+# Issuer selection:
+# - Default caller is gateway (edge→worker).
+# - For service→service, set SMOKE_S2S_CALLER=<slug> (act|user|geo|audit|...)
+SMOKE_S2S_CALLER="${SMOKE_S2S_CALLER:-gateway}"
+
+_smoke_s2s_token_for() {
+  local caller="${1:-$SMOKE_S2S_CALLER}"
+  mint_s2s "$caller" "$caller" 300
 }
-ASSERT_USER() { mint_user_assertion_core "${1:-smoke-tests}" "${2:-300}"; }
 
 mint_user_assertion_gateway() {
   local uid="${1:-smoke-tests}" ttl="${2:-300}"
@@ -102,30 +96,49 @@ ASSERT_USER_GATEWAY() { mint_user_assertion_gateway "${1:-smoke-tests}" "${2:-30
 # ---- SAFE header emitters (array form — use these) --------------------------
 # These populate NV_AUTH_HEADERS[@] with:
 #   -H "Authorization: Bearer <...>"  -H "X-NV-User-Assertion: <...>"
-AUTH_HEADERS_CORE_ARR() {
+AUTH_HEADERS_SVC_ARR() {
+  local caller="${1:-$SMOKE_S2S_CALLER}"
   NV_AUTH_HEADERS=(
-    -H "Authorization: Bearer $(TOKEN_CORE)"
-    -H "X-NV-User-Assertion: $(ASSERT_USER smoke-tests 300)"
-  )
-}
-AUTH_HEADERS_GATEWAY_ARR() {
-  NV_AUTH_HEADERS=(
-    -H "Authorization: Bearer $(TOKEN_GATEWAY)"
+    -H "Authorization: Bearer $(_smoke_s2s_token_for "$caller")"
     -H "X-NV-User-Assertion: $(ASSERT_USER_GATEWAY smoke-tests 300)"
   )
 }
 
-# ---- Audit diag helpers -----------------------------------------------------
-# Returns raw JSON diag or empty on failure
-nv_audit_diag_json() {
-  curl -sS "${GW%/}/__audit" || true
+# ---- Unified request wrappers ----------------------------------------------
+# nv_req [METHOD] [URL] [CALLER?] [extra curl args...]
+# CALLER defaults to $SMOKE_S2S_CALLER (default: gateway)
+nv_req() {
+  local method="$1"; shift
+  local url="$1"; shift || true
+  local caller="${1-}"; if [[ "$caller" =~ ^-H|^-d|^-X|^-s|^-- ]]; then caller=""; else shift || true; fi
+  AUTH_HEADERS_SVC_ARR "${caller:-$SMOKE_S2S_CALLER}"
+  curl -sS -X "$method" "$url" "${NV_AUTH_HEADERS[@]}" "$@"
 }
-# Extracts current WAL filepath using jq if available; else returns empty
+
+# Convenience for explicit gateway caller
+nv_req_gateway() {
+  local method="$1"; shift
+  local url="$1"; shift || true
+  nv_req "$method" "$url" "gateway" "$@"
+}
+
+# ---- Debug helpers ----------------------------------------------------------
+nv_dbg_show_s2s() {
+  local caller="${1:-$SMOKE_S2S_CALLER}"
+  local tok; tok="$(_smoke_s2s_token_for "$caller")"
+  local h p; h="${tok%%.*}"; p="${tok#*.}"; p="${p%%.*}"
+  echo "— S2S DEBUG —"
+  echo "caller=${caller} secret(len)=${#S2S_JWT_SECRET} aud=${S2S_JWT_AUDIENCE}"
+  echo "header:"; printf '%s' "$h" | b64url_decode | pretty
+  echo "payload:"; printf '%s' "$p" | b64url_decode | pretty
+}
+
+# ---- Audit diag helpers -----------------------------------------------------
+nv_audit_diag_json() { curl -sS "${GW%/}/__audit" || true; }
 nv_audit_current_file() {
   if [[ ${NV_USE_JQ:-1} -eq 1 ]] && command -v "${JQ:-jq}" >/dev/null 2>&1; then
-    nv_audit_diag_json | "${JQ:-jq}" -r '.currentFile // empty' 2>/dev/null || true
+    nv_audit_diag_json | "${JQ:-jq}" -r '.currentFile // empty' >/dev/null 2>&1 || true
   else
-    # fallback: try to grep a JSON key (naive)
     nv_audit_diag_json | sed -n 's/.*"currentFile"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
   fi
 }
@@ -169,7 +182,6 @@ payload_act_minimal() {
   }'
 }
 
-# Same as minimal but with a caller-provided name (to avoid 11000 dupe)
 payload_act_minimal_named() {
   local nm="$1"
   json "{
@@ -272,6 +284,11 @@ Env overrides:
   ACT=http://127.0.0.1:4002
   USER_URL=http://127.0.0.1:4001   # user service base URL
 
+Test tuning:
+  SMOKE_S2S_CALLER=gateway|act|user|geo|audit|...   (default: gateway)
+  S2S_JWT_SECRET=...           # must match service verifier
+  S2S_JWT_AUDIENCE=...         # must match service verifier
+
 Options:
   --list     Show enumerated tests and exit
   --no-jq    Disable jq pretty-print (raw output)
@@ -308,7 +325,6 @@ _nv_find_index_by_id() {
   echo ""; return 1
 }
 
-# Pretty name lookup
 nv_name_for_id() {
   local id="$1" idx
   idx=$(_nv_find_index_by_id "$id") || true
@@ -317,7 +333,6 @@ nv_name_for_id() {
   printf "%s" "$name"
 }
 
-# Run a single test by id in a SUBSHELL so any `exit` only kills that test
 nv_run_one() {
   local id="$1" idx rc
   idx=$(_nv_find_index_by_id "$id") || true

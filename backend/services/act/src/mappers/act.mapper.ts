@@ -21,12 +21,30 @@ import type { ActDocument } from "../models/Act";
 /**
  * Convert a Mongoose document (or plain object) to the domain shape.
  * We validate with Zod so callers never see malformed data.
+ *
+ * NOTE: Mongo gives `_id` as an ObjectId; the contract expects a string.
+ *       Normalize `_id` → string before parsing.
  */
 export function dbToDomain(input: ActDocument | unknown): Act {
-  const obj =
+  const raw =
     typeof (input as any)?.toObject === "function"
       ? (input as ActDocument).toObject({ getters: true })
       : (input as Record<string, unknown>);
+
+  // Coerce _id to string when present (ObjectId → hex string)
+  const idVal = (raw as any)?._id;
+  const normalizedId =
+    typeof idVal === "string"
+      ? idVal
+      : idVal?.toHexString?.()
+      ? idVal.toHexString()
+      : idVal?.toString?.()
+      ? idVal.toString()
+      : idVal !== undefined
+      ? String(idVal)
+      : undefined;
+
+  const obj = normalizedId !== undefined ? { ...raw, _id: normalizedId } : raw;
 
   return actContract.parse(obj);
 }

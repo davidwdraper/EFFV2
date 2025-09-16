@@ -33,7 +33,7 @@ ACT=${ACT:-http://127.0.0.1:4002}
 USER=${USER:-http://127.0.0.1:4001}
 
 # S2S minting defaults (match your .env.dev)
-S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-core-internal}"
+S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-s2s-secret}"
 S2S_JWT_AUDIENCE="${S2S_JWT_AUDIENCE:-internal-services}"
 
 # Data defaults

@@ -1,15 +1,14 @@
 // backend/services/act/src/routes/actRoutes.ts
 import { Router } from "express";
-import { cacheGet, invalidateOnSuccess } from "@shared/utils/cache";
+import { cacheGet, invalidateOnSuccess } from "@eff/shared/src/utils/cache";
 
 // 🔧 Direct handler imports (no barrels, no adapters)
-import { ping } from "../controllers/act/handlers/ping";
-import { search, byHometown } from "../controllers/act/handlers/search";
-import { list } from "../controllers/act/handlers/list";
-import { findById } from "../controllers/act/handlers/findById";
-import { create } from "../controllers/act/handlers/create";
-import { update } from "../controllers/act/handlers/update";
-import { remove } from "../controllers/act/handlers/remove";
+import { search, byHometown } from "../handlers/act/search";
+import { list } from "../handlers/act/list";
+import { findById } from "../handlers/act/findById";
+import { create } from "../handlers/act/create";
+import { update } from "../handlers/act/update";
+import { remove } from "../handlers/act/remove";
 
 const router = Router();
 
@@ -22,9 +21,6 @@ const router = Router();
  * - Delete = DELETE /:id
  * - GETs are cacheable; mutations invalidate "act" namespace
  */
-
-// one-liners only — no logic here
-router.get("/ping", ping);
 
 // Public GETs with cache (TTL via ACT_CACHE_TTL_SEC)
 router.get("/search", cacheGet("act", "ACT_CACHE_TTL_SEC"), search);

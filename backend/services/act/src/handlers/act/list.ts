@@ -1,8 +1,8 @@
 // backend/services/act/src/controllers/act/handlers/list.ts
 import type { Request, Response, NextFunction } from "express";
-import { logger } from "../../../../../shared/utils/logger";
-import ActModel from "../../../models/Act";
-import { dbToDomain } from "../../../mappers/act.mapper";
+import { logger } from "@eff/shared/src/utils/logger";
+import ActModel from "../../models/Act";
+import { dbToDomain } from "../../mappers/act.mapper";
 
 export async function list(req: Request, res: Response, next: NextFunction) {
   const requestId = String(req.headers["x-request-id"] || "");

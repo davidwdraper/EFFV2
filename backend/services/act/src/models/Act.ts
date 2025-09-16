@@ -1,78 +1,36 @@
 // backend/services/act/src/models/Act.ts
-import { Schema, Document, model } from "mongoose";
-import { normalizeActName } from "@shared/utils/normalizeActName";
+/**
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - ADRs:
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - (NEW) docs/adr/XXXX-entity-services-on-shared-createServiceApp.md
+ *
+ * Why:
+ * - Keep the Mongoose model boring: storage + indexes.
+ * - Enforce shape/rules via the shared Zod contract in a mapper at the boundary.
+ * - This avoids duplicating regex/array rules in two places.
+ */
 
-export type BlackoutDays = [
-  boolean,
-  boolean,
-  boolean,
-  boolean,
-  boolean,
-  boolean,
-  boolean
-];
+import { Schema, Document, model, models } from "mongoose";
+import { normalizeActName } from "@eff/shared/src/utils/normalizeActName";
+import type { Act } from "@eff/shared/src/contracts/act.contract";
 
-export interface ActDocument extends Document {
-  dateCreated: Date;
-  dateLastUpdated: Date;
-
-  actStatus: number;
-  actType: number[];
-  userCreateId: string;
-  userOwnerId: string;
-
-  name: string;
-  nameNormalized: string;
-  aliases?: string[];
-
-  email?: string;
-
-  homeTown: string;
-  state: string;
-  homeTownId: string;
-
-  // Optional mailing address
-  addressStreet1?: string;
-  addressStreet2?: string;
-  addressCity?: string;
-  addressState?: string;
-  addressZip?: string;
-
-  // Spatial location (always required)
-  actLoc: { type: "Point"; coordinates: [number, number] };
-
-  imageIds: string[];
-
-  websiteUrl?: string;
-  distanceWillingToTravel: number;
-  genreList: string[];
-  actDuration: number;
-  breakLength: number;
-  numberOfBreaks: number;
-
-  bookingNotes?: string;
-  earliestStartTime?: string;
-  latestStartTime?: string;
-  blackoutDays?: BlackoutDays;
-
-  validatedBy: string[];
-  invalidatedBy: string[];
+export interface ActDocument extends Document, Omit<Act, "_id"> {
+  _id: any;
 }
-
-const timeRe = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
-const zipRe = /^\d{5}(-\d{4})?$/;
 
 const ActSchema = new Schema<ActDocument>(
   {
+    // Meta / timestamps are driven by Mongoose timestamps mapping below
+    dateCreated: { type: Date },
+    dateLastUpdated: { type: Date },
+
     actStatus: { type: Number, required: true, default: 0 },
-    actType: {
-      type: [Number],
-      required: true,
-      validate: {
-        validator: (v: number[]) => Array.isArray(v) && v.length > 0,
-        message: "actType must be a non-empty array",
-      },
-    },
+
+    // Arrays: keep minimal validators; Zod does strict checks in the mapper
+    actType: { type: [Number], required: true },
 
     userCreateId: { type: String, required: true },
     userOwnerId: { type: String, required: true },
@@ -81,26 +39,22 @@ const ActSchema = new Schema<ActDocument>(
     nameNormalized: { type: String, required: true, index: true },
     aliases: { type: [String], default: [] },
 
+    // Email format is validated by the Zod contract; DB just stores it
     email: { type: String, index: true },
 
+    // Hometown (always required by contract)
     homeTown: { type: String, required: true },
     state: { type: String, required: true },
     homeTownId: { type: String, required: true },
 
-    // Optional mailing address
+    // Optional mailing address (format validated by Zod)
     addressStreet1: { type: String },
     addressStreet2: { type: String },
     addressCity: { type: String },
     addressState: { type: String },
-    addressZip: {
-      type: String,
-      validate: {
-        validator: (v: string) => !v || zipRe.test(v),
-        message: "Invalid ZIP code",
-      },
-    },
+    addressZip: { type: String },
 
-    // Spatial point: required for search, default to town coords if no address provided
+    // Spatial point (required by contract)
     actLoc: {
       type: {
         type: String,
@@ -109,16 +63,8 @@ const ActSchema = new Schema<ActDocument>(
         required: true,
       },
       coordinates: {
-        type: [Number],
+        type: [Number], // [lng, lat]
         required: true,
-        validate: {
-          validator(v: number[]) {
-            return (
-              Array.isArray(v) && v.length === 2 && v.every(Number.isFinite)
-            );
-          },
-          message: "actLoc.coordinates must be [lng, lat] numbers",
-        },
       },
     },
 
@@ -131,69 +77,33 @@ const ActSchema = new Schema<ActDocument>(
       min: 0,
       default: () => Number(process.env.ACT_DISTANCE_DEFAULT_MI || 50),
     },
-    genreList: {
-      type: [String],
-      required: true,
-      validate: {
-        validator: (v: string[]) =>
-          Array.isArray(v) &&
-          v.length > 0 &&
-          v.every((s) => typeof s === "string" && s.trim().length > 0),
-        message: "genreList must be a non-empty array of strings",
-      },
-    },
+
+    genreList: { type: [String], required: true },
+
     actDuration: { type: Number, required: true, min: 0 },
     breakLength: { type: Number, required: true, min: 0 },
     numberOfBreaks: { type: Number, required: true, min: 0 },
 
     bookingNotes: { type: String },
-    earliestStartTime: {
-      type: String,
-      validate: {
-        validator: (v: string | undefined) => v === undefined || timeRe.test(v),
-        message: 'earliestStartTime must be "HH:MM" or "HH:MM:SS"',
-      },
-    },
-    latestStartTime: {
-      type: String,
-      validate: {
-        validator: (v: string | undefined) => v === undefined || timeRe.test(v),
-        message: 'latestStartTime must be "HH:MM" or "HH:MM:SS"',
-      },
-    },
-    blackoutDays: {
-      type: [Boolean],
-      validate: {
-        validator: (v: boolean[] | undefined) =>
-          v === undefined || (Array.isArray(v) && v.length === 7),
-        message: "blackoutDays must be an array of 7 booleans",
-      },
-    },
+    earliestStartTime: { type: String },
+    latestStartTime: { type: String },
 
-    validatedBy: {
-      type: [String],
-      validate: {
-        validator: (v: string[]) => Array.isArray(v) && v.length <= 3,
-        message: "validatedBy must contain at most 3 user IDs",
-      },
-      default: [],
-    },
-    invalidatedBy: {
-      type: [String],
-      validate: {
-        validator: (v: string[]) => Array.isArray(v) && v.length <= 3,
-        message: "invalidatedBy must contain at most 3 user IDs",
-      },
-      default: [],
-    },
+    // Exactly 7 booleans — enforced by Zod; DB stores as array
+    blackoutDays: { type: [Boolean] },
+
+    validatedBy: { type: [String], default: [] },
+    invalidatedBy: { type: [String], default: [] },
   },
   {
     strict: true,
     versionKey: false,
+    bufferCommands: false,
     timestamps: { createdAt: "dateCreated", updatedAt: "dateLastUpdated" },
+    collection: "acts",
   }
 );
 
+// ---- Indexes ----
 ActSchema.index(
   { nameNormalized: 1, homeTownId: 1 },
   {
@@ -202,19 +112,23 @@ ActSchema.index(
     collation: { locale: "en", strength: 1 },
   }
 );
-
 ActSchema.index({ actLoc: "2dsphere" });
+ActSchema.index({ state: 1, homeTownId: 1 });
+ActSchema.index({ dateLastUpdated: -1, _id: -1 });
 
+// ---- Normalization (minimal) ----
+// Keep only the bits not covered by Zod (we still compute nameNormalized)
 ActSchema.pre("validate", function (next) {
   try {
     const normalized = normalizeActName(this.name);
     this.nameNormalized = normalized || this.name?.toLowerCase()?.trim() || "";
+    // quick guard for coordinates presence (shape strictly validated in Zod)
     if (
       !this.actLoc ||
       !Array.isArray(this.actLoc.coordinates) ||
       this.actLoc.coordinates.length !== 2
     ) {
-      return next(new Error("actLoc.coordinates must be provided [lng, lat]"));
+      return next(new Error("actLoc.coordinates must be [lng, lat]"));
     }
     next();
   } catch (err) {
@@ -222,5 +136,5 @@ ActSchema.pre("validate", function (next) {
   }
 });
 
-const ActModel = model<ActDocument>("Act", ActSchema);
+const ActModel = models.Act || model<ActDocument>("Act", ActSchema);
 export default ActModel;

@@ -1,12 +1,12 @@
 // backend/services/act/src/controllers/town/handlers/findById.ts
 import type { Request, Response } from "express";
-import { logger } from "../../../../../shared/utils/logger";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
-import { zodBadRequest, respond } from "@shared/src/contracts/http";
-import { notFound } from "@shared/src/http/errors";
-import * as repo from "../../../repo/townRepo";
-import { toTownListItem } from "../../../dto/townDto";
-import { zIdParam, zTownListItem } from "./schemas";
+import { logger } from "@eff/shared/src/utils/logger";
+import { asyncHandler } from "@eff/shared/src/middleware/asyncHandler";
+import { zodBadRequest, respond } from "@eff/shared/src/contracts/http";
+import { notFound } from "@eff/shared/src/http/errors";
+import * as repo from "../../repo/townRepo";
+import { toTownListItem } from "../../dto/townDto";
+import { zIdParam, zTownListItem } from "../town/schemas";
 
 /**
  * GET /towns/:id

@@ -14,7 +14,7 @@
  */
 
 import { SERVICE_NAME } from "./bootstrap";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 
 try {
   logger.debug(

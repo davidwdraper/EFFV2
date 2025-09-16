@@ -1,10 +1,26 @@
 // backend/services/act/src/repos/actRepo.ts
+/**
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - Design: docs/design/backend/act/REPO.md
+ * - ADRs:
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0027-entity-services-on-shared-createserviceapp-internal-only-s2s-no-edge-guardrails.md
+ *
+ * Why:
+ * - Act repo with strict domain↔DB mapping and typed fallbacks:
+ *   - Validate via shared contracts/mappers.
+ *   - Ensure actLoc via provided coords → address geocode → Town fallback.
+ *   - Keep Mongoose queries strongly typed with lean<T>().
+ */
+
+import axios from "axios";
 import ActModel, { ActDocument } from "../models/Act";
 import TownModel from "../models/Town";
 import { dbToDomain, domainToDb } from "../mappers/act.mapper";
-import { normalizeActName } from "../../../shared/utils/normalizeActName";
-import axios from "axios";
-import { s2sAuthHeader } from "@shared/utils/s2s";
+
+import { normalizeActName } from "@eff/shared/src/utils/normalizeActName";
+import { s2sAuthHeader } from "@eff/shared/src/utils/s2s";
 
 import type {
   CreateActDto,
@@ -12,13 +28,39 @@ import type {
   SearchByRadiusDto,
 } from "../validators/act.dto";
 
+import type { Town } from "@eff/shared/src/contracts/town.contract";
+import type { Act } from "@eff/shared/src/contracts/act.contract";
+
 type GeoPoint = { type: "Point"; coordinates: [number, number] };
+type TownLoc = Pick<Town, "_id" | "loc">;
+type ActLocFields = Pick<Act, "homeTownId" | "actLoc">;
+
 const M_PER_MI = 1609.344;
 const GATEWAY_CORE = process.env.GATEWAY_CORE_BASE_URL;
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Helper utilities
 // ──────────────────────────────────────────────────────────────────────────────
+
+function asOptString(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() !== "" ? v : undefined;
+}
+
+/** Safely pick optional address fields without assuming DTO declares them. */
+function pickAddressFields(src: unknown): {
+  addressStreet1?: string;
+  addressCity?: string;
+  addressState?: string;
+  addressZip?: string;
+} {
+  const s = src as Record<string, unknown>;
+  return {
+    addressStreet1: asOptString(s.addressStreet1),
+    addressCity: asOptString(s.addressCity),
+    addressState: asOptString(s.addressState),
+    addressZip: asOptString(s.addressZip),
+  };
+}
 
 async function callGeoService(address: string): Promise<GeoPoint | null> {
   try {
@@ -39,44 +81,50 @@ async function callGeoService(address: string): Promise<GeoPoint | null> {
       };
     }
     return null;
-  } catch (err) {
-    // Log at caller — swallow here for fallback
+  } catch {
+    // Caller logs; we fall back to Town coords.
     return null;
   }
 }
 
-// Ensure we always have a proper GeoJSON point for actLoc.
-// 1. If provided and valid, return it.
-// 2. Else, if mailing address is present, call Geo service.
-// 3. Else, fall back to the town's coordinates.
-async function ensureActLoc<
-  T extends {
-    homeTownId: string;
-    actLoc?: Partial<GeoPoint>;
-    addressStreet1?: string;
-    addressCity?: string;
-    addressState?: string;
-    addressZip?: string;
-  }
->(dto: T): Promise<Omit<T, "actLoc"> & { actLoc: GeoPoint }> {
-  // Provided and valid
+/**
+ * Ensure we always have a proper GeoJSON point for actLoc.
+ * 1. If provided and valid, return it.
+ * 2. Else, if mailing address is present, call Geo service.
+ * 3. Else, fall back to the town's coordinates.
+ */
+type EnsureActLocInput = {
+  homeTownId: string;
+  actLoc?: Partial<GeoPoint>;
+  addressStreet1?: string;
+  addressCity?: string;
+  addressState?: string;
+  addressZip?: string;
+};
+async function ensureActLoc(input: EnsureActLocInput): Promise<GeoPoint> {
+  const { actLoc } = input;
+
+  // 1) Provided and valid
   if (
-    dto.actLoc &&
-    dto.actLoc.type === "Point" &&
-    Array.isArray(dto.actLoc.coordinates) &&
-    dto.actLoc.coordinates.length === 2 &&
-    Number.isFinite(dto.actLoc.coordinates[0]) &&
-    Number.isFinite(dto.actLoc.coordinates[1])
+    actLoc &&
+    actLoc.type === "Point" &&
+    Array.isArray(actLoc.coordinates) &&
+    actLoc.coordinates.length === 2 &&
+    Number.isFinite(actLoc.coordinates[0]) &&
+    Number.isFinite(actLoc.coordinates[1])
   ) {
-    return dto as any;
+    return {
+      type: "Point",
+      coordinates: [actLoc.coordinates[0], actLoc.coordinates[1]],
+    };
   }
 
-  // If mailing address present → call Geo service
+  // 2) If mailing address present → call Geo service
   const addr = [
-    dto.addressStreet1,
-    dto.addressCity,
-    dto.addressState,
-    dto.addressZip,
+    input.addressStreet1,
+    input.addressCity,
+    input.addressState,
+    input.addressZip,
   ]
     .filter(Boolean)
     .join(", ")
@@ -84,37 +132,41 @@ async function ensureActLoc<
 
   if (addr.length > 0) {
     const geo = await callGeoService(addr);
-    if (geo) {
-      const { actLoc: _ignore, ...rest } = dto as any;
-      return { ...rest, actLoc: geo };
-    }
+    if (geo) return geo;
   }
 
-  // Fallback to Town coords
-  const town = await TownModel.findById(dto.homeTownId).lean();
-  if (!town?.loc?.coordinates) {
+  // 3) Fallback to Town coords (typed lean)
+  const town = await TownModel.findById(input.homeTownId)
+    .select({ _id: 1, loc: 1 })
+    .lean<TownLoc>()
+    .exec();
+
+  if (!town?.loc?.coordinates || town.loc.coordinates.length !== 2) {
     throw new Error("Missing town coordinates for fallback actLoc");
   }
 
-  const actLoc: GeoPoint = {
+  return {
     type: "Point",
     coordinates: [town.loc.coordinates[0], town.loc.coordinates[1]],
   };
-
-  const { actLoc: _ignore, ...rest } = dto as any;
-  return { ...rest, actLoc };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// CRUD
-// ──────────────────────────────────────────────────────────────────────────────
-
 export async function create(input: CreateActDto) {
-  const withLoc = await ensureActLoc(input);
-  const doc = await ActModel.create({
-    ...domainToDb(withLoc),
-    nameNormalized: normalizeActName(withLoc.name),
+  // Safely extract address fields and compute actLoc from the minimal subset
+  const addr = pickAddressFields(input);
+
+  const actLoc = await ensureActLoc({
+    homeTownId: (input as any).homeTownId,
+    actLoc: (input as any).actLoc as any,
+    ...addr,
   });
+
+  const doc = await ActModel.create({
+    ...domainToDb({ ...(input as any), actLoc }),
+    nameNormalized: normalizeActName((input as any).name),
+  });
+
   return dbToDomain(doc as ActDocument);
 }
 
@@ -134,18 +186,20 @@ export async function update(id: string, input: UpdateActDto) {
       input.addressState ||
       input.addressZip)
   ) {
-    const current = await ActModel.findById(id).lean();
+    // ↓↓↓ Typed lean keeps current.homeTownId & current.actLoc available
+    const current = await ActModel.findById(id)
+      .select({ homeTownId: 1, actLoc: 1 })
+      .lean<ActLocFields>()
+      .exec();
     if (!current) return null;
 
-    const refreshed = await ensureActLoc({
+    const actLoc = await ensureActLoc({
       homeTownId: (input.homeTownId as string) || current.homeTownId,
       actLoc: current.actLoc as GeoPoint,
-      addressStreet1: input.addressStreet1,
-      addressCity: input.addressCity,
-      addressState: input.addressState,
-      addressZip: input.addressZip,
+      ...pickAddressFields(input),
     });
-    payload.actLoc = refreshed.actLoc;
+
+    payload.actLoc = actLoc;
   }
 
   const updated = await ActModel.findByIdAndUpdate(id, payload, {

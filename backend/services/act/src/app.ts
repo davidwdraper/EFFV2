@@ -1,64 +1,55 @@
 // backend/services/act/src/app.ts
-import express from "express";
+/**
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ *   - docs/adr/0027-entity-services-on-shared-createServiceApp.md
+ *
+ * Why:
+ * - Entity services are internal-only behind the gateway plane. Assemble via the
+ *   shared builder: requestId → httpLogger → problemJson → trace5xx(early) →
+ *   health (open) → verifyS2S → parsers → routes → 404 → error.
+ */
 
-import { coreMiddleware } from "@shared/middleware/core";
-import { makeHttpLogger } from "@shared/middleware/httpLogger";
-import { entryExit } from "@shared/middleware/entryExit";
-import { auditBuffer } from "@shared/middleware/audit";
-import {
-  notFoundProblemJson,
-  errorProblemJson,
-} from "@shared/middleware/problemJson";
-import { addTestOnlyHelpers } from "@shared/middleware/testHelpers";
-import { createHealthRouter } from "@shared/src/health";
+import mongoose from "mongoose";
+import type express from "express";
+import { createServiceApp } from "@eff/shared/src/app/createServiceApp";
+import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
+import { addTestOnlyHelpers } from "@eff/shared/src/middleware/testHelpers";
 
 import actRoutes from "./routes/actRoutes";
 import townRoutes from "./routes/townRoutes";
 import { SERVICE_NAME, config } from "./config";
 
-// Ensure required envs (other than service name, which is from code)
-if (!config.mongoUri) {
+// Sanity: required envs (other than service name, which is from code)
+if (!config.mongoUri)
   throw new Error("Missing required env var: ACT_MONGO_URI");
+if (!config.port) throw new Error("Missing required env var: ACT_PORT");
+
+// Readiness: check Mongo connection
+async function readiness() {
+  const state = mongoose.connection?.readyState; // 1 = connected
+  return { mongo: state === 1 ? "ok" : `state=${state}` };
 }
-if (!config.port) {
-  throw new Error("Missing required env var: ACT_PORT");
+
+// Mount routes (one-liners only)
+function mountRoutes(api: express.Router) {
+  api.use("/acts", actRoutes);
+  api.use("/towns", townRoutes);
 }
 
-// Express app
-export const app = express();
-app.disable("x-powered-by");
-app.set("trust proxy", true);
+const app = createServiceApp({
+  serviceName: SERVICE_NAME,
+  apiPrefix: "/api",
+  verifyS2S, // internal-only: health is open; everything else requires S2S
+  readiness,
+  mountRoutes,
+});
 
-// Core middleware (shared)
-app.use(coreMiddleware());
-app.use(makeHttpLogger(SERVICE_NAME));
-app.use(entryExit());
-app.use(auditBuffer());
-
-// Health (EXCEPTION: stays at root, not under /api)
-app.use(
-  createHealthRouter({
-    service: SERVICE_NAME,
-    readiness: async () => ({ upstreams: { ok: true } }),
-  })
-);
-
-// --------------------------- API prefix --------------------------------------
-// Everything user-facing for this service lives under /api/*
-const api = express.Router();
-
-// Routes under /api
-api.use("/acts", actRoutes);
-api.use("/towns", townRoutes);
-
-// Mount the API router
-app.use("/api", api);
-
-// Test helpers updated to match /api paths
+// Test helpers aligned to /api paths
 addTestOnlyHelpers(app as any, ["/api/acts", "/api/towns"]);
-
-// 404 + error handlers (limit known prefixes to /api/* and /health)
-app.use(notFoundProblemJson(["/api/acts", "/api/towns", "/health"]));
-app.use(errorProblemJson());
 
 export default app;

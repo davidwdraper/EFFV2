@@ -1,10 +1,10 @@
 // backend/services/act/src/controllers/town/handlers/list.ts
 import type { Request, Response } from "express";
-import { logger } from "../../../../../shared/utils/logger";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
-import { zodBadRequest, respond } from "@shared/src/contracts/http";
-import * as repo from "../../../repo/townRepo"; // <-- missing import added
-import { toTownListItem } from "../../../dto/townDto";
+import { logger } from "@eff/shared/src/utils/logger";
+import { asyncHandler } from "@eff/shared/src/middleware/asyncHandler";
+import { zodBadRequest, respond } from "@eff/shared/src/contracts/http";
+import * as repo from "../../repo/townRepo"; // <-- missing import added
+import { toTownListItem } from "../../dto/townDto";
 import { zListQuery, zTownListItem } from "./schemas";
 
 /** Escape a string for use inside a RegExp */

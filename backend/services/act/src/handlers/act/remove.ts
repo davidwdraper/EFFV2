@@ -1,7 +1,7 @@
 // backend/services/act/src/controllers/act/handlers/remove.ts
 import type { Request, Response, NextFunction } from "express";
-import { logger } from "../../../../../shared/utils/logger";
-import ActModel from "../../../models/Act";
+import { logger } from "@eff/shared/src/utils/logger";
+import ActModel from "../../models/Act";
 
 export async function remove(req: Request, res: Response, next: NextFunction) {
   const requestId = String(req.headers["x-request-id"] || "");

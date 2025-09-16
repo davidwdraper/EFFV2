@@ -1,8 +1,8 @@
 // backend/services/act/src/controllers/act/handlers/search.ts
 import type { Request, Response, NextFunction } from "express";
-import { logger } from "../../../../../shared/utils/logger";
-import ActModel from "../../../models/Act";
-import { dbToDomain } from "../../../mappers/act.mapper";
+import { logger } from "@eff/shared/src/utils/logger";
+import ActModel from "../../models/Act";
+import { dbToDomain } from "../../mappers/act.mapper";
 
 // Basic search via querystring: ?nameLike=&genre=&actType=1,2
 export async function search(req: Request, res: Response, next: NextFunction) {

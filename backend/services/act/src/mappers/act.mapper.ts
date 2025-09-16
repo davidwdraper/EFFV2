@@ -1,67 +1,59 @@
 // backend/services/act/src/mappers/act.mapper.ts
-import type { Act } from "@shared/src/contracts/act.contract";
+/**
+ * Docs:
+ * - Contracts: @eff/shared/src/contracts/act.contract.ts
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - ADRs:
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - (NEW) docs/adr/XXXX-entity-services-on-shared-createServiceApp.md
+ *
+ * Why:
+ * - Make the shared Zod contract the single source of truth.
+ * - Validate on the way in (domain → DB) and the way out (DB → domain).
+ * - Keep DB-managed fields (_id, dates) write-protected.
+ */
+
+import { actContract, type Act } from "@eff/shared/src/contracts/act.contract";
+import { clean } from "@eff/shared/src/contracts/clean";
 import type { ActDocument } from "../models/Act";
 
-// Domain ↔ DB mappers. Keep thin; no business logic here.
+/**
+ * Convert a Mongoose document (or plain object) to the domain shape.
+ * We validate with Zod so callers never see malformed data.
+ */
+export function dbToDomain(input: ActDocument | unknown): Act {
+  const obj =
+    typeof (input as any)?.toObject === "function"
+      ? (input as ActDocument).toObject({ getters: true })
+      : (input as Record<string, unknown>);
 
-export function dbToDomain(doc: ActDocument): Act {
-  // Mongoose to plain object (toJSON honors virtuals if enabled)
-  const o = doc.toObject({ getters: true });
-  // Ensure required fields are present (runtime safety)
-  return {
-    _id: String(o._id),
-    dateCreated: o.dateCreated,
-    dateLastUpdated: o.dateLastUpdated,
-
-    actStatus: o.actStatus,
-    actType: o.actType,
-    userCreateId: o.userCreateId,
-    userOwnerId: o.userOwnerId,
-
-    name: o.name,
-    nameNormalized: o.nameNormalized,
-    aliases: o.aliases,
-
-    email: o.email,
-
-    homeTown: o.homeTown,
-    state: o.state,
-    homeTownId: o.homeTownId,
-
-    addressStreet1: o.addressStreet1,
-    addressStreet2: o.addressStreet2,
-    addressCity: o.addressCity,
-    addressState: o.addressState,
-    addressZip: o.addressZip,
-
-    actLoc: o.actLoc,
-
-    imageIds: o.imageIds ?? [],
-
-    websiteUrl: o.websiteUrl,
-    distanceWillingToTravel: o.distanceWillingToTravel,
-    genreList: o.genreList,
-    actDuration: o.actDuration,
-    breakLength: o.breakLength,
-    numberOfBreaks: o.numberOfBreaks,
-
-    bookingNotes: o.bookingNotes,
-    earliestStartTime: o.earliestStartTime,
-    latestStartTime: o.latestStartTime,
-    blackoutDays: o.blackoutDays,
-
-    validatedBy: o.validatedBy ?? [],
-    invalidatedBy: o.invalidatedBy ?? [],
-  };
+  return actContract.parse(obj);
 }
 
-// For creates/updates we accept a partial Act (DTO-validated) and pass through.
-// Any computed fields (nameNormalized, actLoc fallback) should be handled in repo/service.
+/**
+ * Prepare a (partial) domain object for persistence.
+ * - Validates against the contract (partial writes are allowed upstream via DTOs;
+ *   here we accept Partial<Act> but Zod will enforce correctness of provided fields).
+ * - Strips DB-managed fields so they can’t be set by callers.
+ */
 export function domainToDb(partial: Partial<Act>): Record<string, unknown> {
-  const o: Record<string, unknown> = { ...partial };
-  // Never allow clients to set DB-managed fields directly
-  delete o._id;
-  delete o.dateCreated;
-  delete o.dateLastUpdated;
-  return o;
+  // Validate the *provided* fields by intersecting with the contract’s keys.
+  // For full creates, upstream should validate with actContract before calling this.
+  const provided = Object.fromEntries(
+    Object.entries(partial).filter(([, v]) => v !== undefined)
+  );
+
+  // When creating/updating, we still run through the contract for safety.
+  // For partials, parse will fail if a provided field is invalid (good).
+  // We don’t require missing fields here (repo/service layer decides create vs update).
+  const validated = actContract.partial().parse(provided);
+
+  // Never allow callers to set DB-managed fields
+  delete (validated as any)._id;
+  delete (validated as any).dateCreated;
+  delete (validated as any).dateLastUpdated;
+
+  // Keep storage shape compact and stable
+  return clean(validated as Record<string, unknown>);
 }

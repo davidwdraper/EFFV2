@@ -2,9 +2,9 @@
 import type { Request, Response, NextFunction } from "express";
 import axios from "axios";
 import jwt from "jsonwebtoken";
-import { logger } from "@shared/utils/logger";
-import { createActDto } from "../../../validators/act.dto";
-import * as repo from "../../../repo/actRepo";
+import { logger } from "@eff/shared/src/utils/logger";
+import { createActDto } from "../../validators/act.dto";
+import * as repo from "../../repo/actRepo";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Strict envs (fail fast; matches .env.dev you already have)

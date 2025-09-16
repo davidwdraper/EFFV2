@@ -1,8 +1,8 @@
 // backend/services/act/src/controllers/act/handlers/getById.ts
 import type { Request, Response, NextFunction } from "express";
-import { logger } from "../../../../../shared/utils/logger";
-import { findByIdDto } from "../../../validators/act.dto";
-import * as repo from "../../../repo/actRepo";
+import { logger } from "@eff/shared/src/utils/logger";
+import { findByIdDto } from "../../validators/act.dto";
+import * as repo from "../../repo/actRepo";
 
 export async function findById(
   req: Request,

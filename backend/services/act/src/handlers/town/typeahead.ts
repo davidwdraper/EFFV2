@@ -1,12 +1,12 @@
 // backend/services/act/src/controllers/town/handlers/typeahead.ts
 import type { Request, Response } from "express";
-import { logger } from "../../../../../shared/utils/logger";
-import { asyncHandler } from "@shared/middleware/asyncHandler";
-import { zodBadRequest, respond } from "@shared/src/contracts/http";
-import { clean } from "@shared/src/contracts/clean";
-import { escapeRe } from "../../../lib/search"; // <-- corrected path
-import * as repo from "../../../repo/townRepo"; // <-- corrected path
-import { toTownTypeaheadItem } from "../../../dto/townDto"; // <-- mapper (see #3)
+import { logger } from "@eff/shared/src/utils/logger";
+import { asyncHandler } from "@eff/shared/src/middleware/asyncHandler";
+import { zodBadRequest, respond } from "@eff/shared/src/contracts/http";
+import { clean } from "@eff/shared/src/contracts/clean";
+import { escapeRe } from "../../lib/search";
+import * as repo from "../../repo/townRepo";
+import { toTownTypeaheadItem } from "../../dto/townDto";
 import { zTypeaheadQuery, zTypeaheadResponse } from "./schemas";
 
 /**

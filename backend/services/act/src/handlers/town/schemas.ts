@@ -1,6 +1,6 @@
 // backend/services/act/src/controllers/town/handlers/schemas.ts
 import { z } from "zod";
-import { zObjectId } from "@shared/src/contracts/objectId";
+import { zObjectId } from "@eff/shared/src/contracts/objectId";
 
 export const MAX_TYPEAHEAD_LIMIT = 5000;
 

@@ -9,4 +9,4 @@ export {
   updateActDto,
   searchByRadiusDto,
   findByIdDto,
-} from "../../../validators/act.dto";
+} from "../../validators/act.dto";

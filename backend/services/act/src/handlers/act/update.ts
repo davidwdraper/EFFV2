@@ -1,8 +1,8 @@
 // backend/services/act/src/controllers/act/handlers/update.ts
 import type { Request, Response, NextFunction } from "express";
-import { logger } from "../../../../../shared/utils/logger";
-import { updateActDto } from "../../../validators/act.dto";
-import * as repo from "../../../repo/actRepo";
+import { logger } from "@eff/shared/src/utils/logger";
+import { updateActDto } from "../../validators/act.dto";
+import * as repo from "../../repo/actRepo";
 
 export async function update(req: Request, res: Response, next: NextFunction) {
   const requestId = String(req.headers["x-request-id"] || "");

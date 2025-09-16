@@ -1,29 +1,32 @@
 // backend/services/act/src/models/Town.ts
-import { Schema, Document, model } from "mongoose";
-
 /**
- * Town model used by Act repo for geospatial fallbacks.
- * NOTE: _id is a STRING to match homeTownId:string across services.
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - ADRs:
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0027-entity-services-on-shared-createserviceapp-internal-only-s2s-no-edge-guardrails.md
+ *
+ * Why:
+ * - Keep the model boring (storage + indexes). Let the shared Zod contract
+ *   validate shape and rules via a mapper at the boundary.
+ * - _id remains a STRING to align with homeTownId:string across services.
  */
 
-export interface TownDocument extends Document {
+import { Schema, model, models, type Document } from "mongoose";
+import type { Town } from "@eff/shared/src/contracts/town.contract";
+
+export interface TownDocument extends Document, Omit<Town, "_id"> {
   _id: string; // string id (e.g., "austin-tx" or FIPS)
-  name: string; // "Austin"
-  state: string; // "TX"
-  lat: number;
-  lng: number;
-  county?: string;
-  population?: number;
-  fips?: string;
-  loc: { type: "Point"; coordinates: [number, number] }; // [lng, lat]
 }
 
 const TownSchema = new Schema<TownDocument>(
   {
-    _id: { type: String, required: true }, // << string, not ObjectId
+    _id: { type: String, required: true }, // string, not ObjectId
     name: { type: String, required: true, index: true },
     state: { type: String, required: true, index: true },
 
+    // Keep lat/lng for convenient numeric queries
     lat: { type: Number, required: true },
     lng: { type: Number, required: true },
 
@@ -31,6 +34,7 @@ const TownSchema = new Schema<TownDocument>(
     population: { type: Number },
     fips: { type: String },
 
+    // GeoJSON point (required). [lng, lat]
     loc: {
       type: {
         type: String,
@@ -39,29 +43,22 @@ const TownSchema = new Schema<TownDocument>(
         required: true,
       },
       coordinates: {
-        type: [Number], // [lng, lat]
+        type: [Number],
         required: true,
-        validate: {
-          validator(v: number[]) {
-            return (
-              Array.isArray(v) && v.length === 2 && v.every(Number.isFinite)
-            );
-          },
-          message: "loc.coordinates must be [lng, lat] numbers",
-        },
       },
     },
   },
   {
     strict: true,
     versionKey: false,
-    // indexes built here; connection should have bufferCommands=false at bootstrap per SOP
+    bufferCommands: false,
+    collection: "towns",
   }
 );
 
-// Fast lookups and spatial queries
-TownSchema.index({ name: 1, state: 1 }, { name: "idx_name_state" }); // non-unique: towns with same name exist across states
+// Indexes for fast lookups and spatial queries
+TownSchema.index({ name: 1, state: 1 }, { name: "idx_name_state" }); // non-unique across states
 TownSchema.index({ loc: "2dsphere" });
 
-const TownModel = model<TownDocument>("Town", TownSchema);
+const TownModel = models.Town || model<TownDocument>("Town", TownSchema);
 export default TownModel;

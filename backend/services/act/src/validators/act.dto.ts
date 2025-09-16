@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   actContract,
   timeStringSchema,
-} from "@shared/src/contracts/act.contract";
+} from "@eff/shared/src/contracts/act.contract";
 
 /**
  * CREATE (API surface):

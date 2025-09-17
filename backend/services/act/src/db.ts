@@ -1,4 +1,18 @@
 // backend/services/act/src/db.ts
+/**
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - SOP:  docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0017-environment-loading-and-validation.md
+ *   - docs/adr/0027-entity-services-on-shared-createServiceApp.md
+ *
+ * Why:
+ *   • Validate env vars early (no silent fallbacks)
+ *   • Disable mongoose buffering so connection errors surface immediately
+ *   • Log a redacted URI (no credentials)
+ *   • Wait until the connection is actually established before declaring ready
+ */
 import mongoose from "mongoose";
 import { logger } from "@eff/shared/src/utils/logger";
 

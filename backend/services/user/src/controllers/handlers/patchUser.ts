@@ -17,11 +17,13 @@ export const patchUser: RequestHandler = asyncHandler(async (req, res) => {
   if ("conflict" in out)
     return res.status(409).json({ error: "User already exists" });
 
+  /*
   req.audit?.push({
     type: "patch",
     model: "User",
     id: String(req.params.id),
     fields: Object.keys(parsed.data ?? {}),
   });
+  */
   return res.status(200).json(out.dto);
 });

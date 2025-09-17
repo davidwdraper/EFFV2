@@ -26,7 +26,6 @@ import {
   notFoundProblemJson,
   errorProblemJson,
 } from "@eff/shared/src/middleware/problemJson";
-import { addTestOnlyHelpers } from "@eff/shared/src/middleware/testHelpers";
 import { createHealthRouter } from "@eff/shared/src/health";
 import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
 
@@ -66,9 +65,6 @@ app.use(express.urlencoded({ extended: false }));
 
 // API prefix
 app.use("/api", auditRoutes);
-
-// Test helpers updated to match /api paths
-addTestOnlyHelpers(app as any, ["/api/events"]);
 
 // 404 + error handlers (limit known prefixes to /api/* and /health)
 app.use(notFoundProblemJson(["/api", "/health", "/healthz", "/readyz"]));

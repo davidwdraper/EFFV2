@@ -1,5 +1,4 @@
 // backend/services/gateway/src/app.ts
-
 /**
  * Docs:
  * - Design: docs/design/backend/gateway/app.md
@@ -46,11 +45,9 @@ import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
 import { authGate } from "./middleware/authGate";
 import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
 import { httpsOnly } from "./middleware/httpsOnly";
-
-// Proxy plane pieces
-import resolveServiceFromSlug from "./middleware/resolveServiceFromSlug";
-import { injectUpstreamIdentity } from "./middleware/injectUpstreamIdentity";
 import { serviceProxy } from "./middleware/serviceProxy";
+import { injectUpstreamIdentity } from "./middleware/injectUpstreamIdentity";
+import { proxyServiceHealth } from "./middleware/proxyServiceHealth";
 
 // Svcconfig mirror (non-blocking boot)
 import { startSvcconfigMirror } from "@eff/shared/src/svcconfig/client";
@@ -93,7 +90,7 @@ app.use(
   })
 );
 
-// ⚠️ No body parsers before proxy (streaming path)
+// No body parsers before proxy (streaming path)
 
 // Request ID → HTTP logger → 5xx trace (early)
 app.use(requestIdMiddleware());
@@ -108,6 +105,12 @@ app.use(
     readiness,
   })
 );
+
+// NEW: Service health proxy (public; unauthenticated; not audited)
+// Examples:
+//   GET /user/health/live   → http://user:PORT/health/live
+//   GET /act/health/ready   → http://act:PORT/health/ready
+app.use("/:slug/health", proxyServiceHealth());
 
 // WAL diagnostics (safe, non-billable)
 app.get("/__audit", (_req, res) => {
@@ -129,23 +132,9 @@ app.use(auditCapture());
 // Lightweight root
 app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
-/**
- * Proxy plane — svcconfig-backed resolution → identity injection → proxy
- * Contract: /api/:slug/<plural...>
- *  - slug (singular): "act", "geo", ...
- *  - remainder (plural route): "/acts", "/resolve", ...
- *
- * Order matters. Do not mount generic "/api" handlers here:
- *  1) resolveServiceFromSlug  → sets req.resolvedService.{slug, baseUrl, targetUrl}
- *  2) injectUpstreamIdentity  → ALWAYS overwrite Authorization + X-NV-User-Assertion
- *  3) serviceProxy            → forwards to targetUrl (ignorePath=true)
- */
-app.use(
-  "/api/:slug",
-  resolveServiceFromSlug,
-  injectUpstreamIdentity(),
-  serviceProxy()
-);
+// Proxy plane — inject identities then stream upstream
+app.use("/api", injectUpstreamIdentity());
+app.use("/api", serviceProxy());
 
 // Tail parsers (for any non-proxied routes; none by default)
 app.use(express.json({ limit: "2mb" }));

@@ -1,8 +1,8 @@
 {
   "v": 1,
   "snapshot": {
-    "version": "1",
-    "updatedAt": 1758072684432,
+    "version": "2",
+    "updatedAt": 1758141811155,
     "services": {
       "user": {
         "slug": "user",

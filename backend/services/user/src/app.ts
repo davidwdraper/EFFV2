@@ -1,87 +1,71 @@
 // backend/services/user/src/app.ts
-import express from "express";
+/**
+ * Docs:
+ * - Arch: docs/architecture/backend/OVERVIEW.md
+ * - SOP:  docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
+ *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ *   - docs/adr/0027-entity-services-on-shared-createServiceApp.md
+ *
+ * Why:
+ * - Match the baseline entity-service pattern used by ACT:
+ *   shared createServiceApp → health (open) → verifyS2S (internal-only) →
+ *   parsers (inside builder) → routes → 404/error tails.
+ * - Keep end-user assertion enforcement for non-GET requests behind a single
+ *   toggle (USER_ASSERTION_ENFORCE), but do it *inside* the /api mount to
+ *   preserve uniform assembly and avoid edge drift.
+ */
 
-import { coreMiddleware } from "@eff/shared/src/middleware/core";
-import { makeHttpLogger } from "@eff/shared/src/middleware/httpLogger";
-import { entryExit } from "@eff/shared/src/middleware/entryExit";
-import { auditBuffer } from "@eff/shared/src/middleware/audit";
-import {
-  notFoundProblemJson,
-  errorProblemJson,
-} from "@eff/shared/src/middleware/problemJson";
-import { addTestOnlyHelpers } from "@eff/shared/src/middleware/testHelpers";
-import { createHealthRouter } from "@eff/shared/src/health";
-
+import mongoose from "mongoose";
+import type express from "express";
+import { createServiceApp } from "@eff/shared/src/app/createServiceApp";
 import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
-import { verifyUserAssertion } from "./middleware/verifyUserAssertion";
 
 import userRoutes from "./routes/userRoutes";
 import userPublicRoutes from "./routes/userPublicRoutes";
 import directoryRoutes from "./routes/directoryRoutes";
+import { SERVICE_NAME, config } from "./config";
+import { verifyUserAssertion } from "./middleware/verifyUserAssertion";
 
-import { SERVICE_NAME } from "./config";
+// Sanity: required envs (same strictness as ACT)
+if (!config.mongoUri)
+  throw new Error("Missing required env var: USER_MONGO_URI");
+if (!config.port) throw new Error("Missing required env var: USER_PORT");
 
-export const app = express();
-app.disable("x-powered-by");
-app.set("trust proxy", true);
+// Readiness: check Mongo connection
+async function readiness() {
+  const state = mongoose.connection?.readyState; // 1 = connected
+  return { mongo: state === 1 ? "ok" : `state=${state}` };
+}
 
-// Core middleware
-app.use(coreMiddleware());
-app.use(makeHttpLogger(SERVICE_NAME));
-app.use(entryExit());
-app.use(auditBuffer());
+// Mount routes (one-liners only; match ACT’s pattern)
+function mountRoutes(api: express.Router) {
+  // End-user assertion only on non-GET methods, gated by env (default: false)
+  const enforceUA =
+    String(process.env.USER_ASSERTION_ENFORCE || "false").toLowerCase() ===
+    "true";
+  if (enforceUA) {
+    const uaMw = verifyUserAssertion({ enforce: true });
+    api.use((req, res, next) => {
+      const m = (req.method || "GET").toUpperCase();
+      if (m === "GET" || m === "HEAD" || m === "OPTIONS") return next();
+      return uaMw(req, res, next);
+    });
+  }
 
-// Health (kept at root)
-app.use(
-  createHealthRouter({
-    service: SERVICE_NAME,
-    readiness: async () => ({ upstreams: { ok: true } }),
-  })
-);
+  // CRUD mounted at plural path; compat/public kept per contract
+  api.use("/users", userRoutes);
+  api.use("/user", userPublicRoutes);
+  api.use("/user/directory", directoryRoutes);
+}
 
-// --------------------------- API prefix --------------------------------------
-const api = express.Router();
-
-// All API calls must come from an internal caller (gateway/core) with S2S
-api.use(verifyS2S);
-
-// End-user assertion only on mutating methods; gated by env
-const enforceUA =
-  String(process.env.USER_ASSERTION_ENFORCE || "false").toLowerCase() ===
-  "true";
-const uaMw = verifyUserAssertion({ enforce: enforceUA });
-api.use((req, res, next) => {
-  const m = req.method.toUpperCase();
-  if (m === "GET" || m === "HEAD" || m === "OPTIONS") return next();
-  return uaMw(req, res, next);
+const app = createServiceApp({
+  serviceName: SERVICE_NAME,
+  apiPrefix: "/api",
+  verifyS2S, // internal-only: health is open; everything else requires S2S
+  readiness,
+  mountRoutes,
 });
-
-// ✅ CRUD mounted at plural path
-api.use("/users", userRoutes);
-
-// Keep public/compat endpoints (still behind S2S plane)
-api.use("/user", userPublicRoutes);
-api.use("/user/directory", directoryRoutes);
-
-// Mount API router
-app.use("/api", api);
-
-// Test helpers updated to match mounts
-addTestOnlyHelpers(app as any, [
-  "/api/users",
-  "/api/user",
-  "/api/user/directory",
-]);
-
-// 404 + error handlers
-app.use(
-  notFoundProblemJson([
-    "/api/users",
-    "/api/user",
-    "/api/user/directory",
-    "/health",
-  ])
-);
-app.use(errorProblemJson());
 
 export default app;

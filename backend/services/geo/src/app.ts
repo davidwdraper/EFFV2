@@ -24,7 +24,6 @@
 import type express from "express";
 import { createServiceApp } from "@eff/shared/src/app/createServiceApp";
 import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
-import { addTestOnlyHelpers } from "@eff/shared/src/middleware/testHelpers";
 
 import geoRoutes from "./routes/geo.routes";
 import { SERVICE_NAME } from "./config";
@@ -47,8 +46,5 @@ const app = createServiceApp({
   readiness,
   mountRoutes,
 });
-
-// Test helpers aligned to canonical API paths
-addTestOnlyHelpers(app as any, ["/api/resolve"]);
 
 export default app;

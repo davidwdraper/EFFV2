@@ -1,38 +1,23 @@
-# /scripts/smoke/tests/009_act_crud_direct_withaddr.sh
+# /scripts/smoke/tests/010_act_crud_gateway_withaddr.sh
 #!/usr/bin/env bash
-# Act create/get/delete DIRECT (4002) WITH address → triggers Act→Geo geocode via clientHttp.
-# Self-contained: does NOT rely on TOKEN_* helpers (since they may be absent).
-# It mints an S2S JWT inline here using env S2S_JWT_SECRET / S2S_JWT_AUDIENCE.
+# Act create/get/delete VIA GATEWAY (4000) WITH address → triggers Act→Geo geocode via clientHttp.
+# This mirrors test #9 but calls through the gateway:
+#   - Base URL: $GW (default http://127.0.0.1:4000)
+#   - Route:    /api/act/acts  (slug singular + plural route)
+# Assumptions:
+#   - Gateway injects S2S + user assertion upstream (no client auth required here).
+#   - svcconfig LKG includes geo + act with outboundApiPrefix=/api.
+#   - GEO_RESOLVE_PATH=/resolve in Act env.
+#   - Shared client in Act makes S2S call to Geo and returns {lat,lng}.
 
-t9() {
+t10() {
   set -euo pipefail
 
   # ---- Config ---------------------------------------------------------------
-  local base="${ACT:-http://127.0.0.1:4002}/api/acts"
+  local base="${GW:-http://127.0.0.1:4000}/api/act/acts"
   local max_time="${NV_CURL_MAXTIME:-15}"
 
-  # Defaults must match backend .env.dev
-  local S2S_SECRET="${S2S_JWT_SECRET:-devlocal-s2s-secret}"
-  local S2S_AUD="${S2S_JWT_AUDIENCE:-internal-services}"
-
-  # ---- Minimal helpers (self-contained; don’t depend on smoke.lib.sh) -------
-  b64url() { openssl enc -base64 -A | tr '+/' '-_' | tr -d '='; }
-
-  mint_s2s_inline() {
-    # $1=iss  $2=svc  $3=ttl
-    local iss="${1:-gateway}" svc="${2:-gateway}" ttl="${3:-300}"
-    local now exp hdr pld sig
-    now=$(date +%s); exp=$((now + ttl))
-    hdr='{"alg":"HS256","typ":"JWT"}'
-    pld=$(printf '{"sub":"s2s","iss":"%s","aud":"%s","iat":%s,"exp":%s,"svc":"%s"}' \
-          "$iss" "$S2S_AUD" "$now" "$exp" "$svc")
-    hdr=$(printf '%s' "$hdr" | b64url)
-    pld=$(printf '%s' "$pld" | b64url)
-    sig=$(printf '%s.%s' "$hdr" "$pld" | \
-          openssl dgst -binary -sha256 -hmac "$S2S_SECRET" | b64url)
-    printf '%s.%s.%s' "$hdr" "$pld" "$sig"
-  }
-
+  # ---- Minimal helpers (self-contained) -------------------------------------
   unique_suffix() {
     local ts rand
     ts=$(date +%Y%m%d%H%M%S)
@@ -40,7 +25,6 @@ t9() {
     printf '%s-%s' "$ts" "$rand"
   }
 
-  # Build JSON payload with mailingAddress and unique name to avoid E11000
   payload_with_address_named() {
     local name="$1"
     cat <<JSON
@@ -70,15 +54,10 @@ t9() {
 JSON
   }
 
-  # ---- Mint caller→Act S2S (gateway issuer is acceptable in dev smokes) -----
-  local TOKEN; TOKEN="$(mint_s2s_inline "gateway" "gateway" 300)"
-  local AUTH="Authorization: Bearer ${TOKEN}"
-
-  # ---- Create (PUT) ---------------------------------------------------------
+  # ---- Create (PUT via gateway) --------------------------------------------
   local nm="SmokeTest Act $(unique_suffix)"
   local resp id
   resp=$(curl -sS -X PUT "$base" \
-    -H "$AUTH" \
     -H "Content-Type: application/json" \
     --max-time "$max_time" \
     -d "$(payload_with_address_named "$nm")")
@@ -89,16 +68,15 @@ JSON
     echo "$resp"
   fi
 
-  # Extract id
+  # Extract id (prefer jq if present)
   if command -v jq >/dev/null 2>&1; then
     id=$(echo "$resp" | jq -r '._id // .id // .data._id // .result._id // empty')
   else
-    # crude fallback: not perfect, but adequate for smoke
     id=$(echo "$resp" | sed -n 's/.*"_id"[[:space:]]*:[[:space:]]*"\([^"]\+\)".*/\1/p' | head -n1)
   fi
 
-  [[ -n "${id:-}" ]] || { echo "❌ direct PUT+address did not return _id (name=$nm)"; exit 1; }
-  echo "✅ created direct _id=$id (name=$nm)"
+  [[ -n "${id:-}" ]] || { echo "❌ gateway PUT+address did not return _id (name=$nm)"; exit 1; }
+  echo "✅ created via gateway _id=$id (name=$nm)"
 
   # ---- Geocode assertion: expect coordinates [lng, lat] ---------------------
   local lng lat
@@ -115,18 +93,18 @@ JSON
   fi
   echo "✅ geocoded coordinates present (lng=$lng lat=$lat)"
 
-  # ---- GET (read-back) ------------------------------------------------------
-  curl -sS "$base/$id" -H "$AUTH" --max-time "${NV_CURL_MAXTIME:-12}" | {
+  # ---- GET (read-back via gateway) ------------------------------------------
+  curl -sS "$base/$id" --max-time "${NV_CURL_MAXTIME:-12}" | {
     if command -v jq >/dev/null 2>&1; then jq; else cat; fi
   }
 
-  # ---- DELETE (cleanup; idempotent) -----------------------------------------
+  # ---- DELETE (cleanup; idempotent via gateway) ------------------------------
   local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$base/$id" -H "$AUTH" --max-time "${NV_CURL_MAXTIME:-12}")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$base/$id" --max-time "${NV_CURL_MAXTIME:-12}")
   case "$code" in
     200|202|204|404) echo "✅ delete $base/$id ($code)";;
     *) echo "❌ delete $base/$id failed ($code)"; exit 1;;
   esac
 }
 
-register_test 9 "act PUT+GET+DELETE direct WITH address → geocode (JWT gateway)" t9
+register_test 10 "act PUT+GET+DELETE via gateway WITH address → geocode" t10

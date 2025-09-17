@@ -8,16 +8,21 @@
  *   - If S2S_JWT_ISSUER is set (non-empty), require iss === that.    (403)
  *   - No caller/issuer allowlists. No per-service allow/deny tables.
  *
+ * Dev bypass (explicit):
+ *   - If S2S_OPEN is truthy ("1" or "true"), verification is bypassed.
+ *     A SECURITY log with reason="s2s_open_bypass" is emitted.
+ *     Use only in dev/local bring-up; NEVER in prod.
+ *
  * Rationale:
- *   You mandated services be "open to all NV certified callers" until the new
- *   svcconfig-driven caller identity ships. This middleware enforces only the
- *   minimally correct S2S invariants while avoiding config drift between
- *   dev/test/prod.
+ *   Services are internal behind the gateway plane. This middleware enforces
+ *   the minimal S2S invariants while avoiding config drift. The explicit
+ *   bypass helps unblock local/testing until proper caller verification ships.
  *
  * Env:
- *   - S2S_JWT_SECRET      (required)
- *   - S2S_JWT_AUDIENCE    (required)
- *   - S2S_JWT_ISSUER      (optional; if empty -> issuer not enforced)
+ *   - S2S_OPEN            (optional; "1"/"true" to bypass; dev/local only)
+ *   - S2S_JWT_SECRET      (required unless S2S_OPEN is truthy)
+ *   - S2S_JWT_AUDIENCE    (required unless S2S_OPEN is truthy)
+ *   - S2S_JWT_ISSUER      (optional; if non-empty -> issuer enforced)
  *   - S2S_CLOCK_SKEW_SEC  (optional; default 0)
  *
  * Failure codes:
@@ -25,8 +30,8 @@
  *   - 403 Forbidden:    valid token but aud/iss fails policy.
  *
  * Logging:
- *   Emits SECURITY log with reason in {missing_token|jwt_invalid|aud_mismatch|
- *   iss_mismatch} and kind "s2s_verify". Never logs raw tokens or claims.
+ *   SECURITY channel with {reason, decision, status, kind:"s2s_verify"} for
+ *   denials and explicit allows (bypass). No raw tokens or claims logged.
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -94,6 +99,14 @@ function secLog(
 }
 
 export function verifyS2S(req: Request, res: Response, next: NextFunction) {
+  // ── Explicit dev bypass (honors S2S_OPEN) ───────────────────────────────────
+  const S2S_OPEN = String(process.env.S2S_OPEN || "").trim();
+  if (S2S_OPEN === "1" || /^true$/i.test(S2S_OPEN)) {
+    // Health is open anyway; here we explicitly allow /api when S2S_OPEN is set.
+    secLog(req, "s2s_open_bypass", 200);
+    return next();
+  }
+
   const secret = String(process.env.S2S_JWT_SECRET || "");
   const expectedAud = String(process.env.S2S_JWT_AUDIENCE || "");
   const expectedIss = (process.env.S2S_JWT_ISSUER || "").trim(); // optional

@@ -1,22 +1,15 @@
 // backend/services/audit/src/services/ingestQueue.ts
 /**
- * NowVibin — Backend
- * File: backend/services/audit/src/services/ingestQueue.ts
- * Service Slug: audit
+ * In-memory ingest queue with on-demand flushing (no periodic timer).
  *
- * Why:
- *   In-memory ingest queue with single-flight flushing. We WAL-append in the
- *   controller, enqueue here, and immediately attempt a DB flush. If the write
- *   fails, we re-queue the batch and back off briefly.
+ * WHY THIS SHAPE
+ * --------------
+ * - Controller AWAITS WAL append (durability) → enqueue → single-flight flush.
+ * - DB failures re-queue the batch and back off briefly; WAL guarantees no loss.
+ * - No periodic tick; fewer moving parts. WAL replay is a separate startup task.
  *
- * Policy (immutable ledger):
- *   - Inserts only. No upserts. Duplicates are rejected by the unique
- *     { eventId } index and treated as benign (ignored) during bulk insert.
- *
- * References:
- *   SOP: docs/architecture/backend/SOP.md (New-Session SOP v4, Amended)
- *   Design: docs/design/backend/audit/OVERVIEW.md
- *   ADR: docs/adr/0001-audit-wal-and-batching.md
+ * Write semantics:
+ * - INSERT-ONLY. No upserts. Unique(eventId) enforces idempotency.
  */
 
 import type { AuditEvent } from "@eff/shared/src/contracts/auditEvent.contract";
@@ -26,7 +19,7 @@ import * as repo from "../repo/auditEventRepo";
 const BATCH_MAX = Number(process.env.AUDIT_BATCH_MAX || "500"); // events per DB write
 const QUEUE_MAX = Number(process.env.AUDIT_QUEUE_MAX || "50000"); // safety cap
 const RETRY_BACKOFF_MS = Number(process.env.AUDIT_RETRY_BACKOFF_MS || "1000"); // on error
-const TIME_SLICE_MS = Number(process.env.AUDIT_TIME_SLICE_MS || "25"); // yield budget
+const TIME_SLICE_MS = Number(process.env.AUDIT_TIME_SLICE_MS || "25"); // event-loop yield budget
 
 // ---- State ------------------------------------------------------------------
 const q: AuditEvent[] = [];
@@ -35,7 +28,6 @@ let retryTimer: NodeJS.Timeout | null = null;
 
 // ---- Public API -------------------------------------------------------------
 
-/** Enqueue events for background persistence and trigger a flush immediately. */
 export function enqueueForFlush(events: AuditEvent[]) {
   if (!events || events.length === 0) return;
 
@@ -52,7 +44,6 @@ export function enqueueForFlush(events: AuditEvent[]) {
   requestFlush();
 }
 
-/** For readiness endpoints. */
 export function getQueueDepth() {
   return {
     length: q.length,
@@ -62,7 +53,6 @@ export function getQueueDepth() {
   };
 }
 
-/** Tests/shutdown helper; cancels any scheduled retry. */
 export function stopFlusher() {
   if (retryTimer) {
     clearTimeout(retryTimer);
@@ -73,17 +63,12 @@ export function stopFlusher() {
 
 // ---- Internals --------------------------------------------------------------
 
-/** Trigger a flush if none is running and no backoff is in effect. */
 function requestFlush() {
   if (isFlushing) return;
-  if (retryTimer) return; // wait for backoff window to expire
+  if (retryTimer) return; // wait out backoff
   void flushLoop();
 }
 
-/**
- * Drain the queue in batches until empty or we exceed a small time slice,
- * then yield to avoid starving the event loop under heavy load.
- */
 async function flushLoop(): Promise<void> {
   if (isFlushing) return;
   isFlushing = true;
@@ -95,12 +80,9 @@ async function flushLoop(): Promise<void> {
       const batch = q.splice(0, take);
 
       try {
-        // INSERTS ONLY — ignore duplicates by eventId, do not upsert.
-        // Implementation detail lives in the repo (insertMany unordered +
-        // ignore duplicate key errors).
-        await repo.insertBatchIgnoreDuplicates(batch);
+        await repo.insertBatch(batch); // INSERT-ONLY, ignore dupes
       } catch (dbErr) {
-        // Put the batch back at the FRONT to preserve order, then back off briefly.
+        // Put back at FRONT to preserve order
         for (let i = batch.length - 1; i >= 0; i--) q.unshift(batch[i]);
 
         // eslint-disable-next-line no-console
@@ -110,20 +92,19 @@ async function flushLoop(): Promise<void> {
           }`
         );
 
-        // Schedule a one-shot retry; no periodic timer.
         if (!retryTimer) {
           retryTimer = setTimeout(() => {
             retryTimer = null;
             requestFlush();
           }, RETRY_BACKOFF_MS);
         }
-        return; // exit early; we'll retry after backoff
+        return; // exit; retry after backoff
       }
 
-      // Yield if we've hogged the loop for too long
+      // Yield if we’ve hogged the loop too long
       if (Date.now() - started > TIME_SLICE_MS) {
         queueMicrotask(() => {
-          isFlushing = false; // allow the next requestFlush() to run
+          isFlushing = false;
           requestFlush();
         });
         return;

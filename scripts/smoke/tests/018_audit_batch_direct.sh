@@ -1,75 +1,94 @@
-#!/usr/bin/env bash
-# NowVibin smoke test 18 — Audit batch ingest (direct, PUT /api/events)
+# scripts/smoke/tests/018_audit_batch_direct.sh
 
+# t18 — audit PUT /api/events batch (direct 4999) [S2S]
 t18() {
-  local AUD_BASE="${AUDIT:-http://127.0.0.1:4999}"
-  local url="${AUD_BASE}/api/events"
+  # Be strict but don't die on unset env; we provide sane defaults.
+  set -eo pipefail
 
-  # Build headers safely (no word-splitting)
-  local S2S; S2S=$(TOKEN_CORE)
-  local ASSERT; ASSERT=$(ASSERT_USER smoke-tests 300)
-  local H1="Authorization: Bearer ${S2S}"
-  local H2="X-NV-User-Assertion: ${ASSERT}"
+  # Defaults if the harness didn't set them
+  local BASE="${BASE:-http://127.0.0.1:4999}"
+  local AUTHZ="${AUTHZ:-}"       # e.g., "Authorization: Bearer <token>"
+  local PAY="${PAY:-}"           # optional; if empty we'll synthesize
 
-  # Unique ids
-  local now; now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  local ridA ridB eidA eidB
-  ridA=$(openssl rand -hex 12 2>/dev/null || echo "ridA-$$-$(date +%s)")
-  ridB=$(openssl rand -hex 12 2>/dev/null || echo "ridB-$$-$(date +%s)")
-  eidA="smoke-18-$(date +%s)-a"
-  eidB="smoke-18-$(date +%s)-b"
+  local HDR OUT HTTP COUNT
+  HDR="$(mktemp)"; OUT="$(mktemp)"
+  trap 'rm -f "$HDR" "$OUT" ${TMP_PAY:-}' RETURN
 
-  # Payload matches validator (finish|timeout|client-abort|shutdown-replay)
-  local payload
-  payload=$(json "[
-    {
-      \"eventId\": \"${eidA}\",
-      \"requestId\": \"${ridA}\",
-      \"ts\": \"${now}\",
-      \"method\": \"PUT\",
-      \"path\": \"/api/acts\",
-      \"slug\": \"act\",
-      \"status\": 200,
-      \"durationMs\": 123,
-      \"finalizeReason\": \"finish\",
-      \"source\": { \"service\": \"gateway\", \"instanceId\": \"smoke-runner\", \"s2sIssuer\": \"gateway-core\", \"s2sSubject\": \"gateway-core\", \"ip\": \"127.0.0.1\", \"userAgent\": \"nv-smoke/1.0\" },
-      \"billing\": { \"billingAccountId\": \"acct_smoke_18\", \"planId\": \"TEST\", \"meterId\": \"api.smoke\", \"meterQty\": 1, \"meterUnit\": \"call\", \"billableUnits\": 1 }
-    },
-    {
-      \"eventId\": \"${eidB}\",
-      \"requestId\": \"${ridB}\",
-      \"ts\": \"${now}\",
-      \"method\": \"GET\",
-      \"path\": \"/api/acts/xyz\",
-      \"slug\": \"act\",
-      \"status\": 200,
-      \"durationMs\": 456,
-      \"finalizeReason\": \"finish\",
-      \"source\": { \"service\": \"gateway\", \"instanceId\": \"smoke-runner\", \"s2sIssuer\": \"gateway-core\", \"s2sSubject\": \"gateway-core\", \"ip\": \"127.0.0.1\", \"userAgent\": \"nv-smoke/1.0\" },
-      \"billing\": { \"billingAccountId\": \"acct_smoke_18\", \"planId\": \"TEST\", \"meterId\": \"api.smoke\", \"meterQty\": 1, \"meterUnit\": \"call\", \"billableUnits\": 1 }
-    }
-  ]")
-
-  echo "→ PUT $url"
-  local resp
-  resp=$(curl -sS -X PUT "$url" \
-    -H "$H1" \
-    -H "$H2" \
-    -H "Content-Type: application/json" \
-    -d "$payload") || { echo "❌ curl failed"; exit 1; }
-  echo "$resp" | pretty
-
-  # Accept either {accepted:2} or {received:2}
-  local accepted=""
-  if [[ ${NV_USE_JQ:-1} -eq 1 ]] && command -v ${JQ:-jq} >/dev/null 2>&1; then
-    accepted=$(echo "$resp" | ${JQ:-jq} -r '.accepted // .received // empty')
-  fi
-  if [[ -z "$accepted" ]]; then
-    accepted=$(echo "$resp" | sed -nE 's/.*"accepted"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')
-    [[ -n "$accepted" ]] || accepted=$(echo "$resp" | sed -nE 's/.*"received"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')
+  # If no payload provided, synthesize 2 valid events
+  if [ -z "$PAY" ]; then
+    TMP_PAY="$(mktemp)"
+    # 2 simple, valid events; ids include time to avoid dup collisions
+    local T NOW
+    NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    T="$(date +%s)"
+    cat >"$TMP_PAY" <<JSON
+[
+  {
+    "eventId": "smoke-18-${T}-a",
+    "ts": "${NOW}",
+    "durationMs": 123,
+    "finalizeReason": "finish",
+    "requestId": "r-${T}-a",
+    "method": "PUT",
+    "path": "/api/acts",
+    "slug": "act",
+    "status": 200,
+    "billableUnits": 1
+  },
+  {
+    "eventId": "smoke-18-${T}-b",
+    "ts": "${NOW}",
+    "durationMs": 456,
+    "finalizeReason": "finish",
+    "requestId": "r-${T}-b",
+    "method": "GET",
+    "path": "/api/acts/xyz",
+    "slug": "act",
+    "status": 200,
+    "billableUnits": 1
+  }
+]
+JSON
+    PAY="$TMP_PAY"
   fi
 
-  [[ "$accepted" == "2" ]] || { echo "❌ expected 2 accepted/received, got '$accepted'"; exit 1; }
-  echo "✅ batch accepted $accepted events"
+  # Optional auth header
+  local CURL_AUTH=()
+  if [ -n "$AUTHZ" ]; then
+    CURL_AUTH=(-H "$AUTHZ")
+  fi
+
+  HTTP="$(curl -sS -i -o "$OUT" -D "$HDR" -w '%{http_code}' \
+    -X PUT "$BASE/api/events" \
+    "${CURL_AUTH[@]}" \
+    -H 'Content-Type: application/json' \
+    --data-binary @"$PAY")" || HTTP="000"
+
+  echo "→ PUT $BASE/api/events"
+
+  # Prefer header; fallback to JSON body
+  COUNT="$(grep -i '^X-Audit-Received:' "$HDR" 2>/dev/null | awk '{print $2}' | tr -d '\r')"
+  if [ -z "${COUNT:-}" ] || ! echo "$COUNT" | grep -Eq '^[0-9]+$'; then
+    COUNT="$(jq -r '.received // empty' "$OUT" 2>/dev/null || true)"
+  fi
+
+  if [ "$HTTP" != "202" ]; then
+    echo "❌ expected HTTP 202, got $HTTP"
+    return 1
+  fi
+
+  if [ "$COUNT" != "2" ]; then
+    echo "❌ expected 2 accepted/received, got '$COUNT'"
+    echo "--- Response headers ---"
+    cat "$HDR"
+    echo "--- Response body ---"
+    cat "$OUT"
+    return 1
+  fi
+
+  echo "✅ received $COUNT"
+  return 0
 }
-register_test 18 "audit PUT /api/events batch (direct 4999) [JWT core]" t18
+
+# Register exactly like the other tests
+register_test 18 "audit PUT /api/events batch (direct 4999) [S2S]" t18

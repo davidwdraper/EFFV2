@@ -2,87 +2,110 @@
 /**
  * NowVibin — Backend
  * File: backend/services/audit/src/repo/auditEventRepo.ts
- * Service Slug: audit
+ * Service: audit
  *
  * Why:
  *   Centralized persistence for the AuditEvent ledger with INSERT-ONLY semantics.
- *   - Idempotency comes from a unique { eventId } index.
- *   - Duplicate-key errors are benign and ignored.
+ *   - Idempotency via unique { eventId }.
+ *   - Duplicate-key (11000) batches are *not errors*; we return counts.
  *   - No updates, no deletes — immutable ledger.
- *
- * References:
- *   SOP: docs/architecture/backend/SOP.md (New-Session SOP v4, Amended)
- *   Design: docs/design/backend/audit/OVERVIEW.md
- *   ADR: docs/adr/0001-audit-wal-and-batching.md
  */
 
 import type { AuditEvent } from "@eff/shared/src/contracts/auditEvent.contract";
-import AuditEventModel from "../models/auditEvent.model"; // ← matches provided model file name
+import AuditEventModel from "../models/auditEvent.model";
 import { Types } from "mongoose";
 
-// ---------------------------------------------------------------------------
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+function num(v: any): number | undefined {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** True if this write error object represents a duplicate-key error (11000). */
+function isDupErrObj(we: any): boolean {
+  const c = num(we?.code) ?? num(we?.err?.code);
+  return c === 11000;
+}
+
+/** Extract write error objects (driver/mongoose vary on shape). */
+function getWriteErrors(err: any): any[] {
+  if (Array.isArray(err?.writeErrors)) return err.writeErrors;
+  // Some shapes: err.result?.result?.writeErrors
+  if (Array.isArray(err?.result?.result?.writeErrors))
+    return err.result.result.writeErrors;
+  if (Array.isArray(err?.result?.writeErrors)) return err.result.writeErrors;
+  return [];
+}
+
+/** True if the bulk failure is *only* duplicates. */
+function isDupOnlyBulkError(err: any): boolean {
+  // Top-level “everything was a dup” case
+  if (num(err?.code) === 11000) return true;
+  const wes = getWriteErrors(err);
+  return wes.length > 0 && wes.every(isDupErrObj);
+}
+
+/** Count duplicates from a bulk error (best-effort across shapes). */
+function countDupes(err: any): number {
+  if (num(err?.code) === 11000) {
+    // Best-effort: assume entire batch duped when driver collapses
+    const attempted =
+      num(err?.result?.result?.nInserted) !== undefined
+        ? num(err?.result?.result?.nInserted)!
+        : undefined;
+    // If we can’t read attempted reliably here, the caller supplies it.
+    // We’ll override with caller’s attempted as needed.
+  }
+  const wes = getWriteErrors(err);
+  return (
+    wes.filter(isDupErrObj).length || (num(err?.code) === 11000 ? Infinity : 0)
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Write path (insert-only, ignore duplicates)
-// ---------------------------------------------------------------------------
+// ──────────────────────────────────────────────────────────────────────────────
 
 export type InsertSummary = {
-  attempted: number; // events we tried to persist
-  inserted: number; // inserted first-time (not previously seen)
-  duplicates: number; // already present (ignored)
+  attempted: number;
+  inserted: number;
+  duplicates: number;
 };
 
-/**
- * Insert a batch of AuditEvents.
- * - Unordered insertMany so independent docs can succeed.
- * - Duplicate-key errors (11000 on eventId) are treated as NO-OP and counted.
- * - Any non-duplicate error bubbles up to the caller.
- */
-export async function insertBatchIgnoreDuplicates(
+export async function insertBatch(
   events: AuditEvent[]
 ): Promise<InsertSummary> {
   const attempted = Array.isArray(events) ? events.length : 0;
   if (!attempted) return { attempted: 0, inserted: 0, duplicates: 0 };
 
   try {
-    const res = await AuditEventModel.insertMany(events, {
-      ordered: false,
-      // strict mode already on schema; we rely on upstream validation
-    });
-
-    // If insertMany resolves, all inserted; no duplicates were fatal.
+    const res = await AuditEventModel.insertMany(events, { ordered: false });
     const inserted = Array.isArray(res) ? res.length : attempted;
-    const duplicates = attempted - inserted; // typically 0 here
-    return { attempted, inserted, duplicates: Math.max(0, duplicates) };
+    const duplicates = Math.max(0, attempted - inserted);
+    return { attempted, inserted: Math.max(0, inserted), duplicates };
   } catch (err: any) {
-    // Mongoose/Mongo bulk write error shape:
-    // err.code === 11000 for single dup; bulk has err.writeErrors[i].code === 11000
-    // We ignore ONLY duplicate key errors; anything else is rethrown.
-    const writeErrors: any[] = Array.isArray(err?.writeErrors)
-      ? err.writeErrors
-      : [];
-
-    const allDupes =
-      writeErrors.length > 0 &&
-      writeErrors.every((we) => Number(we?.code) === 11000);
-
-    if (allDupes) {
-      const duplicates = writeErrors.length;
-      const inserted = attempted - duplicates;
-      return {
-        attempted,
-        inserted: Math.max(0, inserted),
-        duplicates: Math.max(0, duplicates),
-      };
+    if (isDupOnlyBulkError(err)) {
+      // When driver throws despite partial success, we can’t perfectly know
+      // how many made it; safest is: duplicates = count of dup write errors,
+      // inserted = attempted - duplicates (never negative).
+      let d = countDupes(err);
+      if (!Number.isFinite(d) || d < 0) d = attempted; // fallback if collapsed top-level 11000
+      const inserted = Math.max(0, attempted - d);
+      return { attempted, inserted, duplicates: Math.max(0, d) };
     }
-
-    // Mixed/other errors → surface to caller so queue requeues/backoffs.
     const e = err as Error;
     e.message = `[audit.repo] insertMany failed (attempted=${attempted}): ${e.message}`;
     throw e;
   }
 }
 
-// ---------------------------------------------------------------------------
-/** Point lookup by `eventId` (investigations start here often). */
+// ──────────────────────────────────────────────────────────────────────────────
+// Read path (immutable)
+// ──────────────────────────────────────────────────────────────────────────────
+
 export async function getByEventId(
   eventId: string
 ): Promise<AuditEvent | null> {
@@ -96,16 +119,9 @@ export async function getByEventId(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Read path (immutable, cursor-paginated listing)
-// ---------------------------------------------------------------------------
-
 export type ListFilters = {
-  // Time window (ISO strings, inclusive)
   fromTs?: string;
   toTs?: string;
-
-  // Common filters
   slug?: string;
   requestId?: string;
   userSub?: string;
@@ -113,19 +129,15 @@ export type ListFilters = {
   statusMin?: number;
   statusMax?: number;
   durationReliable?: boolean;
-
-  // Billing filters
   billingAccountId?: string;
   billingSubaccountId?: string;
-
-  // Pagination
-  limit?: number; // default 100, max 1000
+  limit?: number;
   cursor?: string; // base64 of {"ts":"<iso>","_id":"<hex>"} for sort ts:-1,_id:-1
 };
 
 export type ListResult = {
   items: AuditEvent[];
-  nextCursor?: string; // present iff there might be more
+  nextCursor?: string;
 };
 
 export async function listEvents(
@@ -148,8 +160,6 @@ export async function listEvents(
   } = filters;
 
   const cap = Math.min(Math.max(1, limit), 1000);
-
-  // Build query
   const q: any = {};
 
   // Time window (inclusive)
@@ -178,11 +188,12 @@ export async function listEvents(
   // Cursor decode for sort (ts:-1, _id:-1)
   if (cursor) {
     try {
-      const decoded = JSON.parse(Buffer.from(cursor, "utf8").toString());
+      const decoded = JSON.parse(
+        Buffer.from(cursor, "base64").toString("utf8")
+      );
       const cTs = String(decoded?.ts || "");
       const cId = String(decoded?._id || "");
       if (cTs && cId && Types.ObjectId.isValid(cId)) {
-        // ts < cTs OR (ts == cTs AND _id < cId)
         q.$or = [
           { ts: { $lt: cTs } },
           { ts: cTs, _id: { $lt: new Types.ObjectId(cId) } },
@@ -195,7 +206,6 @@ export async function listEvents(
     }
   }
 
-  // Execute
   try {
     const docs = await AuditEventModel.find(q)
       .sort({ ts: -1, _id: -1 })
@@ -205,7 +215,6 @@ export async function listEvents(
 
     const items = (docs as unknown as AuditEvent[]) || [];
 
-    // nextCursor if page full
     let nextCursor: string | undefined;
     if (items.length === cap) {
       const last: any = docs[docs.length - 1];
@@ -225,7 +234,6 @@ export async function listEvents(
   }
 }
 
-/** Convenience: list events for a billing account in a time window. */
 export async function listByBillingAccount(params: {
   billingAccountId: string;
   fromTs?: string;

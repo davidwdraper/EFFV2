@@ -1,28 +1,42 @@
 // backend/services/audit/src/config.ts
 /**
- * Docs:
- * - Arch: docs/architecture/backend/OVERVIEW.md
- * - Design: docs/design/backend/audit/OVERVIEW.md
- * - Boot: docs/architecture/backend/BOOTSTRAP.md
+ * NowVibin — Backend
+ * File: backend/services/audit/src/config.ts
  *
  * Why:
- * - Centralized, typed config for the Audit service.
- * - Turns this file into a real module via explicit exports to satisfy TS.
+ *   SOP-compliant config:
+ *   - No dotenv loading here (bootstrap handles env cascade).
+ *   - No silent defaults — required vars must be present/valid.
+ *   - Fail fast at import time to surface misconfig early.
+ *
+ * Notes:
+ *   Service name is intentionally NOT exported here; it’s baked into index.ts.
  */
 
-export const SERVICE_NAME = "audit";
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (v == null || String(v).trim() === "") {
+    throw new Error(`Missing required env var: ${name}`);
+  }
+  return String(v);
+}
 
-export type AuditConfig = {
-  port: number;
-  mongoUri: string;
-  exposeHealth: boolean;
-};
+function requireNumber(name: string): number {
+  const raw = requireEnv(name);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    throw new Error(`Invalid number for env var ${name}: "${raw}"`);
+  }
+  return n;
+}
 
-const num = (v: string | undefined) => Number(v ?? NaN);
+export const config = {
+  // pass-through (optional)
+  env: process.env.NODE_ENV,
 
-export const config: AuditConfig = {
-  port: num(process.env.AUDIT_PORT),
-  mongoUri: process.env.AUDIT_MONGO_URI || "",
-  exposeHealth:
-    String(process.env.EXPOSE_HEALTH || "").toLowerCase() === "true",
-};
+  // required
+  port: requireNumber("AUDIT_PORT"),
+  mongoUri: requireEnv("AUDIT_MONGO_URI"),
+  logLevel: requireEnv("LOG_LEVEL"),
+  logServiceUrl: requireEnv("LOG_SERVICE_URL"),
+} as const;

@@ -1,83 +1,88 @@
+// backend/services/audit/src/repo/auditEventRepo.ts
 /**
- * Docs:
- * - Arch: docs/architecture/backend/OVERVIEW.md
- * - Design: docs/design/backend/audit/OVERVIEW.md
- * - Security: docs/architecture/shared/SECURITY.md
- * - Scaling: docs/architecture/backend/SCALING.md
- * - ADRs: docs/adr/0001-audit-wal-and-batching.md
+ * NowVibin — Backend
+ * File: backend/services/audit/src/repo/auditEventRepo.ts
+ * Service Slug: audit
  *
  * Why:
- * - Centralized persistence for the AuditEvent ledger:
- *   - Idempotent insert-only writes (bulk upsert on `eventId`)
- *   - Immutable reads for investigations and billing exports
- * - We deliberately do NOT support update/delete to preserve audit credibility.
+ *   Centralized persistence for the AuditEvent ledger with INSERT-ONLY semantics.
+ *   - Idempotency comes from a unique { eventId } index.
+ *   - Duplicate-key errors are benign and ignored.
+ *   - No updates, no deletes — immutable ledger.
+ *
+ * References:
+ *   SOP: docs/architecture/backend/SOP.md (New-Session SOP v4, Amended)
+ *   Design: docs/design/backend/audit/OVERVIEW.md
+ *   ADR: docs/adr/0001-audit-wal-and-batching.md
  */
 
+import type { AuditEvent } from "@eff/shared/src/contracts/auditEvent.contract";
+import AuditEventModel from "../models/auditEvent.model"; // ← matches provided model file name
 import { Types } from "mongoose";
-import type { AuditEvent } from "@shared/src/contracts/auditEvent.contract";
-import AuditEventModel from "../models/auditEvent.model";
 
 // ---------------------------------------------------------------------------
-// Write path (idempotent inserts)
+// Write path (insert-only, ignore duplicates)
 // ---------------------------------------------------------------------------
 
-export type UpsertSummary = {
+export type InsertSummary = {
   attempted: number; // events we tried to persist
-  upserted: number; // inserted first-time (not previously seen)
-  duplicates: number; // already present (no-op by design)
+  inserted: number; // inserted first-time (not previously seen)
+  duplicates: number; // already present (ignored)
 };
 
 /**
- * Bulk upsert a batch of AuditEvents (idempotent on `eventId`).
- *
- * WHY:
- * - Network/WAL gives us at-least-once delivery; this ensures exactly-once effect.
- * - We use `$setOnInsert` ONLY so duplicates never mutate existing rows.
+ * Insert a batch of AuditEvents.
+ * - Unordered insertMany so independent docs can succeed.
+ * - Duplicate-key errors (11000 on eventId) are treated as NO-OP and counted.
+ * - Any non-duplicate error bubbles up to the caller.
  */
-export async function upsertBatch(
+export async function insertBatchIgnoreDuplicates(
   events: AuditEvent[]
-): Promise<UpsertSummary> {
+): Promise<InsertSummary> {
   const attempted = Array.isArray(events) ? events.length : 0;
-  if (!attempted) return { attempted: 0, upserted: 0, duplicates: 0 };
+  if (!attempted) return { attempted: 0, inserted: 0, duplicates: 0 };
 
-  // Build idempotent ops
-  let ops: Parameters<typeof AuditEventModel.bulkWrite>[0];
   try {
-    ops = events.map((e) => ({
-      updateOne: {
-        filter: { eventId: e.eventId },
-        update: { $setOnInsert: e },
-        upsert: true,
-      },
-    }));
-  } catch (err) {
-    const e = err as Error;
-    e.message = `[audit.repo] build bulk ops failed: ${e.message}`;
-    throw e;
-  }
+    const res = await AuditEventModel.insertMany(events, {
+      ordered: false,
+      // strict mode already on schema; we rely on upstream validation
+    });
 
-  // Execute
-  try {
-    const res: any = await AuditEventModel.bulkWrite(ops, { ordered: false });
-    const upserted = Number(res?.upsertedCount || 0);
-    return { attempted, upserted, duplicates: attempted - upserted };
-  } catch (err) {
+    // If insertMany resolves, all inserted; no duplicates were fatal.
+    const inserted = Array.isArray(res) ? res.length : attempted;
+    const duplicates = attempted - inserted; // typically 0 here
+    return { attempted, inserted, duplicates: Math.max(0, duplicates) };
+  } catch (err: any) {
+    // Mongoose/Mongo bulk write error shape:
+    // err.code === 11000 for single dup; bulk has err.writeErrors[i].code === 11000
+    // We ignore ONLY duplicate key errors; anything else is rethrown.
+    const writeErrors: any[] = Array.isArray(err?.writeErrors)
+      ? err.writeErrors
+      : [];
+
+    const allDupes =
+      writeErrors.length > 0 &&
+      writeErrors.every((we) => Number(we?.code) === 11000);
+
+    if (allDupes) {
+      const duplicates = writeErrors.length;
+      const inserted = attempted - duplicates;
+      return {
+        attempted,
+        inserted: Math.max(0, inserted),
+        duplicates: Math.max(0, duplicates),
+      };
+    }
+
+    // Mixed/other errors → surface to caller so queue requeues/backoffs.
     const e = err as Error;
-    e.message = `[audit.repo] bulk upsert failed (attempted=${attempted}): ${e.message}`;
+    e.message = `[audit.repo] insertMany failed (attempted=${attempted}): ${e.message}`;
     throw e;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Read path (immutable)
-// ---------------------------------------------------------------------------
-
-/**
- * Point lookup by `eventId`.
- *
- * WHY:
- * - Investigations often start from a UUID seen in logs/invoices.
- */
+/** Point lookup by `eventId` (investigations start here often). */
 export async function getByEventId(
   eventId: string
 ): Promise<AuditEvent | null> {
@@ -91,8 +96,12 @@ export async function getByEventId(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Read path (immutable, cursor-paginated listing)
+// ---------------------------------------------------------------------------
+
 export type ListFilters = {
-  // Time window (ISO strings). Inclusive bounds.
+  // Time window (ISO strings, inclusive)
   fromTs?: string;
   toTs?: string;
 
@@ -101,8 +110,8 @@ export type ListFilters = {
   requestId?: string;
   userSub?: string;
   finalizeReason?: "finish" | "timeout" | "client-abort" | "shutdown-replay";
-  statusMin?: number; // e.g., 200
-  statusMax?: number; // e.g., 399
+  statusMin?: number;
+  statusMax?: number;
   durationReliable?: boolean;
 
   // Billing filters
@@ -119,14 +128,6 @@ export type ListResult = {
   nextCursor?: string; // present iff there might be more
 };
 
-/**
- * List events by time window + filters with cursor pagination.
- *
- * WHY this shape:
- * - Sort `(ts:-1, _id:-1)` gives stable scans on an append-only ledger.
- * - Cursor avoids skip/limit cliffs on large collections.
- * - Filters match typical investigations and billing exports.
- */
 export async function listEvents(
   filters: ListFilters = {}
 ): Promise<ListResult> {
@@ -177,9 +178,7 @@ export async function listEvents(
   // Cursor decode for sort (ts:-1, _id:-1)
   if (cursor) {
     try {
-      const decoded = JSON.parse(
-        Buffer.from(cursor, "base64").toString("utf8")
-      );
+      const decoded = JSON.parse(Buffer.from(cursor, "utf8").toString());
       const cTs = String(decoded?.ts || "");
       const cId = String(decoded?._id || "");
       if (cTs && cId && Types.ObjectId.isValid(cId)) {
@@ -226,10 +225,7 @@ export async function listEvents(
   }
 }
 
-/**
- * Convenience: list events for a billing account in a time window.
- * (Thin wrapper over listEvents with the right filters wired.)
- */
+/** Convenience: list events for a billing account in a time window. */
 export async function listByBillingAccount(params: {
   billingAccountId: string;
   fromTs?: string;

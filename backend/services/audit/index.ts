@@ -1,82 +1,64 @@
 // backend/services/audit/index.ts
 /**
- * Docs:
- * - Arch: docs/architecture/backend/OVERVIEW.md
- * - Design: docs/design/backend/audit/OVERVIEW.md
- * - Boot: docs/architecture/backend/BOOTSTRAP.md
+ * NowVibin — Backend
+ * File: backend/services/audit/index.ts
+ * Service Slug: audit
  *
  * Why:
- * - Keep entrypoint boring and reliable:
- *   1) Load env (via ./src/bootstrap which uses @shared/env).
- *   2) Connect DB so WAL replay has a live target.
- *   3) Replay WAL before accepting traffic (durability catch-up).
- *   4) Start HTTP server with shared helper (structured logs).
- *   5) Handle signals here (graceful shutdown) — avoids coupling to startHttpService types.
+ *   Standardize boot using shared `bootstrapService` so Mongo is connected and
+ *   the Audit WAL is replayed **before** the HTTP server binds its port.
+ *   Matches the Act/User boot flow for zero-drift operations.
+ *
+ * References:
+ *   SOP: docs/architecture/backend/SOP.md (New-Session SOP v4, Amended)
+ *   Arch: docs/architecture/backend/OVERVIEW.md
+ *   Boot: docs/architecture/backend/BOOTSTRAP.md
+ *   ADR: docs/adr/0003-shared-app-builder.md
+ *   ADR: docs/adr/0017-environment-loading-and-validation.md
+ *   ADR: docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
+ *   ADR: docs/adr/0027-entity-services-on-shared-createServiceApp.md
  */
 
-import "./src/bootstrap/bootstrap"; // loads env in standard order + asserts required vars
-import "./src/log.init"; // pino sinks / bindings
 import "tsconfig-paths/register";
+import path from "node:path";
+import { bootstrapService } from "@eff/shared/src/bootstrap/bootstrapService";
 
-import app from "./src/app";
-import { config } from "./src/config";
-import { SERVICE_NAME } from "./src/bootstrap/bootstrap";
-import { connectDb, disconnectDb } from "./src/db";
-import { logger } from "@eff/shared/src/utils/logger";
-import { startHttpService } from "@eff/shared/src/bootstrap/startHttpService";
-import { preflightWALReplay } from "./src/bootstrap/walbootstrap";
+const SERVICE_NAME = "audit" as const;
 
-// ---- Top-level process guards ----------------------------------------------
-process.on("unhandledRejection", (reason) => {
-  logger.error({ reason }, `[${SERVICE_NAME}] Unhandled Promise Rejection`);
-});
-process.on("uncaughtException", (err) => {
-  logger.error({ err }, `[${SERVICE_NAME}] Uncaught Exception`);
-});
+void bootstrapService({
+  serviceName: SERVICE_NAME,
+  serviceRootAbs: path.resolve(__dirname), // service root (this folder), not /src
 
-async function start() {
-  try {
-    // 1) DB first — needed for WAL replay upserts
+  // Connect DB and replay WAL BEFORE binding the port
+  beforeStart: async () => {
+    const { connectDb } = await import("./src/db");
+    const { preflightWALReplay } = await import("./src/bootstrap/walbootstrap");
     await connectDb();
-
-    // 2) Durability catch-up before we accept live traffic
     await preflightWALReplay();
+  },
 
-    // 3) Start HTTP server
-    const server: any = startHttpService({
-      app,
-      port: config.port,
-      serviceName: SERVICE_NAME,
-      logger,
-    });
+  // Lazy import so env cascade is applied before app/config loads
+  createApp: () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require("./src/app");
+    return mod.default;
+  },
 
-    // 4) Graceful shutdown (signals) — do not depend on startHttpService options
-    const shutdown = async (signal: NodeJS.Signals) => {
-      logger.info({ signal }, `[${SERVICE_NAME}] shutdown requested`);
-      try {
-        // Close HTTP listener if possible (best-effort)
-        if (server && typeof server.close === "function") {
-          await new Promise<void>((resolve) => server.close(() => resolve()));
-        }
-      } catch (err) {
-        logger.warn({ err }, `[${SERVICE_NAME}] server.close failed`);
-      }
-      try {
-        await disconnectDb();
-      } catch (err) {
-        logger.warn({ err }, `[${SERVICE_NAME}] disconnectDb failed`);
-      } finally {
-        process.exit(0);
-      }
-    };
+  portEnv: "AUDIT_PORT",
 
-    process.on("SIGTERM", () => void shutdown("SIGTERM"));
-    process.on("SIGINT", () => void shutdown("SIGINT"));
-  } catch (err) {
-    logger.error({ err }, `failed to start ${SERVICE_NAME} service`);
-    // Fail fast so container/orchestrator can restart us
-    process.exit(1);
-  }
-}
+  requiredEnv: [
+    // logging plane
+    "LOG_LEVEL",
+    "LOG_SERVICE_URL",
+    // database
+    "AUDIT_MONGO_URI",
+    // internal S2S plane
+    "S2S_JWT_SECRET",
+    "S2S_JWT_AUDIENCE",
+    // svcconfig snapshot inputs for httpClientBySlug (parity with Act/User)
+    "SVCCONFIG_BASE_URL",
+    "SVCCONFIG_LKG_PATH",
+  ],
 
-start();
+  // repoEnvFallback + startSvcconfig use sane defaults from bootstrapService
+});

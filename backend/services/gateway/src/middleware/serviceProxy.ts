@@ -8,50 +8,38 @@
  *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
  *
  * Why:
- * - Thin transport-only reverse proxy for `/api/<slug>/<rest...>`.
- * - Streams bodies; strips hop-by-hop headers; never forwards client Authorization.
+ * - Thin transport-only reverse proxy for `/api/:slug/<plural...>`.
+ * - Streams bodies; strips hop-by-hop headers; **preserves** gateway-minted
+ *   Authorization and X-NV-User-Assertion (set by injectUpstreamIdentity()).
+ *
+ * Notes:
+ * - This version relies on resolveServiceFromSlug() having already set
+ *   (req as any).resolvedService = { slug, baseUrl, targetUrl }.
+ * - We DO NOT recompute the target from req.url; that caused loss of "/acts".
  */
-import type { RequestHandler } from "express";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";
 import { logger } from "@eff/shared/src/utils/logger";
-import { ROUTE_ALIAS } from "../config";
-import { getSvcconfigSnapshot } from "@eff/shared/src/svcconfig/client";
-import type { ServiceConfig } from "@eff/shared/src/contracts/svcconfig.contract";
 
 export function serviceProxy(): RequestHandler {
-  return (req, res) => {
-    const segments = (req.url || "/").split("?")[0].split("/").filter(Boolean);
-    const seg = segments[0] || "";
+  return (req: Request, res: Response, _next: NextFunction) => {
+    const r = (req as any).resolvedService as
+      | { slug: string; baseUrl: string; targetUrl: string }
+      | undefined;
 
-    if (seg === "api") {
-      logger.error({ url: req.url, path: req.path }, "[gateway] proxy at root");
-      return res.status(500).json({
+    if (!r?.targetUrl) {
+      return res.status(502).json({
         type: "about:blank",
-        title: "Gateway Misconfiguration",
-        status: 500,
-        detail: "serviceProxy must be mounted at /api",
+        title: "Bad Gateway",
+        status: 502,
+        detail: "Service resolution missing",
         instance: (req as any).id,
       });
     }
 
-    const slug = resolveSlug(seg);
-    const cfg = getService(slug);
-    if (!cfg) {
-      return res.status(404).json({
-        type: "about:blank",
-        title: "Not Found",
-        status: 404,
-        detail: "Unknown or disallowed service",
-        instance: (req as any).id,
-      });
-    }
-
-    const base = upstreamBase(cfg);
-    const restPath = "/" + segments.slice(1).join("/");
-    const qs = req.url.includes("?") ? "?" + req.url.split("?")[1] : "";
-    const targetUrl = base + restPath + qs;
+    const targetUrl = r.targetUrl;
 
     const hop = new Set([
       "connection",
@@ -64,15 +52,22 @@ export function serviceProxy(): RequestHandler {
       "upgrade",
       "host",
     ]);
+
+    // Build outbound headers:
+    // - Strip hop-by-hop headers
+    // - DO NOT strip Authorization (gateway minted it)
+    // - Preserve X-NV-User-Assertion (gateway minted it)
     const outHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
       if (!k) continue;
       if (hop.has(k.toLowerCase())) continue;
-      if (k.toLowerCase() === "authorization") continue;
+      // Authorization is intentionally preserved
+      // X-NV-User-Assertion is intentionally preserved
       if (Array.isArray(v)) outHeaders[k] = v.join(", ");
       else if (typeof v === "string") outHeaders[k] = v;
     }
 
+    // Forwarded headers
     const xfHost = req.headers["x-forwarded-host"]
       ? String(req.headers["x-forwarded-host"])
       : String(req.headers["host"] || "");
@@ -92,13 +87,26 @@ export function serviceProxy(): RequestHandler {
     const urlObj = new URL(targetUrl);
     const agent = urlObj.protocol === "https:" ? https : http;
 
+    // Log without leaking secrets
+    logger.debug(
+      {
+        requestId: (req as any).id,
+        svc: r.slug,
+        target: targetUrl,
+        method: req.method,
+        hasAuth: typeof outHeaders["authorization"] === "string",
+        hasUA: typeof outHeaders["x-nv-user-assertion"] === "string",
+      },
+      "[gateway] proxy enter"
+    );
+
     const upstreamReq = agent.request(
       {
         protocol: urlObj.protocol,
         hostname: urlObj.hostname,
         port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
         method: req.method,
-        path: urlObj.pathname + urlObj.search,
+        path: urlObj.pathname + urlObj.search, // full path from resolved target
         headers: outHeaders,
       },
       (upstreamRes) => {
@@ -114,7 +122,7 @@ export function serviceProxy(): RequestHandler {
           logger.debug(
             {
               requestId: (req as any).id,
-              svc: slug,
+              svc: r.slug,
               target: targetUrl,
               status: upstreamRes.statusCode,
             },
@@ -137,7 +145,7 @@ export function serviceProxy(): RequestHandler {
       const status = timeout ? 504 : connErr ? 502 : 500;
 
       logger.error(
-        { requestId: (req as any).id, svc: slug, target: targetUrl, err },
+        { requestId: (req as any).id, svc: r.slug, target: targetUrl, err },
         "[gateway] proxy error"
       );
 
@@ -157,43 +165,12 @@ export function serviceProxy(): RequestHandler {
       }
     });
 
+    // Stream the incoming body to upstream
     req.pipe(upstreamReq);
-
-    logger.debug(
-      {
-        requestId: (req as any).id,
-        svc: slug,
-        target: targetUrl,
-        method: req.method,
-      },
-      "[gateway] proxy enter"
-    );
   };
 }
 
 // Helpers
-function resolveSlug(seg: string): string {
-  const lower = String(seg || "").toLowerCase();
-  const aliased = (ROUTE_ALIAS as Record<string, string>)[lower] || lower;
-  return aliased.endsWith("s") ? aliased.slice(0, -1) : aliased;
-}
-
-function getService(slug: string): ServiceConfig | undefined {
-  const snap = getSvcconfigSnapshot();
-  if (!snap) return undefined;
-  const cfg = snap.services[slug];
-  if (!cfg) return undefined;
-  if (cfg.enabled !== true) return undefined;
-  if (cfg.allowProxy !== true) return undefined;
-  return cfg;
-}
-
-function upstreamBase(cfg: ServiceConfig): string {
-  const base = cfg.baseUrl.replace(/\/+$/, "");
-  const apiPrefix = (cfg.outboundApiPrefix || "/api").replace(/^\/?/, "/");
-  return `${base}${apiPrefix}`;
-}
-
 function mergeForwardedFor(
   existing: string | string[] | undefined,
   addr?: string | null

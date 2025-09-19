@@ -1,18 +1,26 @@
 // backend/services/auth/src/routes/authRoutes.ts
-import express from "express";
-import * as authController from "../controllers/authController";
-import { logger } from "@shared/utils/logger";
+/**
+ * Docs:
+ * - Arch: docs/architecture/shared/ROUTE_CONVENTIONS.md
+ * - SOP:  docs/architecture/backend/SOP.md
+ *
+ * Why:
+ * - Route one-liners only. Service mounts under /api; gateway adds slug.
+ *   External (via gateway):  /api/auth/<...>
+ *   Internal (service):      /api/auth/<...>
+ */
 
-const router = express.Router();
+import { Router } from "express";
 
-logger.debug(
-  { routes: ["/auth/create", "/auth/login", "/auth/password_reset"] },
-  "authService: routes initialized"
-);
+// direct handler imports (no barrels/shims)
+import create from "../handlers/auth/create";
+import login from "../handlers/auth/login";
+import passwordReset from "../handlers/auth/passwordReset";
 
-// One-line route → controller mappings
-router.post("/create", authController.create);
-router.post("/login", authController.login);
-router.post("/password_reset", authController.passwordReset);
+const router = Router();
+
+router.post("/create", create);
+router.post("/login", login);
+router.post("/password_reset", passwordReset);
 
 export default router;

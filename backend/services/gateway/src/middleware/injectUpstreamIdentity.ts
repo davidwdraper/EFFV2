@@ -8,12 +8,14 @@
  *   - docs/adr/0017-environment-loading-and-validation.md
  *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
+ *   - docs/adr/0029-versioned-s2s-and-x-nv-api-version.md
  *
  * Why:
  * - The gateway is the trust boundary. We never forward client Authorization nor
  *   caller-provided user assertions upstream.
  * - We always inject a fresh S2S token and always mint a new user assertion for
  *   each proxied request to ensure uniform, short-lived upstream identities.
+ * - Also attach X-NV-Api-Version: v<version> based on resolved service (APR-0029).
  *
  * Notes:
  * - User assertion TTL defaults to 300s; S2S TTL capped by S2S_MAX_TTL_SEC (<=900).
@@ -50,6 +52,12 @@ export function injectUpstreamIdentity(): RequestHandler {
       );
       if ("x-user-assertion" in req.headers) {
         delete (req.headers as Record<string, unknown>)["x-user-assertion"]; // legacy, drop entirely
+      }
+
+      // Attach the resolved API version header (e.g., "v1")
+      const v = (req as any)?.resolvedService?.version;
+      if (typeof v === "number" && Number.isFinite(v)) {
+        req.headers["x-nv-api-version"] = `v${v}`;
       }
 
       next();

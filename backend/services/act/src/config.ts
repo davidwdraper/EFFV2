@@ -7,9 +7,6 @@
  * - Fail fast at import time if something is missing/invalid.
  */
 
-// ── Service identity ──────────────────────────────────────────────────────────
-export const SERVICE_NAME = "act" as const;
-
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (v == null || String(v).trim() === "") {

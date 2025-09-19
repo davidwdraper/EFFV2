@@ -1,29 +1,26 @@
 // backend/services/auth/src/config.ts
-import { requireEnv, requireNumber } from "../../shared/config/env";
-
 /**
- * Auth service config (no defaults; env must be loaded by ./bootstrap).
- * Note: Removed deprecated orchestrator URL and unused mongoUri.
- * Auth is a business-tier service that talks directly to USER_SERVICE_URL.
+ * Docs:
+ * - Design: docs/design/backend/config/env-loading.md
+ * - Arch:   docs/architecture/backend/CONFIG.md
+ * - SOP:    docs/architecture/backend/SOP.md
+ *
+ * Why:
+ * - Centralized, strict config for Auth. No dotenv here (bootstrap loads env).
+ * - Fail fast if required envs are missing/invalid.
  */
 
-export const serviceName = requireEnv("AUTH_SERVICE_NAME");
-export const port = requireNumber("AUTH_PORT");
-export const jwtSecret = requireEnv("JWT_SECRET");
-export const userServiceUrl = requireEnv("USER_SERVICE_URL"); // direct to user service (tier-3)
-export const logLevel = requireEnv("LOG_LEVEL");
-export const logServiceUrl = requireEnv("LOG_SERVICE_URL");
-
-export function requireUpstream(name: "USER_SERVICE_URL") {
-  return requireEnv(name);
-}
+import { requireEnv, requireNumber } from "@eff/shared/src/env";
 
 export const config = {
-  serviceName,
-  port,
-  jwtSecret,
-  userServiceUrl,
-  logLevel,
-  logServiceUrl,
-  requireUpstream,
-};
+  env: process.env.NODE_ENV,
+  port: requireNumber("AUTH_PORT"),
+  jwtSecret: requireEnv("JWT_SECRET"),
+  logLevel: requireEnv("LOG_LEVEL"),
+  logServiceUrl: requireEnv("LOG_SERVICE_URL"),
+  // upstream (kept as envs per SOP; handlers read these)
+  userSlug: requireEnv("USER_SLUG"),
+  userApiVersion: requireEnv("USER_SLUG_API_VERSION"),
+  userRouteUsers: requireEnv("USER_ROUTE_USERS"),
+  userRoutePrivateEmail: requireEnv("USER_ROUTE_PRIVATE_EMAIL"),
+} as const;

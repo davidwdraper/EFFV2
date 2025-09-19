@@ -7,6 +7,7 @@
  *   - docs/adr/0017-environment-loading-and-validation.md
  *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md   // APR-0029
  *
  * Why:
  * - Resolve target service API bases via the svcconfig **snapshot**.
@@ -16,7 +17,7 @@
  * Notes:
  * - Inside shared, use **relative** imports to avoid self-aliasing.
  * - Caches base per (slug, apiVersion) in-process.
- * - apiVersion is accepted for forward-compat (ignored in base computation for now).
+ * - As of APR-0029, `apiVersion` is **used** to resolve (slug,version). No env URL overrides.
  */
 
 import {
@@ -30,6 +31,20 @@ import { logger } from "../logger";
 const ensureLeading = (p: string) => (p.startsWith("/") ? p : `/${p}`);
 const stripTrailing = (p: string) => p.replace(/\/+$/, "");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const normSlug = (s: string) =>
+  String(s || "")
+    .trim()
+    .toLowerCase();
+const normVersion = (v: string) => {
+  const m = String(v || "")
+    .trim()
+    .match(/^v?(\d+)$/i);
+  if (!m)
+    throw new Error(
+      `[httpClientBySlug] invalid apiVersion "${v}" (use V1, v2, 3, ...)`
+    );
+  return `V${m[1]}`;
+};
 
 // Cache: (slug,version) -> apiBase
 const apiBaseCache = new Map<string, string>();
@@ -76,17 +91,73 @@ async function ensureSvcconfigReady(timeoutMs = 1000): Promise<void> {
   );
 }
 
-async function resolveServiceConfig(slug: string): Promise<ServiceConfig> {
+function pickByVersion(
+  snapServices: any,
+  slug: string,
+  version: string
+): ServiceConfig | null {
+  // Accept several shapes without changing callers:
+  // 1) Array< ServiceConfig >
+  if (Array.isArray(snapServices)) {
+    return (
+      snapServices.find(
+        (r: any) =>
+          normSlug(r?.slug) === normSlug(slug) &&
+          normVersion(r?.version || "V1") === normVersion(version)
+      ) || null
+    );
+  }
+
+  // 2) Record<string, unknown>
+  if (snapServices && typeof snapServices === "object") {
+    const bySlug = (snapServices as Record<string, any>)[normSlug(slug)];
+    // 2a) Direct config with version field
+    if (bySlug && typeof bySlug === "object" && bySlug.baseUrl) {
+      return normVersion(bySlug.version || "V1") === normVersion(version)
+        ? (bySlug as ServiceConfig)
+        : null;
+    }
+    // 2b) Record of versions: services[slug][version]
+    if (
+      bySlug &&
+      typeof bySlug === "object" &&
+      (bySlug[normVersion(version)] || bySlug[version])
+    ) {
+      const vCfg = bySlug[normVersion(version)] || bySlug[version];
+      return (vCfg as ServiceConfig) ?? null;
+    }
+    // 2c) Flat keys like "user.V1"
+    const flatKey = `${normSlug(slug)}.${normVersion(version)}`.toLowerCase();
+    if ((snapServices as any)[flatKey]) {
+      return (snapServices as any)[flatKey] as ServiceConfig;
+    }
+  }
+
+  return null;
+}
+
+async function resolveServiceConfig(
+  slug: string,
+  apiVersion: string
+): Promise<ServiceConfig> {
   await ensureSvcconfigReady();
   const mod = await ensureSvcconfigModule();
   const snap = mod.getSvcconfigSnapshot();
   if (!snap)
     throw new Error("[httpClientBySlug] svcconfig snapshot not initialized");
-  const cfg = snap.services?.[slug];
+
+  const wantedVer = normVersion(apiVersion);
+  const cfg = pickByVersion(snap.services, slug, wantedVer);
+
   if (!cfg)
-    throw new Error(`[httpClientBySlug] unknown service slug="${slug}"`);
+    throw new Error(
+      `[httpClientBySlug] unknown (slug="${slug}", version="${wantedVer}")`
+    );
   if (cfg.enabled !== true)
-    throw new Error(`[httpClientBySlug] service "${slug}" is disabled`);
+    throw new Error(
+      `[httpClientBySlug] service "${slug}" version "${wantedVer}" is disabled`
+    );
+
   return cfg as ServiceConfig;
 }
 
@@ -101,21 +172,29 @@ export async function s2sRequestBySlug<TResp = unknown, TBody = unknown>(
   path: string,
   opts: S2SRequestOptions<TBody> = {}
 ): Promise<S2SResponse<TResp>> {
-  const key = `${slug}::${apiVersion || "-"}`;
+  const ver = normVersion(apiVersion);
+  const key = `${normSlug(slug)}::${ver}`;
   let apiBase = apiBaseCache.get(key);
 
   if (!apiBase) {
-    const cfg = await resolveServiceConfig(slug);
+    const cfg = await resolveServiceConfig(slug, ver);
     apiBase = computeApiBase(cfg);
     apiBaseCache.set(key, apiBase);
     logger.info(
-      { slug, apiVersion, apiBase },
+      { slug, apiVersion: ver, apiBase },
       "[httpClientBySlug] cached api base"
     );
   }
 
   const target = `${stripTrailing(apiBase)}${ensureLeading(path)}`;
-  return s2sRequest<TResp, TBody>(target, opts);
+
+  // Inject version header while preserving caller headers
+  const mergedOpts: S2SRequestOptions<TBody> = {
+    ...opts,
+    headers: { ...(opts.headers || {}), "X-NV-Api-Version": ver },
+  };
+
+  return s2sRequest<TResp, TBody>(target, mergedOpts);
 }
 
 /** Optional prewarm (safe to call multiple times). */
@@ -123,13 +202,14 @@ export async function prewarmSlug(
   slug: string,
   apiVersion: string
 ): Promise<void> {
-  const key = `${slug}::${apiVersion || "-"}`;
+  const ver = normVersion(apiVersion);
+  const key = `${normSlug(slug)}::${ver}`;
   if (apiBaseCache.has(key)) return;
-  const cfg = await resolveServiceConfig(slug);
+  const cfg = await resolveServiceConfig(slug, ver);
   const apiBase = computeApiBase(cfg);
   apiBaseCache.set(key, apiBase);
   logger.info(
-    { slug, apiVersion, apiBase },
+    { slug, apiVersion: ver, apiBase },
     "[httpClientBySlug] prewarmed api base"
   );
 }

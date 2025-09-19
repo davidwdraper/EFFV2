@@ -4,20 +4,25 @@
  * resolveServiceFromSlug middleware (svcconfig-backed)
  * --------------------------------------------------------------------------
  * Purpose:
- *   Map /api/:slug/... to the internal worker base URL using svcconfig,
- *   and compute the final upstream target URL without introducing slashes bugs.
+ *   Map /api/:slug.V<version>/... to the internal worker base URL using
+ *   svcconfig, and compute the final upstream target URL without introducing
+ *   slashes bugs.
  *
  * Behavior:
- *   - Looks up the service by slug in svcconfig snapshot.
+ *   - Requires slug with explicit API version: "<slug>.V<version>" (APR-0029).
+ *   - Looks up the service by (slug, version) in svcconfig snapshot.
  *   - Uses svc.baseUrl (trimmed) and svc.outboundApiPrefix (default "/api").
- *   - Strips the "/api/:slug" prefix from the incoming URL to get the remainder.
+ *   - Strips the "/api/:slug.V<version>" prefix from the incoming URL to get the remainder.
  *   - Joins baseUrl + outboundApiPrefix + remainder with safe joining.
- *   - Attaches { slug, baseUrl, apiPrefix, targetUrl } to req.resolvedService.
+ *   - Attaches { slug, version, baseUrl, apiPrefix, targetUrl } to req.resolvedService.
  *
  * Notes:
  *   - This middleware **does not** decide public vs private proxying;
  *     it always uses *internal* resolution for gateway→worker hops.
- *   - If svc is disabled/missing in svcconfig, returns 404.
+ *   - If svc is missing/disabled or version not found, returns 404.
+ *
+ * ADRs:
+ *   - docs/adr/0029-versioned-s2s-and-x-nv-api-version.md
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -36,8 +41,9 @@ export default function resolveServiceFromSlug(
   next: NextFunction
 ) {
   // Expect routes mounted as /api/:slug/...
-  const slug = (req.params as any)?.slug as string | undefined;
-  if (!slug) {
+  // Here ":slug" MUST be "<slug>.V<version>" (case-insensitive V).
+  const slugParam = (req.params as any)?.slug as string | undefined;
+  if (!slugParam) {
     return res.status(404).json({
       type: "about:blank",
       title: "Not Found",
@@ -47,29 +53,45 @@ export default function resolveServiceFromSlug(
     });
   }
 
+  const m = /^([a-z0-9-]+)\.v(\d+)$/i.exec(slugParam.trim());
+  if (!m) {
+    return res.status(404).json({
+      type: "about:blank",
+      title: "Not Found",
+      status: 404,
+      detail:
+        "Service slug must include an API version, e.g. /api/act.V1/acts (.../slug.V<version>/...).",
+      instance: (req as any).id,
+    });
+  }
+  const slug = m[1].toLowerCase();
+  const versionNum = Number(m[2]);
+  const versionKey = String(versionNum);
+
   // Read svcconfig snapshot (no network calls here)
   const snap = getSvcconfigSnapshot();
-  const svc = snap?.services?.[String(slug).toLowerCase()];
+  const byVersion =
+    (snap?.services?.[slug] as Record<string, any> | undefined) || undefined;
+  const svc = byVersion?.[versionKey];
+
   if (!svc || svc.enabled !== true) {
     return res.status(404).json({
       type: "about:blank",
       title: "Not Found",
       status: 404,
-      detail: `Service '${slug}' unavailable (unknown or disabled).`,
+      detail: `Service '${slug}' (version v${versionKey}) unavailable (unknown or disabled).`,
       instance: (req as any).id,
     });
   }
 
   const baseUrl = String(svc.baseUrl || "").replace(/\/+$/, "");
-  // outboundApiPrefix is required by our routing contract; default to "/api"
   const apiPrefix = String(svc.outboundApiPrefix || "/api").replace(
     /^\/?/,
     "/"
   );
 
-  // Compute remainder after "/api/:slug"
-  // Example: originalUrl "/api/act/acts" , baseUrlMount "/api/act" → remainder "/acts"
-  const mount = req.baseUrl || `/api/${slug}`;
+  // Compute remainder after "/api/:slug.V<version>"
+  const mount = req.baseUrl || `/api/${slugParam}`;
   const full = req.originalUrl || req.url || "/";
   const remainder = full.startsWith(mount)
     ? full.slice(mount.length) || "/"
@@ -80,7 +102,8 @@ export default function resolveServiceFromSlug(
       type: "about:blank",
       title: "Bad Gateway",
       status: 502,
-      detail: "Route remainder missing after slug; expected plural resource.",
+      detail:
+        "Route remainder missing after versioned slug; expected plural resource.",
       instance: (req as any).id,
     });
   }
@@ -89,12 +112,19 @@ export default function resolveServiceFromSlug(
   const baseWithPrefix = joinUrl(baseUrl, apiPrefix);
   const targetUrl = joinUrl(baseWithPrefix, remainder);
 
-  (req as any).resolvedService = { slug, baseUrl, apiPrefix, targetUrl };
+  (req as any).resolvedService = {
+    slug,
+    version: versionNum,
+    baseUrl,
+    apiPrefix,
+    targetUrl,
+  };
 
   // Minimal debug without leaking secrets
   (req as any).log?.debug?.({
     msg: "[gateway] resolved",
     slug,
+    version: versionNum,
     baseUrl,
     apiPrefix,
     remainder,

@@ -1,31 +1,31 @@
-# /scripts/smoke/tests/010_act_crud_gateway_withaddr.sh
+# PATH: scripts/smoke/tests/010_act_crud_gateway_withaddr.sh
 #!/usr/bin/env bash
-# Act create/get/delete VIA GATEWAY (4000) WITH address → triggers Act→Geo geocode via clientHttp.
-# This mirrors test #9 but calls through the gateway:
-#   - Base URL: $GW (default <direct-disabled>)
-#   - Route:    /api/act/acts  (slug singular + plural route)
-# Assumptions:
-#   - Gateway injects S2S + user assertion upstream (no client auth required here).
+# Act create/get/delete VIA GATEWAY (4000) WITH address → triggers Act→Geo geocode via callBySlug.
+# Conforms to APR-0029 (versioned edge route) and gateway auth requirements.
+#
+# Requirements:
+#   - All calls go through the gateway: $GW (default http://127.0.0.1:4000)
+#   - Versioned route: /api/act.V1/acts   (slug singular + versioned)
+#   - Gateway enforces mutations require X-NV-User-Assertion (provided by gateway_req headers).
 #   - svcconfig LKG includes geo + act with outboundApiPrefix=/api.
-#   - GEO_RESOLVE_PATH=/resolve in Act env.
-#   - Shared client in Act makes S2S call to Geo and returns {lat,lng}.
+#   - Act uses callBySlug to call Geo at GEO_RESOLVE_PATH=/resolve and returns {lat,lng}.
 
 t10() {
   set -euo pipefail
 
   # ---- Config ---------------------------------------------------------------
-  local base="${GW:-<direct-disabled>}/api/act/acts"
+  local base="${GW:-http://127.0.0.1:4000}/api/act.V1/acts"
   local max_time="${NV_CURL_MAXTIME:-15}"
 
-  # ---- Minimal helpers (self-contained) -------------------------------------
-  unique_suffix() {
+  # ---- Minimal helpers (namespaced to avoid collisions) ---------------------
+  t10_unique_suffix() {
     local ts rand
     ts=$(date +%Y%m%d%H%M%S)
     rand=$( (openssl rand -hex 3 2>/dev/null) || printf '%04d' "$RANDOM" )
     printf '%s-%s' "$ts" "$rand"
   }
 
-  payload_with_address_named() {
+  t10_payload_with_address_named() {
     local name="$1"
     cat <<JSON
 {
@@ -54,13 +54,15 @@ t10() {
 JSON
   }
 
-  # ---- Create (PUT via gateway) --------------------------------------------
-  local nm="SmokeTest Act $(unique_suffix)"
+  # ---- Create (PUT via gateway, with proper headers) ------------------------
+  local nm="SmokeTest Act $(t10_unique_suffix)"
   local resp id
-  resp=$(curl -sS -X PUT "$base" \
-    -H "Content-Type: application/json" \
-    --max-time "$max_time" \
-    -d "$(payload_with_address_named "$nm")")
+  resp=$(
+    gateway_req PUT "$base" \
+      --max-time "$max_time" \
+      -H "Content-Type: application/json" \
+      -d "$(t10_payload_with_address_named "$nm")"
+  )
 
   if [[ "${NV_USE_JQ:-1}" -eq 1 ]] && command -v "${JQ:-jq}" >/dev/null 2>&1; then
     echo "$resp" | ${JQ:-jq}
@@ -68,7 +70,7 @@ JSON
     echo "$resp"
   fi
 
-  # Extract id (prefer jq if present)
+  # Extract id
   if command -v jq >/dev/null 2>&1; then
     id=$(echo "$resp" | jq -r '._id // .id // .data._id // .result._id // empty')
   else
@@ -100,7 +102,7 @@ JSON
 
   # ---- DELETE (cleanup; idempotent via gateway) ------------------------------
   local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$base/$id" --max-time "${NV_CURL_MAXTIME:-12}")
+  code=$(gateway_req DELETE "$base/$id" --max-time "${NV_CURL_MAXTIME:-12}" -o /dev/null -w '%{http_code}')
   case "$code" in
     200|202|204|404) echo "✅ delete $base/$id ($code)";;
     *) echo "❌ delete $base/$id failed ($code)"; exit 1;;

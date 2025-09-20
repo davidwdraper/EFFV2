@@ -1,5 +1,4 @@
-// backend/services/act/src/handlers/act/create.ts
-
+// PATH: backend/services/act/src/handlers/act/create.ts
 /**
  * Docs:
  * - Arch: docs/architecture/backend/OVERVIEW.md
@@ -9,10 +8,11 @@
  *   - docs/adr/0017-environment-loading-and-validation.md
  *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
  *
  * Why:
- * - Act calls Geo directly using the shared S2S client that resolves API base via svcconfig.
- * - Act only supplies the slug, api version (currently unused), and the service-local path.
+ * - Act calls Geo via the shared **callBySlug** helper (single source of truth).
+ * - Keeps S2S headers, API versioning, and JSON body handling consistent with gateway.
  *
  * Env (names only; values in .env.*):
  * - GEO_SLUG=geo
@@ -22,7 +22,7 @@
 
 import type { Request, Response, NextFunction } from "express";
 import { logger } from "@eff/shared/src/utils/logger";
-import { s2sRequestBySlug } from "@eff/shared/src/utils/s2s/httpClientBySlug";
+import { callBySlug } from "@eff/shared/src/utils/s2s/callBySlug";
 import { createActDto } from "../../validators/act.dto";
 import * as repo from "../../repo/actRepo";
 
@@ -34,7 +34,7 @@ function requireEnv(name: string): string {
   return v.trim();
 }
 const GEO_SLUG = requireEnv("GEO_SLUG"); // e.g., geo
-const GEO_SLUG_API_VERSION = requireEnv("GEO_SLUG_API_VERSION"); // e.g., v1 (unused for now)
+const GEO_SLUG_API_VERSION = requireEnv("GEO_SLUG_API_VERSION"); // e.g., v1
 const GEO_RESOLVE_PATH = requireEnv("GEO_RESOLVE_PATH"); // e.g., /resolve
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -52,27 +52,39 @@ async function geocodeFromMailingAddress(
   if (!addr || !addr.addr1 || !addr.city || !addr.state || !addr.zip)
     return null;
 
-  const resp = await s2sRequestBySlug<{ lat: number; lng: number }>(
+  const address = `${addr.addr1}, ${addr.city}, ${addr.state} ${addr.zip}`;
+
+  const resp = await callBySlug<{ lat: number; lng: number }>(
     GEO_SLUG,
     GEO_SLUG_API_VERSION,
-    GEO_RESOLVE_PATH,
     {
       method: "POST",
+      path: GEO_RESOLVE_PATH,
       timeoutMs: 2000,
-      headers: { "Content-Type": "application/json" },
-      body: {
-        address: `${addr.addr1}, ${addr.city}, ${addr.state} ${addr.zip}`,
-      },
+      headers: { "content-type": "application/json" },
+      body: { address },
     }
   );
 
+  // Tolerate multiple S2SResponse shapes: {body}|{data}|{payload}
+  const payload: any =
+    (resp as any).body ??
+    (resp as any).data ??
+    (resp as any).payload ??
+    undefined;
+
+  const ok =
+    typeof resp.status === "number"
+      ? resp.status >= 200 && resp.status < 300
+      : !!payload;
+
   if (
-    resp.ok &&
-    resp.data &&
-    typeof resp.data.lat === "number" &&
-    typeof resp.data.lng === "number"
+    ok &&
+    payload &&
+    typeof payload.lat === "number" &&
+    typeof payload.lng === "number"
   ) {
-    return { lat: resp.data.lat, lng: resp.data.lng };
+    return { lat: payload.lat, lng: payload.lng };
   }
   return null;
 }
@@ -98,7 +110,6 @@ export async function create(req: Request, res: Response, next: NextFunction) {
       try {
         const a = dto.mailingAddress as MailingAddress;
         if (a?.addr1 && a?.city && a?.state && a?.zip) {
-          const address = `${a.addr1}, ${a.city}, ${a.state} ${a.zip}`;
           const ll = await geocodeFromMailingAddress(a);
           if (ll) {
             // GeoJSON = [lng, lat]

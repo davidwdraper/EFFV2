@@ -1,4 +1,4 @@
-// backend/services/act/src/app.ts
+// PATH: backend/services/act/src/app.ts
 /**
  * Docs:
  * - Arch: docs/architecture/backend/OVERVIEW.md
@@ -12,6 +12,8 @@
  * - Entity services are internal-only behind the gateway plane. Assemble via the
  *   shared builder: requestId → httpLogger → problemJson → trace5xx(early) →
  *   health (open) → verifyS2S → parsers → routes → 404 → error.
+ * - Source of truth for service name is index.ts via bootstrapService; app.ts
+ *   reads it from process.env.SERVICE_NAME to avoid duplication.
  */
 
 import mongoose from "mongoose";
@@ -20,9 +22,9 @@ import { createServiceApp } from "@eff/shared/src/app/createServiceApp";
 import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
 import actRoutes from "./routes/actRoutes";
 import townRoutes from "./routes/townRoutes";
-import { SERVICE_NAME, config } from "./config";
+import { config } from "./config";
 
-// Sanity: required envs (other than service name, which is from code)
+// Sanity: required envs (other than service name, which comes from index.ts)
 if (!config.mongoUri)
   throw new Error("Missing required env var: ACT_MONGO_URI");
 if (!config.port) throw new Error("Missing required env var: ACT_PORT");
@@ -39,8 +41,11 @@ function mountRoutes(api: express.Router) {
   api.use("/towns", townRoutes);
 }
 
+// Service identity comes from bootstrapService (index.ts) to avoid duplication.
+const serviceName = process.env.SERVICE_NAME || "act";
+
 const app = createServiceApp({
-  serviceName: SERVICE_NAME,
+  serviceName,
   apiPrefix: "/api",
   verifyS2S, // internal-only: health is open; everything else requires S2S
   readiness,

@@ -2,7 +2,7 @@
   "v": 1,
   "snapshot": {
     "version": "1",
-    "updatedAt": 1758147654975,
+    "updatedAt": 1758405878985,
     "services": {
       "user": {
         "slug": "user",
@@ -23,7 +23,7 @@
           "timeoutMs": 5000
         },
         "version": 1,
-        "updatedAt": "2025-09-06T19:57:32.518Z",
+        "updatedAt": "2025-09-20T04:12:39.658Z",
         "updatedBy": "seed",
         "notes": "User service"
       },
@@ -44,27 +44,9 @@
           "timeoutMs": 5000
         },
         "version": 1,
-        "updatedAt": "2025-09-06T19:57:32.797Z",
+        "updatedAt": "2025-09-20T04:12:39.658Z",
         "updatedBy": "seed",
         "notes": "Act service"
-      },
-      "gateway-core": {
-        "slug": "gateway-core",
-        "enabled": true,
-        "allowProxy": true,
-        "baseUrl": "http://127.0.0.1:4011",
-        "outboundApiPrefix": "/api",
-        "healthPath": "/health",
-        "exposeHealth": true,
-        "protectedGetPrefixes": [],
-        "publicPrefixes": [],
-        "overrides": {
-          "timeoutMs": 5000
-        },
-        "version": 1,
-        "updatedAt": "2025-09-06T19:57:32.800Z",
-        "updatedBy": "seed",
-        "notes": "Core internal router"
       },
       "geo": {
         "slug": "geo",
@@ -82,9 +64,63 @@
           "timeoutMs": 5000
         },
         "version": 1,
-        "updatedAt": "2025-09-06T21:12:28.278Z",
+        "updatedAt": "2025-09-20T04:12:39.658Z",
         "updatedBy": "seed",
-        "notes": "Geo service - calls Google Places API"
+        "notes": "Geo service"
+      },
+      "audit": {
+        "slug": "audit",
+        "enabled": true,
+        "allowProxy": true,
+        "baseUrl": "http://127.0.0.1:4015",
+        "outboundApiPrefix": "/api",
+        "healthPath": "/health",
+        "exposeHealth": true,
+        "protectedGetPrefixes": [],
+        "publicPrefixes": [],
+        "overrides": {
+          "timeoutMs": 5000
+        },
+        "version": 1,
+        "updatedAt": "2025-09-20T04:12:39.658Z",
+        "updatedBy": "seed",
+        "notes": "Audit service (required by gateway WAL)"
+      },
+      "log": {
+        "slug": "log",
+        "enabled": true,
+        "allowProxy": true,
+        "baseUrl": "http://127.0.0.1:4006",
+        "outboundApiPrefix": "/api",
+        "healthPath": "/health",
+        "exposeHealth": true,
+        "protectedGetPrefixes": [],
+        "publicPrefixes": [],
+        "overrides": {
+          "timeoutMs": 5000
+        },
+        "version": 1,
+        "updatedAt": "2025-09-20T04:12:39.658Z",
+        "updatedBy": "seed",
+        "notes": "Log service (required by gateway telemetry)"
+      },
+      "auth": {
+        "slug": "auth",
+        "enabled": true,
+        "allowProxy": true,
+        "baseUrl": "http://127.0.0.1:4007",
+        "outboundApiPrefix": "/api",
+        "healthPath": "/health",
+        "exposeHealth": true,
+        "protectedGetPrefixes": [],
+        "publicPrefixes": [],
+        "overrides": {
+          "timeoutMs": 5000
+        },
+        "version": 1,
+        "updatedAt": "2025-09-20T04:12:39.658Z",
+        "updatedBy": "seed",
+        "notes": "Auth service"
       }
     }
   }

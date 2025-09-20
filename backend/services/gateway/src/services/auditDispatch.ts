@@ -17,7 +17,7 @@
  * - 2xx → ok; 4xx → non-retriable (drop); 5xx/other → retriable w/ backoff
  */
 import type { AuditEvent } from "@eff/shared/src/contracts/auditEvent.contract";
-import { putInternalJson } from "../utils/s2sClient";
+import { putInternalJson } from "../utils/s2s/s2sClient";
 import { resolveInternalBase, joinUrl } from "../utils/serviceResolver";
 import { logger } from "@eff/shared/src/utils/logger";
 

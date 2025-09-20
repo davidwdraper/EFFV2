@@ -2,7 +2,7 @@
 #!/usr/bin/env bash
 # Act create/get/delete VIA GATEWAY (4000) WITH address → triggers Act→Geo geocode via clientHttp.
 # This mirrors test #9 but calls through the gateway:
-#   - Base URL: $GW (default http://127.0.0.1:4000)
+#   - Base URL: $GW (default <direct-disabled>)
 #   - Route:    /api/act/acts  (slug singular + plural route)
 # Assumptions:
 #   - Gateway injects S2S + user assertion upstream (no client auth required here).
@@ -14,7 +14,7 @@ t10() {
   set -euo pipefail
 
   # ---- Config ---------------------------------------------------------------
-  local base="${GW:-http://127.0.0.1:4000}/api/act/acts"
+  local base="${GW:-<direct-disabled>}/api/act/acts"
   local max_time="${NV_CURL_MAXTIME:-15}"
 
   # ---- Minimal helpers (self-contained) -------------------------------------

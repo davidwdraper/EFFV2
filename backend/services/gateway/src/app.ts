@@ -1,4 +1,5 @@
-// backend/services/gateway/src/app.ts
+// PATH: backend/services/gateway/src/app.ts
+
 /**
  * Docs:
  * - Design: docs/design/backend/gateway/app.md
@@ -12,13 +13,18 @@
  *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
  *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *   - docs/adr/0024-extract-readiness-from-app-assembly-for-separation-of-concerns.md
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md   // APR-0029
+ *   - docs/adr/00XX-gateway-uses-shared-s2s-callBySlug-post-guardrails.md // TODO: replace 00XX with next ADR
  *
  * Why:
  * - Assembly order follows SOP: httpsOnly → cors → requestId → http logger →
  *   trace5xx(early) → health → guardrails (SECURITY logs) → audit (WAL) →
- *   identity injection → proxy → tails (404/error).
+ *   service forwarding (versioned) → tails (404/error).
+ * - Versioned API at the edge: /api/:slug.V<version>/... (APR-0029).
+ * - After guardrails, the gateway is “just another service”: it forwards via the
+ *   shared S2S helper (callBySlug). This removes resolver/proxy drift in gateway.
  * - Problem+JSON formatting comes from shared middleware for single source of truth.
- * - No body parsers before proxy; keep streams zero-copy.
+ * - No body parsers before forwarding; keep streams zero-copy to upstream.
  */
 
 import express from "express";
@@ -45,9 +51,10 @@ import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
 import { authGate } from "./middleware/authGate";
 import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
 import { httpsOnly } from "./middleware/httpsOnly";
-import { serviceProxy } from "./middleware/serviceProxy";
-import { injectUpstreamIdentity } from "./middleware/injectUpstreamIdentity";
-import { proxyServiceHealth } from "./middleware/proxyServiceHealth";
+
+// ⬇️ New: versioned API router that forwards using shared callBySlug.
+// (Keeps the gateway thin; no local resolver/proxy logic.)
+import apiRouter from "./routes/api";
 
 // Svcconfig mirror (non-blocking boot)
 import { startSvcconfigMirror } from "@eff/shared/src/svcconfig/client";
@@ -79,6 +86,7 @@ app.use(
   cors({
     origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
+    // APR-0029: allow X-NV-Api-Version across the edge
     allowedHeaders: [
       "Content-Type",
       "Authorization",
@@ -86,11 +94,12 @@ app.use(
       "x-correlation-id",
       "x-amzn-trace-id",
       "x-nv-user-assertion",
+      "x-nv-api-version",
     ],
   })
 );
 
-// No body parsers before proxy (streaming path)
+// No body parsers before forwarding (streaming path)
 
 // Request ID → HTTP logger → 5xx trace (early)
 app.use(requestIdMiddleware());
@@ -106,10 +115,12 @@ app.use(
   })
 );
 
-// NEW: Service health proxy (public; unauthenticated; not audited)
+// Service health proxy (public; unauthenticated; not audited)
 // Examples:
-//   GET /user/health/live   → http://user:PORT/health/live
-//   GET /act/health/ready   → http://act:PORT/health/ready
+//   GET /user/health/live    → http://<user>.…/health/live
+//   GET /act/health/ready    → http://<act>.…/health/ready
+// Health is intentionally **unversioned**.
+import { proxyServiceHealth } from "./middleware/proxyServiceHealth";
 app.use("/:slug/health", proxyServiceHealth());
 
 // WAL diagnostics (safe, non-billable)
@@ -132,11 +143,17 @@ app.use(auditCapture());
 // Lightweight root
 app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
 
-// Proxy plane — inject identities then stream upstream
-app.use("/api", injectUpstreamIdentity());
-app.use("/api", serviceProxy());
+/**
+ * APR-0029 — Versioned API forwarding at the edge
+ *   Route shape: /api/:slug.V<version>/...
+ *   - apiRouter parses <slug>.V<version>, validates (via shared svcconfig snapshot),
+ *     and forwards via shared callBySlug (S2S client handles identity minting).
+ *
+ * Order matters: guardrails → audit → /api router.
+ */
+app.use("/api", apiRouter);
 
-// Tail parsers (for any non-proxied routes; none by default)
+// Tail parsers (for any non-forwarded routes; none by default)
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 

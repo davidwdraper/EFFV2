@@ -1,22 +1,28 @@
-// backend/services/gateway/src/middleware/serviceProxy.ts
+// PATH: backend/services/gateway/src/middleware/serviceProxy.ts
 
 /**
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md
- * - ADRs:
- *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
- *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ * APR-0029 — serviceProxy (streams + API version header)
+ * --------------------------------------------------------------------------
+ * Purpose:
+ * - Thin reverse proxy that streams request/response bodies without buffering.
+ * - Forwards X-NV-Api-Version (derived from resolveServiceFromSlug) as "V#".
  *
- * Why:
- * - Thin transport-only reverse proxy for `/api/:slug/<plural...>`.
- * - Streams bodies; strips hop-by-hop headers; **preserves** gateway-minted
- *   Authorization and X-NV-User-Assertion (set by injectUpstreamIdentity()).
+ * Alignment with your resolver:
+ * - resolveServiceFromSlug attaches:
+ *     (req as any).resolvedService = {
+ *       slug: string,
+ *       version: number,     // e.g. 1
+ *       baseUrl: string,
+ *       apiPrefix: string,
+ *       targetUrl: string
+ *     }
+ * - We convert that numeric version to the canonical header value "V#" (e.g., 1 → "V1").
  *
  * Notes:
- * - This version relies on resolveServiceFromSlug() having already set
- *   (req as any).resolvedService = { slug, baseUrl, targetUrl }.
- * - We DO NOT recompute the target from req.url; that caused loss of "/acts".
+ * - Strips hop-by-hop headers; preserves gateway-minted Authorization and
+ *   X-NV-User-Assertion (injected by injectUpstreamIdentity()).
  */
+
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import http from "node:http";
 import https from "node:https";
@@ -26,7 +32,12 @@ import { logger } from "@eff/shared/src/utils/logger";
 export function serviceProxy(): RequestHandler {
   return (req: Request, res: Response, _next: NextFunction) => {
     const r = (req as any).resolvedService as
-      | { slug: string; baseUrl: string; targetUrl: string }
+      | {
+          slug: string;
+          version?: number | string;
+          baseUrl: string;
+          targetUrl: string;
+        }
       | undefined;
 
     if (!r?.targetUrl) {
@@ -41,6 +52,7 @@ export function serviceProxy(): RequestHandler {
 
     const targetUrl = r.targetUrl;
 
+    // RFC 7230 hop-by-hop headers that must not be forwarded.
     const hop = new Set([
       "connection",
       "keep-alive",
@@ -54,20 +66,17 @@ export function serviceProxy(): RequestHandler {
     ]);
 
     // Build outbound headers:
-    // - Strip hop-by-hop headers
-    // - DO NOT strip Authorization (gateway minted it)
-    // - Preserve X-NV-User-Assertion (gateway minted it)
+    // - Drop hop-by-hop
+    // - Preserve Authorization & X-NV-User-Assertion (gateway minted them)
     const outHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
       if (!k) continue;
       if (hop.has(k.toLowerCase())) continue;
-      // Authorization is intentionally preserved
-      // X-NV-User-Assertion is intentionally preserved
       if (Array.isArray(v)) outHeaders[k] = v.join(", ");
       else if (typeof v === "string") outHeaders[k] = v;
     }
 
-    // Forwarded headers
+    // Forwarded & tracing headers
     const xfHost = req.headers["x-forwarded-host"]
       ? String(req.headers["x-forwarded-host"])
       : String(req.headers["host"] || "");
@@ -84,14 +93,25 @@ export function serviceProxy(): RequestHandler {
         : (req.headers["x-request-id"] as string)) ||
       "";
 
+    // APR-0029: stamp canonical API version header as "V#".
+    if (r.version !== undefined) {
+      const ver =
+        typeof r.version === "number"
+          ? `V${r.version}`
+          : /^v?\d+$/i.test(String(r.version))
+          ? `V${String(r.version).replace(/^v/i, "")}`
+          : String(r.version);
+      outHeaders["X-NV-Api-Version"] = ver;
+    }
+
     const urlObj = new URL(targetUrl);
     const agent = urlObj.protocol === "https:" ? https : http;
 
-    // Log without leaking secrets
     logger.debug(
       {
         requestId: (req as any).id,
         svc: r.slug,
+        version: r.version,
         target: targetUrl,
         method: req.method,
         hasAuth: typeof outHeaders["authorization"] === "string",
@@ -106,10 +126,11 @@ export function serviceProxy(): RequestHandler {
         hostname: urlObj.hostname,
         port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
         method: req.method,
-        path: urlObj.pathname + urlObj.search, // full path from resolved target
+        path: urlObj.pathname + urlObj.search,
         headers: outHeaders,
       },
       (upstreamRes) => {
+        // Mirror response headers except hop-by-hop ones.
         const safeHeaders: Record<string, number | string | string[]> = {};
         for (const [k, v] of Object.entries(upstreamRes.headers)) {
           if (!k) continue;
@@ -123,6 +144,7 @@ export function serviceProxy(): RequestHandler {
             {
               requestId: (req as any).id,
               svc: r.slug,
+              version: r.version,
               target: targetUrl,
               status: upstreamRes.statusCode,
             },
@@ -145,7 +167,13 @@ export function serviceProxy(): RequestHandler {
       const status = timeout ? 504 : connErr ? 502 : 500;
 
       logger.error(
-        { requestId: (req as any).id, svc: r.slug, target: targetUrl, err },
+        {
+          requestId: (req as any).id,
+          svc: r.slug,
+          version: r.version,
+          target: targetUrl,
+          err,
+        },
         "[gateway] proxy error"
       );
 
@@ -165,12 +193,12 @@ export function serviceProxy(): RequestHandler {
       }
     });
 
-    // Stream the incoming body to upstream
+    // Stream request body to upstream.
     req.pipe(upstreamReq);
   };
 }
 
-// Helpers
+// Helper: merge/append X-Forwarded-For chains safely.
 function mergeForwardedFor(
   existing: string | string[] | undefined,
   addr?: string | null

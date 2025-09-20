@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
-# scripts/smoke/smoke.sh
-# NowVibin — modular smoke test runner (one file per test)
-# macOS Bash 3.2 friendly
+# /scripts/smoke/smoke.sh
+# NowVibin — modular smoke test runner (gateway-first, versioned)
+# macOS Bash 3.2 friendly (no process substitution, no associative arrays)
+#
 # Usage:
 #   bash scripts/smoke/smoke.sh --list
 #   bash scripts/smoke/smoke.sh [--no-jq] [--silent] <id|id,id|a-b|all>
+#
+# WHY:
+# - Enforces gateway-only testing for consistency with prod trust boundary
+# - Plumbs API_VERSION for /api/<slug>.<version>/... paths
+# - Loads split libs (s2s.sh minting; smoke.lib.sh shared helpers) without < <(…)
 
 set -euo pipefail
 
+# --- Layout ------------------------------------------------------------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB="$ROOT/smoke.lib.sh"
+LIB_SHARED="$ROOT/smoke.lib.sh"
+LIB_S2S="$ROOT/lib/s2s.sh"
 TEST_DIR="$ROOT/tests"
 
-# ---- Flags ------------------------------------------------------------------
+# --- Flags -------------------------------------------------------------------
 NV_USE_JQ=1
 NV_QUIET=0
 NV_LIST=0
@@ -26,16 +34,25 @@ while [[ "${1-}" == --* ]]; do
 done
 export NV_USE_JQ NV_QUIET
 
-# ---- Load lib ---------------------------------------------------------------
-if [[ ! -f "$LIB" ]]; then echo "Missing $LIB" >&2; exit 1; fi
-# shellcheck source=/dev/null
-. "$LIB"
+# --- API version (default V1) ------------------------------------------------
+API_VERSION="${API_VERSION:-V1}"
+export API_VERSION
 
-# ---- Discover & load tests (each file registers one test) -------------------
+# --- Load libs (no process substitution) ------------------------------------
+if [[ ! -f "$LIB_SHARED" ]]; then echo "Missing $LIB_SHARED" >&2; exit 1; fi
+if [[ ! -f "$LIB_S2S"    ]]; then echo "Missing $LIB_S2S"    >&2; exit 1; fi
+# shellcheck source=/dev/null
+. "$LIB_S2S"
+# shellcheck source=/dev/null
+. "$LIB_SHARED"
+
+# --- Discover & load tests (plain glob loop) --------------------------------
 if [[ ! -d "$TEST_DIR" ]]; then echo "Missing $TEST_DIR" >&2; exit 1; fi
 
 NV_TEST_FILES=()
-while IFS= read -r f; do NV_TEST_FILES+=("$f"); done < <(LC_ALL=C ls -1 "$TEST_DIR"/*.sh 2>/dev/null || true)
+for f in "$TEST_DIR"/*.sh; do
+  [[ -f "$f" ]] && NV_TEST_FILES+=("$f")
+done
 
 if [[ ${#NV_TEST_FILES[@]} -eq 0 ]]; then
   echo "No tests found in $TEST_DIR" >&2; exit 1
@@ -46,10 +63,10 @@ for f in "${NV_TEST_FILES[@]}"; do
   . "$f"
 done
 
-# sort internal TESTS by numeric id (stable)
+# Sort internal TESTS by numeric id (delegated to lib; 3.2-safe)
 nv_sort_tests
 
-# ---- Entry ------------------------------------------------------------------
+# --- Entry -------------------------------------------------------------------
 if [[ $NV_LIST -eq 1 ]]; then
   nv_help
   echo
@@ -66,11 +83,14 @@ fi
 
 SELECTION="$1"; shift || true
 
-# macOS Bash 3.2 safe expansion
+# Expand selection without process substitution
 IDS=()
-_selection_expanded="$(nv_parse_selection "$SELECTION")"
-while IFS= read -r line; do [[ -n "$line" ]] && IDS+=("$line"); done <<< "$_selection_expanded"
-unset _selection_expanded
+_sel_expanded="$(nv_parse_selection "$SELECTION")"
+# here-strings are OK on bash 3.2
+while IFS= read -r line; do
+  [[ -n "$line" ]] && IDS+=("$line")
+done <<< "$_sel_expanded"
+unset _sel_expanded
 
 overall=0
 if [[ $NV_QUIET -eq 1 ]]; then

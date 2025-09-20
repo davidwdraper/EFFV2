@@ -8,7 +8,7 @@ t9() {
   set -euo pipefail
 
   # ---- Config ---------------------------------------------------------------
-  local base="${ACT:-http://127.0.0.1:4002}/api/acts"
+  local base="${ACT:-<direct-disabled>}/api/acts"
   local max_time="${NV_CURL_MAXTIME:-15}"
 
   # Defaults must match backend .env.dev

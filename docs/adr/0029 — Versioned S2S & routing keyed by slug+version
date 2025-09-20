@@ -1,0 +1,83 @@
+---
+id: 0029
+title: Versioned S2S & routing keyed by slug+version (slug.VN) with gateway-enforced X-NV-Api-Version
+date: 2025-09-19
+status: Accepted
+tags: [gateway, s2s, versioning, svcconfig, routing, api]
+---
+
+# Status
+
+Accepted
+
+# Context
+
+- We need **explicit API versioning** across the fleet without churning every service’s internal routes.
+- Today, services mount unversioned routes under `/api/...` and are discovered via **svcconfig** using a **slug**.
+- We’re introducing **client-visible versions at the edge** (e.g., `/api/act.V1/...`) and need:
+  - The gateway to **enforce version presence** and forward it in a standard header.
+  - **Shared S2S** calls to resolve targets by **(slug, version)** consistently with the gateway.
+  - **svcconfig** to store and resolve multiple configs per slug, disambiguated by **version**.
+- Requirements from SOP:
+  - **No .env URL overrides** for service resolution; **svcconfig is the source of truth**.
+  - **No fallbacks**: missing/invalid version should hard-fail, not “default to V1”.
+
+# Decision
+
+- **Edge URL contract (client → gateway)**:
+  - External requests MUST use a **versioned slug**: `/api/<slug>.V<version>/<resource...>`, e.g. `/api/act.V1/acts`.
+  - The gateway parses the suffix `.V<digits>` and rejects if missing/invalid.
+  - The gateway sets `X-NV-Api-Version: <numeric>` on the proxied request.
+- **svcconfig model**:
+  - Store multiple records per slug, each with a `version: number`.
+  - Enforce uniqueness on **(slug, version)** via a composite unique index.
+  - Each record continues to carry `baseUrl`, `outboundApiPrefix` (default `/api`), `enabled`, `allowProxy`, etc.
+- **Gateway resolution**:
+  - `resolveServiceFromSlug` extracts `{slug, version}` from path, looks up **svcconfig[slug][version]**, and composes the **target URL**:  
+    `target = baseUrl + outboundApiPrefix + remainder`.
+  - `serviceProxy` forwards, preserving the minted **Authorization** and **X-NV-User-Assertion**, and **adds**/ensures `X-NV-Api-Version`.
+- **Shared S2S client**:
+  - Helpers resolve by **(slug, version)**, mint S2S token, set `X-NV-Api-Version`, and call the target.
+  - **No .env base URL overrides**; only svcconfig is consulted.
+  - **No fallback**: if `(slug,version)` is missing/disabled → fail fast with a 5xx at the caller boundary.
+- **Services**:
+  - Keep **unversioned** internal route mounts (`/api/...`). They are **implicitly V1**.
+  - If/when a service needs in-process V2 for a subset of endpoints, it may optionally use a lightweight `versioned()` dispatcher that selects handlers based on `X-NV-Api-Version`, but the **preferred** path is deploying a separate `(slug, version=2)` entry in svcconfig that points to the V2 instance.
+- **Headers**:
+  - `X-NV-Api-Version` is the canonical hop-to-hop signal of version. Gateway always sets it; S2S helpers set it on internal calls.
+
+# Consequences
+
+**Pros**
+
+- Versioning is **visible and enforced at the edge**; services remain simple and cohesive.
+- **Single source of truth** (svcconfig) for endpoints and versions; no env URL drift.
+- Easy to run **V1 and V2 side-by-side** by publishing additional svcconfig rows and, if desired, separate deployments.
+- Testing and smoke flows stay deterministic (version is explicit in the URL).
+
+**Cons / Risks**
+
+- Requires a **svcconfig migration** to add the composite unique index `(slug, version)` and backfill existing rows to `version = 1`.
+- Gateway/router changes are required to **reject** unversioned external paths (breaking for any old clients).
+- Internal S2S callers must supply a **version**; missing version is a hard error (no fallback).
+
+**Operational**
+
+- Monitoring/alerts should include `(slug, version)` dimensions.
+- Rollouts for new versions are controlled entirely via svcconfig + deploys; rollbacks are simple (flip enabled/allowProxy or revert svcconfig).
+
+# Alternatives Considered
+
+1. **Per-endpoint versioning inside services** (e.g., `/api/foo/v2/bar`)
+   - Heavier churn across services; makes router code noisy; encourages partial drift. Rejected.
+2. **Query/header-only versioning** (no path change)
+   - Invisible to routing/observability and fragile in proxies. Rejected.
+3. **Default/fallback to V1** when version absent
+   - Violates SOP “no fallbacks”; creates ambiguity and hidden behavior. Rejected.
+
+# References
+
+- SOP: `docs/architecture/backend/SOP.md`
+- Existing svcconfig contract & client
+- Gateway guardrails & proxy plane
+- Shared S2S client (`@eff/shared/src/utils/s2s/*`)

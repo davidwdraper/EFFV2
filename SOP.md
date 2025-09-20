@@ -432,3 +432,52 @@ A few things moving forward:
 1. path/filename as a comment at the top of each file is required
 2. If an ADR is required in the source file, ask for the next # before generating code and place a proper reference in the comment header. Remember the ADR number and increment for each ADR needed throughout the session.
 3. Provide the ADR insertion script with full details, immediately after the code block
+
+Don't make guesses. Always ask if there is already shared code before writing what cold be duplicate.
+
+Gateway S2S Behavior (NEW)
+
+Once the gateway finishes its guardrails and authenticates the request,
+it behaves exactly like any other internal service making an S2S call.
+
+Shared S2S client only.
+All outbound calls from the gateway to workers must use the same shared S2S helpers
+(services/shared/utils/s2sClient.ts and friends) that every service uses to call another.
+No private minting logic, no edge-only shortcuts.
+
+Reasoning.
+The gateway’s public guardrails (rate limit, read-only mode, etc.) stop at the trust boundary.
+After that point, it is just a service among services.
+Reusing the shared S2S helpers guarantees:
+
+Single code path for JWT mint/verify → easier rotation and auditing.
+
+Consistent issuer/audience/TTL rules across the entire mesh.
+
+No drift when keys rotate or when services are added.
+
+Contract.
+
+S2S_JWT_SECRET, S2S_JWT_ISSUER, S2S_JWT_AUDIENCE, S2S_ALLOWED_ISSUERS, S2S_ALLOWED_CALLERS
+must be validated at startup exactly as for any worker.
+
+All gateway→worker calls must include an S2S JWT minted by these helpers and
+must never forward the client’s Authorization header.
+
+Implication for code.
+
+The gateway’s proxy layer (injectUpstreamIdentity) imports the shared S2S client and mints tokens through it.
+
+No duplicate token logic inside gateway routes or middleware.
+
+Why:
+After the edge guardrails run, the gateway is simply another caller in the internal micro-service mesh.
+Using identical S2S code paths eliminates hidden differences, making key rotation, auditing, and security review uniform and predictable.
+
+Most important things:
+
+1. always ask for my file version if refactoring existing logic. You only have to ask for it once within a session, if you maintain the copy.
+2. always put path/filename at the top of every file
+3. alway have a complete header at the top of every file
+4. always provide inline code that explains why something is there, not how.
+5. always ensure that new code is properly wired in - no hanging strays.

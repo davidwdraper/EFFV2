@@ -7,7 +7,7 @@ t13() {
   set -euo pipefail
 
   # ---- Config ---------------------------------------------------------------
-  local BASE="${USER_URL:-http://127.0.0.1:4001}/api/users"
+  local BASE="${USER_URL:-<direct-disabled>}/api/users"
   local MAX_TIME="${NV_CURL_MAXTIME:-15}"
 
   # S2S / user assertion env (defaults mirror dev)

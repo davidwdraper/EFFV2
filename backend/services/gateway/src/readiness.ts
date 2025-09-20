@@ -15,7 +15,7 @@
 import type { ReadinessFn } from "@eff/shared/src/health";
 import { getSvcconfigSnapshot } from "@eff/shared/src/svcconfig/client";
 import type { ServiceConfig } from "@eff/shared/src/contracts/svcconfig.contract";
-import { s2sGet } from "./utils/s2sClient";
+import { s2sGet } from "./utils/s2s/s2sClient";
 
 function healthUrlFor(cfg: ServiceConfig | undefined, kind: "ready" | "live") {
   if (!cfg || cfg.exposeHealth === false) return null;

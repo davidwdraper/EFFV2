@@ -1,5 +1,5 @@
-# /scripts/smoke/smoke.lib.sh
 #!/usr/bin/env bash
+# PATH: scripts/smoke/smoke.lib.sh
 #
 # Shared helpers for modular smoketests (one file per test)
 # macOS Bash 3.2 compatible (no associative arrays, no mapfile)
@@ -14,9 +14,14 @@ GEO=${GEO:-http://127.0.0.1:4012}
 ACT=${ACT:-http://127.0.0.1:4002}
 USER_URL=${USER_URL:-http://127.0.0.1:4001}  # avoid clash with $USER
 
-# S2S defaults (must match backend .env.dev)
+# S2S defaults (must match backend .env.dev) — used only for debug helpers now
 S2S_JWT_SECRET="${S2S_JWT_SECRET:-devlocal-s2s-secret}"
 S2S_JWT_AUDIENCE="${S2S_JWT_AUDIENCE:-internal-services}"
+
+# CLIENT (edge) defaults — required by gateway authGate (strict in dev too)
+CLIENT_JWT_SECRET="${CLIENT_JWT_SECRET:-devlocal-client-secret}"
+CLIENT_JWT_AUDIENCE="${CLIENT_JWT_AUDIENCE:-nv-clients}"
+CLIENT_JWT_ISSUER="${CLIENT_JWT_ISSUER:-smoke-suite}"
 
 # End-user assertion defaults (dev/test)
 USER_ASSERTION_SECRET="${USER_ASSERTION_SECRET:-devlocal-users-internal}"
@@ -36,7 +41,8 @@ NV_USE_JQ=${NV_USE_JQ:-1}
 NV_QUIET=${NV_QUIET:-0}
 JQ=${JQ:-jq}
 if [[ $NV_USE_JQ -eq 1 ]] && ! command -v "$JQ" >/dev/null 2>&1; then
-  echo "jq not found, falling back to raw output"; NV_USE_JQ=0
+  echo "jq not found, falling back to raw output"
+  NV_USE_JQ=0
 fi
 
 # ---- Utilities --------------------------------------------------------------
@@ -54,12 +60,12 @@ nv_unique_suffix() {
 }
 
 # ---- Tokens -----------------------------------------------------------------
+# S2S (internal) — kept for debug display only (gateway now forwards via shared S2S)
 mint_s2s () {
   local iss="${1:-gateway}" svc="${2:-smoke}" ttl="${3:-300}"
   local now exp hdr pld sig
   now=$(date +%s); exp=$((now + ttl))
   hdr='{"alg":"HS256","typ":"JWT"}'
-  # include iat (some verifiers require it)
   pld=$(printf '{"sub":"s2s","iss":"%s","aud":"%s","iat":%s,"exp":%s,"svc":"%s"}' \
         "$iss" "$S2S_JWT_AUDIENCE" "$now" "$exp" "$svc")
   hdr=$(printf '%s' "$hdr" | b64url)
@@ -68,16 +74,25 @@ mint_s2s () {
   printf '%s.%s.%s' "$hdr" "$pld" "$sig"
 }
 
-# Issuer selection:
-# - Default caller is gateway (edge→worker).
-# - For service→service, set SMOKE_S2S_CALLER=<slug> (act|user|geo|audit|...)
-SMOKE_S2S_CALLER="${SMOKE_S2S_CALLER:-gateway}"
-
-_smoke_s2s_token_for() {
-  local caller="${1:-$SMOKE_S2S_CALLER}"
-  mint_s2s "$caller" "$caller" 300
+# CLIENT (edge) — this is what the gateway auth gate expects at the edge
+mint_client () {
+  local sub="${1:-smoke-client}" ttl="${2:-300}"
+  local now exp hdr pld sig
+  now=$(date +%s); exp=$((now + ttl))
+  hdr='{"alg":"HS256","typ":"JWT"}'
+  pld=$(printf '{"sub":"%s","iss":"%s","aud":"%s","iat":%s,"exp":%s}' \
+        "$sub" "$CLIENT_JWT_ISSUER" "$CLIENT_JWT_AUDIENCE" "$now" "$exp")
+  hdr=$(printf '%s' "$hdr" | b64url)
+  pld=$(printf '%s' "$pld" | b64url)
+  sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -binary -sha256 -hmac "$CLIENT_JWT_SECRET" | b64url)
+  printf '%s.%s.%s' "$hdr" "$pld" "$sig"
 }
 
+# Issuer selection:
+SMOKE_S2S_CALLER="${SMOKE_S2S_CALLER:-gateway}"
+_smoke_s2s_token_for() { local caller="${1:-$SMOKE_S2S_CALLER}"; mint_s2s "$caller" "$caller" 300; }
+
+# User assertion minted as if by gateway (short-lived)
 mint_user_assertion_gateway() {
   local uid="${1:-smoke-tests}" ttl="${2:-300}"
   local now exp jti hdr pld sig
@@ -93,33 +108,25 @@ mint_user_assertion_gateway() {
 }
 ASSERT_USER_GATEWAY() { mint_user_assertion_gateway "${1:-smoke-tests}" "${2:-300}"; }
 
-# ---- SAFE header emitters (array form — use these) --------------------------
-# These populate NV_AUTH_HEADERS[@] with:
-#   -H "Authorization: Bearer <...>"  -H "X-NV-User-Assertion: <...>"
-AUTH_HEADERS_SVC_ARR() {
-  local caller="${1:-$SMOKE_S2S_CALLER}"
-  NV_AUTH_HEADERS=(
-    -H "Authorization: Bearer $(_smoke_s2s_token_for "$caller")"
+# ---- SAFE header emitters (array form) --------------------------------------
+# Gateway EDGE request headers (client auth + assertion). DO NOT include S2S here.
+AUTH_HEADERS_CLIENT_ARR() {
+  NV_CLIENT_HEADERS=(
+    -H "Authorization: Bearer $(mint_client smoke-client 300)"
     -H "X-NV-User-Assertion: $(ASSERT_USER_GATEWAY smoke-tests 300)"
+    -H "X-Request-Id: smoke-$(nv_unique_suffix)"
+    -H "Accept: application/json"
+    -H "Content-Type: application/json"
   )
 }
 
 # ---- Unified request wrappers ----------------------------------------------
-# nv_req [METHOD] [URL] [CALLER?] [extra curl args...]
-# CALLER defaults to $SMOKE_S2S_CALLER (default: gateway)
-nv_req() {
+# gateway_req [METHOD] [URL] [curl extras...]
+gateway_req() {
   local method="$1"; shift
   local url="$1"; shift || true
-  local caller="${1-}"; if [[ "$caller" =~ ^-H|^-d|^-X|^-s|^-- ]]; then caller=""; else shift || true; fi
-  AUTH_HEADERS_SVC_ARR "${caller:-$SMOKE_S2S_CALLER}"
-  curl -sS -X "$method" "$url" "${NV_AUTH_HEADERS[@]}" "$@"
-}
-
-# Convenience for explicit gateway caller
-nv_req_gateway() {
-  local method="$1"; shift
-  local url="$1"; shift || true
-  nv_req "$method" "$url" "gateway" "$@"
+  AUTH_HEADERS_CLIENT_ARR
+  curl -sS -X "$method" "$url" "${NV_CLIENT_HEADERS[@]}" "$@"
 }
 
 # ---- Debug helpers ----------------------------------------------------------
@@ -157,7 +164,7 @@ delete_ok() {
   esac
 }
 
-# Example payloads used by Act tests
+# ---- Example payloads used by Act tests ------------------------------------
 payload_act_minimal() {
   json '{
     "name": "SmokeTest Act Update",
@@ -245,7 +252,8 @@ register_test() {
   for row in "${TESTS[@]}"; do
     IFS='|' read -r tid _ _ <<<"$row"
     if [[ "$tid" == "$id" ]]; then
-      echo "Duplicate test id: $id ($name)" >&2; exit 1
+      echo "Duplicate test id: $id ($name)" >&2
+      exit 1
     fi
   done
   TESTS+=("${id}|${name}|${fn}")
@@ -284,10 +292,13 @@ Env overrides:
   ACT=http://127.0.0.1:4002
   USER_URL=http://127.0.0.1:4001   # user service base URL
 
-Test tuning:
-  SMOKE_S2S_CALLER=gateway|act|user|geo|audit|...   (default: gateway)
-  S2S_JWT_SECRET=...           # must match service verifier
-  S2S_JWT_AUDIENCE=...         # must match service verifier
+Client auth (gateway edge verification):
+  CLIENT_JWT_SECRET=devlocal-client-secret
+  CLIENT_JWT_AUDIENCE=nv-clients
+  CLIENT_JWT_ISSUER=smoke-suite
+
+User assertion:
+  USER_ASSERTION_SECRET=devlocal-users-internal
 
 Options:
   --list     Show enumerated tests and exit
@@ -307,8 +318,11 @@ nv_parse_selection() {
     for p in "${parts[@]}"; do
       if [[ "$p" =~ ^[0-9]+-[0-9]+$ ]]; then
         a="${p%-*}"; b="${p#*-}"; for ((i=a; i<=b; i++)); do out+=("$i"); done
-      elif [[ "$p" =~ ^[0-9]+$ ]]; then out+=("$p")
-      else echo "Bad selection token: $p" >&2; exit 64
+      elif [[ "$p" =~ ^[0-9]+$ ]]; then
+        out+=("$p")
+      else
+        echo "Bad selection token: $p" >&2
+        exit 64
       fi
     done
   fi
@@ -322,7 +336,8 @@ _nv_find_index_by_id() {
     if [[ "$id" == "$want" ]]; then echo "$i"; return 0; fi
     i=$((i+1))
   done
-  echo ""; return 1
+  echo ""
+  return 1
 }
 
 nv_name_for_id() {

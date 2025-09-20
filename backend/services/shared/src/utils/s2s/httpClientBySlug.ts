@@ -1,4 +1,4 @@
-// backend/services/shared/src/utils/s2s/httpClientBySlug.ts
+// PATH: backend/services/shared/src/utils/s2s/httpClientBySlug.ts
 
 /**
  * Docs:
@@ -10,14 +10,14 @@
  *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md   // APR-0029
  *
  * Why:
- * - Resolve target service API bases via the svcconfig **snapshot**.
- * - Import svcconfig client **dynamically** after envs are loaded; never at module top-level.
- * - After composing the target URL, delegate the call to the standard S2S http client.
+ * - Resolve target service API bases via the svcconfig **snapshot** (no network).
+ * - Add **uniform S2S identity** + **X-NV-Api-Version** in one place so gateway
+ *   and service→service behave identically (no drift).
+ * - Respect an inbound X-NV-User-Assertion if present; otherwise mint a short-lived one.
  *
  * Notes:
- * - Inside shared, use **relative** imports to avoid self-aliasing.
  * - Caches base per (slug, apiVersion) in-process.
- * - As of APR-0029, `apiVersion` is **used** to resolve (slug,version). No env URL overrides.
+ * - External versions may be "V1"/"v1"/"1" at call sites; we normalize to "V#".
  */
 
 import {
@@ -25,8 +25,13 @@ import {
   type S2SRequestOptions,
   type S2SResponse,
 } from "./httpClient";
+// Re-export public types for ergonomic imports by higher-level helpers
+export type { S2SRequestOptions, S2SResponse } from "./httpClient";
+
 import type { ServiceConfig } from "../../contracts/svcconfig.contract";
 import { logger } from "../logger";
+import { mintS2S } from "./mintS2S";
+import { mintUserAssertion } from "./mintUserAssertion";
 
 const ensureLeading = (p: string) => (p.startsWith("/") ? p : `/${p}`);
 const stripTrailing = (p: string) => p.replace(/\/+$/, "");
@@ -97,7 +102,7 @@ function pickByVersion(
   version: string
 ): ServiceConfig | null {
   // Accept several shapes without changing callers:
-  // 1) Array< ServiceConfig >
+  // 1) Array<ServiceConfig>
   if (Array.isArray(snapServices)) {
     return (
       snapServices.find(
@@ -143,8 +148,9 @@ async function resolveServiceConfig(
   await ensureSvcconfigReady();
   const mod = await ensureSvcconfigModule();
   const snap = mod.getSvcconfigSnapshot();
-  if (!snap)
+  if (!snap) {
     throw new Error("[httpClientBySlug] svcconfig snapshot not initialized");
+  }
 
   const wantedVer = normVersion(apiVersion);
   const cfg = pickByVersion(snap.services, slug, wantedVer);
@@ -161,10 +167,46 @@ async function resolveServiceConfig(
   return cfg as ServiceConfig;
 }
 
+function mintHeaders(
+  ver: string,
+  inbound: Record<string, string | undefined>
+): Record<string, string> {
+  // Start from a clean map of defined string values only
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(inbound || {})) {
+    if (typeof v === "string") out[k] = v;
+  }
+
+  // Never forward client Authorization upstream; always mint fresh S2S
+  delete out.authorization;
+  delete out.Authorization as any;
+
+  const ttlSec = Math.min(
+    Number(process.env.S2S_MAX_TTL_SEC || 300) || 300,
+    900
+  );
+  const caller = process.env.SERVICE_NAME || "gateway";
+  out.authorization = `Bearer ${mintS2S({ ttlSec, meta: { svc: caller } })}`;
+
+  // Preserve provided user assertion if present; otherwise mint a short-lived one
+  const hasUA =
+    typeof out["x-nv-user-assertion"] === "string" &&
+    out["x-nv-user-assertion"]!.length > 0;
+  if (!hasUA) {
+    const sub = process.env.DEFAULT_USER_ASSERTION_SUB || "smoke-tests";
+    out["x-nv-user-assertion"] = mintUserAssertion({ sub }, { ttlSec: 300 });
+  }
+
+  // Stamp canonical API version header ("V#")
+  out["x-nv-api-version"] = ver;
+
+  return out;
+}
+
 /**
  * Perform an S2S request to a service by slug.
  * `path` is the service-local API path (e.g., "/resolve"); outboundApiPrefix is added from svcconfig.
- * Delegates the actual HTTP call to s2sRequest().
+ * Adds S2S Authorization + X-NV-User-Assertion (if missing) + X-NV-Api-Version, then delegates to s2sRequest().
  */
 export async function s2sRequestBySlug<TResp = unknown, TBody = unknown>(
   slug: string,
@@ -188,10 +230,16 @@ export async function s2sRequestBySlug<TResp = unknown, TBody = unknown>(
 
   const target = `${stripTrailing(apiBase)}${ensureLeading(path)}`;
 
-  // Inject version header while preserving caller headers
+  // Merge headers and mint upstream identity (S2S + UA) and version
+  const inboundHeaders = (opts.headers || {}) as Record<
+    string,
+    string | undefined
+  >;
+  const headers = mintHeaders(ver, inboundHeaders);
+
   const mergedOpts: S2SRequestOptions<TBody> = {
     ...opts,
-    headers: { ...(opts.headers || {}), "X-NV-Api-Version": ver },
+    headers,
   };
 
   return s2sRequest<TResp, TBody>(target, mergedOpts);

@@ -1,32 +1,31 @@
-// backend/services/gateway/src/middleware/rateLimit.ts
+// backend/services/shared/middleware/rateLimit.ts
+
 /**
- * References:
- * - NowVibin Backend — New-Session SOP v4 (Amended)
- *   • Guardrails run BEFORE proxy; audit (billing) happens AFTER guardrails
- *   • “Security telemetry vs Billing-grade audit” split
- *   • “Instrumentation everywhere; never block foreground traffic”
+ * Docs:
+ * - Design: docs/design/backend/guardrails/rate-limit.md
+ * - Architecture: docs/architecture/backend/GUARDRAILS.md
+ * - ADRs:
+ *   - docs/adr/0011-global-edge-rate-limiting.md
  *
  * Why:
- * This is the **general** edge rate limiter (distinct from `sensitiveLimiter`).
- * It provides a low-cost backstop against abusive bursts across the API without
- * introducing external dependencies. It:
- *   1) Tracks requests per (IP + method + path) in-memory (fixed window).
- *   2) Responds with 429 when the window’s `points` are exceeded.
- *   3) Emits a **SECURITY** log on denial (so ops can see abuse) but does NOT
- *      write to the audit WAL (billing remains clean).
+ * - Provide a **low-cost backstop** against abusive bursts across the API without
+ *   external dependencies. This runs **before proxy** and **before audit** so
+ *   SECURITY denials never contaminate the billing WAL.
+ * - Scope keys to (IP + method + path) to contain abusers without starving
+ *   unrelated users or routes.
  *
  * Notes:
- * - In-memory is intentional for dev/test and small deployments. For horizontal
- *   scale or strict SLAs, swap this with a distributed limiter (e.g., Redis) but
- *   keep this exact interface so call sites do not change.
- * - Failures of the limiter must never crash or block requests; worst case is a
- *   noisier log or reduced protection for that request.
+ * - Fixed-window, in-memory by default (dev/test and small deployments). For
+ *   horizontal scale or strict SLAs, swap the bucket store with Redis or a
+ *   distributed limiter but keep this exact interface and behavior.
+ * - Fail-open: limiter errors must never take the service down or block traffic.
+ * - On deny, we emit a **SECURITY** log (not WAL) and return RFC7807 Problem+JSON
+ *   with `Retry-After`.
  */
 
 import type { Request, Response, NextFunction } from "express";
 import { logSecurity } from "../utils/securityLog";
 
-// Public config surface — keep tiny and explicit.
 export type RateLimitCfg = {
   /** Allowed requests per window per (ip+method+path). */
   points: number;
@@ -34,24 +33,42 @@ export type RateLimitCfg = {
   windowMs: number;
 };
 
-// Fixed-window counters per key. For production, replace with distributed store.
+/**
+ * WHY: Keeping the store in module scope ensures cheap per-request ops.
+ * Replace this map with a distributed store for multi-instance deployments.
+ */
 type Bucket = { count: number; resetAt: number };
 const buckets = new Map<string, Bucket>();
 
-/** WHY: Key ties to IP + method + normalized path to scope abuse without cross-user starvation. */
+/** WHY: Key ties to IP + method + normalized path to scope abuse precisely. */
 function keyFor(req: Request) {
+  const ipHeader = (req.headers["x-forwarded-for"] as string) || "";
   const ip =
-    (req.headers["x-forwarded-for"] as string) ||
-    req.socket.remoteAddress ||
-    "unknown";
-  // Normalize to avoid query noise; we rate-limit the *route*, not each query variant.
-  return `${ip.split(",")[0].trim()}|${req.method}|${req.path}`;
+    ipHeader.split(",")[0].trim() || req.socket.remoteAddress || "unknown";
+  // Normalize to avoid query noise; we limit by the *route*, not each query variant.
+  return `${ip}|${req.method}|${req.path}`;
 }
 
-export function rateLimitMiddleware(cfg: RateLimitCfg) {
+/** WHY: Allow zero-arg usage from createServiceApp(); fall back to env. */
+function loadCfgFromEnv(): RateLimitCfg {
+  const points = Number(process.env.RATE_LIMIT_POINTS ?? 120);
+  const windowMs = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
+  return {
+    points: Number.isFinite(points) && points > 0 ? points : 120,
+    windowMs: Number.isFinite(windowMs) && windowMs > 0 ? windowMs : 60_000,
+  };
+}
+
+/**
+ * Rate limit guardrail (fixed window).
+ * - Denials log to SECURITY channel and return Problem+JSON 429 with Retry-After.
+ * - Success path is zero allocation aside from Map lookups/increments.
+ */
+export function rateLimitMiddleware(cfg?: RateLimitCfg) {
+  const cfgResolved = cfg ?? loadCfgFromEnv();
   // Defensive normalization — avoid NaNs/zeros causing odd behavior.
-  const points = Math.max(1, cfg.points | 0);
-  const windowMs = Math.max(250, cfg.windowMs | 0);
+  const points = Math.max(1, cfgResolved.points | 0);
+  const windowMs = Math.max(250, cfgResolved.windowMs | 0);
 
   return (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -70,7 +87,13 @@ export function rateLimitMiddleware(cfg: RateLimitCfg) {
         return next();
       }
 
-      // Deny branch: emit SECURITY log, do NOT touch audit WAL (billing).
+      // ─────────────────────────────────────────────────────────────────────
+      // Deny branch: emit SECURITY log (never WAL), include short non-PII reason
+      // ─────────────────────────────────────────────────────────────────────
+      const ipHeader = (req.headers["x-forwarded-for"] as string) || "";
+      const clientIp =
+        ipHeader.split(",")[0].trim() || req.socket.remoteAddress || "";
+
       logSecurity(req, {
         kind: "rate_limit",
         reason: "global_backstop_exceeded",
@@ -78,24 +101,27 @@ export function rateLimitMiddleware(cfg: RateLimitCfg) {
         status: 429,
         route: req.path,
         method: req.method,
-        ip:
-          (req.headers["x-forwarded-for"] as string)?.split(",")[0].trim() ||
-          req.socket.remoteAddress ||
-          "",
+        ip: clientIp,
         details: { limit: points, windowMs, count: b.count },
       });
 
-      // Communicate retry hint. Use whole seconds; clients don’t benefit from ms precision.
+      // Communicate retry hint. Use whole seconds; sub-second precision is noise.
       const retryInMs = Math.max(0, b.resetAt - now);
       res.setHeader("Retry-After", Math.ceil(retryInMs / 1000));
 
-      return res.status(429).json({
-        type: "about:blank",
-        title: "Too Many Requests",
-        status: 429,
-        detail: "Rate limit exceeded",
-        instance: (req as any).id,
-      });
+      // RFC7807 Problem+JSON + correlation key
+      const requestId = (req as any).id;
+      return res
+        .status(429)
+        .type("application/problem+json")
+        .json({
+          type: "about:blank",
+          title: "Too Many Requests",
+          status: 429,
+          detail: "Rate limit exceeded",
+          instance: req.originalUrl || req.url,
+          requestId,
+        });
     } catch {
       // Fail-open: protection must not become an availability risk.
       return next();

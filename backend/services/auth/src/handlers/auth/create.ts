@@ -1,22 +1,28 @@
-// backend/services/auth/src/handlers/auth/create.ts
+// PATH: backend/services/auth/src/handlers/auth/create.ts
 /**
  * Docs:
  * - Arch: docs/architecture/backend/OVERVIEW.md
  * - SOP:  docs/architecture/backend/SOP.md
  * - ADRs:
  *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
  *
  * Why:
- * - Auth now calls User directly via the shared S2S client resolved by svcconfig.
+ * - Auth calls User via the shared S2S client (`callBySlug`) resolved by svcconfig.
  * - Keep controller thin: validate → hash → S2S → issue token → audit → return.
  */
 
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
-import { s2sRequestBySlug } from "@eff/shared/src/utils/s2s/httpClientBySlug";
+import { callBySlug } from "@eff/shared/src/utils/s2s/callBySlug";
 import { logger } from "@eff/shared/src/utils/logger";
 import { config } from "../../config";
 import { generateToken } from "../../utils/jwtUtils";
+
+// Tolerate multiple S2S response shapes.
+function pickPayload(resp: any) {
+  return resp?.body ?? resp?.data ?? resp?.payload ?? undefined;
+}
 
 export default async function create(
   req: Request,
@@ -35,45 +41,41 @@ export default async function create(
     const password = String(req.body?.password || "");
 
     if (!email || !password || !firstname || !lastname) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Missing required fields: email, password, firstname, lastname",
-        });
+      return res.status(400).json({
+        error: "Missing required fields: email, password, firstname, lastname",
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const resp = await s2sRequestBySlug<any>(
-      config.userSlug,
-      config.userApiVersion,
-      config.userRouteUsers,
-      {
-        method: "POST",
-        timeoutMs: 5000,
-        headers: { "Content-Type": "application/json" },
-        body: {
-          email,
-          password: hashedPassword,
-          firstname,
-          middlename,
-          lastname,
-        },
-      }
-    );
+    const resp = await callBySlug<any>(config.userSlug, config.userApiVersion, {
+      method: "POST",
+      path: config.userRouteUsers,
+      timeoutMs: 5000,
+      headers: { "content-type": "application/json" },
+      body: {
+        email,
+        password: hashedPassword,
+        firstname,
+        middlename,
+        lastname,
+      },
+    });
 
-    if (!resp.ok) {
+    const status = Number(resp.status || 0);
+    const payload = pickPayload(resp);
+
+    if (!(status >= 200 && status < 300)) {
       logger.error(
-        { requestId, status: resp.status, data: resp.data },
+        { requestId, status, data: payload },
         "[AuthHandlers.create] downstream error"
       );
       return res
-        .status(resp.status)
-        .send(resp.data ?? { error: "User create failed" });
+        .status(status || 502)
+        .send(payload ?? { error: "User create failed" });
     }
 
-    const created = resp.data?.user ?? resp.data ?? {};
+    const created = payload?.user ?? payload ?? {};
     const id = String(created.id ?? created._id ?? created.userId ?? "");
     const safeUser = {
       id,

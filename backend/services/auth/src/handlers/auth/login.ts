@@ -1,16 +1,23 @@
-// backend/services/auth/src/handlers/auth/login.ts
+// PATH: backend/services/auth/src/handlers/auth/login.ts
 /**
  * POST /api/auth/login
  * Body: { email, password }
  * Behavior: fetch user (private email) via S2S, compare bcrypt, return JWT.
+ *
+ * Transport:
+ * - Uses callBySlug to reach User service through svcconfig.
  */
 
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
-import { s2sRequestBySlug } from "@eff/shared/src/utils/s2s/httpClientBySlug";
+import { callBySlug } from "@eff/shared/src/utils/s2s/callBySlug";
 import { logger } from "@eff/shared/src/utils/logger";
 import { config } from "../../config";
 import { generateToken } from "../../utils/jwtUtils";
+
+function pickPayload(resp: any) {
+  return resp?.body ?? resp?.data ?? resp?.payload ?? undefined;
+}
 
 export default async function login(
   req: Request,
@@ -29,32 +36,34 @@ export default async function login(
       return res.status(400).json({ error: "Missing email or password" });
     }
 
-    const resp = await s2sRequestBySlug<any>(
-      config.userSlug,
-      config.userApiVersion,
-      `${config.userRoutePrivateEmail}/${encodeURIComponent(email)}`,
-      { method: "GET", timeoutMs: 5000 }
-    );
+    const resp = await callBySlug<any>(config.userSlug, config.userApiVersion, {
+      method: "GET",
+      path: `${config.userRoutePrivateEmail}/${encodeURIComponent(email)}`,
+      timeoutMs: 5000,
+    });
 
-    if (resp.status === 404) {
+    const status = Number(resp.status || 0);
+    const payload = pickPayload(resp);
+
+    if (status === 404) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
-    if (!resp.ok) {
+    if (!(status >= 200 && status < 300)) {
       logger.error(
-        { requestId, status: resp.status, data: resp.data },
+        { requestId, status, data: payload },
         "[AuthHandlers.login] downstream error"
       );
       return res
-        .status(resp.status)
-        .send(resp.data ?? { error: "User lookup failed" });
+        .status(status || 502)
+        .send(payload ?? { error: "User lookup failed" });
     }
 
-    const user = resp.data?.user ?? resp.data ?? {};
+    const user = payload?.user ?? payload ?? {};
     const hash: string | undefined = user?.password;
     if (!hash)
       return res.status(401).json({ error: "Invalid email or password" });
 
-    const ok = await bcrypt.compare(password, hash);
+    const ok = await bcrypt.compare(password, String(hash));
     if (!ok)
       return res.status(401).json({ error: "Invalid email or password" });
 

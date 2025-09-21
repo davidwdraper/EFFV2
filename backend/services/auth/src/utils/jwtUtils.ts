@@ -1,6 +1,6 @@
 // backend/services/auth/src/utils/jwtUtils.ts
 import jwt from "jsonwebtoken";
-import { logger } from "@shared/utils/logger";
+import { logger } from "@eff/shared/src/utils/logger";
 
 // ✅ Fail fast if secret is not provided
 if (!process.env.JWT_SECRET) {

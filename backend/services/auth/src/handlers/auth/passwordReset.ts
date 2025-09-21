@@ -2,7 +2,7 @@
 /**
  * POST /api/auth/password_reset
  * Body: { email, newPassword }
- * Behavior: lookup user id via private email (S2S), PUT new hashed password to User.
+ * Behavior: lookup user id via private email (S2S), PATCH hashed password to User.
  *
  * Transport:
  * - Uses callBySlug for both lookup and update.
@@ -16,6 +16,9 @@ import { config } from "../../config";
 
 function pickPayload(resp: any) {
   return resp?.body ?? resp?.data ?? resp?.payload ?? undefined;
+}
+function pickText(resp: any): string | undefined {
+  return typeof resp?.text === "string" ? resp.text : undefined;
 }
 
 export default async function passwordReset(
@@ -32,7 +35,14 @@ export default async function passwordReset(
     const newPassword = String(req.body?.newPassword || "");
 
     if (!email || !newPassword) {
-      return res.status(400).json({ error: "email and newPassword required" });
+      return res
+        .status(400)
+        .json({
+          type: "about:blank",
+          title: "Bad Request",
+          status: 400,
+          detail: "email and newPassword required",
+        });
     }
 
     // 1) Lookup by private email
@@ -48,49 +58,82 @@ export default async function passwordReset(
 
     const lookupStatus = Number(lookup.status || 0);
     const lookupPayload = pickPayload(lookup);
+    const lookupText = pickText(lookup);
 
-    if (lookupStatus === 404)
-      return res.status(404).json({ error: "User not found" });
+    if (lookupStatus === 404) {
+      return res
+        .status(404)
+        .json({
+          type: "about:blank",
+          title: "Not Found",
+          status: 404,
+          detail: "User not found",
+        });
+    }
     if (!(lookupStatus >= 200 && lookupStatus < 300)) {
       logger.error(
-        { requestId, status: lookupStatus, data: lookupPayload },
+        { requestId, status: lookupStatus, data: lookupPayload ?? lookupText },
         "[AuthHandlers.passwordReset] lookup error"
       );
       return res
         .status(lookupStatus || 502)
-        .send(lookupPayload ?? { error: "User lookup failed" });
+        .json(
+          lookupPayload ?? {
+            type: "about:blank",
+            title: "Bad Gateway",
+            status: 502,
+            detail: "User lookup failed",
+          }
+        );
     }
 
     const user = lookupPayload?.user ?? lookupPayload ?? {};
     const id = String(user.id ?? user._id ?? user.userId ?? "");
-    if (!id) return res.status(404).json({ error: "User not found" });
+    if (!id) {
+      return res
+        .status(404)
+        .json({
+          type: "about:blank",
+          title: "Not Found",
+          status: 404,
+          detail: "User not found",
+        });
+    }
 
-    // 2) Hash and PUT to user service
+    // 2) Hash and PATCH to user service (PUT /:id is forbidden by SOP)
     const newHash = await bcrypt.hash(newPassword, 10);
 
     const update = await callBySlug<any>(
       config.userSlug,
       config.userApiVersion,
       {
-        method: "PUT",
+        method: "PATCH",
         path: `${config.userRouteUsers}/${encodeURIComponent(id)}`,
         timeoutMs: 5000,
         headers: { "content-type": "application/json" },
-        body: { password: newHash, dateLastUpdated: new Date().toISOString() },
+        body: { password: newHash },
       }
     );
 
     const updateStatus = Number(update.status || 0);
     const updatePayload = pickPayload(update);
+    const updateText = pickText(update);
 
     if (!(updateStatus >= 200 && updateStatus < 300)) {
       logger.error(
-        { requestId, status: updateStatus, data: updatePayload },
+        { requestId, status: updateStatus, data: updatePayload ?? updateText },
         "[AuthHandlers.passwordReset] update error"
       );
       return res
         .status(updateStatus || 502)
-        .send(updatePayload ?? { error: "Password update failed" });
+        .json(
+          updatePayload ?? {
+            type: "about:blank",
+            title: "Bad Gateway",
+            status: 502,
+            detail: "Password update failed",
+          }
+        );
     }
 
     (req as any).audit?.push({
@@ -104,7 +147,7 @@ export default async function passwordReset(
       { requestId, userId: id },
       "[AuthHandlers.passwordReset] exit"
     );
-    return res.json({ ok: true });
+    return res.status(200).json({ ok: true });
   } catch (err) {
     logger.debug({ requestId, err }, "[AuthHandlers.passwordReset] error");
     return next(err as Error);

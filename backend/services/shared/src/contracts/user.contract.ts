@@ -1,4 +1,4 @@
-// backend/services/shared/contracts/user.contract.ts
+// PATH: backend/services/shared/src/contracts/user.contract.ts
 import { z } from "zod";
 import { zObjectId, zIsoDate } from "./common";
 
@@ -42,13 +42,21 @@ export const zUserReplace = z.object({
   firstname: z.string().min(1),
   lastname: z.string().min(1),
   middlename: z.string().optional(),
-  userStatus: z.number().int().optional(), // keep optional to preserve existing controller semantics
+  userStatus: z.number().int().optional(),
   userType: z.number().int().optional(),
   imageIds: z.array(z.string()).optional(),
 });
 export type UserReplace = z.infer<typeof zUserReplace>;
 
-export const zUserPatch = zUserReplace.partial();
+/**
+ * Patch: allow password (hash) to be set by auth flow.
+ * NOTE: This is the ONLY place password appears besides create.
+ */
+export const zUserPatch = zUserReplace
+  .extend({
+    password: z.string().min(6).max(200).optional(),
+  })
+  .partial();
 export type UserPatch = z.infer<typeof zUserPatch>;
 
 // Back-compat type aliases (if any code still imports these names)

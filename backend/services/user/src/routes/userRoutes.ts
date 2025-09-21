@@ -3,7 +3,7 @@ import { Router } from "express";
 import { cacheGet, invalidateOnSuccess } from "@eff/shared/src/utils/cache";
 
 // 🔧 Direct handler imports (no barrels)
-import { create } from "../controllers/handlers/create";
+import create from "../controllers/handlers/create";
 import { list } from "../controllers/handlers/list";
 import { getUserByEmail } from "../controllers/handlers/getUserByEmail";
 import { getUserByEmailWithPassword } from "../controllers/handlers/getUserByEmailWithPassword";

@@ -1,10 +1,10 @@
-// backend/services/user/src/controllers/handlers/patchUser.ts
+// PATH: backend/services/user/src/controllers/handlers/patchUser.ts
 import type { RequestHandler } from "express";
 import { asyncHandler } from "@eff/shared/src/middleware/asyncHandler";
-import { zUserPatch } from "../../contracts/userContracts";
+import { zUserPatch } from "@eff/shared/src/contracts/user.contract";
 import * as svc from "../../services/user.service";
 
-// PATCH /api/user/:id
+// PATCH /api/users/:id
 export const patchUser: RequestHandler = asyncHandler(async (req, res) => {
   const parsed = zUserPatch.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: "Invalid patch" });
@@ -27,3 +27,5 @@ export const patchUser: RequestHandler = asyncHandler(async (req, res) => {
   */
   return res.status(200).json(out.dto);
 });
+
+export default patchUser;

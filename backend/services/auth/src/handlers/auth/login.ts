@@ -3,11 +3,7 @@
  * POST /api/auth/login
  * Body: { email, password }
  * Behavior: fetch user (private email) via S2S, compare bcrypt, return JWT.
- *
- * Transport:
- * - Uses callBySlug to reach User service through svcconfig.
  */
-
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
 import { callBySlug } from "@eff/shared/src/utils/s2s/callBySlug";
@@ -58,14 +54,21 @@ export default async function login(
         .send(payload ?? { error: "User lookup failed" });
     }
 
+    // Accept either { user, password } or { user: { password } } or { password }
     const user = payload?.user ?? payload ?? {};
-    const hash: string | undefined = user?.password;
-    if (!hash)
+    const hash: string | undefined =
+      (typeof payload?.password === "string" && payload.password) ||
+      (typeof user?.password === "string" && user.password) ||
+      undefined;
+
+    if (!hash) {
       return res.status(401).json({ error: "Invalid email or password" });
+    }
 
     const ok = await bcrypt.compare(password, String(hash));
-    if (!ok)
+    if (!ok) {
       return res.status(401).json({ error: "Invalid email or password" });
+    }
 
     const id = String(user.id ?? user._id ?? user.userId ?? "");
     const token = generateToken({

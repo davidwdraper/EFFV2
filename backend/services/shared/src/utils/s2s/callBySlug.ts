@@ -166,6 +166,11 @@ function prepareBodyAndHeaders(
   );
 }
 
+/** Default S2S timeout (ms). Keep below gateway edge timeout to fail inside the caller first. */
+const DEFAULT_S2S_TIMEOUT_MS = Number(
+  process.env.TIMEOUT_S2S_DEFAULT_MS ?? 6000
+);
+
 /**
  * One-shot, version-aware S2S call by slug.
  * - Gateway usage: pass inbound body/headers minus Authorization.
@@ -181,7 +186,7 @@ export async function callBySlug<TResp = unknown, TBody = unknown>(
   const qs = buildQuery(opts.query);
   const pathWithQs = `${ensureLeading(opts.path)}${qs}`;
 
-  const { headers = {}, body, timeoutMs } = opts;
+  const { headers = {}, body } = opts;
 
   // Strip any Authorization keys without tripping noUnusedLocals.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -194,11 +199,22 @@ export async function callBySlug<TResp = unknown, TBody = unknown>(
   // Normalize/serialize body and headers (JSON by default)
   const { bodyOut, headersOut } = prepareBodyAndHeaders(body, restHeaders);
 
+  // Stamp normalized API version header if caller didn't set it
+  if (!headersOut["x-nv-api-version"]) {
+    headersOut["x-nv-api-version"] = ver;
+  }
+
+  // Effective timeout: caller override or default
+  const effectiveTimeoutMs =
+    typeof opts.timeoutMs === "number"
+      ? opts.timeoutMs
+      : DEFAULT_S2S_TIMEOUT_MS;
+
   const reqOpts: S2SRequestOptions<any> = {
     method,
     headers: headersOut,
     body: bodyOut,
-    timeoutMs,
+    timeoutMs: effectiveTimeoutMs,
   };
 
   try {

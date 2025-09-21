@@ -33,7 +33,7 @@ SERVICES=(
   "gateway|backend/services/gateway|yarn dev"
   "geo|backend/services/geo|yarn dev"
   "act|backend/services/act|yarn dev"
-  # "auth|backend/services/auth|yarn dev"
+  "auth|backend/services/auth|yarn dev"
   # "image|backend/services/image|yarn dev"
   "user|backend/services/user|yarn dev"
   #"log|backend/services/log|yarn dev"

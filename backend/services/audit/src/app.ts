@@ -1,4 +1,3 @@
-// backend/services/audit/src/app.ts
 /**
  * NowVibin — Backend
  * File: backend/services/audit/src/app.ts
@@ -16,6 +15,7 @@ import { createServiceApp } from "@eff/shared/src/app/createServiceApp";
 import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
 import auditRoutes from "./routes/auditEvent.routes";
 import { config } from "./config";
+import { initWalDrainer } from "./services/walDrainer";
 
 // Sanity: required envs
 if (!config.mongoUri)
@@ -40,5 +40,8 @@ const app = createServiceApp({
   readiness,
   mountRoutes,
 });
+
+// Initialize the unified WAL drainer (periodic tail; live kick on ingestion)
+initWalDrainer();
 
 export default app;

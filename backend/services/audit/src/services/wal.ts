@@ -8,7 +8,7 @@
  * Why:
  * - Write-Ahead Log (WAL) gives us durability-before-DB: we never lose an event
  *   between intake and persistence. We append NDJSON lines to a per-day file,
- *   then enqueue for DB. WAL replay (walReplayer.ts) idempotently backfills.
+ *   then enqueue for DB. WAL replay (via unified walDrainer) idempotently backfills.
  *
  * Notes:
  * - Append-only, one file per UTC day (keeps ops simple).
@@ -19,6 +19,7 @@
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
+import { logger } from "@eff/shared/src/utils/logger";
 
 // ---------- Env helpers ------------------------------------------------------
 
@@ -132,6 +133,10 @@ export async function walAppend(
       mode: 0o640,
       flag: "a",
     });
+    logger.debug(
+      { file: path.basename(file), count: events.length },
+      "[audit.wal] append ok"
+    );
   } catch (err) {
     const e = err as Error;
     e.message = `[audit.wal] append failed (${file}): ${e.message}`;

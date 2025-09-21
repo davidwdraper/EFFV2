@@ -1,5 +1,4 @@
 // backend/services/gateway/src/services/auditWal.ts
-
 /**
  * Docs:
  * - Design: docs/design/backend/gateway/audit-wal.md
@@ -10,7 +9,10 @@
  * Why:
  * - Durable, non-blocking audit WAL with rotation, retention, and crash-safe replay.
  * - At-least-once semantics; downstream does idempotent dedupe.
+ * - EVENT-DRIVEN: no periodic polling; flush on enqueue and on replay, with
+ *   bounded backoff on retriable failures only while there is pending data.
  */
+
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
@@ -26,8 +28,6 @@ type WalCfg = {
   retentionDays: number;
   ringMaxEvents: number;
   batchSize: number;
-  flushMs: number;
-  maxRetryMs: number;
   dropAfterMB: number;
 };
 
@@ -37,8 +37,6 @@ const cfg: WalCfg = {
   retentionDays: num(process.env.WAL_RETENTION_DAYS, 7),
   ringMaxEvents: num(process.env.WAL_RING_MAX_EVENTS, 50000),
   batchSize: num(process.env.WAL_BATCH_SIZE, 200),
-  flushMs: num(process.env.WAL_FLUSH_MS, 1000),
-  maxRetryMs: num(process.env.WAL_MAX_RETRY_MS, 30000),
   dropAfterMB: num(process.env.WAL_DROP_AFTER_MB, 512),
 };
 
@@ -53,19 +51,22 @@ class AuditWal {
   private ring: AuditEvent[] = [];
   private writer: fs.WriteStream | null = null;
   private currentFile = "";
-  private timer: NodeJS.Timeout | null = null;
   private sending = false;
   private attempt = 0;
   private cursor: LineMeta | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
 
   async init(): Promise<void> {
     await fsp.mkdir(cfg.dir, { recursive: true });
     await this.rotateIfNeeded(true);
     await this.loadCursor();
-    this.scheduleFlush();
+    // No periodic timer: we rely on enqueue-triggered flush and startup replay.
     void this.replayFromCursor();
     void this.cleanupOldFiles();
-    logger.info({ dir: cfg.dir }, "[auditWal] initialized");
+    logger.info(
+      { dir: cfg.dir, mode: "event-driven" },
+      "[auditWal] initialized"
+    );
   }
 
   snapshot() {
@@ -73,13 +74,13 @@ class AuditWal {
       dir: cfg.dir,
       currentFile: this.currentFile,
       ringSize: this.ring.length,
-      flushMs: cfg.flushMs,
       batchSize: cfg.batchSize,
       cursor: this.cursor
         ? { file: this.cursor.file, pos: this.cursor.pos }
         : null,
       sending: this.sending,
       attempt: this.attempt,
+      retryTimerActive: !!this.retryTimer,
     };
   }
 
@@ -102,14 +103,20 @@ class AuditWal {
       "[auditWal] enqueued"
     );
 
-    if (this.ring.length >= cfg.batchSize) this.flush("batchSize");
+    // Event-driven: try to flush immediately.
+    this.flush("enqueue");
   }
 
-  flush(_reason: string) {
-    if (this.sending) return;
-    if (this.ring.length === 0) return;
-    this.sending = true;
+  flush(reason: string) {
+    // If already sending or waiting a scheduled retry, do nothing.
+    if (this.sending || this.retryTimer) return;
 
+    if (this.ring.length === 0) {
+      logger.debug({ reason }, "[auditWal] flush skipped (empty ring)");
+      return;
+    }
+
+    this.sending = true;
     const toSend = this.ring.slice(0, cfg.batchSize);
 
     void (async () => {
@@ -120,33 +127,45 @@ class AuditWal {
           this.ring.splice(0, toSend.length);
           this.attempt = 0;
           logger.info(
-            { sent: toSend.length, status: res.status },
+            { sent: toSend.length, status: res.status, reason },
             "[auditWal] batch sent"
           );
         } else if (!res.retriable) {
+          // Drop poison batch; do not advance cursor (so WAL replay can decide).
           this.ring.splice(0, toSend.length);
           logger.warn(
-            { status: res.status, dropped: toSend.length },
+            { status: res.status, dropped: toSend.length, reason },
             "[auditWal] non-retriable; dropped from ring (cursor unchanged)"
           );
         } else {
           const wait = nextBackoffMs(++this.attempt);
           logger.warn(
-            { status: res.status, attempt: this.attempt, wait },
-            "[auditWal] retriable failure; will retry"
+            { status: res.status, attempt: this.attempt, wait, reason },
+            "[auditWal] retriable failure; scheduling retry"
           );
-          await delay(wait);
+          this.retryTimer = setTimeout(() => {
+            this.retryTimer = null;
+            this.flush("retry");
+          }, wait);
+          return; // keep sending=true until finally
         }
       } catch (err) {
         const wait = nextBackoffMs(++this.attempt);
         logger.warn(
-          { err, attempt: this.attempt, wait },
-          "[auditWal] error sending; will retry"
+          { err, attempt: this.attempt, wait, reason },
+          "[auditWal] error sending; scheduling retry"
         );
-        await delay(wait);
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          this.flush("retry");
+        }, wait);
+        return;
       } finally {
         this.sending = false;
-        this.scheduleFlush();
+        // Keep draining if we still have items and no retry is pending.
+        if (this.ring.length > 0 && !this.retryTimer) {
+          this.flush("drain-continue");
+        }
       }
     })();
   }
@@ -175,6 +194,7 @@ class AuditWal {
               "[auditWal] replay advanced"
             );
           } else if (!res.retriable) {
+            // Skip poison batch; advance cursor to avoid replay storms.
             pos = chunk.nextPos;
             await this.saveCursor({ file, pos, len: 0 });
             logger.warn(
@@ -296,14 +316,6 @@ class AuditWal {
     } finally {
       await fd?.close().catch(() => {});
     }
-  }
-
-  private scheduleFlush() {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    this.timer = setTimeout(() => this.flush("timer"), cfg.flushMs);
   }
 
   private async cleanupOldFiles() {

@@ -19,8 +19,8 @@
 import {
   auditEventContract,
   type AuditEvent,
-} from "@shared/src/contracts/auditEvent.contract";
-import { clean } from "@shared/src/contracts/clean";
+} from "@eff/shared/src/contracts/auditEvent.contract";
+import { clean } from "@eff/shared/src/contracts/clean";
 
 /**
  * Validate + normalize a domain AuditEvent before DB insertion.

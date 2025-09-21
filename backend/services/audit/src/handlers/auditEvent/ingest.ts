@@ -19,8 +19,10 @@ import {
   asEventArray,
 } from "../../validators/auditEvent.dto";
 import { walAppend } from "../../services/wal";
-import { enqueueForFlush } from "../../services/ingestQueue";
 import { logger } from "@eff/shared/src/utils/logger";
+
+// ⬇️ NEW: signal the WAL drainer after WAL append so live API ingests flush to DB
+import { scheduleWalDrain } from "../../services/walDrainer";
 
 export default async function ingest(
   req: Request,
@@ -53,13 +55,16 @@ export default async function ingest(
       return next(e);
     }
 
-    // 3) Queue for background insert (insert-only; dupes ignored by unique index)
+    // 3) Trigger drain of any pending WAL lines → DB (single-flight & idempotent)
+    //    This is non-blocking; we acknowledge once the WAL is durable.
     try {
-      enqueueForFlush(events);
+      scheduleWalDrain("ingest");
     } catch (err) {
-      const e = err as Error;
-      e.message = `[audit.ingest] enqueue failed (WAL persisted): ${e.message}`;
-      return next(e);
+      // Drain scheduling is best-effort; WAL durability already guaranteed above.
+      logger.warn(
+        { requestId, err },
+        "[audit.ingest] scheduleWalDrain failed (WAL persisted)"
+      );
     }
 
     // 4) Acknowledge with single, documented header + JSON body

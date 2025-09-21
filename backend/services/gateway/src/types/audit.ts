@@ -1,6 +1,6 @@
 // backend/services/gateway/src/types/audit.ts
 import { z } from "zod";
-import { auditEventContract } from "@shared/src/contracts/auditEvent.contract";
+import { auditEventContract } from "@eff/shared/src/contracts/auditEvent.contract";
 
 // Canonical event type — inferred from shared contract (single source of truth)
 export type AuditEvent = z.infer<typeof auditEventContract>;

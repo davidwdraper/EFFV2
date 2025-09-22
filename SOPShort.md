@@ -28,12 +28,11 @@ Route & Service Rules
 URL convention (no exceptions)
 
 http(s)://<host>:<port>/api/<slug>/v<major>/<rest>
-
 http(s)://<host>:<port>/<healthRoute>
 
 <slug> = singular service name; REST resources = plural.
 
-CRUD (versioned paths):
+CRUD (versioned paths)
 
 Create: PUT /api/<slug>/v1/<resources> (service generates \_id, returns it)
 
@@ -41,7 +40,7 @@ Update: PATCH /api/<slug>/v1/<resources>/:id
 
 Read: GET /api/<slug>/v1/<resources>/:id
 
-Delete: DELETE/api/<slug>/v1/<resources>/:id (idempotent)
+Delete: DELETE /api/<slug>/v1/<resources>/:id (idempotent)
 
 No PUT /:id replaces.
 
@@ -53,7 +52,7 @@ Template Service Blueprint
 
 All new services clone Act 1:1.
 
-Flow: contract → DTOs → mappers → model → repo → controllers → routes
+Flow: contract → DTOs → mappers → model → repo → controllers → routes.
 
 Model: bufferCommands=false; indexes defined.
 
@@ -93,16 +92,12 @@ Gateway never forwards client Authorization.
 
 Both gateway and workers use shared callBySlug to mint tokens and make internal calls.
 
-Required envs (minimum):
+Required envs (minimum)
 
 S2S_JWT_SECRET
-
 S2S_JWT_ISSUER
-
 S2S_JWT_AUDIENCE
-
 S2S_ALLOWED_ISSUERS
-
 S2S_ALLOWED_CALLERS
 
 (Recommended) S2S_CLOCK_SKEW_SEC
@@ -132,3 +127,9 @@ Inline “why” comments, not “how”.
 Always ensure new code is wired in — no hanging strays.
 
 Never drift. If you don’t know if pre-existing logic exists, ask first before building.
+
+Always, always, always: first line of every file drop should look like
+
+// backend/services/log/src/app.ts
+
+✅ This version is ready to paste at the start of each new session.

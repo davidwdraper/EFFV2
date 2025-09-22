@@ -1,0 +1,2 @@
+test/smoke.health.direct.spec.ts
+test/smoke.health.gateway.spec.ts

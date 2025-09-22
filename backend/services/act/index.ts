@@ -22,7 +22,7 @@ import "tsconfig-paths/register";
 import path from "node:path";
 import { bootstrapService } from "@eff/shared/src/bootstrap/bootstrapService";
 
-const SERVICE_NAME = "act" as const;
+export const SERVICE_NAME = "act" as const;
 
 void bootstrapService({
   serviceName: SERVICE_NAME,

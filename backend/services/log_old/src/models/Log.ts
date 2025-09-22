@@ -1,6 +1,15 @@
 // backend/services/log/src/models/Log.ts
+/**
+ * NowVibin — Backend
+ * Service: log
+ * Why:
+ *   Mongoose model aligned to shared contract; indexes for common queries.
+ * ADRs:
+ *   - SOP v4 (Reduced, Clean)
+ */
+
 import mongoose, { Schema, Document } from "mongoose";
-import type { LogEvent } from "../../../shared/src/contracts/log";
+import type { LogEvent } from "@eff/shared/src/contracts/log";
 
 export interface LogDocument extends Omit<LogEvent, "sourceLine">, Document {
   sourceLine?: number;
@@ -14,7 +23,7 @@ const LogSchema = new Schema<LogDocument>(
 
     // origin & routing
     service: { type: String, index: true },
-    channel: { type: String, required: true, index: true }, // "audit" | "error"
+    channel: { type: String, required: true, index: true }, // "audit" | "error" | etc.
     level: { type: String, required: true, index: true },
 
     // message & context

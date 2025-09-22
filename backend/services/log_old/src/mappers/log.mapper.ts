@@ -1,5 +1,14 @@
 // backend/services/log/src/mappers/log.mapper.ts
-import type { LogEvent } from "../../../shared/src/contracts/log";
+/**
+ * NowVibin — Backend
+ * Service: log
+ * Why:
+ *   Explicit domain↔DB mapping keeps models swappable and tests deterministic.
+ * ADRs:
+ *   - SOP v4 (Reduced, Clean)
+ */
+
+import type { LogEvent } from "@eff/shared/src/contracts/log";
 import type { LogDocument } from "../models/Log";
 
 export function dbToDomain(doc: LogDocument): LogEvent {
@@ -27,6 +36,5 @@ export function dbToDomain(doc: LogDocument): LogEvent {
 }
 
 export function domainToDb(e: LogEvent) {
-  // 1:1 mapping; mongoose handles persistence concerns
   return { ...e };
 }

@@ -1,6 +1,6 @@
 // backend/services/log/src/validators/log.dto.ts
 import { z } from "zod";
-import { LogContract } from "../../../shared/src/contracts/log";
+import { LogContract } from "@eff/shared/src/contracts/log.contract";
 
 /**
  * DTO for POST /logs

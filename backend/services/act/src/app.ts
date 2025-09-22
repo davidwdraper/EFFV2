@@ -42,7 +42,7 @@ function mountRoutes(api: express.Router) {
 }
 
 // Service identity comes from bootstrapService (index.ts) to avoid duplication.
-const serviceName = process.env.SERVICE_NAME || "act";
+const serviceName = String(process.env.SERVICE_NAME);
 
 const app = createServiceApp({
   serviceName,

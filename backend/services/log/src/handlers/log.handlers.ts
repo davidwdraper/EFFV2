@@ -10,7 +10,7 @@
  */
 
 import type { RequestHandler } from "express";
-import { LogContract } from "@eff/shared/src/contracts/log";
+import { LogContract } from "@eff/shared/src/contracts/log.contract";
 import Log from "../models/Log";
 import { domainToDb } from "../mappers/log.mapper";
 

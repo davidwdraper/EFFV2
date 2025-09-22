@@ -1,7 +1,7 @@
 // backend/services/log/src/controllers/logController.ts
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { LogContract } from "@shared/src/contracts/log";
+import { LogContract } from "@eff/shared/src/contracts/log.contract";
 import Log from "../models/Log";
 import { domainToDb } from "../mappers/log.mapper";
 

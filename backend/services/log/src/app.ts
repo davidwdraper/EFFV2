@@ -1,54 +1,58 @@
-// PATH: backend/services/act/src/app.ts
+// backend/services/log/src/app.ts
 /**
- * Docs:
- * - Arch: docs/architecture/backend/OVERVIEW.md
- * - SOP: docs/architecture/backend/SOP.md
- * - ADRs:
- *   - docs/adr/0015-edge-guardrails-stay-in-gateway-remove-from-shared.md
- *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
- *   - docs/adr/0027-entity-services-on-shared-createServiceApp.md
+ * NowVibin — Backend
+ * Service: log
+ * -----------------------------------------------------------------------------
+ * WHY:
+ * - Use shared app builder so health mounts before auth, S2S is global,
+ *   and versioned routes stay one-liners. This minimizes service-specific
+ *   boilerplate and avoids drift across workers.
  *
- * Why:
- * - Entity services are internal-only behind the gateway plane. Assemble via the
- *   shared builder: requestId → httpLogger → problemJson → trace5xx(early) →
- *   health (open) → verifyS2S → parsers → routes → 404 → error.
- * - Source of truth for service name is index.ts via bootstrapService; app.ts
- *   reads it from process.env.SERVICE_NAME to avoid duplication.
+ * NOTES:
+ * - We keep a tiny readiness probe that depends only on Mongo connectivity;
+ *   it’s cheap and deterministic. DB connect runs before route wiring so
+ *   readiness reflects reality instead of “maybe soon.”
  */
 
 import mongoose from "mongoose";
-import type express from "express";
 import { createServiceApp } from "@eff/shared/src/app/createServiceApp";
-import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
-import actRoutes from "./routes/actRoutes";
-import townRoutes from "./routes/townRoutes";
-import { config } from "./config";
+import { verifyS2S as sharedVerifyS2S } from "@eff/shared/src/middleware/verifyS2S";
+import { logger } from "@eff/shared/src/utils/logger";
+import { connectDB } from "./db";
+import { mountRoutes } from "./routes/logRoutes";
 
-// Sanity: required envs (other than service name, which comes from index.ts)
-if (!config.mongoUri)
-  throw new Error("Missing required env var: ACT_MONGO_URI");
-if (!config.port) throw new Error("Missing required env var: ACT_PORT");
-
-// Readiness: check Mongo connection
+// WHY: Readiness should be trivial and non-blocking; we don’t probe deep I/O here.
 async function readiness() {
-  const state = mongoose.connection?.readyState; // 1 = connected
-  return { mongo: state === 1 ? "ok" : `state=${state}` };
+  const ready = mongoose.connection.readyState === 1; // 1 = connected
+  return { ok: ready, upstreams: { mongo: ready } };
 }
 
-// Mount routes (one-liners only)
-function mountRoutes(api: express.Router) {
-  api.use("/acts", actRoutes);
-  api.use("/towns", townRoutes);
-}
+// WHY: Connect DB early so route-level work doesn’t mask a latent DB failure.
+//      Boot remains resilient; bootstrap decides crash/retry policy.
+void connectDB().catch((err) => {
+  logger.error({ err }, "DB connect failed");
+});
 
-// Service identity comes from bootstrapService (index.ts) to avoid duplication.
-const serviceName = process.env.SERVICE_NAME || "act";
+// WHY: Temporary bypass knob is useful for isolating middleware issues without code edits.
+//      Leave it off in normal operation.
+const verifyS2S =
+  process.env.S2S_BYPASS === "1"
+    ? (_req: any, _res: any, next: any) => next()
+    : sharedVerifyS2S;
 
 const app = createServiceApp({
-  serviceName,
+  // WHY: Your shared CreateServiceAppOptions requires explicit serviceName.
+  serviceName: "log",
+
+  // WHY: Keep API namespace predictable → yields /api/log/v1/...
   apiPrefix: "/api",
-  verifyS2S, // internal-only: health is open; everything else requires S2S
+
+  // WHY: Health routes are mounted public by the builder; S2S guards everything else.
+  verifyS2S,
+
   readiness,
+
+  // WHY: Single function that mounts versioned routes keeps routes one-liners and testable.
   mountRoutes,
 });
 

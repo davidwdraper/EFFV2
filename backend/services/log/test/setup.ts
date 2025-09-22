@@ -1,163 +1,49 @@
-// backend/services/act/test/setup.ts
-import path from "node:path";
+// backend/services/log/test/setup.ts
 import fs from "node:fs";
-import * as dotenv from "dotenv";
-import mongoose from "mongoose";
-import { vi, beforeAll, beforeEach, afterAll } from "vitest";
+import fsp from "node:fs/promises";
+import path from "node:path";
 
-/**
- * 1) Stub pino-http BEFORE anything imports it.
- *    We return a no-op middleware that attaches a minimal req.log/res.log.
- */
-vi.mock("pino-http", () => {
-  const noop = () => {};
-  const mkLog = () => ({
-    level: "silent",
-    info: noop,
-    warn: noop,
-    error: noop,
-    debug: noop,
-    fatal: noop,
-    trace: noop,
-    child() {
-      return this;
-    },
-  });
-  const pinoHttp = () => {
-    const mw = (req: any, res: any, next: any) => {
-      const log = mkLog();
-      (req as any).log = log;
-      (res as any).log = log;
-      next();
-    };
-    return mw;
-  };
-  return { default: pinoHttp };
-});
+// ── Test env defaults (must exist BEFORE app import) ──────────────────────────
+process.env.NODE_ENV ??= "test";
+process.env.LOG_LEVEL ??= "debug";
 
-/**
- * 2) Stub shared logger to avoid network/audit I/O in tests.
- *    Keep shape pino-ish enough for code that calls .child(), etc.
- */
-vi.mock("@shared/utils/logger", () => {
-  const noop = () => {};
-  const logger = {
-    level: "silent",
-    levels: {
-      values: {
-        fatal: 60,
-        error: 50,
-        warn: 40,
-        info: 30,
-        debug: 20,
-        trace: 10,
-      },
-    },
-    info: noop,
-    warn: noop,
-    error: noop,
-    debug: noop,
-    fatal: noop,
-    trace: noop,
-    child() {
-      return this as any;
-    },
-  };
-  return {
-    logger,
-    postAudit: vi.fn().mockResolvedValue(undefined),
-    extractLogContext: () => ({}),
-  };
-});
+// App/service-required
+process.env.LOG_SERVICE_NAME ??= "log"; // required by config.ts
+process.env.SERVICE_NAME ??= "log-service-test"; // optional, useful in logs
+process.env.LOG_PORT ??= "4006"; // <- required number env
 
-/**
- * 3) Load .env for tests:
- *    - ENV_FILE if provided (abs or relative to CWD)
- *    - service-local .env.test
- *    - repo-root .env.test (../../../ from service root)
- */
-(() => {
-  const cwd = process.cwd(); // with --root, this is backend/services/act
-  const candidates = [
-    process.env.ENV_FILE || "", // explicit override
-    ".env.test", // service-local
-    path.join(cwd, "../../../.env.test"), // repo-root fallback
-  ]
-    .filter(Boolean)
-    .map((p) => (path.isAbsolute(p) ? p : path.resolve(cwd, p)));
+// Auth tokens (rotation-aware)
+process.env.LOG_SERVICE_TOKEN_CURRENT ??= "test-current-key";
+process.env.LOG_SERVICE_TOKEN_NEXT ??= "test-next-key";
 
-  const chosen = candidates.find((p) => fs.existsSync(p));
+// DB + FS cache
+process.env.LOG_MONGO_URI ??= "mongodb://127.0.0.1:27017/eff_log_test";
+process.env.LOG_FS_DIR ??= "tmp-logs/nv-log-cache-test";
 
-  if (!chosen) {
-    throw new Error(
-      `[act:test:setup] No env file found.\n` +
-        `Tried:\n - ${candidates.join("\n - ")}\n` +
-        `Add ACT_MONGO_URI to backend/services/act/.env.test or repo-root .env.test`
-    );
+// Logger util endpoints (E2E will override to the ephemeral port)
+process.env.LOG_SERVICE_URL ??= "http://127.0.0.1:0/logs";
+process.env.LOG_SERVICE_HEALTH_URL ??= "http://127.0.0.1:0/health/deep";
+
+// ── FS cache reset helper ─────────────────────────────────────────────────────
+export async function resetFsDir() {
+  const FS_DIR = path.resolve(process.env.LOG_FS_DIR!);
+
+  // If something exists at FS_DIR but it's a file, remove it
+  try {
+    const st = await fsp.stat(FS_DIR);
+    if (!st.isDirectory()) {
+      await fsp.rm(FS_DIR, { force: true });
+    }
+  } catch {
+    // does not exist → fine
   }
 
-  dotenv.config({ path: chosen });
-  // eslint-disable-next-line no-console
-  console.log(`[act:test:setup] Loaded env from: ${chosen}`);
-})();
+  await fsp.mkdir(FS_DIR, { recursive: true });
 
-/**
- * 4) Hermetic defaults for tests ONLY (never in service code).
- */
-process.env.ACT_TYPEAHEAD_MIN_CHARS ??= "1";
-process.env.ACT_TYPEAHEAD_LIMIT ??= "50";
-process.env.ACT_MIN_STATUS_VISIBLE ??= "0";
-process.env.NODE_ENV ??= "test";
-process.env.LOG_LEVEL ??= "silent";
-process.env.LOG_SERVICE_URL ??= "http://127.0.0.1:4999/logs";
-process.env.LOG_SERVICE_TOKEN_CURRENT ??= "test-token";
-process.env.REDIS_DISABLED ??= "1";
-process.env.ACT_SERVICE_NAME ??= "act-test";
-process.env.ACT_PORT ??= "0"; // ephemeral in-process server
-// ❗ DB URI must be provided by env; no hard-coded defaults here.
-if (!process.env.ACT_MONGO_URI) {
-  throw new Error("ACT_MONGO_URI must be set in your loaded .env.test");
+  const entries = await fsp.readdir(FS_DIR).catch(() => []);
+  await Promise.all(
+    entries.map((n) =>
+      fsp.rm(path.join(FS_DIR, n), { force: true, recursive: true })
+    )
+  );
 }
-process.env.ACT_SEARCH_UNFILTERED_CUTOFF ??= "25";
-
-/**
- * 👇 NEW: allow Town writes during tests only.
- * Your Town model error message mentions these flags explicitly.
- */
-process.env.ALLOW_TOWN_WRITES ??= "1";
-process.env.ACT_TOWNS_READONLY ??= "0";
-
-/**
- * 5) Mongoose safety
- */
-mongoose.set("bufferCommands", false);
-mongoose.set("strictQuery", true);
-
-/**
- * 6) Global lifecycle hooks
- *    - We connect using the DB specified in .env.test
- *    - We DO NOT drop the whole DB anymore.
- *    - We clean ONLY mutable collections between tests.
- *    - Towns is preserved as read-only reference data.
- */
-import {
-  ensureConnected,
-  cleanMutableCollections,
-  disconnectMongo,
-} from "./helpers/mongo";
-
-beforeAll(async () => {
-  await ensureConnected(process.env.ACT_MONGO_URI!, { autoIndex: true });
-  // Build indexes once (Town unique + 2dsphere, etc.) — relies on autoIndex:true above
-  await mongoose.connection.db.command({ ping: 1 });
-});
-
-beforeEach(async () => {
-  await cleanMutableCollections({
-    immutable: ["towns"], // protect Towns (tests that must write can still do so explicitly)
-  });
-});
-
-afterAll(async () => {
-  await disconnectMongo();
-});

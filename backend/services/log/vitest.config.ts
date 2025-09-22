@@ -1,42 +1,44 @@
-// backend/services/act/vitest.config.ts
+// backend/services/log/vitest.config.ts
 import { defineConfig } from "vitest/config";
-import tsconfigPaths from "vite-tsconfig-paths";
 import path from "node:path";
 
 export default defineConfig({
-  plugins: [tsconfigPaths()],
-  resolve: {
-    alias: {
-      // From ACT service folder → shared
-      "@shared": path.resolve(__dirname, "../shared"),
-    },
-  },
   test: {
-    environment: "node",
-
-    // ✅ Relative globs so tests run from repo root OR this service folder
-    include: ["test/**/*.spec.ts"],
-    setupFiles: ["test/setup.ts", "test/seed/runBeforeEach.ts"],
-
-    isolate: false,
-    poolOptions: { threads: { singleThread: true } },
-    hookTimeout: 60_000,
-    testTimeout: 60_000,
     globals: true,
-
+    environment: "node",
+    include: ["backend/services/log/test/**/*.spec.ts"],
+    setupFiles: ["backend/services/log/test/setup.ts"],
+    hookTimeout: 30000,
+    testTimeout: 30000,
+    restoreMocks: true,
+    watch: false,
+    reporters: ["default"],
     coverage: {
       provider: "v8",
-      reporter: ["text", "lcov", "html"],
-      reportsDirectory: "coverage", // local to this service
       all: true,
-      include: ["src/**"], // cover this service’s source
-      exclude: [
-        "**/test/**",
-        "src/index.ts",
-        "src/models/**",
-        "src/models/Town.ts",
+      include: [
+        "backend/services/log/src/**/*.ts",
+        "backend/services/shared/**/*.ts",
       ],
-      thresholds: { lines: 90, functions: 90, branches: 90, statements: 90 },
+      exclude: [
+        "**/node_modules/**",
+        "**/dist/**",
+        "backend/services/log/test/**",
+      ],
+      reportsDirectory: "coverage",
+      reporter: ["text", "html"],
+      thresholds: {
+        lines: 90,
+        functions: 90,
+        statements: 90,
+        branches: 85,
+      },
+    },
+  },
+  resolve: {
+    alias: {
+      // e.g. import "@shared/types/express"
+      "@shared": path.resolve(process.cwd(), "backend/services/shared"),
     },
   },
 });

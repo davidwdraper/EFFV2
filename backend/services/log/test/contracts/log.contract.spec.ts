@@ -1,6 +1,6 @@
 // backend/services/log/test/contracts/log.contract.spec.ts
 import { describe, it, expect } from "vitest";
-import { LogContract } from "../../../shared/src/contracts/log";
+import { LogContract } from "@eff/shared/src/contracts/log.contract";
 import { validEvent, invalidEvents } from "../fixtures/log.samples";
 
 describe("Log Contract (shared/contracts/log.ts)", () => {

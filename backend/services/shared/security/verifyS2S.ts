@@ -2,6 +2,8 @@
 /**
  * Shared middleware: verifyS2S
  * -------------------------------------------------------
+ * WHEN THIS LOGIC IS REPLACED, DO NOT HAVE A RUNTIME S2S_OPEN SWITCH!
+ *
  * TEMPORARY OPEN MODE FOR DEV/SMOKE
  * - If S2S_OPEN=1, all S2S calls are accepted (signature,
  *   issuer and audience checks are skipped).

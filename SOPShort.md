@@ -133,3 +133,7 @@ Always, always, always: first line of every file drop should look like
 // backend/services/log/src/app.ts
 
 ✅ This version is ready to paste at the start of each new session.
+
+Do be dropped for future sessions:
+
+You have saved the NowVibin Backend — Core SOP (Reduced, Clean) as the fresh baseline for all new backend sessions.

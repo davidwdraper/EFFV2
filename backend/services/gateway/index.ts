@@ -44,5 +44,10 @@ void bootstrapService({
     "BREAKER_FAILURE_THRESHOLD",
     "BREAKER_HALFOPEN_AFTER_MS",
     "BREAKER_MIN_RTT_MS",
+    "KMS_PROJECT_ID",
+    "KMS_LOCATION_ID",
+    "KMS_KEY_RING_ID",
+    "KMS_KEY_ID",
+    "JWKS_CACHE_TTL_MS",
   ],
 });

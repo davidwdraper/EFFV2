@@ -8,84 +8,216 @@
  *
  * Why:
  * - Provide a single, well-typed helper to pull the active **public key** for the
- *   Gateway’s KMS-managed ES256 signing key. This is the canonical source for the
- *   JWKS endpoint and for any internal key-caching logic.
+ *   Gateway’s KMS-managed signing key. This is the canonical source for the
+ *   JWKS endpoint and any internal key-caching logic.
  *
  * How:
- * - Uses the official Google Cloud KMS client to:
- *     1. Locate the key ring/version defined in env.
- *     2. Fetch the public key PEM.
- *     3. Convert PEM → JWK with `x`, `y`, `crv`, `kid` and `alg` ES256 fields.
- * - Returns a JWK object that can be dropped straight into a JWKS response.
+ * - Reads env in a robust way:
+ *     A) KMS_CRYPTO_KEY = projects/<proj>/locations/<loc>/keyRings/<ring>/cryptoKeys/<key>
+ *        (optionally KMS_KEY_VERSION=<n>)
+ *     B) Or individual parts:
+ *        KMS_PROJECT_ID, KMS_LOCATION_ID, KMS_KEY_RING_ID, KMS_KEY_ID
+ *        (optionally KMS_KEY_VERSION=<n>)
+ * - If no KMS_KEY_VERSION is provided, selects the CryptoKey.PRIMARY version if present,
+ *   else newest ENABLED CryptoKeyVersion.
+ * - Fetches PEM public key for the chosen version and converts to JWK.
+ * - Detects RSA vs EC(P-256) and sets alg accordingly (RS256 or ES256).
  *
  * Security:
- * - Never exports the private key. Only the public key is fetched.
- * - Reads KMS config from env so stage/prod can point to different key rings.
+ * - Only public key is fetched; no private key leaves KMS.
  */
 
-import { KeyManagementServiceClient } from "@google-cloud/kms";
+import { KeyManagementServiceClient, protos } from "@google-cloud/kms";
 import { createPublicKey } from "node:crypto";
-// `jose` is ESM-only. We import it dynamically to stay compatible with ts-node-dev (CJS).
 import type { JWK } from "jose";
 import { logger } from "@eff/shared/src/utils/logger";
 
-// ── Required envs (public resource names only; safe for .env.*)
-const PROJECT_ID = process.env.KMS_PROJECT_ID!;
-const LOCATION_ID = process.env.KMS_LOCATION_ID!;
-const KEY_RING = process.env.KMS_KEY_RING!;
-const KEY_NAME = process.env.KMS_KEY_NAME!;
-const KEY_VERSION = process.env.KMS_KEY_VERSION ?? "1"; // can be rotated without code changes
-
-// Compose the full KMS resource name once.
-const KMS_KEY_VERSION_PATH = [
-  "projects",
-  PROJECT_ID,
-  "locations",
-  LOCATION_ID,
-  "keyRings",
-  KEY_RING,
-  "cryptoKeys",
-  KEY_NAME,
-  "cryptoKeyVersions",
-  KEY_VERSION,
-].join("/");
-
-// ESM-in-CJS bridge for `jose`
+// ESM-in-CJS bridge for `jose` (compatible with ts-node-dev)
 let _jose: Promise<typeof import("jose")> | null = null;
 const getJose = () => (_jose ??= import("jose"));
 
+type Alg = "RS256" | "ES256";
+
+type KmsEnv = {
+  projectId: string;
+  locationId: string;
+  keyRingId: string;
+  keyId: string;
+  cryptoKeyPath: string; // projects/.../cryptoKeys/<key>
+  keyVersion?: string; // number as string, e.g., "1"
+};
+
+function parseKmsEnv(): KmsEnv {
+  const {
+    KMS_CRYPTO_KEY = "",
+    KMS_PROJECT_ID = "",
+    KMS_LOCATION_ID = "",
+    KMS_KEY_RING_ID = "",
+    KMS_KEY_ID = "",
+    KMS_KEY_VERSION = "",
+  } = process.env;
+
+  // Prefer full crypto key path if provided
+  if (KMS_CRYPTO_KEY.trim()) {
+    const m = KMS_CRYPTO_KEY.match(
+      /^projects\/([^/]+)\/locations\/([^/]+)\/keyRings\/([^/]+)\/cryptoKeys\/([^/]+)$/
+    );
+    if (!m) {
+      throw new Error(`KMS_CRYPTO_KEY is malformed: ${KMS_CRYPTO_KEY}`);
+    }
+    const [, projectId, locationId, keyRingId, keyId] = m;
+    return {
+      projectId,
+      locationId,
+      keyRingId,
+      keyId,
+      cryptoKeyPath: KMS_CRYPTO_KEY,
+      keyVersion: KMS_KEY_VERSION?.trim() || undefined,
+    };
+  }
+
+  // Otherwise require all four parts
+  const missing: string[] = [];
+  if (!KMS_PROJECT_ID) missing.push("KMS_PROJECT_ID");
+  if (!KMS_LOCATION_ID) missing.push("KMS_LOCATION_ID");
+  if (!KMS_KEY_RING_ID) missing.push("KMS_KEY_RING_ID");
+  if (!KMS_KEY_ID) missing.push("KMS_KEY_ID");
+  if (missing.length) {
+    throw new Error(
+      `KMS environment variables are not fully configured; missing: ${missing.join(
+        ", "
+      )}`
+    );
+  }
+
+  const cryptoKeyPath = [
+    "projects",
+    KMS_PROJECT_ID,
+    "locations",
+    KMS_LOCATION_ID,
+    "keyRings",
+    KMS_KEY_RING_ID,
+    "cryptoKeys",
+    KMS_KEY_ID,
+  ].join("/");
+
+  return {
+    projectId: KMS_PROJECT_ID,
+    locationId: KMS_LOCATION_ID,
+    keyRingId: KMS_KEY_RING_ID,
+    keyId: KMS_KEY_ID,
+    cryptoKeyPath,
+    keyVersion: KMS_KEY_VERSION?.trim() || undefined,
+  };
+}
+
+function versionPath(cryptoKeyPath: string, version: string) {
+  return `${cryptoKeyPath}/cryptoKeyVersions/${version}`;
+}
+
 /**
- * Fetch the active ES256 public key from Google KMS and return it as a JWK.
- * This is called by the JWKS router and can be reused wherever the public key is needed.
+ * Choose the key version:
+ * - If explicit KMS_KEY_VERSION: use it.
+ * - Else CryptoKey.primary if present,
+ * - Else newest ENABLED version,
+ * - Else throw.
+ */
+async function resolveVersion(
+  client: KeyManagementServiceClient,
+  cryptoKeyPath: string,
+  explicitVersion?: string
+): Promise<{ versionPath: string; kid: string }> {
+  if (explicitVersion && explicitVersion.trim()) {
+    const vp = versionPath(cryptoKeyPath, explicitVersion.trim());
+    return { versionPath: vp, kid: explicitVersion.trim() };
+  }
+
+  // Get the CryptoKey to inspect .primary
+  const [cryptoKey] = await client.getCryptoKey({ name: cryptoKeyPath });
+  const primaryName = cryptoKey?.primary?.name ?? undefined;
+  if (primaryName) {
+    const kid = primaryName.split("/").pop() || "unknown";
+    return { versionPath: primaryName, kid };
+  }
+
+  // Fall back to newest ENABLED version
+  const [versions] = await client.listCryptoKeyVersions({
+    parent: cryptoKeyPath,
+    filter: "", // all
+  });
+
+  if (!versions || versions.length === 0) {
+    throw new Error(`No crypto key versions found under ${cryptoKeyPath}`);
+  }
+
+  const enableStates =
+    protos.google.cloud.kms.v1.CryptoKeyVersion.CryptoKeyVersionState;
+  const enabled = versions
+    .filter((v) => v.state === enableStates.ENABLED && !!v.name)
+    .sort((a, b) => {
+      const na = Number((a.name || "").split("/").pop());
+      const nb = Number((b.name || "").split("/").pop());
+      return nb - na; // newest first
+    });
+
+  if (enabled.length > 0 && enabled[0].name) {
+    const name = enabled[0].name;
+    const kid = name.split("/").pop() || "unknown";
+    return { versionPath: name, kid };
+  }
+
+  throw new Error(
+    `No PRIMARY or ENABLED versions found under ${cryptoKeyPath}`
+  );
+}
+
+/**
+ * Detect alg from PEM public key: RS256 for RSA, ES256 for P-256 EC.
+ */
+function detectAlgFromPem(pem: string): Alg {
+  const key = createPublicKey(pem);
+  const t = (key as any).asymmetricKeyType as string | undefined;
+  if (t === "rsa") return "RS256";
+  if (t === "ec") return "ES256";
+  return "RS256";
+}
+
+/**
+ * Fetch the active public key from Google KMS and return it as a JWK.
  */
 export async function fetchGatewayJwk(): Promise<
-  JWK & { kid: string; alg: "ES256"; use: "sig" }
+  JWK & { kid: string; alg: Alg; use: "sig" }
 > {
-  if (!PROJECT_ID || !LOCATION_ID || !KEY_RING || !KEY_NAME) {
-    throw new Error("KMS environment variables are not fully configured");
-  }
-
+  const env = parseKmsEnv();
   const client = new KeyManagementServiceClient();
 
-  // 1) Fetch the PEM-formatted public key from KMS.
-  const [result] = await client.getPublicKey({ name: KMS_KEY_VERSION_PATH });
-  if (!result.pem) {
-    throw new Error(`KMS public key not found at ${KMS_KEY_VERSION_PATH}`);
+  // Resolve which version to use
+  const { versionPath: vp, kid } = await resolveVersion(
+    client,
+    env.cryptoKeyPath,
+    env.keyVersion
+  );
+
+  // Fetch PEM public key for that version
+  const [pub] = await client.getPublicKey({ name: vp });
+  if (!pub.pem) {
+    throw new Error(`KMS public key not found at ${vp}`);
   }
 
-  // 2) Convert PEM → KeyObject → JWK (via jose, loaded dynamically).
+  // Convert PEM → JWK
   const { exportJWK } = await getJose();
-  const publicKey = createPublicKey(result.pem);
+  const publicKey = createPublicKey(pub.pem);
   const jwk = (await exportJWK(publicKey)) as JWK;
 
-  // 3) Add ES256-specific fields for JWKS consumers.
-  const kid = result.name?.split("/").pop() || "unknown";
+  // Determine alg from key type
+  const alg = detectAlgFromPem(pub.pem);
+
   return {
     ...(jwk as object),
-    kid,
-    alg: "ES256",
-    use: "sig",
-  } as JWK & { kid: string; alg: "ES256"; use: "sig" };
+    kid, // version number string, stable per version
+    alg, // RS256 or ES256
+    use: "sig", // signing
+  } as JWK & { kid: string; alg: Alg; use: "sig" };
 }
 
 /**
@@ -95,7 +227,10 @@ export async function fetchGatewayJwk(): Promise<
 export async function logKmsKeyReadiness() {
   try {
     const jwk = await fetchGatewayJwk();
-    logger.info({ kid: jwk.kid }, "[kmsPublicKey] KMS signing key ready");
+    logger.info(
+      { kid: jwk.kid, alg: jwk.alg },
+      "[kmsPublicKey] KMS signing key ready"
+    );
   } catch (err) {
     logger.error({ err }, "[kmsPublicKey] failed to fetch KMS signing key");
   }

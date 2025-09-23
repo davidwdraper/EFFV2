@@ -1,187 +1,173 @@
-// backend/services/shared/src/middleware/verifyS2S.ts
+// PATH: backend/services/shared/src/middleware/verifyS2S.ts
 
 /**
- * verifyS2S — ES256/JWKS verification (Google KMS signer upstream)
+ * verifyS2S — shared S2S JWT verification (KMS / ES256 via JWKS)
  * -----------------------------------------------------------------------------
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
- * - Design: docs/design/backend/security/s2s-jwt.md
  * - ADRs:
  *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md
  *
  * Why:
- * - ADR-0030 moves signing to the gateway using **Google Cloud KMS** (ES256).
- *   Services must verify S2S tokens against the gateway’s **JWKS**. No shared
- *   secrets in env; only public JWKS and validation rules live here.
+ * - Under the KMS design, **only the gateway signs** S2S JWTs using a Google KMS
+ *   asymmetric key (ES256). All verifiers (workers & gateway private routes)
+ *   must verify against the **gateway’s JWKS** — no symmetric secret anywhere.
  *
- * What:
- * - Express middleware `verifyS2S` that:
- *   • Extracts a Bearer token from Authorization
- *   • Validates ES256 signature via remote JWKS (cached; honors ETag/Cache-Control)
- *   • Enforces `aud` and `iss`
- *   • Applies small clock tolerance
- *   • On success, attaches normalized caller claims to `req.s2s`
+ * Policy (no fallbacks):
+ * - alg: ES256 only
+ * - iss: S2S_JWT_ISSUER (exact match)
+ * - aud: S2S_JWT_AUDIENCE (exact match)
+ * - exp/nbf honored with S2S_CLOCK_SKEW_SEC tolerance
+ * - JWKS fetched from S2S_JWKS_URL and cached in-process
  *
- * Env (config-only; no secrets):
- * - S2S_JWKS_URL          e.g. https://gateway.nowvibin.io/.well-known/jwks.json
- * - S2S_REQUIRED_ISS      e.g. "gateway"
- * - S2S_REQUIRED_AUD      e.g. "internal-services"
- * - S2S_CLOCK_TOLERANCE_S default 45   // WHY: handle minor skew across nodes
+ * Env (required, hard fail if missing):
+ *   S2S_JWKS_URL          e.g., https://gateway.internal/.well-known/jwks.json
+ *   S2S_JWT_ISSUER        e.g., gateway
+ *   S2S_JWT_AUDIENCE      e.g., internal-services
+ *   S2S_CLOCK_SKEW_SEC    e.g., 60
+ *   S2S_JWKS_COOLDOWN_MS  e.g., 30000   // how long to keep stale JWKS before re-fetch
+ *   S2S_JWKS_TIMEOUT_MS   e.g., 1500    // fetch timeout for the JWKS endpoint
+ *
+ * Behavior:
+ * - Uses jose’s createRemoteJWKSet (ETag-aware) with strict alg=ES256.
+ * - On success, attaches `req.caller = { iss, sub, aud, jti?, kid? }`.
+ * - On failure, returns RFC7807 Problem+JSON (401/403) without leaking internals.
  *
  * Notes:
- * - Only accepts ES256 (matches KMS key). If you rotate to a different alg,
- *   rotate both KMS key type and this verifier’s allowed algorithms.
- * - We rely on jose’s `createRemoteJWKSet` which respects HTTP caching
- *   headers (Cache-Control/ETag). The gateway’s JWKS route sets both.
+ * - This entirely replaces any HS256 secret-based verifier. **Do not require
+ *   S2S_JWT_SECRET** anywhere in KMS mode.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import {
-  jwtVerify,
   createRemoteJWKSet,
-  type JWTPayload,
-  errors as joseErr,
+  jwtVerify,
+  errors as JoseErrors,
+  JWTPayload,
 } from "jose";
+import { requireEnv, requireNumber } from "../env";
 import { logger } from "../utils/logger";
 
-type S2SContext = {
-  iss?: string;
-  sub?: string;
-  aud?: string | string[];
-  kid?: string;
-  // pass-through of common custom claims (string-only for audit hygiene)
-  meta?: Record<string, string>;
-};
+// ── Strict envs (no defaults) ────────────────────────────────────────────────
+const S2S_JWKS_URL = requireEnv("S2S_JWKS_URL");
+const S2S_ISSUER = requireEnv("S2S_JWT_ISSUER");
+const S2S_AUDIENCE = requireEnv("S2S_JWT_AUDIENCE");
+const CLOCK_SKEW_SEC = requireNumber("S2S_CLOCK_SKEW_SEC");
+const JWKS_COOLDOWN_MS = requireNumber("S2S_JWKS_COOLDOWN_MS");
+const JWKS_TIMEOUT_MS = requireNumber("S2S_JWKS_TIMEOUT_MS");
 
-// Extend Express for downstreams
-declare module "express-serve-static-core" {
-  interface Request {
-    s2s?: S2SContext;
-  }
-}
-
-const RE_JWT = /^Bearer\s+(.+)$/i;
-
-// WHY: fail fast on misconfig — verification without JWKS or policy makes no sense.
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v || !String(v).trim()) {
-    throw new Error(`[verifyS2S] Missing required env: ${name}`);
-  }
-  return String(v).trim();
-}
-
-const JWKS_URL = requireEnv("S2S_JWKS_URL");
-const REQUIRED_ISS = requireEnv("S2S_REQUIRED_ISS");
-const REQUIRED_AUD = requireEnv("S2S_REQUIRED_AUD");
-const CLOCK_TOL_S = Math.max(
-  0,
-  Number(process.env.S2S_CLOCK_TOLERANCE_S ?? 45) | 0
-);
-
-// WHY: allocate once; jose caches keys per HTTP cache headers.
-const JWKS = createRemoteJWKSet(new URL(JWKS_URL), {
-  // WHY: tolerate flaky control planes; jose will refetch on cache expiry or kid miss
-  cooldownDuration: 1000, // minimal cooldown between failed fetches
+// ── Remote JWKS (module-scoped, single instance) ─────────────────────────────
+const jwksUrl = new URL(S2S_JWKS_URL);
+// jose will honor HTTP cache (ETag/Cache-Control) and apply cooldown to avoid storms.
+const JWKS = createRemoteJWKSet(jwksUrl, {
+  cooldownDuration: JWKS_COOLDOWN_MS,
+  timeoutDuration: JWKS_TIMEOUT_MS,
 });
 
-/** Minimal RFC7807 helper for uniform error shape. */
-function problem(status: number, detail: string, instance?: string) {
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function extractBearer(req: Request): string | undefined {
+  const raw =
+    (req.headers["authorization"] as string | undefined) ??
+    ((req.headers as any)["Authorization"] as string | undefined);
+  if (!raw) return undefined;
+  const m = /^Bearer\s+(.+)$/i.exec(raw.trim());
+  return m ? m[1] : raw.trim();
+}
+
+function problem(
+  status: number,
+  title: string,
+  detail: string,
+  req: Request
+): {
+  type: string;
+  title: string;
+  status: number;
+  detail: string;
+  instance?: string;
+} {
+  const rid =
+    (req as any).id ||
+    (req.headers["x-request-id"] as string | undefined) ||
+    (req.headers["x-correlation-id"] as string | undefined) ||
+    undefined;
   return {
     type: "about:blank",
-    title:
-      status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : "Error",
+    title,
     status,
     detail,
-    instance: instance ?? "",
+    ...(rid ? { instance: rid } : {}),
   };
 }
 
-/** Extract raw JWT from the Authorization header. */
-function extractBearer(req: Request): string | undefined {
-  const h =
-    (req.headers["authorization"] as string | undefined) ??
-    ((req.headers as any)["Authorization"] as string | undefined);
-  if (!h) return undefined;
-  const m = h.match(RE_JWT);
-  return (m ? m[1] : h).trim();
-}
-
-/** WHY: normalize string-only meta; avoid leaking arbitrary objects to logs. */
-function normalizeMetaClaims(payload: JWTPayload): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(payload)) {
-    if (["iss", "sub", "aud", "exp", "nbf", "iat", "jti"].includes(k)) continue;
-    if (typeof v === "string") out[k] = v;
-  }
-  return out;
-}
-
-/** Middleware: verify S2S JWT via gateway-published JWKS (ES256). */
+// ── Middleware ───────────────────────────────────────────────────────────────
 export function verifyS2S(): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
-    const token = extractBearer(req);
-    if (!token) {
-      return res
-        .status(401)
-        .json(problem(401, "Missing bearer token", (req as any).id));
-    }
-
     try {
-      // WHY: only accept ES256 — matches KMS key; tighten surface area
-      const { payload, protectedHeader } = await jwtVerify(token, JWKS, {
-        algorithms: ["ES256"],
-        issuer: REQUIRED_ISS,
-        audience: REQUIRED_AUD,
-        clockTolerance: CLOCK_TOL_S,
-      });
-
-      // Attach normalized context for downstream usage and audit correlation
-      (req as any).s2s = {
-        iss: payload.iss,
-        sub: payload.sub,
-        aud: payload.aud,
-        kid: protectedHeader.kid,
-        meta: normalizeMetaClaims(payload),
-      } satisfies S2SContext;
-
-      return next();
-    } catch (err: any) {
-      // WHY: map jose errors to sensible 401/403 without leaking internals
-      const rid = (req as any).id;
-      if (
-        err instanceof joseErr.JWTExpired ||
-        err instanceof joseErr.JWTNotActive ||
-        err instanceof joseErr.JWSInvalid ||
-        err instanceof joseErr.JWTInvalid
-      ) {
-        logger.warn(
-          {
-            ch: "SECURITY",
-            kind: "s2s_verify",
-            decision: "blocked",
-            rid,
-            reason: err.name,
-          },
-          "[verifyS2S] JWT rejected"
-        );
-        const status =
-          err instanceof joseErr.JWTExpired ||
-          err instanceof joseErr.JWTNotActive
-            ? 401
-            : 401;
+      const token = extractBearer(req);
+      if (!token) {
         return res
-          .status(status)
-          .json(problem(status, "Invalid or expired token", rid));
+          .status(401)
+          .type("application/problem+json")
+          .json(problem(401, "Unauthorized", "Missing bearer token", req));
       }
 
-      // Network / JWKS fetch problems → treat as 503 (policy cannot be enforced)
-      logger.error({ rid, err }, "[verifyS2S] JWKS resolution failure");
+      const { payload, protectedHeader } = await jwtVerify(token, JWKS, {
+        algorithms: ["ES256"], // KMS key is ES256; lock it down
+        issuer: S2S_ISSUER,
+        audience: S2S_AUDIENCE,
+        clockTolerance: CLOCK_SKEW_SEC,
+      });
+
+      const p = payload as JWTPayload & Record<string, unknown>;
+      (req as any).caller = {
+        iss: String(p.iss || ""),
+        sub: String(p.sub || "s2s"),
+        aud: p.aud,
+        jti: p.jti,
+        svc: typeof p.svc === "string" ? p.svc : undefined,
+        kid: protectedHeader.kid,
+      };
+
+      return next();
+    } catch (err: unknown) {
+      // jose error taxonomy (v6):
+      if (err instanceof JoseErrors.JWTExpired) {
+        return res
+          .status(401)
+          .type("application/problem+json")
+          .json(problem(401, "Unauthorized", "token expired", req));
+      }
+
+      if (err instanceof JoseErrors.JWTClaimValidationFailed) {
+        const claim = (err as any).claim as string | undefined;
+
+        if (claim === "nbf") {
+          return res
+            .status(401)
+            .type("application/problem+json")
+            .json(problem(401, "Unauthorized", "token not yet valid", req));
+        }
+
+        if (claim === "aud" || claim === "iss") {
+          return res
+            .status(403)
+            .type("application/problem+json")
+            .json(problem(403, "Forbidden", `${claim} mismatch`, req));
+        }
+
+        return res
+          .status(401)
+          .type("application/problem+json")
+          .json(problem(401, "Unauthorized", "invalid token claims", req));
+      }
+
+      // Signature / structure / jwks fetch failures
+      logger.debug({ err }, "[verifyS2S] verification failure");
       return res
-        .status(503)
-        .json(
-          problem(503, "Authorization service temporarily unavailable", rid)
-        );
+        .status(401)
+        .type("application/problem+json")
+        .json(problem(401, "Unauthorized", "invalid token", req));
     }
   };
 }

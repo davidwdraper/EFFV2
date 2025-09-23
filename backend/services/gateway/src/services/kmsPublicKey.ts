@@ -25,10 +25,11 @@
 
 import { KeyManagementServiceClient } from "@google-cloud/kms";
 import { createPublicKey } from "node:crypto";
-import { exportJWK } from "jose";
+// `jose` is ESM-only. We import it dynamically to stay compatible with ts-node-dev (CJS).
+import type { JWK } from "jose";
 import { logger } from "@eff/shared/src/utils/logger";
 
-// ── Required envs (safe to keep in .env.* because they are public resource names)
+// ── Required envs (public resource names only; safe for .env.*)
 const PROJECT_ID = process.env.KMS_PROJECT_ID!;
 const LOCATION_ID = process.env.KMS_LOCATION_ID!;
 const KEY_RING = process.env.KMS_KEY_RING!;
@@ -49,39 +50,48 @@ const KMS_KEY_VERSION_PATH = [
   KEY_VERSION,
 ].join("/");
 
+// ESM-in-CJS bridge for `jose`
+let _jose: Promise<typeof import("jose")> | null = null;
+const getJose = () => (_jose ??= import("jose"));
+
 /**
  * Fetch the active ES256 public key from Google KMS and return it as a JWK.
  * This is called by the JWKS router and can be reused wherever the public key is needed.
  */
-export async function fetchGatewayJwk(): Promise<Record<string, unknown>> {
+export async function fetchGatewayJwk(): Promise<
+  JWK & { kid: string; alg: "ES256"; use: "sig" }
+> {
   if (!PROJECT_ID || !LOCATION_ID || !KEY_RING || !KEY_NAME) {
     throw new Error("KMS environment variables are not fully configured");
   }
 
   const client = new KeyManagementServiceClient();
 
-  // 1. Fetch the PEM-formatted public key from KMS.
+  // 1) Fetch the PEM-formatted public key from KMS.
   const [result] = await client.getPublicKey({ name: KMS_KEY_VERSION_PATH });
   if (!result.pem) {
     throw new Error(`KMS public key not found at ${KMS_KEY_VERSION_PATH}`);
   }
 
-  // 2. Convert PEM → CryptoKey and then → JWK.
+  // 2) Convert PEM → KeyObject → JWK (via jose, loaded dynamically).
+  const { exportJWK } = await getJose();
   const publicKey = createPublicKey(result.pem);
-  const jwk = await exportJWK(publicKey);
+  const jwk = (await exportJWK(publicKey)) as JWK;
 
-  // 3. Add ES256-specific fields for JWKS consumers.
+  // 3) Add ES256-specific fields for JWKS consumers.
   const kid = result.name?.split("/").pop() || "unknown";
   return {
-    ...jwk,
+    ...(jwk as object),
     kid,
     alg: "ES256",
     use: "sig",
-    kty: "EC",
-  };
+  } as JWK & { kid: string; alg: "ES256"; use: "sig" };
 }
 
-// Optional: eager prefetch to log readiness at boot.
+/**
+ * Optional: eager prefetch to log readiness at boot.
+ * Safe to call during startup; failures are logged and do not throw.
+ */
 export async function logKmsKeyReadiness() {
   try {
     const jwk = await fetchGatewayJwk();

@@ -1,3 +1,4 @@
+# scripts/run.sh
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -5,10 +6,10 @@ set -Eeuo pipefail
 # NowVibin Dev Runner (services spawn with ENV_FILE propagated)
 # - MODE: dev | docker
 # - ENV_FILE: path to env file (default: .env.dev)
-# - Never hard-codes .env.dev in service code; only the runner sets it.
+# - Never hard-codes env inside services; only the runner sets ENV_FILE.
 # - Builds backend/services/shared (@eff/shared) before launching services.
-# - Loads a SAFE subset of root .env.dev (no 'source' of pipes!).
-# - Portable (no associative arrays, works on macOS Bash 3.2).
+# - Loads a SAFE subset of root .env.dev (no risky `source`).
+# - Portable on macOS Bash 3.2 (no assoc arrays, no process substitution).
 # ─────────────────────────────────────────────────────────────────────────────
 
 MODE="${1:-dev}"     # dev | docker
@@ -29,13 +30,13 @@ echo "   ENV_FILE=$ENV_FILE"
 # NOTE: svcconfig starts BEFORE gateway so registry is up first.
 SERVICES=(
   "svcconfig|backend/services/svcconfig|yarn dev"
-  "audit|backend/services/audit|yarn dev"
+  #"audit|backend/services/audit|yarn dev"
   "gateway|backend/services/gateway|yarn dev"
-  "geo|backend/services/geo|yarn dev"
-  "act|backend/services/act|yarn dev"
-  "auth|backend/services/auth|yarn dev"
+  #"geo|backend/services/geo|yarn dev"
+  #"act|backend/services/act|yarn dev"
+  #"auth|backend/services/auth|yarn dev"
   # "image|backend/services/image|yarn dev"
-  "user|backend/services/user|yarn dev"
+  #"user|backend/services/user|yarn dev"
   #"log|backend/services/log|yarn dev"
   #"template|backend/services/template|yarn dev"
 )
@@ -68,6 +69,10 @@ get_env() { # get key from env file without sourcing
   [[ -f "$file" ]] || return 1
   grep -E "^${key}=" "$file" | tail -n1 | cut -d'=' -f2- || true
 }
+has_script() { # check if a yarn script exists in package.json (current dir)
+  node -e "try{const s=require('./package.json').scripts||{};process.exit(s['$1']?0:1)}catch(e){process.exit(1)}" >/dev/null 2>&1
+}
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 # ======= Docker mode =======
 if [[ "$MODE" == "docker" ]]; then
@@ -105,6 +110,12 @@ else
   echo "ℹ️  Root .env.dev not found; continuing without it."
 fi
 
+# Ensure workspace deps once
+if [[ ! -d "$ROOT/node_modules" ]]; then
+  echo "📦 Installing workspace dependencies..."
+  (cd "$ROOT" && yarn install)
+fi
+
 # ----- Build @eff/shared before anything else -----
 SHARED_DIR="$ROOT/backend/services/shared"
 echo "🛠️  Building @eff/shared..."
@@ -118,29 +129,27 @@ if [[ -d "$SHARED_DIR" ]]; then
     exit 1
   fi
 
-  # Ensure workspace deps are installed once
-  if [[ ! -d "$ROOT/node_modules" ]]; then
-    echo "📦 Installing workspace dependencies..."
-    (cd "$ROOT" && yarn install --silent)
-  fi
-
-  # Clean then build (prefer package scripts; fallback to tsc -b)
-  if yarn run -s clean >/dev/null 2>&1; then
-    yarn run -s clean || true
-  else
-    rm -rf dist || true
-  fi
-
-  if yarn run -s build >/dev/null 2>&1; then
-    yarn run -s build
-  else
-    # Fallback: project build in this package dir
-    if command -v yarn >/dev/null 2>&1; then
-      yarn tsc -b --clean || true
-      yarn tsc -b
+  # Clean then build (prefer package scripts; fallbacks are Berry-safe)
+  if has_script clean; then
+    # If rimraf is missing, fall back to rm -rf
+    if has_cmd rimraf; then
+      yarn run clean || true
     else
-      npx tsc -b --clean || true
-      npx tsc -b
+      echo "ℹ️  rimraf not found; using rm -rf for clean"
+      rm -rf dist tsconfig.tsbuildinfo || true
+    fi
+  else
+    rm -rf dist tsconfig.tsbuildinfo || true
+  fi
+
+  if has_script build; then
+    yarn run build
+  else
+    # Berry-safe fallback (no reliance on 'yarn tsc')
+    if has_cmd yarn; then
+      yarn dlx typescript tsc -p tsconfig.json
+    else
+      npx -y typescript tsc -p tsconfig.json
     fi
   fi
 
@@ -157,20 +166,24 @@ else
   exit 1
 fi
 
-# ----- Determine per-service env files (portable, no assoc arrays) -----
+# ----- Determine per-service env files (portable, no assoc arrays, no proc-subst) -----
 SERVICE_NAMES=()
 SERVICE_PATHS=()
 SERVICE_CMDS=()
 SERVICE_ENVFILES=()
 
-while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
-  echo "$line" | grep -Eq '^[[:space:]]*#' && continue
+for line in "${SERVICES[@]}"; do
+  # skip empty and comments
+  [[ -z "${line// }" ]] && continue
+  case "$line" in \#* ) continue ;; esac
+
   name="${line%%|*}"; rest="${line#*|}"
   path="${rest%%|*}"; cmd="${rest#*|}"
+
+  # trim whitespace
   name="$(echo "$name" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
   path="$(echo "$path" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
-  cmd="$(echo "$cmd"  | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  cmd="$(echo  "$cmd"  | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
   [[ -z "$cmd" ]] && cmd="yarn dev"
 
   if [[ ! -d "$path" ]]; then
@@ -185,7 +198,7 @@ while IFS= read -r line; do
   SERVICE_PATHS+=("$path")
   SERVICE_CMDS+=("$cmd")
   SERVICE_ENVFILES+=("$svc_env")
-done < <(printf "%s\n" "${SERVICES[@]}")
+done
 
 # Collect unique env files for port cleanup
 SERVICE_ENV_FILES=()
@@ -251,23 +264,23 @@ fi
 
 if [[ "$needs_local_redis" == "true" ]]; then
   echo "🔎 Checking local Redis @ $REDIS_URL..."
-  if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
+  if has_cmd redis-cli && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
     echo "✅ Redis already running."
   else
     echo "⚙️  Starting local redis-server (no persistence)..."
-    if command -v redis-server >/dev/null 2>&1; then
+    if has_cmd redis-server; then
       redis-server --save "" --appendonly no >/dev/null 2>&1 & REDIS_PROC_PID=$!
       sleep 0.5
-      if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
+      if has_cmd redis-cli && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
         echo "✅ redis-server up (pid $REDIS_PROC_PID)."
       else
         echo "⚠️  redis-server started but not responding yet."
       fi
-    elif command -v docker >/dev/null 2>&1; then
+    elif has_cmd docker; then
       echo "🐳 Launching Redis via Docker..."
       REDIS_DOCKER_ID="$(docker run -d --rm -p 6379:6379 --name nowvibin-redis redis:7-alpine)"
       sleep 0.8
-      if command -v redis-cli >/dev/null 2>&1 && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
+      if has_cmd redis-cli && redis-cli -u "$REDIS_URL" ping >/dev/null 2>&1; then
         echo "✅ Docker Redis up (container $REDIS_DOCKER_ID)."
       else
         echo "⚠️  Docker Redis started but not responding yet."

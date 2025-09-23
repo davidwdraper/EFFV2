@@ -1,67 +1,86 @@
 // backend/services/gateway/src/middleware/trace5xx.ts
+
 /**
- * References:
- * - NowVibin Backend — New-Session SOP v4 (Amended)
- *   • “Instrumentation everywhere. Debug logs on entry/exit with requestId.”
- *   • “Global error middleware. All errors flow through problem.ts + error sink.”
- * - This session’s design: guardrails → audit split; trace5xx runs *before* guards
- *   to pinpoint where a 5xx status was first set.
+ * trace5xx — pinpoint the first place a 5xx status is set
+ * -----------------------------------------------------------------------------
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - Design: docs/design/backend/gateway/app.md
+ * - ADRs:
+ *   - docs/adr/0010-5xx-first-assignment-tracing.md
+ *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md   // context: consistent telemetry
  *
  * Why:
- * 5xx responses can be set in many places (handlers, proxy, error paths). When you’re
- * staring at logs, you need to know **where** the first 5xx status was assigned.
- * This middleware shims a few response methods (`status`, `sendStatus`, `writeHead`)
- * to capture the *first* site that set a 5xx, logs a compact, repo-local stack
- * (no Node internals / node_modules noise), and then lets the request continue.
+ * - 5xx can originate in handlers, proxy code, or error tails. When triaging,
+ *   operators need the **first assignment site** and a tight repo-local stack.
+ * - This middleware wraps a few Response APIs to record the first 5xx setter,
+ *   then logs a compact trace with a stable sentinel `<<<500DBG>>>` for grep.
+ *
+ * Order:
+ * - Mount immediately after requestId + httpLogger and **before** guardrails,
+ *   so the first assignment is attributed correctly even on denials/timeouts.
  *
  * Notes:
- * - Zero behavior change for normal requests; this is *observe-only*.
- * - We log with a stable sentinel `<<<500DBG>>>` so grep/alerts can key off it.
- * - We include `rid` (x-request-id), method, and URL for correlation.
- * - Health endpoints aren’t special-cased here; if they 5xx, we still want traces.
+ * - Observe-only: does not change behavior or bodies; only records metadata.
+ * - Stack filtering keeps lines under the repo root and drops node internals.
+ * - No env fallbacks anywhere. No config knobs. Failures never break requests.
  */
 
 import type { Request, Response, NextFunction } from "express";
 import { logger } from "@eff/shared/src/utils/logger";
 
-function ridOf(req: Request) {
-  const hdr =
+// WHY: derive a repo-root prefix for readable, stable stack filtering.
+const REPO_PREFIX = ((): string => {
+  // Use the process working directory at runtime (service root), normalized with forward slashes
+  const p = process.cwd().replace(/\\/g, "/");
+  return p.endsWith("/") ? p : `${p}/`;
+})();
+
+function ridOf(req: Request): string {
+  // Reuse the requestId minted by requestId middleware; fall back to common headers
+  const id = (req as any).id as string | undefined;
+  if (id) return id;
+  const h =
     (req.headers["x-request-id"] as string | undefined) ||
     (req.headers["x-correlation-id"] as string | undefined) ||
     (req.headers["x-amzn-trace-id"] as string | undefined);
-  return (req as any).id || hdr || "";
+  return h || "";
 }
 
-/** WHY: keep stacks readable by filtering to our repo; drop framework noise. */
-function filteredStack(err: Error) {
-  const raw = String(err.stack || "").split("\n");
-  return raw.filter(
-    (l) =>
-      l.includes("/backend/services/gateway/") && !l.includes("/node_modules/")
-  );
+/** WHY: keep stacks readable; show only repo files, hide node internals & deps. */
+function filteredStack(): string[] {
+  const raw = String(new Error().stack || "").split("\n");
+  return raw
+    .map((l) => l.trim())
+    .filter(
+      (l) =>
+        l.includes(REPO_PREFIX) &&
+        !l.includes("/node_modules/") &&
+        !l.includes("(internal/")
+    );
 }
 
 /**
- * Middleware: trace where a 5xx status is first set.
- * @param tag Optional tag to disambiguate placement (“early”, “late”, etc.)
+ * Middleware: logs where the first 5xx status was set.
+ * @param tag label to disambiguate placement ("early", "late", etc.)
  */
 export function trace5xx(tag = "trace5xx") {
   return (req: Request, res: Response, next: NextFunction) => {
-    const rid = String(ridOf(req));
+    const rid = ridOf(req);
 
-    // WHY: record only the *first* setter to avoid duplicate/late noise.
-    let firstSetter: { code: number; phase: string; stack: string[] } | null =
-      null;
+    // Record only the first site that assigned a 5xx
+    let firstSetter: {
+      code: number;
+      phase: "res.status" | "res.sendStatus" | "res.writeHead";
+      stack: string[];
+    } | null = null;
 
     // Patch res.status
     const _status = res.status.bind(res);
     res.status = (code: number) => {
       if (code >= 500 && !firstSetter) {
-        firstSetter = {
-          code,
-          phase: "res.status()",
-          stack: filteredStack(new Error("trace5xx")),
-        };
+        firstSetter = { code, phase: "res.status", stack: filteredStack() };
         logger.debug(
           {
             sentinel: "500DBG",
@@ -79,15 +98,17 @@ export function trace5xx(tag = "trace5xx") {
       return _status(code);
     };
 
-    // Patch res.sendStatus if present
-    const _sendStatus = res.sendStatus?.bind(res);
+    // Patch res.sendStatus (if present)
+    const _sendStatus = (res.sendStatus as any)?.bind?.(res) as
+      | ((code: number) => Response)
+      | undefined;
     if (_sendStatus) {
-      res.sendStatus = (code: number) => {
+      (res as any).sendStatus = (code: number) => {
         if (code >= 500 && !firstSetter) {
           firstSetter = {
             code,
-            phase: "res.sendStatus()",
-            stack: filteredStack(new Error("trace5xx")),
+            phase: "res.sendStatus",
+            stack: filteredStack(),
           };
           logger.debug(
             {
@@ -107,15 +128,17 @@ export function trace5xx(tag = "trace5xx") {
       };
     }
 
-    // Patch writeHead for lower-level status writes (e.g., proxy)
-    const _writeHead = (res as any).writeHead?.bind(res);
+    // Patch writeHead for low-level writers (e.g., proxy streaming)
+    const _writeHead = (res as any).writeHead?.bind(res) as
+      | ((code: number, ...rest: any[]) => Response)
+      | undefined;
     if (_writeHead) {
       (res as any).writeHead = (code: number, ...rest: any[]) => {
         if (code >= 500 && !firstSetter) {
           firstSetter = {
             code,
-            phase: "res.writeHead()",
-            stack: filteredStack(new Error("trace5xx")),
+            phase: "res.writeHead",
+            stack: filteredStack(),
           };
           logger.debug(
             {
@@ -135,7 +158,7 @@ export function trace5xx(tag = "trace5xx") {
       };
     }
 
-    // After response closes, summarize any 5xx
+    // Summarize at finish to catch any 5xx that slipped through
     res.on("finish", () => {
       if (res.statusCode >= 500) {
         logger.debug(
@@ -157,3 +180,5 @@ export function trace5xx(tag = "trace5xx") {
     next();
   };
 }
+
+export default trace5xx;

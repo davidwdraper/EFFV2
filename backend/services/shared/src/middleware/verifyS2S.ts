@@ -1,228 +1,189 @@
 // backend/services/shared/src/middleware/verifyS2S.ts
+
 /**
- * verifyS2S — minimal S2S guardrail (shared)
+ * verifyS2S — ES256/JWKS verification (Google KMS signer upstream)
  * -----------------------------------------------------------------------------
- * Policy (current iteration):
- *   - Validate HS256 signature & expiry using S2S_JWT_SECRET. (401 on failure)
- *   - Require aud === S2S_JWT_AUDIENCE.                              (403)
- *   - If S2S_JWT_ISSUER is set (non-empty), require iss === that.    (403)
- *   - No caller/issuer allowlists. No per-service allow/deny tables.
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - Design: docs/design/backend/security/s2s-jwt.md
+ * - ADRs:
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md
  *
- * Dev bypass (explicit):
- *   - If S2S_OPEN is truthy ("1" or "true"), verification is bypassed.
- *     A SECURITY log with reason="s2s_open_bypass" is emitted.
- *     Use only in dev/local bring-up; NEVER in prod.
+ * Why:
+ * - ADR-0030 moves signing to the gateway using **Google Cloud KMS** (ES256).
+ *   Services must verify S2S tokens against the gateway’s **JWKS**. No shared
+ *   secrets in env; only public JWKS and validation rules live here.
  *
- * Rationale:
- *   Services are internal behind the gateway plane. This middleware enforces
- *   the minimal S2S invariants while avoiding config drift. The explicit
- *   bypass helps unblock local/testing until proper caller verification ships.
+ * What:
+ * - Express middleware `verifyS2S` that:
+ *   • Extracts a Bearer token from Authorization
+ *   • Validates ES256 signature via remote JWKS (cached; honors ETag/Cache-Control)
+ *   • Enforces `aud` and `iss`
+ *   • Applies small clock tolerance
+ *   • On success, attaches normalized caller claims to `req.s2s`
  *
- * Env:
- *   - S2S_OPEN            (optional; "1"/"true" to bypass; dev/local only)
- *   - S2S_JWT_SECRET      (required unless S2S_OPEN is truthy)
- *   - S2S_JWT_AUDIENCE    (required unless S2S_OPEN is truthy)
- *   - S2S_JWT_ISSUER      (optional; if non-empty -> issuer enforced)
- *   - S2S_CLOCK_SKEW_SEC  (optional; default 0)
+ * Env (config-only; no secrets):
+ * - S2S_JWKS_URL          e.g. https://gateway.nowvibin.io/.well-known/jwks.json
+ * - S2S_REQUIRED_ISS      e.g. "gateway"
+ * - S2S_REQUIRED_AUD      e.g. "internal-services"
+ * - S2S_CLOCK_TOLERANCE_S default 45   // WHY: handle minor skew across nodes
  *
- * Failure codes:
- *   - 401 Unauthorized: missing token, bad signature, expired, malformed.
- *   - 403 Forbidden:    valid token but aud/iss fails policy.
- *
- * Logging:
- *   SECURITY channel with {reason, decision, status, kind:"s2s_verify"} for
- *   denials and explicit allows (bypass). No raw tokens or claims logged.
+ * Notes:
+ * - Only accepts ES256 (matches KMS key). If you rotate to a different alg,
+ *   rotate both KMS key type and this verifier’s allowed algorithms.
+ * - We rely on jose’s `createRemoteJWKSet` which respects HTTP caching
+ *   headers (Cache-Control/ETag). The gateway’s JWKS route sets both.
  */
 
-import type { Request, Response, NextFunction } from "express";
-import * as crypto from "node:crypto";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
+import {
+  jwtVerify,
+  createRemoteJWKSet,
+  type JWTPayload,
+  errors as joseErr,
+} from "jose";
 import { logger } from "../utils/logger";
 
-type JwtHeader = { alg: string; typ?: string };
-type JwtPayload = {
+type S2SContext = {
   iss?: string;
   sub?: string;
   aud?: string | string[];
-  exp?: number;
-  nbf?: number;
-  iat?: number;
-  [k: string]: unknown;
+  kid?: string;
+  // pass-through of common custom claims (string-only for audit hygiene)
+  meta?: Record<string, string>;
 };
 
-function b64urlDecode(input: string): Buffer {
-  const pad = input.length % 4 === 2 ? "==" : input.length % 4 === 3 ? "=" : "";
-  const s = input.replace(/-/g, "+").replace(/_/g, "/") + pad;
-  return Buffer.from(s, "base64");
+// Extend Express for downstreams
+declare module "express-serve-static-core" {
+  interface Request {
+    s2s?: S2SContext;
+  }
 }
 
-function hmacSha256(secret: string, data: string): Buffer {
-  return crypto.createHmac("sha256", secret).update(data).digest();
+const RE_JWT = /^Bearer\s+(.+)$/i;
+
+// WHY: fail fast on misconfig — verification without JWKS or policy makes no sense.
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || !String(v).trim()) {
+    throw new Error(`[verifyS2S] Missing required env: ${name}`);
+  }
+  return String(v).trim();
 }
 
-function timingSafeEqual(a: Buffer, b: Buffer): boolean {
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+const JWKS_URL = requireEnv("S2S_JWKS_URL");
+const REQUIRED_ISS = requireEnv("S2S_REQUIRED_ISS");
+const REQUIRED_AUD = requireEnv("S2S_REQUIRED_AUD");
+const CLOCK_TOL_S = Math.max(
+  0,
+  Number(process.env.S2S_CLOCK_TOLERANCE_S ?? 45) | 0
+);
+
+// WHY: allocate once; jose caches keys per HTTP cache headers.
+const JWKS = createRemoteJWKSet(new URL(JWKS_URL), {
+  // WHY: tolerate flaky control planes; jose will refetch on cache expiry or kid miss
+  cooldownDuration: 1000, // minimal cooldown between failed fetches
+});
+
+/** Minimal RFC7807 helper for uniform error shape. */
+function problem(status: number, detail: string, instance?: string) {
+  return {
+    type: "about:blank",
+    title:
+      status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : "Error",
+    status,
+    detail,
+    instance: instance ?? "",
+  };
 }
 
+/** Extract raw JWT from the Authorization header. */
 function extractBearer(req: Request): string | undefined {
   const h =
     (req.headers["authorization"] as string | undefined) ??
-    (req.headers["Authorization"] as unknown as string | undefined);
-  if (typeof h === "string" && h.trim()) {
-    const m = /^Bearer\s+(.+)$/i.exec(h.trim());
-    return m ? m[1] : h.trim();
-  }
-  return undefined;
+    ((req.headers as any)["Authorization"] as string | undefined);
+  if (!h) return undefined;
+  const m = h.match(RE_JWT);
+  return (m ? m[1] : h).trim();
 }
 
-function secLog(
-  req: Request,
-  reason: string,
-  status: number,
-  extra?: Record<string, unknown>
-) {
-  logger.warn(
-    {
-      ch: "SECURITY",
-      service: (process.env.SERVICE_NAME as string) || "unknown",
-      requestId: (req as any).id,
-      reason,
-      decision: status >= 400 ? "blocked" : "allowed",
-      status,
-      route: req.path,
-      method: req.method,
-      kind: "s2s_verify",
-      ...(extra || {}),
-    },
-    "security guardrail decision"
-  );
+/** WHY: normalize string-only meta; avoid leaking arbitrary objects to logs. */
+function normalizeMetaClaims(payload: JWTPayload): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(payload)) {
+    if (["iss", "sub", "aud", "exp", "nbf", "iat", "jti"].includes(k)) continue;
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
 }
 
-export function verifyS2S(req: Request, res: Response, next: NextFunction) {
-  // ── Explicit dev bypass (honors S2S_OPEN) ───────────────────────────────────
-  const S2S_OPEN = String(process.env.S2S_OPEN || "").trim();
-  if (S2S_OPEN === "1" || /^true$/i.test(S2S_OPEN)) {
-    // Health is open anyway; here we explicitly allow /api when S2S_OPEN is set.
-    secLog(req, "s2s_open_bypass", 200);
-    return next();
-  }
-
-  const secret = String(process.env.S2S_JWT_SECRET || "");
-  const expectedAud = String(process.env.S2S_JWT_AUDIENCE || "");
-  const expectedIss = (process.env.S2S_JWT_ISSUER || "").trim(); // optional
-  const clockSkewSec = Number(process.env.S2S_CLOCK_SKEW_SEC || 0);
-
-  if (!secret || !expectedAud) {
-    // Config problem → treat as 503 (service misconfig), not client fault.
-    secLog(req, "s2s_misconfigured", 503);
-    return res.status(503).json({
-      type: "about:blank",
-      title: "Auth Misconfigured",
-      status: 503,
-      detail: "S2S config invalid (missing secret or audience).",
-      instance: (req as any).id,
-    });
-  }
-
-  const token = extractBearer(req);
-  if (!token) {
-    secLog(req, "missing_token", 401);
-    return res.status(401).json({
-      type: "about:blank",
-      title: "Unauthorized",
-      status: 401,
-      detail: "Missing token",
-      instance: (req as any).id,
-    });
-  }
-
-  try {
-    // Parse JWT compact form
-    const parts = token.split(".");
-    if (parts.length !== 3) throw new Error("malformed");
-    const [hB64, pB64, sigB64] = parts;
-
-    const header = JSON.parse(b64urlDecode(hB64).toString("utf8")) as JwtHeader;
-    const payload = JSON.parse(
-      b64urlDecode(pB64).toString("utf8")
-    ) as JwtPayload;
-
-    if (!header || header.alg !== "HS256") throw new Error("alg_not_supported");
-
-    // Verify signature
-    const data = `${hB64}.${pB64}`;
-    const expected = hmacSha256(secret, data);
-    const given = b64urlDecode(sigB64);
-    if (!timingSafeEqual(expected, given)) throw new Error("bad_signature");
-
-    // Expiry & not-before
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (
-      typeof payload.exp === "number" &&
-      nowSec > payload.exp + clockSkewSec
-    ) {
-      throw new Error("expired");
-    }
-    if (
-      typeof payload.nbf === "number" &&
-      nowSec + clockSkewSec < payload.nbf
-    ) {
-      throw new Error("not_yet_valid");
+/** Middleware: verify S2S JWT via gateway-published JWKS (ES256). */
+export function verifyS2S(): RequestHandler {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const token = extractBearer(req);
+    if (!token) {
+      return res
+        .status(401)
+        .json(problem(401, "Missing bearer token", (req as any).id));
     }
 
-    // Audience must match exactly (or be in array)
-    const aud = payload.aud;
-    const audOk =
-      typeof aud === "string"
-        ? aud === expectedAud
-        : Array.isArray(aud)
-        ? aud.includes(expectedAud)
-        : false;
-    if (!audOk) {
-      secLog(req, "aud_mismatch", 403);
-      return res.status(403).json({
-        type: "about:blank",
-        title: "Forbidden",
-        status: 403,
-        detail: "Audience not allowed",
-        instance: (req as any).id,
+    try {
+      // WHY: only accept ES256 — matches KMS key; tighten surface area
+      const { payload, protectedHeader } = await jwtVerify(token, JWKS, {
+        algorithms: ["ES256"],
+        issuer: REQUIRED_ISS,
+        audience: REQUIRED_AUD,
+        clockTolerance: CLOCK_TOL_S,
       });
-    }
 
-    // Issuer: only enforce if env is set (open policy otherwise)
-    if (expectedIss) {
-      if (payload.iss !== expectedIss) {
-        secLog(req, "iss_mismatch", 403);
-        return res.status(403).json({
-          type: "about:blank",
-          title: "Forbidden",
-          status: 403,
-          detail: "Issuer not allowed",
-          instance: (req as any).id,
-        });
+      // Attach normalized context for downstream usage and audit correlation
+      (req as any).s2s = {
+        iss: payload.iss,
+        sub: payload.sub,
+        aud: payload.aud,
+        kid: protectedHeader.kid,
+        meta: normalizeMetaClaims(payload),
+      } satisfies S2SContext;
+
+      return next();
+    } catch (err: any) {
+      // WHY: map jose errors to sensible 401/403 without leaking internals
+      const rid = (req as any).id;
+      if (
+        err instanceof joseErr.JWTExpired ||
+        err instanceof joseErr.JWTNotActive ||
+        err instanceof joseErr.JWSInvalid ||
+        err instanceof joseErr.JWTInvalid
+      ) {
+        logger.warn(
+          {
+            ch: "SECURITY",
+            kind: "s2s_verify",
+            decision: "blocked",
+            rid,
+            reason: err.name,
+          },
+          "[verifyS2S] JWT rejected"
+        );
+        const status =
+          err instanceof joseErr.JWTExpired ||
+          err instanceof joseErr.JWTNotActive
+            ? 401
+            : 401;
+        return res
+          .status(status)
+          .json(problem(status, "Invalid or expired token", rid));
       }
+
+      // Network / JWKS fetch problems → treat as 503 (policy cannot be enforced)
+      logger.error({ rid, err }, "[verifyS2S] JWKS resolution failure");
+      return res
+        .status(503)
+        .json(
+          problem(503, "Authorization service temporarily unavailable", rid)
+        );
     }
-
-    // Attach normalized caller info for downstream (no PII; only S2S)
-    (req as any).caller = {
-      iss: payload.iss || "unknown",
-      sub: payload.sub || "s2s",
-      aud: payload.aud,
-    };
-
-    // Success path — do not spam SECURITY logs.
-    return next();
-  } catch (_err) {
-    // Any parse/signature/expiry failure → 401
-    secLog(req, "jwt_invalid", 401);
-    return res.status(401).json({
-      type: "about:blank",
-      title: "Unauthorized",
-      status: 401,
-      detail: "invalid token",
-      instance: (req as any).id,
-    });
-  }
+  };
 }
 
 export default verifyS2S;

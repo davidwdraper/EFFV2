@@ -1,13 +1,28 @@
 // PATH: backend/services/gateway/src/handlers/forwardToService.ts
+
 /**
  * Docs:
- * - Gateway forwards /api/:slug.V<version>/* after guardrails via shared S2S client.
- * - Tolerates multiple S2SResponse shapes: {body}|{data}|{payload}|{text}|{buffer}
+ * - Gateway forwards /api/:slug.V<version>/* after guardrails via the **shared S2S client**.
+ * - Tolerates multiple S2SResponse shapes: {body}|{data}|{payload}|{text}|{buffer}.
+ * - ADRs:
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md
+ *
+ * Why:
+ * - Keep the edge **thin and consistent**: shared client handles URL resolution,
+ *   S2S identity minting (KMS/ES256), and version stamping. No proxy drift.
+ * - Normalize upstream responses so clients (smoke/jq) can always expect JSON on errors.
+ *
+ * Non-negotiables:
+ * - Never forward client Authorization. Shared S2S mints upstream identity.
+ * - No env fallbacks here (per SOP). We do **not** read downstream timeout envs;
+ *   shared S2S has its own validated defaults. If you need a different timeout,
+ *   pass it explicitly from a validated config.
  *
  * Notes:
- * - Do NOT forward client Authorization. Shared S2S mints upstream identity.
- * - This handler writes exactly once; guards against headers already sent.
- * - Always emit JSON (Problem+JSON on errors) so callers (smoke/jq) never break.
+ * - Body is JSON-only by design (routes/api applies a scoped JSON parser).
+ * - Single-write discipline: check `headersSent` before writing on all exits.
+ * - We forward query via `opts.query` (lets shared client encode safely).
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -26,7 +41,7 @@ function pickBody(resp: S2SResponse<unknown>): unknown {
   return undefined;
 }
 
-/** Normalize headers coming back from S2S into something Express accepts. */
+/** Normalize headers coming back from S2S into something Express accepts (best-effort). */
 function setResponseHeaders(res: Response, headers?: Record<string, unknown>) {
   if (!headers) return;
   for (const [k, v] of Object.entries(headers)) {
@@ -83,7 +98,7 @@ export async function forwardToService(
       version = String(parsed.version || "");
       restPath = String(parsed.restPath || "");
     } else {
-      // Fallback: parse /:slug.:version/* directly from path (rare)
+      // WHY: belt-and-suspenders parsing. Should be rare, but avoids 500 on edge cases.
       const m = req.path.match(/^\/?([^/.]+)\.([^/]+)\/(.*)$/);
       if (m) {
         slug = (m[1] || "").toLowerCase();
@@ -105,7 +120,7 @@ export async function forwardToService(
       return;
     }
 
-    // Build safe header pass-through (strip client Authorization, hop-by-hop).
+    // Build safe header pass-through (strip client Authorization + hop-by-hop).
     const {
       authorization,
       Authorization,
@@ -115,8 +130,9 @@ export async function forwardToService(
       ...rest
     } = req.headers as Record<string, string | string[] | undefined>;
 
-    // Effective downstream timeout (gateway should be < edge timeout)
-    const timeoutMs = Number(process.env.TIMEOUT_GATEWAY_DOWNSTREAM_MS || 6000);
+    // WHY: we do not read env for a downstream timeout. Shared S2S enforces its own
+    // validated defaults. If a caller needs a different timeout, thread it in via
+    // a validated config and pass `timeoutMs` explicitly.
 
     const s2sResp = await callBySlug(slug, version, {
       method: req.method,
@@ -124,20 +140,25 @@ export async function forwardToService(
       path: restPath,
       query: req.query as Record<string, unknown>,
       headers: {
+        // Correlate across hops
         "x-request-id":
           (req as any).id ||
           (req.headers["x-request-id"] as string | undefined),
+        // Preserve CT/Accept for upstream content negotiation
         "content-type":
           (req.headers["content-type"] as string | undefined) ||
           "application/json; charset=utf-8",
         accept: req.headers["accept"] as string | undefined,
+        // End-user context (if provided)
         "x-nv-user-assertion": req.headers["x-nv-user-assertion"] as
           | string
           | undefined,
+        // Remaining safe headers (no Authorization forwarded)
         ...(rest as Record<string, string | undefined>),
       },
-      body: (req as any).body, // present thanks to scoped JSON parser
-      timeoutMs,
+      // Router ensures JSON parsing; pass through as-is to avoid double-serialization
+      body: (req as any).body,
+      // timeoutMs: (omitted intentionally; see note above)
     });
 
     if (res.headersSent) return;
@@ -154,12 +175,11 @@ export async function forwardToService(
       if (Buffer.isBuffer(bodyRaw)) return res.end(bodyRaw);
       if (bodyRaw instanceof Uint8Array) return res.end(Buffer.from(bodyRaw));
 
-      // If upstream gave us string, try parse JSON; otherwise send as JSON string.
       if (typeof bodyRaw === "string") {
         const maybe = tryParseJSON(bodyRaw);
         return maybe !== undefined
           ? res.json(maybe)
-          : res.json({ value: bodyRaw });
+          : res.json({ value: bodyRaw }); // WHY: stable JSON shape for string bodies
       }
       return res.json(bodyRaw);
     }
@@ -172,7 +192,6 @@ export async function forwardToService(
         ? (bodyRaw as Record<string, any>)
         : problemFromText(s2sResp.status || 502, undefined, rid);
 
-    // Force correct content type for problems.
     res.status(problemJson.status || s2sResp.status || 502);
     res.type("application/problem+json");
     return res.json(problemJson);
@@ -181,7 +200,7 @@ export async function forwardToService(
     try {
       res.end();
     } catch {
-      /* noop */
+      /* no-op */
     }
   }
 }

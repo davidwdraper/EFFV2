@@ -1,35 +1,70 @@
-// backend/services/gateway/src/readiness.ts
+// PATH: backend/services/gateway/src/readiness.ts
 
 /**
+ * Gateway Readiness Probe
+ * -----------------------------------------------------------------------------
  * Docs:
  * - Design: docs/design/backend/gateway/app.md
  * - SOP: docs/architecture/backend/SOP.md
  * - ADRs:
  *   - docs/adr/0024-extract-readiness-from-app-assembly-for-separation-of-concerns.md
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md   // readiness must reflect KMS/svcconfig health
  *
  * Why:
- * - Keep app assembly clean. Readiness concerns live here.
- * - Probes upstream `/health/ready` for required services (env-tunable).
+ * - Keep app assembly clean; readiness lives here and is injected into the health router.
+ * - Probe **required upstream services**’ `/health/ready` endpoints (authoritative, unversioned)
+ *   so deploy orchestration only admits the gateway when its dependencies are actually up.
+ *
+ * Non-negotiables:
+ * - **No env fallbacks.** Required knobs must exist; crash on boot if missing.
+ * - Use the shared S2S HTTP client so identity minting is uniform (no drift).
+ * - Do not “assume” routes; compute from svcconfig snapshot (baseUrl + healthPath).
  */
 
 import type { ReadinessFn } from "@eff/shared/src/health";
 import { getSvcconfigSnapshot } from "@eff/shared/src/svcconfig/client";
 import type { ServiceConfig } from "@eff/shared/src/contracts/svcconfig.contract";
-import { s2sGet } from "./utils/s2s/s2sClient";
+import { s2sRequest } from "@eff/shared/src/utils/s2s/httpClient";
+import { requireEnv, requireNumber } from "@eff/shared/src/env";
 
+/** WHY: strict envs — fail fast if misconfigured. */
+const REQUIRED_UPSTREAMS_RAW = requireEnv("GATEWAY_READY_UPSTREAMS"); // e.g. "user,act,payments"
+const READY_PROBE_TIMEOUT_MS = requireNumber("TIMEOUT_READY_PROBE_MS"); // e.g. 1500
+
+/** WHY: normalize once; an empty list is a config error. */
+const REQUIRED_UPSTREAM_SLUGS = REQUIRED_UPSTREAMS_RAW.split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+if (REQUIRED_UPSTREAM_SLUGS.length === 0) {
+  throw new Error(
+    "[gateway:readiness] GATEWAY_READY_UPSTREAMS produced an empty list"
+  );
+}
+
+/** WHY: compute the direct health URLs from svcconfig (no guesses, no versions). */
 function healthUrlFor(cfg: ServiceConfig | undefined, kind: "ready" | "live") {
-  if (!cfg || cfg.exposeHealth === false) return null;
+  if (!cfg || cfg.exposeHealth === false) return null; // explicit opt-out
   const healthRoot = (cfg.healthPath || "/health").replace(/\/+$/, "");
-  const base = cfg.baseUrl.replace(/\/+$/, "");
+  const base = String(cfg.baseUrl || "").replace(/\/+$/, "");
   return `${base}${healthRoot}/${kind}`;
 }
 
+/**
+ * Readiness contract consumed by the shared health router.
+ * - Returns a map of upstreams with ok/url/status; the router will shape the final payload.
+ * - We *do not* log here; operators can see details in the health payload.
+ */
 export const readiness: ReadinessFn = async (_req) => {
   const snap = getSvcconfigSnapshot();
-  const mustEnv = (process.env.GATEWAY_READY_UPSTREAMS || "user,act")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  if (!snap || !snap.services) {
+    // WHY: fail the readiness check clearly if svcconfig isn’t populated yet.
+    return {
+      upstreams: Object.fromEntries(
+        REQUIRED_UPSTREAM_SLUGS.map((s) => [s, { ok: false }])
+      ),
+    };
+  }
 
   const upstreams: Record<
     string,
@@ -37,20 +72,26 @@ export const readiness: ReadinessFn = async (_req) => {
   > = {};
 
   await Promise.all(
-    mustEnv.map(async (slug) => {
+    REQUIRED_UPSTREAM_SLUGS.map(async (slug) => {
       try {
-        const cfg = snap?.services?.[slug];
+        const cfg = (snap.services as any)[slug] as ServiceConfig | undefined;
         const url = healthUrlFor(cfg, "ready");
-        if (!cfg || !cfg.enabled || !url) {
+        if (!cfg || cfg.enabled !== true || !url) {
+          // WHY: treat missing/disabled/no-health as not ready; prevents partial admit.
           upstreams[slug] = { ok: false };
           return;
         }
-        const r = await s2sGet(url, {
-          timeout: 1500,
-          validateStatus: () => true,
-        } as any);
+
+        // WHY: shared s2sRequest ensures uniform S2S identity minting; no drift.
+        const r = await s2sRequest<any>(url, {
+          method: "GET",
+          timeoutMs: READY_PROBE_TIMEOUT_MS,
+          headers: { "x-nv-probe": "readiness" }, // tag for upstream logs (non-functional)
+        });
+
         upstreams[slug] = { ok: r.status === 200, url, status: r.status };
       } catch {
+        // WHY: opaque upstream failure → mark not ready; do not throw here to allow a full report.
         upstreams[slug] = { ok: false };
       }
     })

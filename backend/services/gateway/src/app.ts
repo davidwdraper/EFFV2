@@ -1,4 +1,4 @@
-// PATH: backend/services/gateway/src/app.ts
+// backend/services/gateway/src/app.ts
 
 /**
  * Docs:
@@ -13,17 +13,14 @@
  *   - docs/adr/0021-gateway-core-internal-no-edge-guardrails.md
  *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  *   - docs/adr/0024-extract-readiness-from-app-assembly-for-separation-of-concerns.md
- *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md   // APR-0029
- *   - docs/adr/00XX-gateway-uses-shared-s2s-callBySlug-post-guardrails.md // TODO: replace 00XX with next ADR
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md   // NEW
  *
  * Why:
- * - Assembly order follows SOP: httpsOnly → cors → requestId → http logger →
- *   trace5xx(early) → health → guardrails (SECURITY logs) → audit (WAL) →
- *   service forwarding (versioned) → tails (404/error).
- * - Versioned API at the edge: /api/:slug.V<version>/... (APR-0029).
- * - After guardrails, the gateway is “just another service”: it forwards via the
- *   shared S2S helper (callBySlug). This removes resolver/proxy drift in gateway.
- * - Problem+JSON formatting comes from shared middleware for single source of truth.
+ * - Keep the gateway thin and deterministic:
+ *   httpsOnly → cors → requestId → http logger → trace5xx(early) →
+ *   health → guardrails → audit (WAL) → **versioned forwarding** → 404/error.
+ * - ADR-0030: publish JWKS so workers can verify ES256 tokens signed by KMS.
  * - No body parsers before forwarding; keep streams zero-copy to upstream.
  */
 
@@ -52,9 +49,11 @@ import { authGate } from "./middleware/authGate";
 import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
 import { httpsOnly } from "./middleware/httpsOnly";
 
-// ⬇️ New: versioned API router that forwards using shared callBySlug.
-// (Keeps the gateway thin; no local resolver/proxy logic.)
+// Versioned API router → forwards via shared callBySlug (no resolver drift)
 import apiRouter from "./routes/api";
+
+// NEW: JWKS publication for ADR-0030 (workers verify ES256 via this key)
+import { createJwksRouter } from "./routes/jwks";
 
 // Svcconfig mirror (non-blocking boot)
 import { startSvcconfigMirror } from "@eff/shared/src/svcconfig/client";
@@ -79,11 +78,13 @@ app.set("trust proxy", true);
 // Transport & Telemetry
 app.use(httpsOnly());
 if (process.env.FORCE_HTTPS === "true") {
+  // WHY: enforce HSTS when running behind TLS terminator in staging/prod
   app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true }));
 }
 
 app.use(
   cors({
+    // WHY: edge accepts browser clients; keep permissive CORS but restrict methods/headers
     origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
     // APR-0029: allow X-NV-Api-Version across the edge
@@ -114,6 +115,10 @@ app.use(
     readiness,
   })
 );
+
+// NEW: JWKS (public). Workers fetch this to verify ES256 tokens (ADR-0030).
+// WHY: mount at both well-known and simple alias.
+app.use("/", createJwksRouter());
 
 // Service health proxy (public; unauthenticated; not audited)
 // Examples:
@@ -158,7 +163,9 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
 // Global tails: 404 + error (RFC7807)
-app.use(notFoundProblemJson(["/api", "/health", "/__"]));
+app.use(
+  notFoundProblemJson(["/api", "/health", "/.well-known", "/jwks", "/__"])
+);
 app.use(errorProblemJson());
 
 export default app;

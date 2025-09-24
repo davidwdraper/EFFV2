@@ -20,7 +20,8 @@
  */
 
 import axios from "axios";
-import { requireUrl, requireEnv, requireNumber } from "@eff/shared/src/env";
+// ⬇️ Fix: avoid self-import of @eff/shared inside shared; use relative path
+import { requireUrl, requireEnv, requireNumber } from "../../env";
 
 type SvcRecord = {
   slug: string;

@@ -1,30 +1,65 @@
+// backend/services/shared/src/utils/userNameLookup.ts
+/**
+ * NowVibin — userNameLookup
+ *
+ * Notes:
+ * - Enforces SOP: **no fallbacks**. Required env must be present; fail fast.
+ * - Drops external `lru-cache` dependency; uses a tiny local LRU.
+ * - Keeps your public API (getUserNamesByIds, enrich*, invalidate) intact.
+ */
+
 import axios from "axios";
-import { LRUCache } from "lru-cache";
+// If your logger lives at src/utils/logger.ts relative to this file, this import is correct.
+// Adjust path only if your tree differs.
 import { logger } from "../utils/logger";
+import { requireUrl, requireNumber } from "../env";
 
-// ---- ENV CONFIG ----
-const USER_SERVICE_URL =
-  process.env.USER_SERVICE_URL || "http://localhost:4001";
+// ---- ENV CONFIG (no fallbacks; fail fast) ----
+const USER_SERVICE_URL = requireUrl("USER_SERVICE_URL");
+const CACHE_MAX = requireNumber("USER_NAME_CACHE_MAX"); // entries
+const CACHE_TTL = requireNumber("USER_NAME_CACHE_TTL_MS"); // ms
+const NEGATIVE_TTL = requireNumber("USER_NAME_NEGATIVE_TTL_MS"); // ms
+const HTTP_TIMEOUT_MS = requireNumber("USER_NAME_HTTP_TIMEOUT_MS"); // ms
 
-// cache size + TTLs (bounded + configurable)
-const CACHE_MAX = parseInt(process.env.USER_NAME_CACHE_MAX || "1000", 10); // entries
-const CACHE_TTL = parseInt(process.env.USER_NAME_CACHE_TTL_MS || "300000", 10); // 5 min
-const NEGATIVE_TTL = parseInt(
-  process.env.USER_NAME_NEGATIVE_TTL_MS || "30000",
-  10
-); // 30s
+// ---- Tiny LRU (bounded, TTL-aware by simple timestamp check on get) ----
+type LruEntry<V> = { v: V; expiresAt: number };
 
-// HTTP timeout for the lookup call
-const HTTP_TIMEOUT_MS = parseInt(
-  process.env.USER_NAME_HTTP_TIMEOUT_MS || "5000",
-  10
-);
+class SimpleLRU<K, V> {
+  private map = new Map<K, LruEntry<V>>();
+  constructor(private max: number) {}
 
-// ---- LRU CACHE ----
-const cache = new LRUCache<string, string>({
-  max: CACHE_MAX,
-  ttl: CACHE_TTL,
-});
+  get(key: K): V | undefined {
+    const e = this.map.get(key);
+    if (!e) return undefined;
+    const now = Date.now();
+    if (e.expiresAt <= now) {
+      this.map.delete(key);
+      return undefined;
+    }
+    // bump recency
+    this.map.delete(key);
+    this.map.set(key, e);
+    return e.v;
+  }
+
+  set(key: K, value: V, ttl: number): void {
+    const expiresAt = Date.now() + Math.max(0, ttl | 0);
+    if (this.map.has(key)) {
+      this.map.delete(key);
+    } else if (this.map.size >= this.max) {
+      // Map is non-empty here by invariant (size >= max), so value is K
+      const oldest = this.map.keys().next().value as K;
+      this.map.delete(oldest);
+    }
+    this.map.set(key, { v: value, expiresAt });
+  }
+
+  delete(key: K): void {
+    this.map.delete(key);
+  }
+}
+
+const cache = new SimpleLRU<string, string>(CACHE_MAX);
 
 // ---- PUBLIC API ----
 
@@ -48,28 +83,29 @@ export async function getUserNamesByIds(
   if (missing.length === 0) return result;
 
   try {
-    const url = `${USER_SERVICE_URL}/users/public/names?ids=${encodeURIComponent(
-      missing.join(",")
-    )}`;
+    const url = `${USER_SERVICE_URL.replace(
+      /\/+$/,
+      ""
+    )}/users/public/names?ids=${encodeURIComponent(missing.join(","))}`;
     const resp = await axios.get(url, { timeout: HTTP_TIMEOUT_MS });
     const names: Record<string, string> = resp.data?.names || {};
 
     // hydrate cache + merge
     for (const [id, name] of Object.entries(names)) {
-      cache.set(id, name);
+      cache.set(id, name, CACHE_TTL);
       result[id] = name;
     }
 
     // Soft negative cache for unknown IDs to avoid repeated hammering
     for (const id of missing) {
-      if (result[id] === undefined) cache.set(id, "", { ttl: NEGATIVE_TTL });
+      if (result[id] === undefined) cache.set(id, "", NEGATIVE_TTL);
     }
 
     return result;
   } catch (err: any) {
     logger.error(
       {
-        err, // Pino recognizes `err` specially and logs stack, type, message
+        err,
         missingCount: missing.length,
       },
       "getUserNamesByIds failed"
@@ -99,11 +135,11 @@ export async function enrichWithUserNames<T extends BaseEntity>(
     : undefined;
 
   const out = copy ? { ...(entity as any) } : (entity as any);
-  out.createdByName = createdByName;
-  out.ownedByName = ownedByName;
+  (out as any).createdByName = createdByName;
+  (out as any).ownedByName = ownedByName;
 
   logger.debug(
-    `enrichWithUserNames - createdByName: ${out.createdByName}, ownedByName: ${out.ownedByName}`
+    `enrichWithUserNames - createdByName: ${createdByName}, ownedByName: ${ownedByName}`
   );
   return out;
 }

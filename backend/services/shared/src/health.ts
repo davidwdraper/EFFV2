@@ -20,11 +20,11 @@
  * - Endpoints are duplicated in both absolute and k8s-style forms for tooling.
  */
 
-import express from "express";
+import express, { Router, Request, Response } from "express";
 
 export type ReadinessDetails = Record<string, any>;
 export type ReadinessFn = (
-  req: express.Request,
+  req: Request,
   ...args: any[]
 ) => Promise<ReadinessDetails> | ReadinessDetails;
 
@@ -37,7 +37,7 @@ type Options = {
   readiness?: ReadinessFn;
 };
 
-function getReqId(req: express.Request) {
+function getReqId(req: Request) {
   const h =
     req.headers["x-request-id"] ||
     req.headers["x-correlation-id"] ||
@@ -55,7 +55,7 @@ function getReqId(req: express.Request) {
  *   GET /live           -> relative liveness (for smoke.sh convenience)
  *   GET /ready          -> relative readiness (for smoke.sh convenience)
  */
-export function createHealthRouter(opts: Options) {
+export function createHealthRouter(opts: Options): Router {
   const router = express.Router();
 
   const base = {
@@ -66,12 +66,12 @@ export function createHealthRouter(opts: Options) {
   };
 
   // WHY (liveness): process is up and serving HTTP. No external calls here.
-  const liveness = (req: express.Request, res: express.Response) => {
+  const liveness = (req: Request, res: Response): void => {
     res.json({ ...base, ok: true, requestId: getReqId(req) });
   };
 
   // WHY (readiness): fast, bounded checks to decide if we can take traffic.
-  const readiness = async (req: express.Request, res: express.Response) => {
+  const readiness = async (req: Request, res: Response): Promise<void> => {
     try {
       const details = opts.readiness ? await opts.readiness(req) : {};
       res.json({ ...base, ok: true, requestId: getReqId(req), ...details });

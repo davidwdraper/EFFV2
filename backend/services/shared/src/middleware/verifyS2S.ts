@@ -48,21 +48,44 @@ import {
 import { requireEnv, requireNumber } from "../env";
 import { logger } from "../utils/logger";
 
-// ── Strict envs (no defaults) ────────────────────────────────────────────────
-const S2S_JWKS_URL = requireEnv("S2S_JWKS_URL");
-const S2S_ISSUER = requireEnv("S2S_JWT_ISSUER");
-const S2S_AUDIENCE = requireEnv("S2S_JWT_AUDIENCE");
-const CLOCK_SKEW_SEC = requireNumber("S2S_CLOCK_SKEW_SEC");
-const JWKS_COOLDOWN_MS = requireNumber("S2S_JWKS_COOLDOWN_MS");
-const JWKS_TIMEOUT_MS = requireNumber("S2S_JWKS_TIMEOUT_MS");
+// ── Lazy config/JWKS (defer env reads to runtime; memoize once) ──────────────
+type S2SConfig = {
+  issuer: string;
+  audience: string;
+  clockSkewSec: number;
+  jwksCooldownMs: number;
+  jwksTimeoutMs: number;
+  jwks: ReturnType<typeof createRemoteJWKSet>;
+};
 
-// ── Remote JWKS (module-scoped, single instance) ─────────────────────────────
-const jwksUrl = new URL(S2S_JWKS_URL);
-// jose will honor HTTP cache (ETag/Cache-Control) and apply cooldown to avoid storms.
-const JWKS = createRemoteJWKSet(jwksUrl, {
-  cooldownDuration: JWKS_COOLDOWN_MS,
-  timeoutDuration: JWKS_TIMEOUT_MS,
-});
+let memo: S2SConfig | null = null;
+
+function getS2SConfig(): S2SConfig {
+  if (memo) return memo;
+
+  const jwksUrlStr = requireEnv("S2S_JWKS_URL");
+  const issuer = requireEnv("S2S_JWT_ISSUER");
+  const audience = requireEnv("S2S_JWT_AUDIENCE");
+  const clockSkewSec = requireNumber("S2S_CLOCK_SKEW_SEC");
+  const jwksCooldownMs = requireNumber("S2S_JWKS_COOLDOWN_MS");
+  const jwksTimeoutMs = requireNumber("S2S_JWKS_TIMEOUT_MS");
+
+  const url = new URL(jwksUrlStr);
+  const jwks = createRemoteJWKSet(url, {
+    cooldownDuration: jwksCooldownMs,
+    timeoutDuration: jwksTimeoutMs,
+  });
+
+  memo = {
+    issuer,
+    audience,
+    clockSkewSec,
+    jwksCooldownMs,
+    jwksTimeoutMs,
+    jwks,
+  };
+  return memo;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function extractBearer(req: Request): string | undefined {
@@ -102,7 +125,27 @@ function problem(
 
 // ── Middleware ───────────────────────────────────────────────────────────────
 export function verifyS2S(): RequestHandler {
+  // Config will be validated and JWKS created on first use
   return async (req: Request, res: Response, next: NextFunction) => {
+    let cfg: S2SConfig;
+    try {
+      cfg = getS2SConfig();
+    } catch (e: any) {
+      // Misconfiguration: keep "no fallbacks" stance but don’t crash the process
+      logger.error({ err: e }, "[verifyS2S] missing/invalid S2S env");
+      return res
+        .status(500)
+        .type("application/problem+json")
+        .json(
+          problem(
+            500,
+            "Internal Server Error",
+            "S2S verification not configured",
+            req
+          )
+        );
+    }
+
     try {
       const token = extractBearer(req);
       if (!token) {
@@ -112,11 +155,11 @@ export function verifyS2S(): RequestHandler {
           .json(problem(401, "Unauthorized", "Missing bearer token", req));
       }
 
-      const { payload, protectedHeader } = await jwtVerify(token, JWKS, {
+      const { payload, protectedHeader } = await jwtVerify(token, cfg.jwks, {
         algorithms: ["ES256"], // KMS key is ES256; lock it down
-        issuer: S2S_ISSUER,
-        audience: S2S_AUDIENCE,
-        clockTolerance: CLOCK_SKEW_SEC,
+        issuer: cfg.issuer,
+        audience: cfg.audience,
+        clockTolerance: cfg.clockSkewSec,
       });
 
       const p = payload as JWTPayload & Record<string, unknown>;
@@ -131,7 +174,6 @@ export function verifyS2S(): RequestHandler {
 
       return next();
     } catch (err: unknown) {
-      // jose error taxonomy (v6):
       if (err instanceof JoseErrors.JWTExpired) {
         return res
           .status(401)
@@ -162,7 +204,6 @@ export function verifyS2S(): RequestHandler {
           .json(problem(401, "Unauthorized", "invalid token claims", req));
       }
 
-      // Signature / structure / jwks fetch failures
       logger.debug({ err }, "[verifyS2S] verification failure");
       return res
         .status(401)

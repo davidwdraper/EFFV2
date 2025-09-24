@@ -6,10 +6,12 @@
     "backend/services/*",
     "services/*"
   ],
-  "resolutions": {
-    "@types/express": "4.17.21",
-    "express": "4.19.2",
-    "zod": "4.0.17"
+  "pnpm": {
+    "overrides": {
+      "@types/express": "4.17.21",
+      "express": "4.19.2",
+      "zod": "4.0.17"
+    }
   },
   "devDependencies": {
     "@types/axios": "^0.14.4",
@@ -38,9 +40,9 @@
     "test:act:unit": "vitest run -c backend/services/act/vitest.config.ts",
     "test:act:watch": "vitest -c backend/services/act/vitest.config.ts --watch",
     "test:act:e2e": "vitest run -c backend/tests/vitest.config.e2e.ts",
-    "test:act": "yarn test:act:unit && yarn test:act:e2e",
+    "test:act": "pnpm run test:act:unit && pnpm run test:act:e2e",
     "coverage:act": "vitest run --coverage -c backend/services/act/vitest.config.ts",
-    "build:shared": "yarn workspace @eff/shared build"
+    "build:shared": "pnpm --filter @eff/shared run build"
   },
   "dependencies": {
     "axios": "^1.11.0",
@@ -51,5 +53,5 @@
     "unzipper": "^0.12.3",
     "zod": "4.0.17"
   },
-  "packageManager": "yarn@4.2.2"
+  "packageManager": "pnpm@9.15.9+sha512.68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd4682181bae55b58418c3a253bde65a505ec7c5f9403ece5cc3cd37dcf2531"
 }

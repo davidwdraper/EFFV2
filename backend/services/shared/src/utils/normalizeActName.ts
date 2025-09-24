@@ -1,5 +1,5 @@
-// backend/services/shared/utils/normalizeActName.ts
-import { remove as removeDiacritics } from "diacritics";
+// backend/services/shared/src/utils/normalizeActName.ts
+// (merged to drop external `diacritics` dep and add explicit typing)
 
 /**
  * Normalize an Act's name for uniqueness and de-duping.
@@ -41,11 +41,16 @@ function loadStopwords(): Set<string> {
 
 const STOPWORDS = loadStopwords();
 
+/** Strip diacritics using built-in Unicode normalization. */
+function removeDiacriticsLocal(input: string): string {
+  return input.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
 export function normalizeActName(input: string): string {
   if (!input) return "";
 
-  // 1) lowercase + remove diacritics
-  let s = removeDiacritics(input.toLowerCase());
+  // 1) lowercase + remove diacritics (no external dep)
+  let s = removeDiacriticsLocal(input.toLowerCase());
 
   // 2) strip punctuation except spaces/digits/letters
   s = s.replace(/[^a-z0-9\s]/g, " ");
@@ -56,7 +61,9 @@ export function normalizeActName(input: string): string {
   if (!s) return "";
 
   // 4) remove stopwords
-  const tokens = s.split(" ").filter((tok) => tok && !STOPWORDS.has(tok));
+  const tokens = s
+    .split(" ")
+    .filter((tok: string) => tok && !STOPWORDS.has(tok));
 
   // fallback if everything got stripped
   if (tokens.length === 0) return s;

@@ -9,6 +9,7 @@
 # - Guarantee the gateway sees KMS_* at boot (inline injection), even if dotenv loads empty strings upstream.
 # - When --test is used, export ONLY gateway KMS_* (plus derived aliases) into THIS shell as well.
 # - Enforce ADC via GOOGLE_APPLICATION_CREDENTIALS in all modes (dev == prod).
+# - Yarn removed; pnpm is the package manager.
 
 set -Eeuo pipefail
 
@@ -36,16 +37,17 @@ echo "   ENV_FILE=$ENV_FILE"
 [[ $NV_TEST -eq 1 ]] && echo "   TEST MODE: exporting KMS_* for gateway (shell-only)"
 
 # ======= Service list ========================================================
+# Switched to pnpm for all service scripts.
 SERVICES=(
-  "svcconfig|backend/services/svcconfig|yarn dev"
-  "gateway|backend/services/gateway|yarn dev"
-  # "audit|backend/services/audit|yarn dev"
-  # "geo|backend/services/geo|yarn dev"
-  # "act|backend/services/act|yarn dev"
-  "auth|backend/services/auth|yarn dev"
-  "user|backend/services/user|yarn dev"
-  # "log|backend/services/log|yarn dev"
-  # "template|backend/services/template|yarn dev"
+  "svcconfig|backend/services/svcconfig|pnpm dev"
+  "gateway|backend/services/gateway|pnpm dev"
+  # "audit|backend/services/audit|pnpm dev"
+  # "geo|backend/services/geo|pnpm dev"
+  # "act|backend/services/act|pnpm dev"
+  "auth|backend/services/auth|pnpm dev"
+  "user|backend/services/user|pnpm dev"
+  # "log|backend/services/log|pnpm dev"
+  # "template|backend/services/template|pnpm dev"
 )
 
 # ======= Helpers =============================================================
@@ -79,14 +81,13 @@ if [[ $NV_TEST -eq 1 ]]; then
     export "$key"="$val"
   done < "$GW_ENV_FILE"
 
-  # Derive aliases (compute even if some parts are empty; it's dev—be transparent)
+  # Derive aliases
   KMS_PROJECT_ID="${KMS_PROJECT_ID:-}"
   KMS_LOCATION_ID="${KMS_LOCATION_ID:-}"
   KMS_KEY_RING_ID="${KMS_KEY_RING_ID:-}"
   KMS_KEY_ID="${KMS_KEY_ID:-}"
   KMS_CRYPTO_KEY="$(mk_crypto_key "$KMS_PROJECT_ID" "$KMS_LOCATION_ID" "$KMS_KEY_RING_ID" "$KMS_KEY_ID")"
   export KMS_CRYPTO_KEY
-  # Aliases for clarity/consistency across code paths
   export KMS_KEY_NAME="$KMS_CRYPTO_KEY"
   export KMS_SIGN_KEY_ID="$KMS_KEY_ID"
   export KMS_JWKS_KEY_ID="$KMS_KEY_ID"
@@ -94,7 +95,7 @@ if [[ $NV_TEST -eq 1 ]]; then
   echo "   → KMS parts: project=${KMS_PROJECT_ID:-<unset>}  location=${KMS_LOCATION_ID:-<unset>}  ring=${KMS_KEY_RING_ID:-<unset>}  key=${KMS_KEY_ID:-<unset>}"
   echo "   → KMS resource: ${KMS_CRYPTO_KEY}"
 
-  # ADC message (informational only; does NOT bypass ADC requirement for runs)
+  # ADC message (informational)
   if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
     if [[ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]]; then
       echo "   → ADC: using GOOGLE_APPLICATION_CREDENTIALS ($GOOGLE_APPLICATION_CREDENTIALS)"
@@ -144,10 +145,10 @@ else
   echo "ℹ️  Root .env.dev not found; continuing without it."
 fi
 
-# Workspace deps
+# Workspace deps (pnpm)
 if [[ ! -d "$ROOT/node_modules" ]]; then
-  echo "📦 Installing workspace dependencies..."
-  (cd "$ROOT" && yarn install)
+  echo "📦 Installing workspace dependencies (pnpm install)..."
+  (cd "$ROOT" && pnpm install)
 fi
 
 # Build @eff/shared first
@@ -159,16 +160,17 @@ if [[ -d "$SHARED_DIR" ]]; then
   [[ "$PKG_NAME" == "@eff/shared" ]] || { echo "❌ backend/services/shared/package.json 'name' must be '@eff/shared' (found '$PKG_NAME')"; exit 1; }
 
   if has_script clean; then
-    if has_cmd rimraf; then yarn run clean || true
+    if has_cmd rimraf; then pnpm run clean || true
     else echo "ℹ️  rimraf not found; using rm -rf for clean"; rm -rf dist tsconfig.tsbuildinfo || true
     fi
   else
     rm -rf dist tsconfig.tsbuildinfo || true
   fi
 
-  if has_script build; then yarn run build
+  if has_script build; then
+    pnpm run build
   else
-    if has_cmd yarn; then yarn dlx typescript tsc -p tsconfig.json
+    if has_cmd pnpm; then pnpm dlx typescript tsc -p tsconfig.json
     else npx -y typescript tsc -p tsconfig.json
     fi
   fi
@@ -189,7 +191,7 @@ for line in "${SERVICES[@]}"; do
   name="${line%%|*}"; rest="${line#*|}"
   path="${rest%%|*}"; cmd="${rest#*|}"
   name="$(trim "$name")"; path="$(trim "$path")"; cmd="$(trim "$cmd")"
-  [[ -z "$cmd" ]] && cmd="yarn dev"
+  [[ -z "$cmd" ]] && cmd="pnpm dev"
   [[ -d "$path" ]] || { echo "  • (missing)  $name → $path"; continue; }
   svc_env="$ROOT/$path/.env.dev"; [[ -f "$svc_env" ]] || svc_env="$ENV_FILE"
   SERVICE_NAMES+=("$name"); SERVICE_PATHS+=("$path"); SERVICE_CMDS+=("$cmd"); SERVICE_ENVFILES+=("$svc_env")
@@ -317,7 +319,9 @@ for i in "${!SERVICE_NAMES[@]}"; do
          KMS_JWKS_KEY_ID=\"$KMS_JWKS_KEY_ID_GW\" \
          $cmd" & PIDS+=($!)
   else
-    bash -lc "cd \"$path\" && ENV_FILE=\"$svc_env\" GATEWAY_ENV=\"$svc_env\" $cmd" & PIDS+=($!)
+    bash -lc "cd \"$path\" \
+      && ENV_FILE=\"$svc_env\" GATEWAY_ENV=\"$svc_env\" \
+         $cmd" & PIDS+=($!)
   fi
 done
 

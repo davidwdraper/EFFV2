@@ -29,12 +29,17 @@
 
 import { KeyManagementServiceClient, protos } from "@google-cloud/kms";
 import { createPublicKey } from "node:crypto";
-import type { JWK } from "jose";
+import type { JWK } from "jose"; // types only (safe in TS)
 import { logger } from "@eff/shared/src/utils/logger";
 
-// ESM-in-CJS bridge for `jose` (compatible with ts-node-dev)
-let _jose: Promise<typeof import("jose")> | null = null;
-const getJose = () => (_jose ??= import("jose"));
+// ---- ESM-safe dynamic import for `jose` (prevents require() rewrite) -------
+let _joseMod: Promise<typeof import("jose")> | null = null;
+// Using Function('return import(...)') avoids ts-node-dev transforming to require()
+function getJose() {
+  return (_joseMod ??= Function("return import('jose')")() as Promise<
+    typeof import("jose")
+  >);
+}
 
 type Alg = "RS256" | "ES256";
 
@@ -62,9 +67,7 @@ function parseKmsEnv(): KmsEnv {
     const m = KMS_CRYPTO_KEY.match(
       /^projects\/([^/]+)\/locations\/([^/]+)\/keyRings\/([^/]+)\/cryptoKeys\/([^/]+)$/
     );
-    if (!m) {
-      throw new Error(`KMS_CRYPTO_KEY is malformed: ${KMS_CRYPTO_KEY}`);
-    }
+    if (!m) throw new Error(`KMS_CRYPTO_KEY is malformed: ${KMS_CRYPTO_KEY}`);
     const [, projectId, locationId, keyRingId, keyId] = m;
     return {
       projectId,
@@ -143,9 +146,7 @@ async function resolveVersion(
   // Fall back to newest ENABLED version
   const [versions] = await client.listCryptoKeyVersions({
     parent: cryptoKeyPath,
-    filter: "", // all
   });
-
   if (!versions || versions.length === 0) {
     throw new Error(`No crypto key versions found under ${cryptoKeyPath}`);
   }
@@ -204,7 +205,7 @@ export async function fetchGatewayJwk(): Promise<
     throw new Error(`KMS public key not found at ${vp}`);
   }
 
-  // Convert PEM → JWK
+  // Convert PEM → JWK using ESM-safe dynamic import
   const { exportJWK } = await getJose();
   const publicKey = createPublicKey(pub.pem);
   const jwk = (await exportJWK(publicKey)) as JWK;

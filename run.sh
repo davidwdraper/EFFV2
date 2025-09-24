@@ -8,6 +8,7 @@
 # - Start services with consistent env (prod-like).
 # - Guarantee the gateway sees KMS_* at boot (inline injection), even if dotenv loads empty strings upstream.
 # - When --test is used, export ONLY gateway KMS_* (plus derived aliases) into THIS shell as well.
+# - Enforce ADC via GOOGLE_APPLICATION_CREDENTIALS in all modes (dev == prod).
 
 set -Eeuo pipefail
 
@@ -94,7 +95,7 @@ if [[ $NV_TEST -eq 1 ]]; then
   echo "   → KMS parts: project=${KMS_PROJECT_ID:-<unset>}  location=${KMS_LOCATION_ID:-<unset>}  ring=${KMS_KEY_RING_ID:-<unset>}  key=${KMS_KEY_ID:-<unset>}"
   echo "   → KMS resource: ${KMS_CRYPTO_KEY}"
 
-  # Actionable ADC message (unchanged behavior)
+  # ADC message (informational only; does NOT bypass ADC requirement for runs)
   if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
     if [[ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]]; then
       echo "   → ADC: using GOOGLE_APPLICATION_CREDENTIALS ($GOOGLE_APPLICATION_CREDENTIALS)"
@@ -102,13 +103,10 @@ if [[ $NV_TEST -eq 1 ]]; then
       echo "   ⚠️  GOOGLE_APPLICATION_CREDENTIALS set but file not found: $GOOGLE_APPLICATION_CREDENTIALS"
     fi
   elif has_cmd gcloud && gcloud auth application-default print-access-token >/dev/null 2>&1; then
-    echo "   → ADC: using gcloud application-default credentials"
+    echo "   → ADC: gcloud application-default credentials detected (dev convenience)"
   else
-    echo "   ⚠️  No ADC detected. Run either:"
-    echo "      • gcloud auth application-default login"
-    echo "        or"
+    echo "   ⚠️  No ADC detected. For parity set:"
     echo "      • export GOOGLE_APPLICATION_CREDENTIALS=\$HOME/.config/nowvibin/gateway-dev.json"
-    echo "     JWKS may fail until ADC is available."
   fi
 fi
 
@@ -124,6 +122,16 @@ fi
 # ======= Dev mode ============================================================
 [[ "$MODE" == "dev" ]] || { echo "❌ Invalid mode. Usage: ENV_FILE=.env.dev ./scripts/run.sh [--test] [dev|docker]"; exit 1; }
 [[ -f "$ENV_FILE" ]] || { echo "❌ ENV_FILE not found: $ENV_FILE"; exit 1; }
+
+# ---- Parity guard: require ADC via SA file in all environments --------------
+if [[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" || ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]]; then
+  echo "❌ GOOGLE_APPLICATION_CREDENTIALS not set or file missing."
+  echo "   Set it to your gateway SA JSON and retry."
+  echo "   Example:"
+  echo "     export GOOGLE_APPLICATION_CREDENTIALS=\"\$HOME/.config/nowvibin/gateway-dev.json\""
+  exit 1
+fi
+echo "✓ ADC via SA file: $GOOGLE_APPLICATION_CREDENTIALS"
 
 ROOT_ENV="$ROOT/.env.dev"
 if [[ -f "$ROOT_ENV" ]]; then
@@ -294,10 +302,12 @@ for i in "${!SERVICE_NAMES[@]}"; do
     echo "→ gateway inline KMS:"
     echo "   parts: proj=${KMS_PROJECT_ID_GW:-<unset>}  loc=${KMS_LOCATION_ID_GW:-<unset>}  ring=${KMS_KEY_RING_ID_GW:-<unset>}  key=${KMS_KEY_ID_GW:-<unset>}"
     echo "   full : ${KMS_CRYPTO_KEY_GW}"
+    echo "   ADC  : GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}"
 
-    # Pass BOTH ENV_FILE and GATEWAY_ENV, plus inline KMS_* and aliases
+    # Pass BOTH ENV_FILE and GATEWAY_ENV, plus inline KMS_* and aliases and ADC path
     bash -lc "cd \"$path\" \
       && ENV_FILE=\"$svc_env\" GATEWAY_ENV=\"$svc_env\" \
+         GOOGLE_APPLICATION_CREDENTIALS=\"$GOOGLE_APPLICATION_CREDENTIALS\" \
          KMS_PROJECT_ID=\"$KMS_PROJECT_ID_GW\" \
          KMS_LOCATION_ID=\"$KMS_LOCATION_ID_GW\" \
          KMS_KEY_RING_ID=\"$KMS_KEY_RING_ID_GW\" \

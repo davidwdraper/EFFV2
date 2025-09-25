@@ -43,7 +43,7 @@ SERVICES=(
   "gateway|backend/services/gateway|pnpm dev"
   "audit|backend/services/audit|pnpm dev"
   # "geo|backend/services/geo|pnpm dev"
-  # "act|backend/services/act|pnpm dev"
+  "act|backend/services/act|pnpm dev"
   #"auth|backend/services/auth|pnpm dev"
   #"user|backend/services/user|pnpm dev"
   # "log|backend/services/log|pnpm dev"

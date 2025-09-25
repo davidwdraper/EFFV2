@@ -20,7 +20,7 @@ import TownModel from "../models/Town";
 import { dbToDomain, domainToDb } from "../mappers/act.mapper";
 
 import { normalizeActName } from "@eff/shared/src/utils/normalizeActName";
-import { s2sAuthHeader } from "@eff/shared/src/utils/s2s";
+import { s2sAuthHeader } from "@eff/shared/src/utils/s2s/s2sAuthHeader";
 
 import type {
   CreateActDto,

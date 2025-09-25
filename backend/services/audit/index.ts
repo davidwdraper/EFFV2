@@ -53,7 +53,6 @@ void bootstrapService({
     // database
     "AUDIT_MONGO_URI",
     // internal S2S plane
-    "S2S_JWT_SECRET",
     "S2S_JWT_AUDIENCE",
     // svcconfig snapshot inputs for httpClientBySlug (parity with Act/User)
     "SVCCONFIG_BASE_URL",

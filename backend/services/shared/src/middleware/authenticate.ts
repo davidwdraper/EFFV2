@@ -2,7 +2,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt, { JwtPayload } from "jsonwebtoken";
 // ⬇️ Use the canonical type your codebase expects
-import type { AuthPayload } from "../types/AuthPayload";
+import type { AuthPayload } from "@eff/shared/src/types/AuthPayload";
 
 /** What we expect to live on req.user (decoded, loosely typed input) */
 export interface AuthUser extends JwtPayload {

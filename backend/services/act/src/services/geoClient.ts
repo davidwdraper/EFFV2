@@ -1,33 +1,24 @@
-import axios from "axios";
-import jwt from "jsonwebtoken";
+/**
+ * NowVibin — Act Service
+ * Client: Geo resolution via callBySlug('geo')
+ *
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md
+ *   - docs/adr/0031-remove-hmac-open-switch.md
+ *
+ * Why:
+ * - All S2S auth is asymmetric (KMS + JWKS). No HS256/HMAC or “open” modes (ADR-0031).
+ * - Use the shared callBySlug() so routing, S2S headers, retries, and timeouts are
+ *   centrally enforced—zero per-service drift.
+ * - Act talks to the Geo service **directly** by slug; no gateway-core hop.
+ */
 
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v || !v.trim()) throw new Error(`Missing required env var: ${name}`);
-  return v.trim();
-}
+import type { AxiosResponse } from "axios";
+import { callBySlug } from "@shared/utils/callBySlug"; // slug→baseURL + S2S injection
 
-// We call CORE, not Geo directly, to keep one ingress point.
-// Uses the same S2S_* vars you already have in .env.dev.
-const CORE_BASE_URL = requireEnv("GATEWAY_CORE_BASE_URL"); // e.g. http://127.0.0.1:4011
-const S2S_JWT_SECRET = requireEnv("S2S_JWT_SECRET");
-const S2S_JWT_ISSUER = requireEnv("S2S_JWT_ISSUER");
-const S2S_JWT_AUDIENCE = requireEnv("S2S_JWT_AUDIENCE");
-
-function mintS2S(ttlSec = 300): string {
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    sub: "s2s",
-    iss: S2S_JWT_ISSUER,
-    aud: S2S_JWT_AUDIENCE,
-    iat: now,
-    exp: now + ttlSec,
-    scope: "geo:resolve",
-    svc: "act",
-  };
-  return jwt.sign(payload, S2S_JWT_SECRET, { algorithm: "HS256" });
-}
-
+/** Input address shape accepted by this helper. */
 export type MailingAddress = {
   addr1?: string;
   addr2?: string;
@@ -36,25 +27,43 @@ export type MailingAddress = {
   zip?: string;
 };
 
+/** Normalized point returned when resolution succeeds. */
+export type GeoPoint = { lat: number; lng: number };
+
+/**
+ * Resolve a human-readable address to lat/lng using the Geo service.
+ *
+ * Why:
+ * - Keep business logic here tiny; the shared client handles auth, tracing, and
+ *   resilience. If Geo is soft-down or returns non-2xx, we degrade gracefully.
+ */
 export async function resolveMailingAddress(
   addr: MailingAddress
-): Promise<{ lat: number; lng: number } | null> {
+): Promise<GeoPoint | null> {
   const { addr1, city, state, zip } = addr || {};
   if (!addr1 || !city || !state || !zip) return null;
 
-  const token = mintS2S(300);
-  const r = await axios.post(
-    `${CORE_BASE_URL}/api/geo/resolve`,
-    { address: `${addr1}, ${city}, ${state} ${zip}` },
-    {
-      timeout: 2000,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      validateStatus: () => true,
-    }
-  );
+  const addressLine = `${addr1}, ${city}, ${state} ${zip}`.trim();
+
+  // Direct call to the geo service by slug. No gateway-core.
+  // Why: single responsibility; internal services communicate service→service
+  // via slug mapping and S2S enforced by the shared client (ADR-0030/0031).
+  const client = callBySlug("geo", {
+    timeout: 2000, // user-path; fail fast to avoid UI stalls
+    // headers, requestId propagation, and S2S token are injected inside callBySlug
+  });
+
+  let r: AxiosResponse<any>;
+  try {
+    r = await client.post(
+      "/resolve",
+      { address: addressLine },
+      { validateStatus: () => true }
+    );
+  } catch {
+    // Network/client error → treat as no result (soft-fail; caller can choose fallback)
+    return null;
+  }
 
   if (
     r.status >= 200 &&
@@ -65,6 +74,7 @@ export async function resolveMailingAddress(
   ) {
     return { lat: r.data.lat, lng: r.data.lng };
   }
-  // Non-2xx or missing fields — treat as no result
+
+  // Non-2xx or malformed response — no throw; upstream may retry with different address.
   return null;
 }

@@ -18,7 +18,7 @@ say "🔍 Checking root env: $FILE"
 
 # Strip comments/blank lines for some checks (but keep full file for reporting)
 STRIPPED="$(mktemp)"; trap 'rm -f "$STRIPPED"' EXIT
-sed -E '/^\s*#/d; /^\s*$/d' "$FILE" > "$STRIPPED"
+sed -E '/^\s*@eff/shared/src/d; /^\s*$/d' "$FILE" > "$STRIPPED"
 
 # 1) NODE_ENV must be present
 hdr "NODE_ENV"

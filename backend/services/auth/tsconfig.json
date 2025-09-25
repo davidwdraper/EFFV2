@@ -14,6 +14,7 @@
  * - RUNTIME (built JS): Node uses @eff/shared package exports, where "./src/*" is mapped to "./dist/*".
  */
 {
+  "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2020",
     "module": "CommonJS",

@@ -1,5 +1,4 @@
-// PATH: backend/services/shared/src/middleware/verifyS2S.ts
-
+// /backend/services/shared/src/middleware/verifyS2S.ts
 /**
  * verifyS2S — shared S2S JWT verification (KMS / ES256 via JWKS)
  * -----------------------------------------------------------------------------
@@ -8,59 +7,31 @@
  * - ADRs:
  *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md
  *
- * Why:
- * - Under the KMS design, **only the gateway signs** S2S JWTs using a Google KMS
- *   asymmetric key (ES256). All verifiers (workers & gateway private routes)
- *   must verify against the **gateway’s JWKS** — no symmetric secret anywhere.
- *
- * Policy (no fallbacks):
- * - alg: ES256 only
- * - iss: S2S_JWT_ISSUER (exact match)
- * - aud: S2S_JWT_AUDIENCE (exact match)
- * - exp/nbf honored with S2S_CLOCK_SKEW_SEC tolerance
- * - JWKS fetched from S2S_JWKS_URL and cached in-process
- *
- * Env (required, hard fail if missing):
- *   S2S_JWKS_URL          e.g., https://gateway.internal/.well-known/jwks.json
- *   S2S_JWT_ISSUER        e.g., gateway
- *   S2S_JWT_AUDIENCE      e.g., internal-services
- *   S2S_CLOCK_SKEW_SEC    e.g., 60
- *   S2S_JWKS_COOLDOWN_MS  e.g., 30000   // how long to keep stale JWKS before re-fetch
- *   S2S_JWKS_TIMEOUT_MS   e.g., 1500    // fetch timeout for the JWKS endpoint
- *
- * Behavior:
- * - Uses jose’s createRemoteJWKSet (ETag-aware) with strict alg=ES256.
- * - On success, attaches `req.caller = { iss, sub, aud, jti?, kid? }`.
- * - On failure, returns RFC7807 Problem+JSON (401/403) without leaking internals.
- *
- * Notes:
- * - This entirely replaces any HS256 secret-based verifier. **Do not require
- *   S2S_JWT_SECRET** anywhere in KMS mode.
+ * Final baseline:
+ * - @eff/shared emits CommonJS; `jose` is ESM-only → use **dynamic import**.
+ * - No barrels/shims per SOP. Intra-package imports are **relative**.
+ * - Strict policy (ES256, exact iss/aud, bounded clock skew).
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import {
-  createRemoteJWKSet,
-  jwtVerify,
-  errors as JoseErrors,
-  JWTPayload,
-} from "jose";
-import { requireEnv, requireNumber } from "../env";
-import { logger } from "../utils/logger";
 
-// ── Lazy config/JWKS (defer env reads to runtime; memoize once) ──────────────
+import { requireEnv, requireNumber } from "@eff/shared/src/utils/env";
+import { logger } from "@eff/shared/src/utils/logger";
+
+// ── Lazy config/JWKS (defer env reads; memoize once) ─────────────────────────
 type S2SConfig = {
   issuer: string;
   audience: string;
   clockSkewSec: number;
   jwksCooldownMs: number;
   jwksTimeoutMs: number;
-  jwks: ReturnType<typeof createRemoteJWKSet>;
+  // createRemoteJWKSet returns a function that resolves keys for jwtVerify
+  jwks: any;
 };
 
 let memo: S2SConfig | null = null;
 
-function getS2SConfig(): S2SConfig {
+async function getS2SConfig(): Promise<S2SConfig> {
   if (memo) return memo;
 
   const jwksUrlStr = requireEnv("S2S_JWKS_URL");
@@ -70,6 +41,7 @@ function getS2SConfig(): S2SConfig {
   const jwksCooldownMs = requireNumber("S2S_JWKS_COOLDOWN_MS");
   const jwksTimeoutMs = requireNumber("S2S_JWKS_TIMEOUT_MS");
 
+  const { createRemoteJWKSet } = await import("jose");
   const url = new URL(jwksUrlStr);
   const jwks = createRemoteJWKSet(url, {
     cooldownDuration: jwksCooldownMs,
@@ -125,11 +97,11 @@ function problem(
 
 // ── Middleware ───────────────────────────────────────────────────────────────
 export function verifyS2S(): RequestHandler {
-  // Config will be validated and JWKS created on first use
+  // Config is validated and JWKS created on first use
   return async (req: Request, res: Response, next: NextFunction) => {
     let cfg: S2SConfig;
     try {
-      cfg = getS2SConfig();
+      cfg = await getS2SConfig();
     } catch (e: any) {
       // Misconfiguration: keep "no fallbacks" stance but don’t crash the process
       logger.error({ err: e }, "[verifyS2S] missing/invalid S2S env");
@@ -155,6 +127,9 @@ export function verifyS2S(): RequestHandler {
           .json(problem(401, "Unauthorized", "Missing bearer token", req));
       }
 
+      // jose is ESM-only; import dynamically in CJS build
+      const { jwtVerify } = await import("jose");
+
       const { payload, protectedHeader } = await jwtVerify(token, cfg.jwks, {
         algorithms: ["ES256"], // KMS key is ES256; lock it down
         issuer: cfg.issuer,
@@ -162,27 +137,31 @@ export function verifyS2S(): RequestHandler {
         clockTolerance: cfg.clockSkewSec,
       });
 
-      const p = payload as JWTPayload & Record<string, unknown>;
+      const p = payload as Record<string, unknown>;
       (req as any).caller = {
         iss: String(p.iss || ""),
         sub: String(p.sub || "s2s"),
         aud: p.aud,
         jti: p.jti,
         svc: typeof p.svc === "string" ? p.svc : undefined,
-        kid: protectedHeader.kid,
+        kid: (protectedHeader as any)?.kid,
       };
 
       return next();
     } catch (err: unknown) {
-      if (err instanceof JoseErrors.JWTExpired) {
+      // Avoid importing jose error classes just to do instanceof checks in CJS.
+      // Compare by error name (stable across jose versions).
+      const name = (err as any)?.name as string | undefined;
+
+      if (name === "JWTExpired") {
         return res
           .status(401)
           .type("application/problem+json")
           .json(problem(401, "Unauthorized", "token expired", req));
       }
 
-      if (err instanceof JoseErrors.JWTClaimValidationFailed) {
-        const claim = (err as any).claim as string | undefined;
+      if (name === "JWTClaimValidationFailed") {
+        const claim = (err as any)?.claim as string | undefined;
 
         if (claim === "nbf") {
           return res

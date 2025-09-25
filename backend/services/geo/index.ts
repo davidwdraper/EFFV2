@@ -21,7 +21,7 @@
 
 import "tsconfig-paths/register";
 import path from "node:path";
-import { bootstrapService } from "@eff/shared/src/bootstrap/bootstrapService";
+import { bootstrapService } from "@eff/shared/bootstrap/bootstrapService";
 
 const SERVICE_NAME = "geo" as const;
 
@@ -39,7 +39,6 @@ void bootstrapService({
     "LOG_LEVEL",
     "LOG_SERVICE_URL",
     // Internal S2S plane for inbound verification
-    "S2S_JWT_SECRET",
     "S2S_JWT_AUDIENCE",
   ],
   // repoEnvFallback + startSvcconfig use sane defaults from bootstrapService

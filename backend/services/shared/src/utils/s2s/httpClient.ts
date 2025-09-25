@@ -1,5 +1,3 @@
-// PATH: backend/services/shared/src/utils/s2s/httpClient.ts
-
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
@@ -9,22 +7,45 @@
  *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
  *
  * Why:
- * - Minimal shared S2S HTTP client for worker→worker calls.
- * - Always mints short-lived S2S and attaches Authorization. Optional user-assertion passthrough.
+ * - Minimal shared HTTP shim for worker→worker calls.
+ * - ⚠️ S2S minting is NOT done here. It is centralized in httpClientBySlug.ts.
+ *   This module just performs the HTTP request with whatever headers it’s given.
  *
  * Notes:
  * - Inside shared, use **relative** imports to avoid self-aliasing.
+ * - Body may be string/Buffer/Uint8Array/Readable; we don’t re-serialize.
  */
 
-import { mintS2S, type MintS2SOptions } from "./mintS2S";
+export type MintS2SOptions = {
+  /**
+   * Extra claims to merge into the S2S JWT payload.
+   * Example: { nv: { purpose: "audit_wal_drain" } }
+   * NOTE: This is carried through S2SRequestOptions for typing only.
+   *       httpClient.ts does not mint; httpClientBySlug.ts reads and mints.
+   */
+  extra?: Record<string, unknown>;
+};
 
 export interface S2SRequestOptions<TBody = unknown> {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
-  body?: TBody; // may already be a string from callBySlug
-  headers?: Record<string, string>; // may already include Content-Length
+  /**
+   * Body may already be a string/Buffer/Uint8Array/Readable from upper layers.
+   * We pass through as-is and do NOT JSON.stringify again.
+   */
+  body?: TBody | string | Buffer | Uint8Array | import("node:stream").Readable;
+  /** Headers to send (case-preserved); may already include Content-Length. */
+  headers?: Record<string, string>;
+  /** Request timeout in ms (defaults below). */
   timeoutMs?: number;
+  /** Optional end-user assertion to forward (if present). */
   userAssertionJwt?: string;
+  /**
+   * S2S mint options (carried for type compatibility).
+   * httpClientBySlug.ts reads this to mint via KMS. This shim ignores it.
+   */
   s2s?: MintS2SOptions;
+  /** Optional low-level HTTP toggles (reserved for future use). */
+  http?: { http1?: boolean };
 }
 
 export interface S2SResponse<T> {
@@ -50,20 +71,22 @@ export async function s2sRequest<TResp = unknown, TBody = unknown>(
       ? opts.timeoutMs
       : DEFAULT_S2S_TIMEOUT_MS;
 
-  // Build headers (case-insensitive merge), mint S2S, optionally attach end-user assertion
+  // Build headers (copy-through). Do NOT mint Authorization here.
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(opts.headers ?? {})) {
     if (typeof v === "string") headers[k] = v;
   }
-  headers["Authorization"] = `Bearer ${mintS2S(opts.s2s)}`;
+
+  // Optionally forward end-user assertion if provided by caller
   if (opts.userAssertionJwt) {
     headers["X-NV-User-Assertion"] = opts.userAssertionJwt;
   }
 
   const method = opts.method ?? "GET";
 
-  // Prepare body. IMPORTANT: if body is already a string/Buffer/Uint8Array,
-  // DO NOT JSON.stringify again. That causes Content-Length mismatches.
+  // Prepare body. IMPORTANT:
+  // If body is already a string/Buffer/Uint8Array/Readable, pass through as-is.
+  // Only JSON.stringify when caller set a JSON content-type and provided a plain object.
   let body: BodyInit | undefined;
   const hasCT = Object.keys(headers).some(
     (k) => k.toLowerCase() === "content-type"
@@ -79,9 +102,10 @@ export async function s2sRequest<TResp = unknown, TBody = unknown>(
     const isBuffer =
       typeof Buffer !== "undefined" && Buffer.isBuffer(opts.body);
     const isUint8 = opts.body instanceof Uint8Array;
+    const isReadable = typeof (opts.body as any)?.pipe === "function"; // Node Readable stream
 
-    if (isString || isBuffer || isUint8) {
-      // Body already serialized by an upper layer (e.g., callBySlug). Pass through as-is.
+    if (isString || isBuffer || isUint8 || isReadable) {
+      // Body already serialized or is a stream; pass through as-is.
       body = opts.body as any;
     } else if (ct && ct.toLowerCase().startsWith("application/json")) {
       // Plain object + JSON CT: serialize once here.

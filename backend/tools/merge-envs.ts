@@ -31,7 +31,7 @@ function parseEnv(filePath: string): ParseResult {
   for (let i = 0; i < raw.length; i++) {
     const line = raw[i];
     // skip comments/blank
-    if (!line || /^\s*#/.test(line)) continue;
+    if (!line || /^\s*@eff/shared/src/.test(line)) continue;
 
     // allow `export KEY=...` or `KEY=...`
     const m = line.match(/^\s*(?:export\s+)?([A-Za-z0-9_.-]+)\s*=\s*(.*)\s*$/);

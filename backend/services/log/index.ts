@@ -17,7 +17,7 @@
  */
 
 import path from "node:path";
-import { bootstrapService } from "@eff/shared/src/bootstrap/bootstrapService";
+import { bootstrapService } from "@eff/shared/bootstrap/bootstrapService";
 
 export const SERVICE_NAME = "log" as const;
 

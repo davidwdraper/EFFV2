@@ -28,18 +28,18 @@
  */
 
 import express, { type Express, type RequestHandler } from "express";
-import { requestIdMiddleware } from "../middleware/requestId";
-import { makeHttpLogger } from "../middleware/httpLogger";
+import { requestIdMiddleware } from "@eff/shared/src/middleware/requestId";
+import { makeHttpLogger } from "@eff/shared/src/middleware/httpLogger";
 import {
   notFoundProblemJson,
   errorProblemJson,
-} from "../middleware/problemJson";
-import { trace5xx } from "../middleware/trace5xx";
-import { createHealthRouter, type ReadinessFn } from "../health";
+} from "@eff/shared/src/middleware/problemJson";
+import { trace5xx } from "@eff/shared/src/middleware/trace5xx";
+import { createHealthRouter, type ReadinessFn } from "@eff/shared/src/health";
 import {
   readOnlyGate,
   type ReadOnlyGateOptions,
-} from "../middleware/readOnlyGate";
+} from "@eff/shared/src/middleware/readOnlyGate";
 
 export type CreateServiceAppOptions = {
   /** Service slug (e.g., "gateway-core", "user"). Used in logs & trace tags. */

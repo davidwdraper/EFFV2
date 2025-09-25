@@ -1,60 +1,31 @@
 {
   "name": "@eff/shared",
-  "version": "1.0.0",
   "private": true,
-  "sideEffects": false,
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
+
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+
   "scripts": {
-    "clean": "rimraf dist tsconfig.tsbuildinfo",
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "clean": "rimraf dist tsconfig.tsbuildinfo || true",
+    "build": "pnpm run clean && tsc -b",
+    "typecheck": "tsc -b --noEmit"
   },
-  "devDependencies": {
-    "rimraf": "^6.0.1",
-    "typescript": "^5.5.4"
-  },
-  "dependencies": {
-    "dotenv": "^16.4.5",
-    "dotenv-expand": "^10.0.0",
-    "jose": "^5.9.3",
-    "pino": "^9.0.0",
-    "pino-http": "^10.3.0",
-    "axios": "^1.11.0"
-  },
+
+  "//": "No barrel: do not export '.'; only subpath exports are allowed.",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./bootstrap/bootstrapService": {
-      "types": "./dist/bootstrap/bootstrapService.d.ts",
-      "default": "./dist/bootstrap/bootstrapService.js"
-    },
-    "./bootstrap/startHttpService": {
-      "types": "./dist/bootstrap/startHttpService.d.ts",
-      "default": "./dist/bootstrap/startHttpService.js"
-    },
-    "./utils/logger": {
-      "types": "./dist/utils/logger.d.ts",
-      "default": "./dist/utils/logger.js"
-    },
-    "./middleware/problemJson": {
-      "types": "./dist/middleware/problemJson.d.ts",
-      "default": "./dist/middleware/problemJson.js"
-    },
-    "./health": {
-      "types": "./dist/health.d.ts",
-      "default": "./dist/health.js"
-    },
-    "./svcconfig/client": {
-      "types": "./dist/svcconfig/client.d.ts",
-      "default": "./dist/svcconfig/client.js"
-    },
-    "./src/*": "./dist/*",
+    "./src/*": "./dist/*.js",
     "./package.json": "./package.json"
+  },
+
+  "typesVersions": {
+    "*": {
+      "src/*": ["dist/*.d.ts"]
+    }
+  },
+
+  "devDependencies": {
+    "rimraf": "^5.0.5",
+    "typescript": "^5.6.3"
   }
 }

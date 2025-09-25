@@ -18,7 +18,7 @@
 
 import "tsconfig-paths/register";
 import path from "node:path";
-import { bootstrapService } from "@eff/shared/src/bootstrap/bootstrapService";
+import { bootstrapService } from "@eff/shared/bootstrap/bootstrapService";
 
 const SERVICE_NAME = "auth" as const;
 
@@ -39,7 +39,6 @@ void bootstrapService({
     // auth local
     "JWT_SECRET",
     // S2S plane (internal services)
-    "S2S_JWT_SECRET",
     "S2S_JWT_AUDIENCE",
     // svcconfig snapshot inputs for httpClientBySlug
     "SVCCONFIG_BASE_URL",

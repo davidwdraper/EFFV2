@@ -1,5 +1,5 @@
 // backend/services/shared/tenant/bucket.ts
-import { requireNumber } from "../env";
+import { requireNumber } from "@eff/shared/src/env";
 import { createHash } from "crypto";
 
 // No magic numbers. Fail fast if USER_BUCKETS is missing/invalid.

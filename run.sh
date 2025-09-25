@@ -1,17 +1,18 @@
+# /scripts/run.sh
 #!/usr/bin/env bash
-# scripts/run.sh
-# NowVibin Dev Runner (prod-parity friendly) — KMS/JWKS inline export for gateway (+ --test shell export)
-# macOS Bash 3.2 compatible (no assoc arrays, no process substitution)
+# =============================================================================
+# NowVibin Dev Runner (prod-parity) — KMS/JWKS inline export for gateway
+# File: /scripts/run.sh
 #
-# WHY:
-# - Keep service code free of dev-only logic.
-# - Start services with consistent env (prod-like).
-# - Guarantee the gateway sees KMS_* at boot (inline injection), even if dotenv loads empty strings upstream.
-# - When --test is used, export ONLY gateway KMS_* (plus derived aliases) into THIS shell as well.
-# - Enforce ADC via GOOGLE_APPLICATION_CREDENTIALS in all modes (dev == prod).
-# - Yarn removed; pnpm is the package manager.
+# Docs / ADRs:
+#   - SOP: NowVibin Backend — Core SOP (Reduced, Clean)
+#   - ADR: Node16 import-resolution in shared (exports ./src/* → ./dist/*.js)
+# =============================================================================
+# macOS Bash 3.2 compatible (no assoc arrays, no process substitution)
+# =============================================================================
 
 set -Eeuo pipefail
+export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/nowvibin/gateway-dev.json"
 
 # ======= Arg parsing =========================================================
 NV_TEST=0
@@ -37,15 +38,14 @@ echo "   ENV_FILE=$ENV_FILE"
 [[ $NV_TEST -eq 1 ]] && echo "   TEST MODE: exporting KMS_* for gateway (shell-only)"
 
 # ======= Service list ========================================================
-# Switched to pnpm for all service scripts.
 SERVICES=(
   "svcconfig|backend/services/svcconfig|pnpm dev"
   "gateway|backend/services/gateway|pnpm dev"
-  # "audit|backend/services/audit|pnpm dev"
+  "audit|backend/services/audit|pnpm dev"
   # "geo|backend/services/geo|pnpm dev"
   # "act|backend/services/act|pnpm dev"
-  "auth|backend/services/auth|pnpm dev"
-  "user|backend/services/user|pnpm dev"
+  #"auth|backend/services/auth|pnpm dev"
+  #"user|backend/services/user|pnpm dev"
   # "log|backend/services/log|pnpm dev"
   # "template|backend/services/template|pnpm dev"
 )
@@ -55,10 +55,7 @@ get_env() { local file="$1" key="$2"; [[ -f "$file" ]] || return 1; grep -E "^${
 has_script() { node -e "try{const s=require('./package.json').scripts||{};process.exit(s['$1']?0:1)}catch(e){process.exit(1)}" >/dev/null 2>&1; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 trim() { echo "$1" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
-mk_crypto_key() { # projects/<proj>/locations/<loc>/keyRings/<ring>/cryptoKeys/<key>
-  local proj="$1" loc="$2" ring="$3" key="$4"
-  echo "projects/${proj}/locations/${loc}/keyRings/${ring}/cryptoKeys/${key}"
-}
+mk_crypto_key() { local proj="$1" loc="$2" ring="$3" key="$4"; echo "projects/${proj}/locations/${loc}/keyRings/${ring}/cryptoKeys/${key}"; }
 
 # ======= Gateway env file (for KMS reads) ===================================
 GW_ENV_FILE_DEFAULT="$ROOT/backend/services/gateway/.env.dev"
@@ -145,39 +142,57 @@ else
   echo "ℹ️  Root .env.dev not found; continuing without it."
 fi
 
-# Workspace deps (pnpm)
-if [[ ! -d "$ROOT/node_modules" ]]; then
-  echo "📦 Installing workspace dependencies (pnpm install)..."
-  (cd "$ROOT" && pnpm install)
-fi
+# ======= @eff/shared build diagnostics helper ================================
+diag_shared_build() {
+  local TSC_RUNNER="$1"
+  echo "——— TSC DIAGNOSTICS (@eff/shared) ———"
+  echo "• cwd: $(pwd)"
+  echo "• tsc version:"
+  ($TSC_RUNNER -v 2>&1) || true
+  echo
+  echo "• src/index.ts present?"; [[ -f "src/index.ts" ]] && echo "  → yes" || echo "  → NO"
+  echo "• root index.ts present?"; [[ -f "index.ts" ]] && echo "  → yes" || echo "  → NO"
+  echo
+  echo "• Raw --showConfig:"
+  ($TSC_RUNNER -p tsconfig.json --showConfig 2>/dev/null) || echo "  (could not run --showConfig)"
+  echo
+  echo "• Emitted files (if any):"
+  ($TSC_RUNNER -p tsconfig.json --listEmittedFiles 2>/dev/null) || echo "  (none)"
+  echo
+  echo "• dist/ contents (max depth 2):"
+  (find dist -maxdepth 2 -type f -print 2>/dev/null || echo "  (no files in dist)") | sed 's/^/  /'
+  echo "———————————————————————————————"
+}
 
-# Build @eff/shared first
+# Build @eff/shared first (workspace project-refs; no source reroute)
 SHARED_DIR="$ROOT/backend/services/shared"
-echo "🛠️  Building @eff/shared..."
+echo "🛠️  Building @eff/shared (workspace tsc -b)…"
 if [[ -d "$SHARED_DIR" ]]; then
-  pushd "$SHARED_DIR" >/dev/null
-  PKG_NAME="$(node -p "try{require('./package.json').name}catch(e){''}" 2>/dev/null || true)"
-  [[ "$PKG_NAME" == "@eff/shared" ]] || { echo "❌ backend/services/shared/package.json 'name' must be '@eff/shared' (found '$PKG_NAME')"; exit 1; }
-
-  if has_script clean; then
-    if has_cmd rimraf; then pnpm run clean || true
-    else echo "ℹ️  rimraf not found; using rm -rf for clean"; rm -rf dist tsconfig.tsbuildinfo || true
-    fi
+  # Use the monorepo root runner so project references resolve correctly.
+  if pnpm -w exec tsc -v >/dev/null 2>&1; then
+    pnpm -w exec tsc -b "$SHARED_DIR" --listEmittedFiles || {
+      echo "❌ @eff/shared build failed (project refs)"; exit 1;
+    }
   else
-    rm -rf dist tsconfig.tsbuildinfo || true
+    npx -y typescript tsc -b "$SHARED_DIR" --listEmittedFiles || {
+      echo "❌ @eff/shared build failed (npx fallback)"; exit 1;
+    }
   fi
 
-  if has_script build; then
-    pnpm run build
-  else
-    if has_cmd pnpm; then pnpm dlx typescript tsc -p tsconfig.json
-    else npx -y typescript tsc -p tsconfig.json
+  # Sanity check: require dist/index.js (services import built output)
+  if [[ ! -f "$SHARED_DIR/dist/index.js" ]]; then
+    echo "❌ @eff/shared did not emit dist/index.js (sanity check)"
+    # Drop into the package dir for a focused diagnostic
+    pushd "$SHARED_DIR" >/dev/null
+    if pnpm exec tsc -v >/dev/null 2>&1; then
+      diag_shared_build "pnpm exec tsc"
+    else
+      diag_shared_build "npx -y typescript tsc"
     fi
+    popd >/dev/null
+    exit 1
   fi
-
-  [[ -f "dist/index.js" ]] || { echo "❌ @eff/shared build produced no dist/index.js"; exit 1; }
-  popd >/dev/null
-  echo "✅ @eff/shared built."
+  echo "✅ @eff/shared built (dist/index.js present)."
 else
   echo "❌ Shared package not found at $SHARED_DIR"
   exit 1
@@ -333,7 +348,7 @@ cleanup() {
   if [[ -n "$REDIS_PROC_PID" ]] && ps -p "$REDIS_PROC_PID" >/dev/null 2>&1; then
     echo "🧯 Stopping redis-server (pid $REDIS_PROC_PID)"; kill "$REDIS_PROC_PID" >/dev/null 2>&1 || true
   fi
-  if [[ -n "$REDIS_DOCKER_ID" ]]; then
+  if [[ -n "$REDIS_DOCKER_ID" ]] && docker ps -q --no-trunc | grep -q "$REDIS_DOCKER_ID"; then
     echo "🧯 Stopping dockerized Redis ($REDIS_DOCKER_ID)"; docker stop "$REDIS_DOCKER_ID" >/dev/null 2>&1 || true
   fi
   if [[ "${#PIDS[@]}" -gt 0 ]]; then

@@ -1,6 +1,6 @@
 // backend/services/shared/middleware/audit.ts
 import type { Request, Response, NextFunction } from "express";
-import { extractLogContext, postAudit } from "../utils/logger";
+import { extractLogContext, postAudit } from "@eff/shared/src/utils/logger";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace

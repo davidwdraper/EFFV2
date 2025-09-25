@@ -31,7 +31,7 @@
 import pinoHttp from "pino-http";
 import { randomUUID } from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
-import { logger as rootLogger } from "../utils/logger";
+import { logger as rootLogger } from "@eff/shared/src/utils/logger";
 
 export function makeHttpLogger(serviceName: string) {
   // WHY: bind a child logger so every entry carries `{ service: <slug> }`

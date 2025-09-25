@@ -1,6 +1,6 @@
 // backend/services/shared/contracts/user.directory.contract.ts
 import { z } from "zod";
-import { zIsoDate } from "./common";
+import { zIsoDate } from "@eff/shared/src/contracts/common";
 
 export const zDirectoryDiscovery = z.object({
   id: z.string(),

@@ -45,7 +45,6 @@ void bootstrapService({
     "LOG_SERVICE_URL",
     "ACT_MONGO_URI",
     // internal S2S plane
-    "S2S_JWT_SECRET",
     "S2S_JWT_AUDIENCE",
     // svcconfig snapshot inputs for httpClientBySlug
     "SVCCONFIG_BASE_URL",

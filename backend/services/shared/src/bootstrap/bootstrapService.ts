@@ -22,9 +22,13 @@
  */
 
 import type { Express } from "express";
-import type { StartedService } from "./startHttpService";
-import { startHttpService } from "./startHttpService";
-import { loadEnvCascadeForService, assertEnv, requireNumber } from "../env";
+import type { StartedService } from "@eff/shared/src/bootstrap/startHttpService";
+import { startHttpService } from "@eff/shared/src/bootstrap/startHttpService";
+import {
+  loadEnvCascadeForService,
+  assertEnv,
+  requireNumber,
+} from "@eff/shared/src/env";
 import path from "node:path";
 import fs from "node:fs";
 
@@ -113,7 +117,7 @@ export async function bootstrapService(
   // 2) Optionally start svcconfig mirror (dynamic import AFTER envs).
   if (startSvcconfig) {
     try {
-      const mod = await import("../svcconfig/client");
+      const mod = await import("@eff/shared/src/svcconfig/client");
       void mod.startSvcconfigMirror();
     } catch {
       /* keep boot resilient; httpClientBySlug can lazy-start */
@@ -124,7 +128,7 @@ export async function bootstrapService(
   assertEnv(mustHave);
 
   // 4) Init logger AFTER env is present.
-  const { initLogger, logger } = await import("../utils/logger");
+  const { initLogger, logger } = await import("@eff/shared/src/utils/logger");
   initLogger(serviceName);
 
   // 5) Optional pre-bind hook (e.g., connect DB).

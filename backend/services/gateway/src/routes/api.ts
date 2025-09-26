@@ -1,4 +1,4 @@
-// PATH: backend/services/gateway/src/routes/api.ts
+// backend/services/gateway/src/routes/api.ts
 /**
  * WHY:
  * - Minimal router for /api/<slug>.<Vx>/<rest>.
@@ -8,8 +8,10 @@
  */
 import express, { Router } from "express";
 import { forwardToService } from "../handlers/forwardToService";
+import { enforceRoutePolicy } from "../middleware/enforceRoutePolicy";
 
-const api = Router();
+// Explicit type annotation prevents deep type inference that breaks with node16/nodenext
+const api: Router = Router();
 
 /**
  * Scoped body parsing for versioned API only.
@@ -18,7 +20,7 @@ const api = Router();
  */
 api.use("/:slug.:version/*", express.json({ limit: "2mb" }));
 
-// Parse "/api/<slug>.<Vx>/<rest...>"
+// Parse "/api/<slug>.<Vx>/<rest...>" and enforce route policy before forwarding
 api.all(
   "/:slug.:version/*",
   (req, _res, next) => {
@@ -33,6 +35,7 @@ api.all(
     (req as any).parsedApiRoute = { slug, version, restPath };
     next();
   },
+  enforceRoutePolicy,
   forwardToService
 );
 

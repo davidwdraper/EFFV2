@@ -8,9 +8,8 @@
  *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
  *
  * Why:
- * - Auth calls User via the shared S2S client (`callBySlug`) resolved by svcconfig.
- * - Flow: validate → create user → hash & PATCH password → issue token → audit → return.
- * - Always return JSON (Problem+JSON on failure).
+ * - Auth calls User via shared S2S (`callBySlug`) resolved by svcconfig.
+ * - Flow: validate → create user (NO password) → hash & PATCH password → mint token → audit → return.
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -31,7 +30,6 @@ const DOWNSTREAM_TIMEOUT = Number(
   process.env.TIMEOUT_AUTH_DOWNSTREAM_MS || 6000
 );
 
-// Internal worker routes are UNVERSIONED under /api
 const USER_CREATE_PATH = "/users";
 const USER_PATCH_PATH = (id: string) => `/users/${encodeURIComponent(id)}`;
 
@@ -63,8 +61,8 @@ export default async function create(
 
     const middlename = middlenameRaw || undefined;
 
-    // 1) Create user (no password in replace contract)
-    const createBody = { email, password, firstname, middlename, lastname };
+    // 1) Create user — NO password in create contract
+    const createBody = { email, firstname, middlename, lastname };
     const respCreate = await callBySlug<any>(
       config.userSlug,
       config.userApiVersion,
@@ -113,7 +111,7 @@ export default async function create(
       });
     }
 
-    // 2) Hash & PATCH password into user (allowed by zUserPatch)
+    // 2) Hash & PATCH password into user
     const hashedPassword = await bcrypt.hash(password, 10);
     const respPatch = await callBySlug<any>(
       config.userSlug,
@@ -153,7 +151,7 @@ export default async function create(
       return res.status(problem.status || statusPatch || 502).json(problem);
     }
 
-    // 3) Issue token and respond
+    // 3) Issue KMS-signed token and respond
     const safeUser = {
       id,
       email: String(created.email ?? email).toLowerCase(),
@@ -162,7 +160,7 @@ export default async function create(
       lastname: created.lastname ?? lastname,
     };
 
-    const token = generateToken({
+    const token = await generateToken({
       id,
       email: safeUser.email,
       firstname: safeUser.firstname,

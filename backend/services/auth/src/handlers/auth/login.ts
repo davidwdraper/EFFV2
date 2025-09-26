@@ -2,7 +2,7 @@
 /**
  * POST /api/auth/login
  * Body: { email, password }
- * Behavior: fetch user (private email) via S2S, compare bcrypt, return JWT.
+ * Behavior: fetch user (private email) via S2S, compare bcrypt, return KMS-signed JWT.
  */
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
@@ -54,7 +54,6 @@ export default async function login(
         .send(payload ?? { error: "User lookup failed" });
     }
 
-    // Accept either { user, password } or { user: { password } } or { password }
     const user = payload?.user ?? payload ?? {};
     const hash: string | undefined =
       (typeof payload?.password === "string" && payload.password) ||
@@ -71,11 +70,13 @@ export default async function login(
     }
 
     const id = String(user.id ?? user._id ?? user.userId ?? "");
-    const token = generateToken({
+    const token = await generateToken({
       id,
       email,
       firstname: String(user.firstname || "").trim(),
-      middlename: String(user.middlename || "").trim() || undefined,
+      middlename: (String(user.middlename || "").trim() || undefined) as
+        | string
+        | undefined,
       lastname: String(user.lastname || "").trim(),
     });
 

@@ -1,57 +1,79 @@
 // backend/services/shared/src/utils/s2s/mintUserAssertion.ts
-
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md
+ * - SOP:  docs/architecture/backend/SOP.md
  * - ADRs:
- *   - docs/adr/0017-environment-loading-and-validation.md
- *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
+ *   - docs/adr/0033-user-assertion-claims-expansion.md        // Contract + KMS-only user assertions
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md
  *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
  *
  * Why:
- * - Centralize end-user assertion minting (HS256) so both gateway and tests use the same logic.
- * - Avoids ESM-only crypto deps in edge; uses jsonwebtoken for consistency across services.
+ * - Single audited path to mint **user assertion** JWTs using **KMS (RS256)** — no .env secrets.
+ * - Enforce a shared Zod contract (sub/iss/aud [+ optional nv]) before signing to prevent drift.
+ * - Delegate signing to the same KMS signer used by S2S (`mintS2S`) to avoid crypto duplication.
+ *
+ * Policy:
+ * - Required top-level claims: `sub` (userId), `iss`, `aud`.
+ * - Optional vendor namespace `nv` for future metadata (kept opaque here).
+ * - TTL policy sourced from env: USER_ASSERTION_TTL_SEC || TOKEN_TTL_SEC || 3600.
+ *
+ * Notes:
+ * - `mintS2S` sets a default payload (iss/aud/sub="s2s"/iat/exp). We *override* `sub`
+ *   via its `extra` field and pass the caller’s `iss`/`aud` through options.
  */
 
-import jwt from "jsonwebtoken";
+import { logger } from "@eff/shared/src/utils/logger";
+import {
+  zUserAssertionClaims,
+  type UserAssertionClaims,
+} from "@eff/shared/src/contracts/userAssertion.contract";
+import { mintS2S } from "@eff/shared/src/utils/s2s/mintS2S";
 
-const reqEnv = (name: string): string => {
-  const v = process.env[name];
-  if (!v || !String(v).trim())
-    throw new Error(`[shared:userAssertion] Missing env ${name}`);
-  return String(v).trim();
-};
-
-export interface UserAssertionClaims {
-  sub: string; // user id (UUID/ULID), not PII like email
-  ctx?: Record<string, string>; // optional extra context (all strings)
+/** Resolve TTL for user assertions (seconds). */
+function resolveTtl(): number {
+  const raw =
+    process.env.USER_ASSERTION_TTL_SEC ?? process.env.TOKEN_TTL_SEC ?? "3600";
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 3600;
+  return Math.floor(n);
 }
 
-export interface MintUserAssertionOptions {
-  ttlSec?: number; // default 300s
-  issuer?: string;
-  audience?: string;
-}
+/**
+ * Mint a KMS-signed **user assertion** JWT.
+ * Accepts the full, validated claims object and delegates signing to KMS.
+ *
+ * @throws ZodError if claims are invalid
+ * @throws Error    if the signer fails
+ */
+export async function mintUserAssertion(
+  claims: UserAssertionClaims
+): Promise<string> {
+  // Validate once at the edge; never sign unchecked payloads.
+  const parsed = zUserAssertionClaims.parse(claims);
 
-export function mintUserAssertion(
-  claims: UserAssertionClaims,
-  opts: MintUserAssertionOptions = {}
-): string {
-  if (!claims?.sub) throw new Error("[shared:userAssertion] sub is required");
-  const secret = reqEnv("USER_ASSERTION_SECRET");
-  const issuer = opts.issuer ?? reqEnv("USER_ASSERTION_ISSUER");
-  const audience = opts.audience ?? reqEnv("USER_ASSERTION_AUDIENCE");
-  const ttlSec = Math.max(30, Math.min(3600, opts.ttlSec ?? 300));
+  // Minimal, non-PII audit trail (do not log full payload)
+  logger.debug(
+    { sub: parsed.sub, iss: parsed.iss, aud: parsed.aud },
+    "[shared.mintUserAssertion] mint"
+  );
 
-  const payload: Record<string, string> = {
-    sub: claims.sub,
-    ...(claims.ctx ?? {}),
-  };
-
-  return jwt.sign(payload, secret, {
-    algorithm: "HS256",
-    issuer,
-    audience,
-    expiresIn: ttlSec,
+  // Delegate to the shared KMS signer. We override `sub` via `extra` so the
+  // final token carries the end-user subject rather than "s2s".
+  const token = await mintS2S({
+    issuer: parsed.iss,
+    audience: parsed.aud,
+    ttlSec: resolveTtl(),
+    extra: {
+      sub: parsed.sub,
+      ...(parsed.nv ? { nv: parsed.nv } : {}),
+    },
   });
+
+  if (!token || typeof token !== "string") {
+    throw new Error("[shared.mintUserAssertion] signer returned no token");
+  }
+  return token;
 }
+
+export default mintUserAssertion;

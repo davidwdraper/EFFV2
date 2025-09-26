@@ -30,7 +30,7 @@ export type {
   S2SResponse,
 } from "@eff/shared/src/utils/s2s/httpClient";
 
-import type { ServiceConfig } from "@eff/shared/src/contracts/svcconfig.contract";
+import type { SvcConfig } from "@eff/shared/src/contracts/svcconfig.contract";
 import { logger } from "@eff/shared/src/utils/logger";
 import {
   mintS2S,
@@ -70,7 +70,7 @@ async function ensureSvcconfigModule() {
   return svcconfigMod;
 }
 
-function computeApiBase(cfg: ServiceConfig): string {
+function computeApiBase(cfg: SvcConfig): string {
   const base = stripTrailing(String(cfg.baseUrl || ""));
   const prefix = ensureLeading(String(cfg.outboundApiPrefix || "/api"));
   return `${base}${prefix}`;
@@ -103,7 +103,7 @@ function pickByVersion(
   snapServices: any,
   slug: string,
   version: string
-): ServiceConfig | null {
+): SvcConfig | null {
   if (Array.isArray(snapServices)) {
     return (
       snapServices.find(
@@ -118,15 +118,15 @@ function pickByVersion(
     const bySlug = (snapServices as Record<string, any>)[normSlug(slug)];
     if (bySlug?.baseUrl) {
       return normVersion(bySlug.version || "V1") === normVersion(version)
-        ? (bySlug as ServiceConfig)
+        ? (bySlug as SvcConfig)
         : null;
     }
     if (bySlug && (bySlug[normVersion(version)] || bySlug[version])) {
-      return (bySlug[normVersion(version)] || bySlug[version]) as ServiceConfig;
+      return (bySlug[normVersion(version)] || bySlug[version]) as SvcConfig;
     }
     const flatKey = `${normSlug(slug)}.${normVersion(version)}`.toLowerCase();
     if ((snapServices as any)[flatKey])
-      return (snapServices as any)[flatKey] as ServiceConfig;
+      return (snapServices as any)[flatKey] as SvcConfig;
   }
 
   return null;
@@ -135,7 +135,7 @@ function pickByVersion(
 async function resolveServiceConfig(
   slug: string,
   apiVersion: string
-): Promise<ServiceConfig> {
+): Promise<SvcConfig> {
   await ensureSvcconfigReady();
   const snap = (await ensureSvcconfigModule()).getSvcconfigSnapshot();
   if (!snap)
@@ -153,7 +153,7 @@ async function resolveServiceConfig(
       `[httpClientBySlug] service "${slug}" version "${wantedVer}" is disabled`
     );
 
-  return cfg as ServiceConfig;
+  return cfg as SvcConfig;
 }
 
 /**

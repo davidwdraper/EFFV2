@@ -6,7 +6,7 @@ import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
 import {
   SvcConfigSchema,
-  type ServiceConfig,
+  type SvcConfig,
 } from "@eff/shared/src/contracts/svcconfig.contract";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ const CHANNEL = process.env.SVCCONFIG_CHANNEL || "svcconfig:changed";
 export type SvcconfigSnapshot = {
   version: string; // local monotonic version
   updatedAt: number; // epoch ms of last refresh
-  services: Record<string, ServiceConfig>; // keyed by slug (lowercase)
+  services: Record<string, SvcConfig>; // keyed by slug (lowercase)
 };
 
 type State = {
@@ -93,7 +93,7 @@ function join(base: string, seg: string): string {
   return `${b}${s}`;
 }
 
-async function fetchAll(): Promise<ServiceConfig[]> {
+async function fetchAll(): Promise<SvcConfig[]> {
   // ⬇️ points at /api/svcconfig (list handler returns { items: [] })
   const url = join(BASE, "/api/svcconfig");
   const r = await axios.get(url, {
@@ -109,7 +109,7 @@ async function fetchAll(): Promise<ServiceConfig[]> {
     throw new Error(`svcconfig list failed: HTTP ${r.status}`);
   }
 
-  const out: ServiceConfig[] = [];
+  const out: SvcConfig[] = [];
   for (const raw of (r.data as any).items as unknown[]) {
     const p = SvcConfigSchema.safeParse(raw);
     if (p.success) {
@@ -121,8 +121,8 @@ async function fetchAll(): Promise<ServiceConfig[]> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-function repopulate(items: ServiceConfig[]) {
-  const services: Record<string, ServiceConfig> = {};
+function repopulate(items: SvcConfig[]) {
+  const services: Record<string, SvcConfig> = {};
   for (const it of items) {
     if (!it?.slug) continue;
     services[it.slug.toLowerCase()] = it;

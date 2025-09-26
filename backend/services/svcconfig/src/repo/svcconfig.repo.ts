@@ -1,5 +1,12 @@
 // backend/services/svcconfig/src/repo/svcconfig.repo.ts
-import SvcConfig from "../models/svcconfig.model";
+/**
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADR-0029: Versioned svcconfig
+ * - ADR-0032: Route policy (merged response validated by SvcConfigSchema)
+ */
+
+import { SvcConfig } from "../models/svcconfig.model";
 import type { SvcConfigDoc } from "../models/svcconfig.model";
 
 export async function create(fields: Partial<SvcConfigDoc>) {
@@ -13,6 +20,16 @@ export async function list() {
 
 export async function getBySlug(slug: string) {
   return SvcConfig.findOne({ slug });
+}
+
+export async function getBySlugVersion(slug: string, version: number) {
+  return SvcConfig.findOne({ slug, version }).lean<SvcConfigDoc | null>();
+}
+
+export async function getLatestBySlug(slug: string) {
+  return SvcConfig.findOne({ slug })
+    .sort({ version: -1, updatedAt: -1 })
+    .lean<SvcConfigDoc | null>();
 }
 
 export async function patchBySlug(slug: string, fields: Partial<SvcConfigDoc>) {

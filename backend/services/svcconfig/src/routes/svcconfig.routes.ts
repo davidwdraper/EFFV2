@@ -1,7 +1,17 @@
-import { Router } from "express";
-import { cacheGet, invalidateOnSuccess } from "@eff/shared/utils/cache"; // ← no /src
+// backend/services/svcconfig/src/routes/svcconfig.routes.ts
+/**
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADR: docs/adr/0032-route-policy-via-svcconfig.md (generated via 0032-adr.sh)
+ *
+ * Notes:
+ * - Collection routes come before param routes (no collisions).
+ * - All routes are one-liners that import handlers directly.
+ */
 
-// 🔧 Direct handler imports (no barrels, no adapters)
+import { Router } from "express";
+import { cacheGet, invalidateOnSuccess } from "@eff/shared/utils/cache";
+
 import { ping } from "../controllers/svcconfig/handlers/ping";
 import { list } from "../controllers/svcconfig/handlers/list";
 import { read } from "../controllers/svcconfig/handlers/read";
@@ -12,27 +22,22 @@ import { broadcast } from "../controllers/svcconfig/handlers/broadcast";
 
 const router = Router();
 
-/**
- * Policy (matches Act/User SOP)
- */
-
 router.get("/ping", ping);
 
-// Collection routes FIRST so '/services' doesn't fall into '/:slug'
+// collections first
 router.get("/services", cacheGet("svcconfig", "SVCCONFIG_CACHE_TTL_SEC"), list);
 
-// Root collection (kept for backward-compat)
+// root collection (kept for backward-compat)
 router.get("/", cacheGet("svcconfig", "SVCCONFIG_CACHE_TTL_SEC"), list);
 
-// Item routes AFTER collection paths
+// item by slug (optional ?version=INT) → returns baseUrl + merged policy
 router.get("/:slug", cacheGet("svcconfig", "SVCCONFIG_CACHE_TTL_SEC"), read);
 
-// Mutations invalidate the "svcconfig" namespace on success
-router.put("/", invalidateOnSuccess("svcconfig")(create)); // canonical create
+// mutations
+router.put("/", invalidateOnSuccess("svcconfig")(create));
 router.patch("/:slug", invalidateOnSuccess("svcconfig")(patch));
 router.delete("/:slug", invalidateOnSuccess("svcconfig")(remove));
 
-// Internal notify (no cache); still invalidates to be safe
 router.post("/broadcast", invalidateOnSuccess("svcconfig")(broadcast));
 
 export default router;

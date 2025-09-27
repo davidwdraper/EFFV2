@@ -1,11 +1,13 @@
-#!/usr/bin/env ts
 /**
+ * NowVibin — Backend Shared
+ * File: backend/services/shared/src/utils/s2s/callBySlug.ts
+ *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
  * - ADRs:
  *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
- *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md   // APR-0029
- *   - docs/adr/0036-single-s2s-client-kms-only-callBySlug.md   // NEW
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
+ *   - docs/adr/0034-centralized-discovery-dual-port-internal-jwks.md
  *
  * Why:
  * - Single, version-aware S2S entrypoint used by BOTH:
@@ -22,6 +24,7 @@
  * Notes:
  * - Path may be absolute ("/acts/123") or relative ("acts/123"); both OK.
  * - Body may be string/Buffer/Uint8Array/Readable (NDJSON streaming supported).
+ * - Per ADR-0034, underlying resolution should prefer the gateway’s internal proxy.
  */
 
 import {
@@ -208,6 +211,8 @@ export async function callBySlug<TResp = unknown, TBody = unknown>(
   };
 
   try {
+    // NOTE: httpClientBySlug should resolve via the gateway’s internal proxy
+    // per ADR-0034. Ensure that module honors GATEWAY_INTERNAL_BASE_URL.
     return await s2sRequestBySlug<TResp, any>(slug, ver, pathWithQs, reqOpts);
   } catch (err) {
     logger.error(

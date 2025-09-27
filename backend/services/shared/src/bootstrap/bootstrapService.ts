@@ -1,7 +1,19 @@
-// backend/services/shared/src/bootstrap/bootstrapService.ts
 /**
- * See ADR-0033 — centralized env loading; strict (no fallbacks) by default.
- * NOTE: Inside @eff/shared, use RELATIVE imports. Consumers use package subpaths.
+ * NowVibin — Backend Shared
+ * File: backend/services/shared/src/bootstrap/bootstrapService.ts
+ *
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0033-centralized-env-loading-and-deferred-config.md
+ *   - docs/adr/0034-centralized-discovery-dual-port-internal-jwks.md
+ *
+ * Purpose:
+ * - Centralized, deterministic bootstrap for all services.
+ * - Strict env validation (no import-time reads; validate at boot).
+ * - Per ADR-0034: services should NOT require SVCCONFIG_* directly.
+ *   If legacy code still references it, we opportunistically derive
+ *   SVCCONFIG_BASE_URL from the gateway’s internal discovery endpoint.
  */
 
 import type { Express } from "express";
@@ -10,6 +22,50 @@ import { startHttpService } from "./startHttpService";
 import { loadEnvCascadeForService, assertEnv, requireNumber } from "../env";
 import path from "node:path";
 import fs from "node:fs";
+
+// Small helper: if SVCCONFIG_BASE_URL is absent but the service knows the
+// gateway internal base, perform a fast, internal discovery call to set it.
+// This preserves compatibility for any legacy modules still reading the var
+// while keeping ADR-0034’s rule: services do not *require* it.
+async function deriveSvcconfigFromGatewayIfMissing(): Promise<void> {
+  const hasSvc =
+    !!process.env.SVCCONFIG_BASE_URL &&
+    process.env.SVCCONFIG_BASE_URL.trim() !== "";
+  if (hasSvc) return;
+
+  const gw =
+    process.env.GATEWAY_INTERNAL_BASE_URL?.trim() ||
+    process.env.GATEWAY_BASE_URL?.trim();
+  if (!gw) return; // Nothing to do; service might not need svcconfig at all.
+
+  try {
+    const token =
+      (process.env.S2S_BEARER && process.env.S2S_BEARER.trim()) ||
+      (process.env.S2S_TOKEN && process.env.S2S_TOKEN.trim()) ||
+      "";
+
+    const url = `${gw.replace(/\/+$/, "")}/_internal/svcconfig/base-url`;
+    const ac = AbortController as any;
+    const signal =
+      typeof ac?.timeout === "function"
+        ? ac.timeout(Number(process.env.S2S_JWKS_TIMEOUT_MS || 3000))
+        : undefined;
+
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      // @ts-ignore TS lib may not include AbortSignal.timeout yet in your TS target
+      signal,
+    });
+
+    if (!res.ok) return; // keep silent; not all services need it
+    const data = (await res.json()) as { baseUrl?: string };
+    if (data?.baseUrl) {
+      process.env.SVCCONFIG_BASE_URL = data.baseUrl;
+    }
+  } catch {
+    // Silent: discovery is best-effort for legacy compatibility only.
+  }
+}
 
 export type BootstrapOptions = {
   serviceName: string;
@@ -53,13 +109,19 @@ export async function bootstrapService(
       ".env.dev",
       "env.dev",
     ].filter(Boolean) as string[],
-    startSvcconfig = true,
+    // Per ADR-0034: default to NOT starting any per-service svcconfig mirror.
+    // Gateway owns discovery and caching; services call gateway internal.
+    startSvcconfig = false,
   } = opts;
 
   // 1) Env cascade (repo → family → service); later files overwrite earlier ones.
   loadEnvCascadeForService(serviceRootAbs);
 
-  // 1a) Optional: Non-prod repo-root fallback (OPT-IN ONLY).
+  // 1a) ADR-0034 bridge: if legacy modules expect SVCCONFIG_BASE_URL,
+  // and it isn’t set, try to derive it from gateway (internal).
+  await deriveSvcconfigFromGatewayIfMissing();
+
+  // 1b) Optional: Non-prod repo-root fallback (OPT-IN ONLY).
   if (repoEnvFallback) {
     const nodeEnv = (process.env.NODE_ENV || "dev").toLowerCase();
     const mustHave = [portEnv, ...requiredEnv];
@@ -101,7 +163,7 @@ export async function bootstrapService(
     }
   }
 
-  // 2) Optionally start svcconfig mirror (AFTER envs).
+  // 2) Optionally start svcconfig mirror (AFTER envs) — generally off per ADR-0034.
   if (startSvcconfig) {
     try {
       // Use CJS require to avoid ESM .js extension requirement.
@@ -109,7 +171,7 @@ export async function bootstrapService(
         require("../svcconfig/client") as typeof import("../svcconfig/client");
       void startSvcconfigMirror();
     } catch {
-      /* keep boot resilient; httpClientBySlug can lazy-start */
+      /* keep boot resilient; httpClientBySlug can lazy-start if it truly needs it */
     }
   }
 

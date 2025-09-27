@@ -6,6 +6,8 @@
 
 set -Eeuo pipefail
 export GOOGLE_APPLICATION_CREDENTIALS="${GOOGLE_APPLICATION_CREDENTIALS:-$HOME/.config/nowvibin/gateway-dev.json}"
+export GATEWAY_INTERNAL_BASE_URL="http://127.0.0.1:4001"
+export GATEWAY_INTERNAL_PORT="4001"
 
 # ======= Arg parsing =========================================================
 NV_TEST=0
@@ -37,7 +39,7 @@ SERVICES=(
   "audit|backend/services/audit|pnpm dev"
   # "geo|backend/services/geo|pnpm dev"
   # "act|backend/services/act|pnpm dev"
-  # "auth|backend/services/auth|pnpm dev"
+  "auth|backend/services/auth|pnpm dev"
   # "user|backend/services/user|pnpm dev"
   # "log|backend/services/log|pnpm dev"
   # "template|backend/services/template|pnpm dev"

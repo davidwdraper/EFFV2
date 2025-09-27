@@ -55,7 +55,6 @@ void bootstrapService({
     "USER_MONGO_URI",
 
     // Internal S2S plane (uniform across services)
-    "S2S_JWT_SECRET",
     "S2S_JWT_AUDIENCE",
 
     // svcconfig snapshot inputs for httpClientBySlug and resolution

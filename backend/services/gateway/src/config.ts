@@ -1,94 +1,148 @@
-// backend/services/gateway/src/config.ts
-
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
  * - ADRs:
- *   - docs/adr/0017-environment-loading-and-validation.md
- *   - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
- *   - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
+ *   - docs/adr/0033-centralized-env-loading-and-deferred-config.md
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md
  *
- * Why:
- * - Runtime config for gateway internals. The **port** is bound by bootstrap,
- *   not read here—so no PORT/GATEWAY_PORT assertion in this module.
- * - Keep strict envs for middleware policies and svcconfig access.
+ * Purpose:
+ * - No import-time env assertions. Read/validate inside validateConfig().
+ * - Provide safe, lazy accessors via cfg() and small selector helpers.
+ *
+ * Usage:
+ *   import { validateConfig, cfg, rateLimitCfg, timeoutCfg, breakerCfg } from "./config";
+ *   validateConfig(); // during bootstrap (before anything calls cfg())
+ *   const { svcconfig } = cfg(); // later usage
  */
 
-import { requireEnum, requireNumber, requireEnv } from "@eff/shared/src/env";
+import { requireEnv, requireNumber, requireEnum } from "@eff/shared/src/env";
 
-export const SERVICE_NAME = "gateway" as const;
+export type NodeEnv = "dev" | "docker" | "production";
 
-export const NODE_ENV = requireEnum("NODE_ENV", [
-  "dev",
-  "docker",
-  "production",
-]);
+export type GatewayConfig = {
+  serviceName: "gateway";
+  nodeEnv: NodeEnv;
+  portEnv: "PORT"; // we bind to PORT inside the service
+  svcconfig: {
+    baseUrl: string; // SVCCONFIG_BASE_URL
+    lkgPath?: string; // SVCCONFIG_LKG_PATH (optional)
+  };
+  timeouts: {
+    gatewayMs: number; // TIMEOUT_GATEWAY_MS
+  };
+  rateLimit: {
+    windowMs: number; // RATE_LIMIT_WINDOW_MS
+    points: number; // RATE_LIMIT_POINTS
+  };
+  breaker: {
+    failureThreshold: number; // BREAKER_FAILURE_THRESHOLD
+    halfOpenAfterMs: number; // BREAKER_HALFOPEN_AFTER_MS
+    minRttMs: number; // BREAKER_MIN_RTT_MS
+  };
+  accessRules: {
+    enabled: boolean; // ACCESS_RULES_ENABLED (optional, default false)
+    failOpen: boolean; // ACCESS_FAIL_OPEN (optional, default false)
+  };
+  redisUrl?: string; // REDIS_URL (optional)
+  kms: {
+    projectId: string; // KMS_PROJECT_ID
+    locationId: string; // KMS_LOCATION_ID
+    keyRingId: string; // KMS_KEY_RING_ID
+    keyId: string; // KMS_KEY_ID
+    jwksCacheTtlMs: number; // JWKS_CACHE_TTL_MS
+  };
+};
 
-// Optional toggles
-export const AUTH_ENABLED = (process.env.AUTH_ENABLED ?? "true") !== "false";
-export const LOG_LEVEL = process.env.LOG_LEVEL;
-export const TRACE_ENABLED = process.env.TRACE_ENABLED;
-export const TRACE_SAMPLE = process.env.TRACE_SAMPLE;
-export const REDACT_HEADERS = process.env.REDACT_HEADERS;
-export const AUDIT_ENABLED = process.env.AUDIT_ENABLED;
-export const LOG_SERVICE_URL = process.env.LOG_SERVICE_URL;
+let CACHED: GatewayConfig | null = null;
 
-// Svcconfig (authoritative)
-export const SVCCONFIG_URL = requireEnv("SVCCONFIG_BASE_URL");
-
-// Fallback route/env toggles
-export const GATEWAY_FALLBACK_ENV_ROUTES =
-  String(process.env.GATEWAY_FALLBACK_ENV_ROUTES || "false").toLowerCase() ===
-  "true";
-
-// Redis/pubsub
-export const REDIS_URL = process.env.REDIS_URL || "";
-export const REDIS_DISABLED =
-  String(process.env.REDIS_DISABLED || "false").toLowerCase() === "true";
-export const SVCCONFIG_CHANNEL =
-  process.env.SVCCONFIG_CHANNEL || "svcconfig:changed";
-export const SVCCONFIG_POLL_MS = Number(
-  process.env.SVCCONFIG_POLL_MS || 10_000
-);
-
-// Allowlist & aliases
-const rawAllowed = (process.env.GATEWAY_ALLOWED_SERVICES || "").trim();
-export const ALLOWED_SERVICES = rawAllowed
-  ? rawAllowed
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean)
-  : ["*"];
-
-function parseAliasMap(): Record<string, string> {
-  const raw = (process.env.GATEWAY_ROUTE_MAP || "").trim();
-  if (!raw) return {};
-  const out: Record<string, string> = {};
-  for (const pair of raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)) {
-    const [k, v] = pair.split(":").map((s) => s.trim().toLowerCase());
-    if (k && v) out[k] = v;
-  }
-  return out;
+// simple boolean parser for "1/true/yes/on"
+function parseBool(name: string, def = "0"): boolean {
+  const v = String(process.env[name] ?? def)
+    .trim()
+    .toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
 }
-export const ROUTE_ALIAS: Record<string, string> = parseAliasMap();
 
-// Structured configs (env-asserted here because they control guardrails)
-export const rateLimitCfg = {
-  windowMs: requireNumber("RATE_LIMIT_WINDOW_MS"),
-  points: requireNumber("RATE_LIMIT_POINTS"),
-};
+export function validateConfig(): GatewayConfig {
+  // All reads happen here — not at module import.
+  const nodeEnv = requireEnum("NODE_ENV", [
+    "dev",
+    "docker",
+    "production",
+  ]) as NodeEnv;
 
-export const timeoutCfg = {
-  gatewayMs: requireNumber("TIMEOUT_GATEWAY_MS"),
-};
+  const baseUrl = requireEnv("SVCCONFIG_BASE_URL");
+  try {
+    // Validate URL early for a nice error message
+    // eslint-disable-next-line no-new
+    new URL(baseUrl);
+  } catch {
+    throw new Error(`SVCCONFIG_BASE_URL must be a valid URL (got: ${baseUrl})`);
+  }
 
-export const breakerCfg = {
-  failureThreshold: requireNumber("BREAKER_FAILURE_THRESHOLD"),
-  halfOpenAfterMs: requireNumber("BREAKER_HALFOPEN_AFTER_MS"),
-  minRttMs: requireNumber("BREAKER_MIN_RTT_MS"),
-};
+  const cfg: GatewayConfig = {
+    serviceName: "gateway",
+    nodeEnv,
+    portEnv: "PORT",
 
-export const serviceName = SERVICE_NAME;
+    svcconfig: {
+      baseUrl,
+      lkgPath: process.env.SVCCONFIG_LKG_PATH || undefined,
+    },
+
+    timeouts: {
+      gatewayMs: requireNumber("TIMEOUT_GATEWAY_MS"),
+    },
+
+    rateLimit: {
+      windowMs: requireNumber("RATE_LIMIT_WINDOW_MS"),
+      points: requireNumber("RATE_LIMIT_POINTS"),
+    },
+
+    breaker: {
+      failureThreshold: requireNumber("BREAKER_FAILURE_THRESHOLD"),
+      halfOpenAfterMs: requireNumber("BREAKER_HALFOPEN_AFTER_MS"),
+      minRttMs: requireNumber("BREAKER_MIN_RTT_MS"),
+    },
+
+    accessRules: {
+      enabled: parseBool("ACCESS_RULES_ENABLED", "0"),
+      failOpen: parseBool("ACCESS_FAIL_OPEN", "0"),
+    },
+
+    redisUrl: process.env.REDIS_URL || undefined,
+
+    kms: {
+      projectId: requireEnv("KMS_PROJECT_ID"),
+      locationId: requireEnv("KMS_LOCATION_ID"),
+      keyRingId: requireEnv("KMS_KEY_RING_ID"),
+      keyId: requireEnv("KMS_KEY_ID"),
+      jwksCacheTtlMs: requireNumber("JWKS_CACHE_TTL_MS"),
+    },
+  };
+
+  CACHED = cfg;
+  return cfg;
+}
+
+export function cfg(): GatewayConfig {
+  if (!CACHED) {
+    throw new Error("cfg() accessed before validateConfig() initialization");
+  }
+  return CACHED;
+}
+
+// Small selector helpers to minimize churn in existing call sites:
+export const serviceName = "gateway" as const;
+
+export function rateLimitCfg() {
+  return cfg().rateLimit;
+}
+
+export function timeoutCfg() {
+  return cfg().timeouts;
+}
+
+export function breakerCfg() {
+  return cfg().breaker;
+}

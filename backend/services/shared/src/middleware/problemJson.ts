@@ -24,7 +24,7 @@ import type {
   RequestHandler,
   ErrorRequestHandler,
 } from "express";
-import { logger } from "@eff/shared/src/utils/logger"; // relative import to avoid self-aliasing
+import { logger } from "../utils/logger"; // relative import to avoid self-aliasing
 
 // Extend Response with `res.problem`
 declare global {

@@ -3,6 +3,7 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
  * - ADR-0032: Route policy via svcconfig
+ * - ADR-0032 NOTE: Health-route gateway bypass (exception for maintainability)
  *
  * Enforces per-route policy fetched from svcconfig. Default = require user JWT
  * unless a rule explicitly allows anonymous or forbids assertions.
@@ -13,9 +14,8 @@
  */
 
 import type { Request, Response, NextFunction } from "express";
-import { SvcConfig } from "@eff/shared/src/contracts/svcconfig.contract"; // type only
+import type { SvcConfig } from "@eff/shared/src/contracts/svcconfig.contract"; // type-only
 import { fetchSvcConfig } from "../clients/svcconfigClient";
-import * as jose from "jose";
 
 // --- user JWT verification (edge) ---
 const USER_JWKS_URL = process.env.USER_JWKS_URL || "";
@@ -23,9 +23,28 @@ const USER_JWT_ISSUER = process.env.USER_JWT_ISSUER || "";
 const USER_JWT_AUDIENCE = process.env.USER_JWT_AUDIENCE || "";
 const CLOCK_SKEW = Number(process.env.USER_JWT_CLOCK_SKEW_SEC || "60");
 
-let userJwks: ReturnType<typeof jose.createRemoteJWKSet> | null = null;
-const getUserJWKS = () =>
-  (userJwks ||= jose.createRemoteJWKSet(new URL(USER_JWKS_URL)));
+// jose is ESM-only; gateway compiles to CJS. Use cached dynamic import everywhere.
+let __jose__: Promise<typeof import("jose")> | null = null;
+function getJose() {
+  return (__jose__ ??= import("jose"));
+}
+
+// Remote JWKS cache (created via jose once)
+let userJwks: ReturnType<
+  Awaited<typeof import("jose")>["createRemoteJWKSet"]
+> | null = null;
+
+async function getUserJWKS() {
+  if (userJwks) return userJwks;
+  if (!USER_JWKS_URL) {
+    const e: any = new Error("USER_JWKS_URL not configured");
+    e.status = 500;
+    throw e;
+  }
+  const { createRemoteJWKSet } = await getJose();
+  userJwks = createRemoteJWKSet(new URL(USER_JWKS_URL));
+  return userJwks;
+}
 
 async function verifyUserJwt(authorizationHeader: string) {
   if (!authorizationHeader?.startsWith("Bearer ")) {
@@ -34,7 +53,9 @@ async function verifyUserJwt(authorizationHeader: string) {
     throw e;
   }
   const token = authorizationHeader.slice("Bearer ".length).trim();
-  const { payload } = await jose.jwtVerify(token, getUserJWKS(), {
+  const { jwtVerify } = await getJose();
+  const jwks = await getUserJWKS();
+  const { payload } = await jwtVerify(token, jwks, {
     issuer: USER_JWT_ISSUER || undefined,
     audience: USER_JWT_AUDIENCE || undefined,
     clockTolerance: CLOCK_SKEW,
@@ -124,6 +145,14 @@ export async function enforceRoutePolicy(
       .replace(/\/+$/, "");
     const method = req.method.toUpperCase();
 
+    // ────────────────────── Health bypass (maintainability) ──────────────────────
+    // Health endpoints are mounted before auth in workers; allow them through
+    // the gateway without requiring user tokens or policy entries.
+    if (method === "GET" && /^\/v\d+\/health$/.test(normPath)) {
+      return next();
+    }
+    // ────────────────────────────────────────────────────────────────────────────
+
     // Fetch config + policy for {slug, major}
     const cfg: SvcConfig = await fetchSvcConfig(slug, major);
     const rule = matchRule(method, normPath, cfg.policy.rules);
@@ -133,13 +162,11 @@ export async function enforceRoutePolicy(
     if (!rule) {
       // Default fail-closed: require valid user token
       if (!auth)
-        return res
-          .status(401)
-          .json({
-            title: "Unauthorized",
-            status: 401,
-            detail: "User token required",
-          });
+        return res.status(401).json({
+          title: "Unauthorized",
+          status: 401,
+          detail: "User token required",
+        });
       await verifyUserJwt(auth);
       return next();
     }
@@ -147,13 +174,11 @@ export async function enforceRoutePolicy(
     switch (rule.userAssertion) {
       case "required": {
         if (!auth)
-          return res
-            .status(401)
-            .json({
-              title: "Unauthorized",
-              status: 401,
-              detail: "User token required",
-            });
+          return res.status(401).json({
+            title: "Unauthorized",
+            status: 401,
+            detail: "User token required",
+          });
         await verifyUserJwt(auth);
         return next();
       }
@@ -164,24 +189,20 @@ export async function enforceRoutePolicy(
       }
       case "forbidden": {
         if (auth)
-          return res
-            .status(403)
-            .json({
-              title: "Forbidden",
-              status: 403,
-              detail: "User token not allowed",
-            });
+          return res.status(403).json({
+            title: "Forbidden",
+            status: 403,
+            detail: "User token not allowed",
+          });
         return next();
       }
       default: {
         if (!auth)
-          return res
-            .status(401)
-            .json({
-              title: "Unauthorized",
-              status: 401,
-              detail: "User token required",
-            });
+          return res.status(401).json({
+            title: "Unauthorized",
+            status: 401,
+            detail: "User token required",
+          });
         await verifyUserJwt(auth);
         return next();
       }
@@ -194,12 +215,10 @@ export async function enforceRoutePolicy(
         : status === 403
         ? "Forbidden"
         : "Internal Server Error";
-    return res
-      .status(status)
-      .json({
-        title,
-        status,
-        detail: err?.message || "Policy enforcement error",
-      });
+    return res.status(status).json({
+      title,
+      status,
+      detail: err?.message || "Policy enforcement error",
+    });
   }
 }

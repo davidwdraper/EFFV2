@@ -15,7 +15,7 @@
  * - docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
  * - docs/adr/0028-deprecate-gateway-core-centralize-s2s-in-shared.md
  */
-
+/*
 import path from "node:path";
 import { bootstrapService } from "@eff/shared/bootstrap/bootstrapService";
 
@@ -39,7 +39,6 @@ void bootstrapService({
     "LOG_PORT",
     "LOG_MONGO_URI",
     "LOG_LEVEL",
-    "S2S_JWT_SECRET",
     // NOTE: Use the audience name you standardized on; keeping S2S_AUDIENCE here
     //       because your .env.dev uses it. If you switch repo-wide to
     //       S2S_JWT_AUDIENCE, update here and the env files together.
@@ -57,3 +56,4 @@ void bootstrapService({
     );
   },
 });
+*/

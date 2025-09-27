@@ -15,8 +15,8 @@
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 
-import { requireEnv, requireNumber } from "@eff/shared/src/utils/env";
-import { logger } from "@eff/shared/src/utils/logger";
+import { requireEnv, requireNumber } from "../utils/env";
+import { logger } from "../utils/logger";
 
 // ── Lazy config/JWKS (defer env reads; memoize once) ─────────────────────────
 type S2SConfig = {

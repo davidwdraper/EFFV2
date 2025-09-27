@@ -7,18 +7,7 @@
  * Why:
  *   Standardize boot using shared `bootstrapService` so Mongo is connected and
  *   the Audit WAL is replayed **before** the HTTP server binds its port.
- *   Matches the Act/User boot flow for zero-drift operations.
- *
- * References:
- *   SOP: docs/architecture/backend/SOP.md (New-Session SOP v4, Amended)
- *   Arch: docs/architecture/backend/OVERVIEW.md
- *   Boot: docs/architecture/backend/BOOTSTRAP.md
- *   ADR: docs/adr/0003-shared-app-builder.md
- *   ADR: docs/adr/0017-environment-loading-and-validation.md
- *   ADR: docs/adr/0022-standardize-shared-import-namespace-to-eff-shared.md
- *   ADR: docs/adr/0027-entity-services-on-shared-createServiceApp.md
  */
-
 import "tsconfig-paths/register";
 import path from "node:path";
 import { bootstrapService } from "@eff/shared/src/bootstrap/bootstrapService";
@@ -27,9 +16,8 @@ const SERVICE_NAME = "audit" as const;
 
 void bootstrapService({
   serviceName: SERVICE_NAME,
-  serviceRootAbs: path.resolve(__dirname), // service root (this folder), not /src
+  serviceRootAbs: path.resolve(__dirname),
 
-  // Connect DB and replay WAL BEFORE binding the port
   beforeStart: async () => {
     const { connectDb } = await import("./src/db");
     const { preflightWALReplay } = await import("./src/bootstrap/walbootstrap");
@@ -44,20 +32,14 @@ void bootstrapService({
     return mod.default;
   },
 
-  portEnv: "AUDIT_PORT",
-
   requiredEnv: [
-    // logging plane
     "LOG_LEVEL",
     "LOG_SERVICE_URL",
-    // database
     "AUDIT_MONGO_URI",
-    // internal S2S plane
     "S2S_JWT_AUDIENCE",
-    // svcconfig snapshot inputs for httpClientBySlug (parity with Act/User)
     "SVCCONFIG_BASE_URL",
     "SVCCONFIG_LKG_PATH",
   ],
 
-  // repoEnvFallback + startSvcconfig use sane defaults from bootstrapService
+  // Keep strict: repo fallback stays OFF unless you explicitly set repoEnvFallback: true
 });

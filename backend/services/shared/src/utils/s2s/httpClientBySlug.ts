@@ -24,18 +24,15 @@ import {
   s2sRequest,
   type S2SRequestOptions,
   type S2SResponse,
-} from "@eff/shared/src/utils/s2s/httpClient";
+} from "../../utils/s2s/httpClient";
 export type {
   S2SRequestOptions,
   S2SResponse,
-} from "@eff/shared/src/utils/s2s/httpClient";
+} from "../../utils/s2s/httpClient";
 
-import type { SvcConfig } from "@eff/shared/src/contracts/svcconfig.contract";
-import { logger } from "@eff/shared/src/utils/logger";
-import {
-  mintS2S,
-  type MintS2SOptions,
-} from "@eff/shared/src/utils/s2s/mintS2S";
+import type { SvcConfig } from "../../contracts/svcconfig.contract";
+import { logger } from "../../utils/logger";
+import { mintS2S, type MintS2SOptions } from "../../utils/s2s/mintS2S";
 
 // ---------- helpers ----------
 const ensureLeading = (p: string) => (p.startsWith("/") ? p : `/${p}`);
@@ -65,8 +62,7 @@ let svcconfigMod: {
   startSvcconfigMirror: () => void;
 } | null = null;
 async function ensureSvcconfigModule() {
-  if (!svcconfigMod)
-    svcconfigMod = await import("@eff/shared/src/svcconfig/client");
+  if (!svcconfigMod) svcconfigMod = await import("../../svcconfig/client.js");
   return svcconfigMod;
 }
 

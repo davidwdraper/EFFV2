@@ -15,157 +15,62 @@
  *   - docs/adr/0024-extract-readiness-from-app-assembly-for-separation-of-concerns.md
  *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
  *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md   // NEW
- *
+ *   - ADR-0032: Route Policy via svcconfig + CTX/HOP tokens
+ *   - ADR-0033: Centralized Env Loading (no fallbacks)
  * Why:
  * - Keep the gateway thin and deterministic:
  *   httpsOnly → cors → requestId → http logger → trace5xx(early) →
  *   health → guardrails → audit (WAL) → **versioned forwarding** → 404/error.
  * - ADR-0030: publish JWKS so workers can verify ES256 tokens signed by KMS.
  * - No body parsers before forwarding; keep streams zero-copy to upstream.
+ *
+ *  - Export a factory so bootstrap loads envs first, then builds the app.
+ *  - Keep imports minimal and portable; avoid deep inferred types in exports.
  */
 
-import express from "express";
-import cors from "cors";
-import helmet from "helmet";
+import express, { type Express } from "express";
 import { createHealthRouter } from "@eff/shared/src/health";
-import { logger } from "@eff/shared/src/utils/logger";
-
-import { serviceName, rateLimitCfg, timeoutCfg, breakerCfg } from "./config";
-
-// Shared middleware
 import { requestIdMiddleware } from "@eff/shared/src/middleware/requestId";
-import { makeHttpLogger as loggingMiddleware } from "@eff/shared/src/middleware/httpLogger";
+import { makeHttpLogger } from "@eff/shared/src/middleware/httpLogger";
 import {
   notFoundProblemJson,
   errorProblemJson,
 } from "@eff/shared/src/middleware/problemJson";
 
-// Edge-only (local) middleware
-import { trace5xx } from "./middleware/trace5xx";
-import { rateLimitMiddleware } from "./middleware/rateLimit";
-import { timeoutsMiddleware } from "./middleware/timeouts";
-import { circuitBreakerMiddleware } from "./middleware/circuitBreaker";
-import { authGate } from "./middleware/authGate";
-import { sensitiveLimiter } from "./middleware/sensitiveLimiter";
-import { httpsOnly } from "./middleware/httpsOnly";
+// Internal routers/middleware
+import api from "./routes/api";
 
-// Versioned API router → forwards via shared callBySlug (no resolver drift)
-import apiRouter from "./routes/api";
+export default function createApp(): Express {
+  const app: Express = express();
 
-// NEW: JWKS publication for ADR-0030 (workers verify ES256 via this key)
-import { createJwksRouter } from "./routes/jwks";
+  // ── Transport & telemetry (edge-safe) ──────────────────────────────────────
+  app.use(requestIdMiddleware());
+  app.use(makeHttpLogger("gateway"));
 
-// Svcconfig mirror (non-blocking boot)
-import { startSvcconfigMirror } from "@eff/shared/src/svcconfig/client";
+  // ── Health (public) ────────────────────────────────────────────────────────
+  app.use(
+    createHealthRouter({
+      service: "gateway",
+      // readiness: optional hook; gateway can add svcconfig/JWKS checks here later
+    })
+  );
 
-// Audit WAL
-import { initWalFromEnv, walSnapshot } from "./services/auditWal";
-import { auditCapture } from "./middleware/auditCapture";
+  // ── API surface ────────────────────────────────────────────────────────────
+  // Route policy enforcement + forwarding happens inside ./routes/api
+  app.use("/api", api);
 
-// Readiness (SoC)
-import { readiness } from "./readiness";
+  // ── Tails: 404 + error formatter ───────────────────────────────────────────
+  app.use(
+    notFoundProblemJson([
+      "/api",
+      "/health",
+      "/healthz",
+      "/readyz",
+      "/live",
+      "/ready",
+    ])
+  );
+  app.use(errorProblemJson());
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Kick off svcconfig mirror (poll/redis handled in shared)
-void startSvcconfigMirror();
-
-// App
-export const app = express();
-
-app.disable("x-powered-by");
-app.set("trust proxy", true);
-
-// Transport & Telemetry
-app.use(httpsOnly());
-if (process.env.FORCE_HTTPS === "true") {
-  // WHY: enforce HSTS when running behind TLS terminator in staging/prod
-  app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true }));
+  return app;
 }
-
-app.use(
-  cors({
-    // WHY: edge accepts browser clients; keep permissive CORS but restrict methods/headers
-    origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"],
-    // APR-0029: allow X-NV-Api-Version across the edge
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "x-request-id",
-      "x-correlation-id",
-      "x-amzn-trace-id",
-      "x-nv-user-assertion",
-      "x-nv-api-version",
-    ],
-  })
-);
-
-// No body parsers before forwarding (streaming path)
-
-// Request ID → HTTP logger → 5xx trace (early)
-app.use(requestIdMiddleware());
-app.use(loggingMiddleware(serviceName));
-app.use(trace5xx("early"));
-
-// Health/readiness (public; unauthenticated; not audited)
-app.use(
-  "/",
-  createHealthRouter({
-    service: serviceName,
-    readiness,
-  })
-);
-
-// NEW: JWKS (public). Workers fetch this to verify ES256 tokens (ADR-0030).
-// WHY: mount at both well-known and simple alias.
-app.use("/", createJwksRouter());
-
-// Service health proxy (public; unauthenticated; not audited)
-// Examples:
-//   GET /user/health/live    → http://<user>.…/health/live
-//   GET /act/health/ready    → http://<act>.…/health/ready
-// Health is intentionally **unversioned**.
-import { proxyServiceHealth } from "./middleware/proxyServiceHealth";
-app.use("/:slug/health", proxyServiceHealth());
-
-// WAL diagnostics (safe, non-billable)
-app.get("/__audit", (_req, res) => {
-  const snap = walSnapshot();
-  res.json({ ok: !!snap, ...(snap || { note: "WAL not initialized yet" }) });
-});
-
-// Guardrails (SECURITY logs on denials; not WAL)
-app.use(rateLimitMiddleware(rateLimitCfg));
-app.use(sensitiveLimiter());
-app.use(timeoutsMiddleware(timeoutCfg));
-app.use(circuitBreakerMiddleware(breakerCfg));
-app.use(authGate());
-
-// Billing-grade audit (only passed requests)
-initWalFromEnv(); // idempotent; starts replay
-app.use(auditCapture());
-
-// Lightweight root
-app.get("/", (_req, res) => res.type("text/plain").send("gateway is up"));
-
-/**
- * APR-0029 — Versioned API forwarding at the edge
- *   Route shape: /api/:slug.V<version>/...
- *   - apiRouter parses <slug>.V<version>, validates (via shared svcconfig snapshot),
- *     and forwards via shared callBySlug (S2S client handles identity minting).
- *
- * Order matters: guardrails → audit → /api router.
- */
-app.use("/api", apiRouter);
-
-// Tail parsers (for any non-forwarded routes; none by default)
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true, limit: "2mb" }));
-
-// Global tails: 404 + error (RFC7807)
-app.use(
-  notFoundProblemJson(["/api", "/health", "/.well-known", "/jwks", "/__"])
-);
-app.use(errorProblemJson());
-
-export default app;

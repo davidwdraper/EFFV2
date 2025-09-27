@@ -26,7 +26,7 @@
  */
 
 import type { Request, Response, NextFunction } from "express";
-import { logger } from "@eff/shared/src/utils/logger";
+import { logger } from "../utils/logger";
 
 /** Pull a correlation id without re-minting; prefer req.id but fall back to common headers. */
 function ridOf(req: Request) {

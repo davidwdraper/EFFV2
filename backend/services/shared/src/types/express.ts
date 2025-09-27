@@ -1,6 +1,6 @@
 // services/shared/types/express.ts
 
-import { AuthPayload } from "@eff/shared/src/types/AuthPayload";
+import { AuthPayload } from "../types/AuthPayload";
 
 declare global {
   namespace Express {

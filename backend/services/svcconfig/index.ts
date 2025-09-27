@@ -23,7 +23,6 @@ const SERVICE_NAME = "svcconfig";
       serviceRootAbs: __dirname,
       // Lazily require the app so its deps only load after env is ready
       createApp: () => require("./src/app").default,
-      portEnv: "SVCCONFIG_PORT",
       // Assert DB env up-front (fail fast)
       requiredEnv: ["SVCCONFIG_MONGO_URI"],
     });

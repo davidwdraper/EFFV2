@@ -29,72 +29,66 @@
  *   S2S client) owns upstream cancellation. This guardrail only protects edge SLO.
  */
 
-import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { logSecurity } from "../utils/securityLog";
+import type { Request, Response, NextFunction } from "express";
 
-export type Cfg = { gatewayMs: number };
+type Options = {
+  /** Override timeout for this middleware instance (ms). Must be > 0. */
+  gatewayMs?: number;
+};
 
-/** Hard validation — crash on boot if the caller passed junk. */
-function assertCfg(cfg: Cfg): asserts cfg is Cfg {
-  if (
-    !cfg ||
-    typeof cfg.gatewayMs !== "number" ||
-    !Number.isFinite(cfg.gatewayMs) ||
-    cfg.gatewayMs <= 0
-  ) {
-    throw new Error(
-      "[timeouts] invalid config: { gatewayMs:number>0 } is required"
-    );
+function requireEnvNumber(name: string): number {
+  const raw = process.env[name];
+  if (!raw || !String(raw).trim()) {
+    throw new Error(`[timeouts] missing required env: ${name}`);
   }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`[timeouts] ${name} must be a number > 0`);
+  }
+  return n;
 }
 
 /**
- * Middleware: send 504 after `gatewayMs` unless the response finishes/closes.
+ * Hard-fail timeout middleware.
+ * Reads TIMEOUT_GATEWAY_MS directly from env (or opts override).
+ * No fallbacks. No dependency on cfg()/validateConfig() order.
  */
-export function timeoutsMiddleware(cfg: Cfg): RequestHandler {
-  assertCfg(cfg);
-
-  return (req: Request, res: Response, next: NextFunction) => {
-    let fired = false;
-
-    // WHY: one timer per request; any completion clears it.
-    const timer = setTimeout(() => {
-      if (res.headersSent || fired) return;
-      fired = true;
-
-      // SECURITY channel (not WAL): timeout at the edge
-      logSecurity(req, {
-        kind: "timeout",
-        reason: "gateway_slo_exceeded",
-        decision: "blocked",
-        status: 504,
-        route: req.path,
-        method: req.method,
-        details: { gatewayMs: cfg.gatewayMs },
-      });
-
-      res
-        .status(504)
-        .type("application/problem+json")
-        .json({
-          type: "about:blank",
-          title: "Gateway Timeout",
-          status: 504,
-          detail: `Request timed out after ${cfg.gatewayMs}ms`,
-          instance: (req as any).id,
-        });
-    }, cfg.gatewayMs);
-
-    // WHY: clear timer on any terminal event to avoid stray work
-    const clear = () => {
-      try {
-        clearTimeout(timer);
-      } catch {
-        /* no-op */
+export function timeoutsMiddleware(opts?: Options) {
+  const gatewayMs = (() => {
+    if (opts?.gatewayMs != null) {
+      const n = Number(opts.gatewayMs);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new Error(
+          "[timeouts] invalid opts.gatewayMs (number > 0 required)"
+        );
       }
+      return n;
+    }
+    return requireEnvNumber("TIMEOUT_GATEWAY_MS");
+  })();
+
+  return function timeouts(req: Request, res: Response, next: NextFunction) {
+    let cleared = false;
+
+    const clear = () => {
+      if (cleared) return;
+      cleared = true;
+      clearTimeout(timer);
     };
-    res.once("finish", clear);
-    res.once("close", clear);
+
+    const timer = setTimeout(() => {
+      if (res.headersSent) return clear();
+      res.setHeader("Connection", "close");
+      res.status(504).json({
+        error: "Gateway timeout",
+        timeoutMs: gatewayMs,
+        rid: (req as any)?.rid ?? null,
+      });
+      clear();
+    }, gatewayMs);
+
+    res.on("finish", clear);
+    res.on("close", clear);
 
     next();
   };

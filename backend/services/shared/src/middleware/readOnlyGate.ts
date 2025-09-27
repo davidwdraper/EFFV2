@@ -25,7 +25,7 @@
  */
 
 import type { Request, Response, NextFunction } from "express";
-import { logSecurity } from "@eff/shared/src/utils/securityLog";
+import { logSecurity } from "../utils/securityLog";
 
 export type ReadOnlyGateOptions = {
   /** Override env-based enablement for tests/special cases. */

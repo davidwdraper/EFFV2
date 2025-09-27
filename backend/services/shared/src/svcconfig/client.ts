@@ -1,27 +1,30 @@
 // backend/services/shared/svcconfig/client.ts
+
 import axios from "axios";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
 import {
   SvcConfigSchema,
   type SvcConfig,
-} from "@eff/shared/src/contracts/svcconfig.contract";
+} from "../contracts/svcconfig.contract";
+import { s2sAuthHeader } from "../utils/s2s/s2sAuthHeader";
 
 // ──────────────────────────────────────────────────────────────────────────────
 /**
- * ENV (same keys for both gateways)
+ * ENV (KMS / CTX+HOP era — no HS256 shared secrets)
  * Required:
- *   SVCCONFIG_BASE_URL         e.g., http://svcconfig:4015  (no trailing slash)
- *   S2S_JWT_SECRET
- *   S2S_JWT_ISSUER             e.g., "gateway" or "gateway-core"
- *   S2S_JWT_AUDIENCE           e.g., "internal-services"
+ *   SVCCONFIG_BASE_URL         e.g., http://127.0.0.1:4015  (no trailing slash)
+ *
  * Optional:
  *   SVCCONFIG_POLL_MS          default 0 (disabled). Set >0 to enable polling.
  *   SVCCONFIG_LKG_PATH         default: CWD/.lkg/svcconfig.json
  *   REDIS_URL                  enable hot updates via pub/sub
  *   SVCCONFIG_CHANNEL          default "svcconfig:changed"
+ *
+ * Notes:
+ * - Authorization, if needed, is provided via s2sAuthHeader('svcconfig'),
+ *   which may return an empty object in dev/open modes.
  */
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -30,9 +33,6 @@ function requireEnv(name: string): string {
 }
 
 const BASE = requireEnv("SVCCONFIG_BASE_URL");
-const S2S_SECRET = requireEnv("S2S_JWT_SECRET");
-const S2S_ISSUER = requireEnv("S2S_JWT_ISSUER");
-const S2S_AUDIENCE = requireEnv("S2S_JWT_AUDIENCE");
 
 // Polling disabled by default; set >0 to enable
 const POLL_MS = Math.max(0, Number(process.env.SVCCONFIG_POLL_MS ?? 0));
@@ -67,25 +67,6 @@ const STATE: State = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
-// S2S mint (caller identity = issuer)
-export function mintS2S(ttlSec = 300): string {
-  const now = Math.floor(Date.now() / 1000);
-  return jwt.sign(
-    {
-      sub: "s2s",
-      iss: S2S_ISSUER,
-      aud: S2S_AUDIENCE,
-      iat: now,
-      exp: now + ttlSec,
-      jti: randomUUID(),
-      svc: S2S_ISSUER,
-    },
-    S2S_SECRET,
-    { algorithm: "HS256", noTimestamp: true }
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // Fetch list from authority (svcconfig service)
 function join(base: string, seg: string): string {
   const b = base.replace(/\/+$/, "");
@@ -96,9 +77,13 @@ function join(base: string, seg: string): string {
 async function fetchAll(): Promise<SvcConfig[]> {
   // ⬇️ points at /api/svcconfig (list handler returns { items: [] })
   const url = join(BASE, "/api/svcconfig");
+  const headers = {
+    ...s2sAuthHeader("svcconfig"), // may be {} in dev/open; never uses HS256
+  };
+
   const r = await axios.get(url, {
     timeout: 3000,
-    headers: { Authorization: `Bearer ${mintS2S(300)}` },
+    headers,
     validateStatus: () => true,
   });
 

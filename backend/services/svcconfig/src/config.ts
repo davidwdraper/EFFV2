@@ -46,7 +46,6 @@ export const config = {
 
   // S2S verification (required)
   s2s: {
-    jwtSecret: requireEnv("S2S_JWT_SECRET"),
     audience: requireEnv("S2S_AUDIENCE"),
     allowedIssuers: requireCsv("S2S_ALLOWED_ISSUERS"),
     allowedCallers: requireCsv("S2S_ALLOWED_CALLERS"),

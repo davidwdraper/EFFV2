@@ -13,8 +13,7 @@ import {
   type SvcConfig,
 } from "@eff/shared/src/contracts/svcconfig.contract";
 
-const SVC_BASE =
-  process.env.SVCCONFIG_BASE_URL || "http://127.0.0.1:4006/api/svcconfig/v1";
+const SVC_BASE = process.env.SVCCONFIG_BASE_URL;
 const COOLDOWN = Number(process.env.SVC_POLICY_COOLDOWN_MS || "60000");
 
 type Key = `${string}:${number}`;

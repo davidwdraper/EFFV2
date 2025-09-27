@@ -10,7 +10,7 @@ import fs from "node:fs"; // (kept for parity; fsp handles writes)
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { getCallerInfo } from "@eff/shared/src/utils/logMeta";
+import { getCallerInfo } from "../utils/logMeta";
 
 /**
  * NowVibin — Shared Logger (authoritative)
@@ -19,7 +19,7 @@ import { getCallerInfo } from "@eff/shared/src/utils/logMeta";
  *    BEFORE creating any request loggers (e.g., pino-http).
  *
  * Usage:
- *   import { SERVICE_NAME } from "@eff/shared/src/utils/config";
+ *   import { SERVICE_NAME } from "../utils/config";
  *   import { initLogger } from "@shared/utils/logger";
  *   initLogger(SERVICE_NAME);
  */

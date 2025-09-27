@@ -28,18 +28,18 @@
  */
 
 import express, { type Express, type RequestHandler } from "express";
-import { requestIdMiddleware } from "@eff/shared/src/middleware/requestId";
-import { makeHttpLogger } from "@eff/shared/src/middleware/httpLogger";
+import { requestIdMiddleware } from "../middleware/requestId";
+import { makeHttpLogger } from "../middleware/httpLogger";
 import {
   notFoundProblemJson,
   errorProblemJson,
-} from "@eff/shared/src/middleware/problemJson";
-import { trace5xx } from "@eff/shared/src/middleware/trace5xx";
-import { createHealthRouter, type ReadinessFn } from "@eff/shared/src/health";
+} from "../middleware/problemJson";
+import { trace5xx } from "../middleware/trace5xx";
+import { createHealthRouter, type ReadinessFn } from "../health";
 import {
   readOnlyGate,
   type ReadOnlyGateOptions,
-} from "@eff/shared/src/middleware/readOnlyGate";
+} from "../middleware/readOnlyGate";
 
 export type CreateServiceAppOptions = {
   /** Service slug (e.g., "gateway-core", "user"). Used in logs & trace tags. */
@@ -69,38 +69,32 @@ export function createServiceApp(opts: CreateServiceAppOptions): Express {
     readOnly,
   } = opts;
 
-  const app = express();
+  if (!apiPrefix || !apiPrefix.startsWith("/")) {
+    throw new Error(
+      `[createServiceApp] apiPrefix must start with "/": got "${apiPrefix}"`
+    );
+  }
 
-  // ── Transport & Telemetry (internal-safe) ───────────────────────────────────
+  const app = express();
+  app.disable("x-powered-by");
+  // app.set("trust proxy", true); // uncomment only if this runs behind a proxy in your env
+
   app.use(requestIdMiddleware());
   app.use(makeHttpLogger(serviceName));
-  // Negotiate problem+json early so downstream errors format consistently.
-  // (The notFound handler is mounted later; this just sets expectation.)
-  // Observe-only first-5xx tracer (early)
   app.use(trace5xx("early", serviceName));
 
-  // ── Health (public, no auth) ────────────────────────────────────────────────
   app.use(createHealthRouter({ service: serviceName, readiness }));
 
-  // ── Internal-only guards (S2S & readonly) ───────────────────────────────────
-  if (verifyS2S) {
-    // Health endpoints are already mounted; verifyS2S will skip them by path.
-    app.use(verifyS2S);
-  }
-  if (readOnly?.enabled) {
-    app.use(readOnlyGate(readOnly));
-  }
+  if (verifyS2S) app.use(verifyS2S);
+  if (readOnly?.enabled) app.use(readOnlyGate(readOnly));
 
-  // ── Body parsers (services parse their own JSON; there is no proxy plane) ───
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: false }));
 
-  // ── Routes (single-concern, import handlers only) ───────────────────────────
   const api = express.Router();
   mountRoutes(api);
   app.use(apiPrefix, api);
 
-  // ── Tails: 404 + error formatter ────────────────────────────────────────────
   app.use(
     notFoundProblemJson([
       apiPrefix,

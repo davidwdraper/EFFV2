@@ -11,8 +11,8 @@
 import axios from "axios";
 // If your logger lives at src/utils/logger.ts relative to this file, this import is correct.
 // Adjust path only if your tree differs.
-import { logger } from "@eff/shared/src/utils/logger";
-import { requireUrl, requireNumber } from "@eff/shared/src/env";
+import { logger } from "../utils/logger";
+import { requireUrl, requireNumber } from "../env";
 
 // ---- ENV CONFIG (no fallbacks; fail fast) ----
 const USER_SERVICE_URL = requireUrl("USER_SERVICE_URL");

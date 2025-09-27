@@ -34,7 +34,7 @@ echo "   ENV_FILE=$ENV_FILE"
 SERVICES=(
   "svcconfig|backend/services/svcconfig|pnpm dev"
   "gateway|backend/services/gateway|pnpm dev"
-  # "audit|backend/services/audit|pnpm dev"
+  "audit|backend/services/audit|pnpm dev"
   # "geo|backend/services/geo|pnpm dev"
   # "act|backend/services/act|pnpm dev"
   # "auth|backend/services/auth|pnpm dev"

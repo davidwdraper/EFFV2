@@ -14,8 +14,6 @@ import { requireEnv, requireNumber } from "@eff/shared/src/env";
 
 export const config = {
   env: process.env.NODE_ENV,
-  port: requireNumber("AUTH_PORT"),
-  jwtSecret: requireEnv("JWT_SECRET"),
   logLevel: requireEnv("LOG_LEVEL"),
   logServiceUrl: requireEnv("LOG_SERVICE_URL"),
   // upstream (kept as envs per SOP; handlers read these)

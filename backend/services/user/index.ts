@@ -56,11 +56,5 @@ void bootstrapService({
 
     // Internal S2S plane (uniform across services)
     "S2S_JWT_AUDIENCE",
-
-    // svcconfig snapshot inputs for httpClientBySlug and resolution
-    "SVCCONFIG_BASE_URL",
-    "SVCCONFIG_LKG_PATH",
   ],
-
-  // repoEnvFallback + startSvcconfig are enabled with sane defaults
 });

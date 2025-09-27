@@ -36,13 +36,8 @@ void bootstrapService({
     // logging
     "LOG_LEVEL",
     "LOG_SERVICE_URL",
-    // auth local
-    "JWT_SECRET",
     // S2S plane (internal services)
     "S2S_JWT_AUDIENCE",
-    // svcconfig snapshot inputs for httpClientBySlug
-    "SVCCONFIG_BASE_URL",
-    "SVCCONFIG_LKG_PATH",
     // upstream wiring for user (slug & paths kept as envs per SOP)
     "USER_SLUG", // e.g., "user"
     "USER_SLUG_API_VERSION", // e.g., "v1" (currently unused but reserved)

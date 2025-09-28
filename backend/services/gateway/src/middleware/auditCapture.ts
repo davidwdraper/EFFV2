@@ -1,23 +1,20 @@
-// backend/services/gateway/src/middleware/auditCapture.ts
 /**
- * References:
- * - NowVibin SOP v4 — “Billing-grade audit AFTER guardrails; requestId correlation; fire-and-forget”
- * - Canonical contract: @shared/contracts/auditEvent.contract (meta: Record<string,string>)
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - Design: docs/design/backend/audit/WAL.md
+ * - ADRs:
+ *   - docs/adr/0010-5xx-first-assignment-tracing.md
+ *   - docs/adr/0016-standard-health-and-readiness-endpoints.md
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
+ *   - docs/adr/0032-route-policy-via-svcconfig-and-ctx-hop-tokens.md
  *
  * Why:
- * Capture a canonical AuditEvent for requests that pass guardrails, matching the
- * shared contract exactly. Any extra breadcrumbs (callerIp, userId, component)
- * are serialized into `meta: Record<string,string>` to avoid type drift.
+ * - Capture canonical AuditEvent AFTER guardrails for any billable request.
+ * - Correlate via requestId; enqueue to WAL (fire-and-forget).
  *
- * Contract-aligned fields emitted:
- *   - Required: eventId, ts, durationMs, requestId, method, path, slug, status, billableUnits
- *   - Optional: tsStart, durationReliable, finalizeReason, meta (string map)
- *
- * Finalize reason mapping:
- *   res.finish      → "finish"
- *   res.close       → "client-abort" if not writableEnded, else "finish"
- *   res.error(504)  → "timeout"
- *   other error     → undefined (still audits, just no finalizeReason)
+ * Emits (contract-aligned):
+ *   required: eventId, ts, durationMs, requestId, method, path, slug, status, billableUnits
+ *   optional: tsStart, durationReliable, finalizeReason, meta (string map)
  */
 
 import type { RequestHandler } from "express";
@@ -25,12 +22,15 @@ import { randomUUID } from "node:crypto";
 import { logger } from "@eff/shared/src/utils/logger";
 import { walEnqueue } from "../services/auditWal";
 import type { AuditEvent } from "@eff/shared/src/contracts/auditEvent.contract";
-import { ROUTE_ALIAS } from "../config";
 
-// Exclude non-billable endpoints
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Treat health/infra paths as non-billable. Covers direct and /api/:slug/health/* */
 function isAuditEligible(url: string): boolean {
-  const u = (url || "").toLowerCase();
-  return ![
+  const path = (url || "").toLowerCase().split("?")[0];
+
+  // Exact infra paths
+  const infra = new Set([
     "/health",
     "/health/live",
     "/health/ready",
@@ -42,20 +42,41 @@ function isAuditEligible(url: string): boolean {
     "/__core",
     "/__auth",
     "/__audit",
-  ].includes(u);
+  ]);
+  if (infra.has(path)) return false;
+
+  // Any /api/<slug>/health/(live|ready)
+  if (/^\/api\/[^/]+\/health\/(live|ready)\b/.test(path)) return false;
+
+  return true;
 }
 
-// Derive service slug from /api/<slug>/... (alias + naive singular), else "gateway"
-function deriveSlug(originalUrl: string): string {
+/** Prefer parsedApiRoute injected by the API/health routers; fallback to path parse. */
+function deriveSlug(
+  originalUrl: string,
+  parsedApiRoute?: { slug?: string }
+): string {
+  const slugFromCtx = String(parsedApiRoute?.slug || "")
+    .trim()
+    .toLowerCase();
+  if (slugFromCtx) return slugFromCtx;
+
   const path = (originalUrl || "").split("?")[0];
   const parts = path.split("/").filter(Boolean);
-  if (parts[0] !== "api" || !parts[1]) return "gateway";
-  const seg = parts[1].toLowerCase();
-  const aliased = (ROUTE_ALIAS as Record<string, string>)[seg] || seg;
-  return aliased.endsWith("s") ? aliased.slice(0, -1) : aliased;
+
+  // Expect /api/<slug>/... for unversioned health or /api/<slug>.<Vx>/... for versioned
+  if (parts[0] === "api" && parts[1]) {
+    // Handle either "<slug>" or "<slug>.<Vx>"
+    const seg = parts[1].toLowerCase();
+    const m = seg.match(/^([a-z0-9-]+)(?:\.[vV]?\d+)?$/);
+    const slug = m ? m[1] : seg;
+    // naive singular (kept from prior behavior)
+    return slug.endsWith("s") ? slug.slice(0, -1) : slug;
+  }
+
+  return "gateway";
 }
 
-// Map runtime signals to contract finalizeReason
 function mapFinalizeReason(
   kind: "finish" | "close" | "error",
   statusCode: number,
@@ -67,9 +88,13 @@ function mapFinalizeReason(
   return undefined;
 }
 
+// ── Middleware ───────────────────────────────────────────────────────────────
+
 export function auditCapture(): RequestHandler {
   return (req, res, next) => {
-    if (!isAuditEligible(req.path || "")) return next();
+    if (!isAuditEligible(req.originalUrl || req.url || req.path || "")) {
+      return next();
+    }
 
     const tsStartMs = Date.now();
     const t0 = process.hrtime.bigint();
@@ -83,10 +108,10 @@ export function auditCapture(): RequestHandler {
       );
       const durationReliable = finalizeReason === "finish";
 
-      // Extras → meta (STRICT string map per contract)
+      // STRICT string map per contract
       const callerIpRaw = (
         (req.headers["x-forwarded-for"] as string) ||
-        req.ip ||
+        (req.ip as string) ||
         ""
       )
         .split(",")[0]
@@ -107,7 +132,10 @@ export function auditCapture(): RequestHandler {
         requestId: (req as any).id || "",
         method: req.method,
         path: req.originalUrl || req.url || req.path || "",
-        slug: deriveSlug(req.originalUrl || req.url || req.path || ""),
+        slug: deriveSlug(
+          req.originalUrl || req.url || req.path || "",
+          (req as any).parsedApiRoute
+        ),
         status: res.statusCode || 0,
         billableUnits: 1,
         finalizeReason,

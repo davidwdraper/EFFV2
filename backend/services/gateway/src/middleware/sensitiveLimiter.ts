@@ -1,4 +1,4 @@
-// PATH: backend/services/gateway/src/middleware/sensitiveLimiter.ts
+// backend/services/gateway/src/middleware/sensitiveLimiter.ts
 
 /**
  * Sensitive Endpoint Limiter (Redis, fixed window)
@@ -8,25 +8,20 @@
  * - Architecture: docs/architecture/backend/GUARDRAILS.md
  * - ADRs:
  *   - docs/adr/0011-global-edge-rate-limiting.md
- *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md   // consistency of edge guardrails
+ *   - docs/adr/0030-gateway-only-kms-signing-and-jwks.md
  *
  * Why:
  * - Enumeration-prone routes (auth, email lookups, private resources) need a
- *   **stricter** throttle than the global backstop to blunt credential stuffing
- *   and discovery attacks without starving unrelated traffic.
+ *   stricter throttle than the global backstop to blunt stuffing/discovery.
  *
  * Policy:
  * - Pipe-delimited prefix allowlist chooses which paths are “sensitive”.
- * - Fixed-window counters per **client IP** in Redis; denials return 429 and
- *   log to the SECURITY channel (never the audit WAL).
+ * - Fixed-window counters per client IP in Redis; denials return 429 and log to
+ *   the SECURITY channel (never the audit WAL).
  *
  * Non-negotiables:
- * - **No env fallbacks.** All knobs are required; crash fast on boot if missing.
+ * - No env fallbacks. All knobs are required; crash fast on boot if missing.
  * - Fail-open on Redis faults: availability beats protection at the edge.
- *
- * Notes:
- * - Key granularity is per-IP to keep memory small and defenses predictable.
- *   If you need per-(IP+route) granularity later, extend the key composer here.
  */
 
 import type { RequestHandler } from "express";
@@ -95,23 +90,27 @@ export function sensitiveLimiter(): RequestHandler {
       if (count > MAX_HITS) {
         // Best-effort TTL fetch for Retry-After; omit header if unavailable.
         let remaining = await redis.ttl(key);
-        if (typeof remaining !== "number" || remaining < 0) {
-          // TTL unknown or not set; skip header (no fallback values).
-          remaining = -1;
-        } else {
+        if (typeof remaining === "number" && remaining >= 0) {
           res.setHeader("Retry-After", Math.ceil(remaining).toString());
         }
 
         // SECURITY log (never WAL)
+        // NOTE: SecurityKind does not include "rate_limit_sensitive".
+        // Use "rate_limit" and encode sensitivity in reason/details.
         logSecurity(req, {
-          kind: "rate_limit_sensitive",
+          kind: "rate_limit",
           reason: "sensitive_backstop_exceeded",
           decision: "blocked",
           status: 429,
           route: req.path,
           method: req.method,
           ip,
-          details: { limit: MAX_HITS, windowMs: WINDOW_MS, count },
+          details: {
+            limit: MAX_HITS,
+            windowMs: WINDOW_MS,
+            count,
+            category: "sensitive",
+          },
         });
 
         return res

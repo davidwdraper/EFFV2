@@ -17,9 +17,9 @@ import https from "node:https";
 import { URL } from "node:url";
 import { logger } from "@eff/shared/src/utils/logger";
 import { getSvcconfigSnapshot } from "@eff/shared/src/svcconfig/client";
-import type { ServiceConfig } from "@eff/shared/src/contracts/svcconfig.contract";
+import type { SvcConfig } from "@eff/shared/src/contracts/svcconfig.contract";
 
-function resolveService(slug: string): ServiceConfig | null {
+function resolveService(slug: string): SvcConfig | null {
   const snap = getSvcconfigSnapshot();
   if (!snap) return null;
   const cfg = snap.services[String(slug || "").toLowerCase()];

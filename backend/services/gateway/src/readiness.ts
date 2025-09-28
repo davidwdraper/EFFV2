@@ -1,5 +1,3 @@
-// PATH: backend/services/gateway/src/readiness.ts
-
 /**
  * Gateway Readiness Probe
  * -----------------------------------------------------------------------------
@@ -18,12 +16,12 @@
  * Non-negotiables:
  * - **No env fallbacks.** Required knobs must exist; crash on boot if missing.
  * - Use the shared S2S HTTP client so identity minting is uniform (no drift).
- * - Do not “assume” routes; compute from svcconfig snapshot (baseUrl + healthPath).
+ * - Do not “assume” routes; compute from svcconfig snapshot (baseUrl + standard health path).
  */
 
 import type { ReadinessFn } from "@eff/shared/src/health";
 import { getSvcconfigSnapshot } from "@eff/shared/src/svcconfig/client";
-import type { ServiceConfig } from "@eff/shared/src/contracts/svcconfig.contract";
+import type { SvcConfig } from "@eff/shared/src/contracts/svcconfig.contract";
 import { s2sRequest } from "@eff/shared/src/utils/s2s/httpClient";
 import { requireEnv, requireNumber } from "@eff/shared/src/env";
 
@@ -42,12 +40,22 @@ if (REQUIRED_UPSTREAM_SLUGS.length === 0) {
   );
 }
 
-/** WHY: compute the direct health URLs from svcconfig (no guesses, no versions). */
-function healthUrlFor(cfg: ServiceConfig | undefined, kind: "ready" | "live") {
-  if (!cfg || cfg.exposeHealth === false) return null; // explicit opt-out
-  const healthRoot = (cfg.healthPath || "/health").replace(/\/+$/, "");
+/**
+ * Compute the direct health URL from svcconfig.
+ * NOTE:
+ * - Current SvcConfig does not include `exposeHealth` or `healthPath`.
+ * - Health endpoints are standardized and unversioned: `${baseUrl}/health/<kind>`.
+ * - If future fields are added, extend this function (don’t inline assumptions).
+ */
+function healthUrlFor(cfg: SvcConfig | undefined, kind: "ready" | "live") {
+  if (!cfg) return null;
+  if (cfg.enabled !== true) return null;
+
   const base = String(cfg.baseUrl || "").replace(/\/+$/, "");
-  return `${base}${healthRoot}/${kind}`;
+  if (!base) return null;
+
+  // Standardized, per ADR-0016: unversioned /health/<kind>
+  return `${base}/health/${kind}`;
 }
 
 /**
@@ -74,15 +82,15 @@ export const readiness: ReadinessFn = async (_req) => {
   await Promise.all(
     REQUIRED_UPSTREAM_SLUGS.map(async (slug) => {
       try {
-        const cfg = (snap.services as any)[slug] as ServiceConfig | undefined;
+        const cfg = (snap.services as any)[slug] as SvcConfig | undefined;
         const url = healthUrlFor(cfg, "ready");
-        if (!cfg || cfg.enabled !== true || !url) {
-          // WHY: treat missing/disabled/no-health as not ready; prevents partial admit.
+        if (!url) {
+          // Missing / disabled / no baseUrl → not ready
           upstreams[slug] = { ok: false };
           return;
         }
 
-        // WHY: shared s2sRequest ensures uniform S2S identity minting; no drift.
+        // Shared client ensures KMS/JWKS-backed S2S identity
         const r = await s2sRequest<any>(url, {
           method: "GET",
           timeoutMs: READY_PROBE_TIMEOUT_MS,
@@ -91,7 +99,7 @@ export const readiness: ReadinessFn = async (_req) => {
 
         upstreams[slug] = { ok: r.status === 200, url, status: r.status };
       } catch {
-        // WHY: opaque upstream failure → mark not ready; do not throw here to allow a full report.
+        // Opaque upstream failure → not ready; keep report comprehensive.
         upstreams[slug] = { ok: false };
       }
     })

@@ -32,7 +32,11 @@ export type {
 
 import type { SvcConfig } from "../../contracts/svcconfig.contract";
 import { logger } from "../../utils/logger";
-import { mintS2S, type MintS2SOptions } from "../../utils/s2s/mintS2S";
+import { mintS2S } from "../../utils/s2s/mintS2S";
+import {
+  getSvcconfigSnapshot,
+  startSvcconfigMirror,
+} from "../../svcconfig/client";
 
 // ---------- helpers ----------
 const ensureLeading = (p: string) => (p.startsWith("/") ? p : `/${p}`);
@@ -53,46 +57,38 @@ const normVersion = (v: string) => {
   return `V${m[1]}`;
 };
 
-// Cache: (slug,version) -> apiBase
+// Cache: (slug,version) -> apiBase; and a rootBase for health
 const apiBaseCache = new Map<string, string>();
+const rootBaseCache = new Map<string, string>();
 
-// Lazy svcconfig module handle
-let svcconfigMod: {
-  getSvcconfigSnapshot: () => any;
-  startSvcconfigMirror: () => void;
-} | null = null;
-async function ensureSvcconfigModule() {
-  if (!svcconfigMod) svcconfigMod = await import("../../svcconfig/client.js");
-  return svcconfigMod;
-}
-
-function computeApiBase(cfg: SvcConfig): string {
-  const base = stripTrailing(String(cfg.baseUrl || ""));
-  const prefix = ensureLeading(String(cfg.outboundApiPrefix || "/api"));
-  return `${base}${prefix}`;
+function computeBases(cfg: SvcConfig): { root: string; api: string } {
+  const root = stripTrailing(String(cfg.baseUrl || ""));
+  const prefRaw = (cfg as any).outboundApiPrefix ?? "/api";
+  const pref = prefRaw
+    ? String(prefRaw).startsWith("/")
+      ? String(prefRaw)
+      : `/${String(prefRaw)}`
+    : "";
+  const api = stripTrailing(`${root}${pref}`);
+  return { root, api };
 }
 
 async function ensureSvcconfigReady(timeoutMs = 1000): Promise<void> {
-  const mod = await ensureSvcconfigModule();
-  if (mod.getSvcconfigSnapshot()) return;
-
+  if (getSvcconfigSnapshot()) return;
   try {
-    void mod.startSvcconfigMirror();
+    void startSvcconfigMirror();
     logger.info("[httpClientBySlug] started svcconfig mirror (lazy)");
   } catch (err) {
     logger.warn({ err }, "[httpClientBySlug] failed to start svcconfig mirror");
   }
-
   const start = Date.now();
   let backoff = 50;
   while (Date.now() - start < timeoutMs) {
-    if (mod.getSvcconfigSnapshot()) return;
+    if (getSvcconfigSnapshot()) return;
     await sleep(backoff);
     backoff = Math.min(backoff * 2, 200);
   }
-  throw new Error(
-    "[httpClientBySlug] svcconfig snapshot unavailable after lazy bootstrap"
-  );
+  // NOTE: we do NOT throw here anymore; callers will surface "unknown slug" if empty.
 }
 
 function pickByVersion(
@@ -109,7 +105,6 @@ function pickByVersion(
       ) || null
     );
   }
-
   if (snapServices && typeof snapServices === "object") {
     const bySlug = (snapServices as Record<string, any>)[normSlug(slug)];
     if (bySlug?.baseUrl) {
@@ -124,7 +119,6 @@ function pickByVersion(
     if ((snapServices as any)[flatKey])
       return (snapServices as any)[flatKey] as SvcConfig;
   }
-
   return null;
 }
 
@@ -133,13 +127,11 @@ async function resolveServiceConfig(
   apiVersion: string
 ): Promise<SvcConfig> {
   await ensureSvcconfigReady();
-  const snap = (await ensureSvcconfigModule()).getSvcconfigSnapshot();
+  const snap = getSvcconfigSnapshot();
   if (!snap)
     throw new Error("[httpClientBySlug] svcconfig snapshot not initialized");
-
   const wantedVer = normVersion(apiVersion);
   const cfg = pickByVersion(snap.services, slug, wantedVer);
-
   if (!cfg)
     throw new Error(
       `[httpClientBySlug] unknown (slug="${slug}", version="${wantedVer}")`
@@ -148,8 +140,20 @@ async function resolveServiceConfig(
     throw new Error(
       `[httpClientBySlug] service "${slug}" version "${wantedVer}" is disabled`
     );
-
   return cfg as SvcConfig;
+}
+
+function isHealthPath(p: string): boolean {
+  const s = p.startsWith("/") ? p.slice(1) : p;
+  // Unversioned health endpoints live at service root per ADR-0016
+  return (
+    s === "health" ||
+    s.startsWith("health/") ||
+    s === "live" ||
+    s === "ready" ||
+    s.startsWith("ready") ||
+    s.startsWith("live")
+  );
 }
 
 /**
@@ -161,37 +165,26 @@ async function resolveServiceConfig(
  */
 async function finalizeHeaders(
   ver: string,
-  inbound: Record<string, string | undefined>,
-  s2sExtra?: MintS2SOptions["extra"]
+  inbound: Record<string, string | undefined>
 ): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(inbound || {})) {
     if (typeof v === "string") out[k.toLowerCase()] = v;
   }
-
-  // Never forward edge Authorization
   delete out.authorization;
 
-  // KMS S2S — single source of truth inside mintS2S (KMS-only, no fallback)
   const ttlSec = Math.min(
     Number(process.env.S2S_MAX_TTL_SEC || 300) || 300,
     900
   );
-  out.authorization = `Bearer ${mintS2S({ ttlSec, extra: s2sExtra })}`;
+  const s2s = await mintS2S({ ttlSec });
+  out.authorization = `Bearer ${s2s}`;
 
-  // X-NV-User-Assertion: forward only if present; do NOT mint here.
-
-  // Stamp canonical API version
   out["x-nv-api-version"] = ver;
-
-  // Disable 100-continue stalls unless caller explicitly set otherwise
   if (out["expect"] === undefined) out["expect"] = "";
-
-  // Sensible default Accept
   out["accept"] = out["accept"] || "application/json";
 
-  // ---- Header history (append-only) ---------------------------------------
-  // base64url(JSON array of hops). Each hop: { ts, svc, ver, reqId? }
+  // header history (append)
   try {
     const svc = process.env.SERVICE_NAME || "gateway";
     const hop = {
@@ -216,14 +209,12 @@ async function finalizeHeaders(
   } catch {
     /* non-fatal */
   }
-
   return out;
 }
 
 /**
  * Perform an S2S request to a service by slug.
- * `path` is the service-local API path (e.g., "/resolve"); outboundApiPrefix is added from svcconfig.
- * Adds S2S Authorization + (optional) forwarded X-NV-User-Assertion + X-NV-Api-Version, then delegates to s2sRequest().
+ * - `path` is service-local. Health paths are sent to ROOT (no outboundApiPrefix).
  */
 export async function s2sRequestBySlug<TResp = unknown, TBody = unknown>(
   slug: string,
@@ -234,30 +225,29 @@ export async function s2sRequestBySlug<TResp = unknown, TBody = unknown>(
   const ver = normVersion(apiVersion);
   const key = `${normSlug(slug)}::${ver}`;
   let apiBase = apiBaseCache.get(key);
+  let rootBase = rootBaseCache.get(key);
 
-  if (!apiBase) {
+  if (!apiBase || !rootBase) {
     const cfg = await resolveServiceConfig(slug, ver);
-    apiBase = computeApiBase(cfg);
+    const bases = computeBases(cfg);
+    apiBase = bases.api;
+    rootBase = bases.root;
     apiBaseCache.set(key, apiBase);
+    rootBaseCache.set(key, rootBase);
     logger.info(
-      { slug, apiVersion: ver, apiBase },
-      "[httpClientBySlug] cached api base"
+      { slug, apiVersion: ver, apiBase, rootBase },
+      "[httpClientBySlug] cached bases"
     );
   }
 
-  const target = `${stripTrailing(apiBase)}${ensureLeading(path)}`;
+  const base = isHealthPath(path) ? (rootBase as string) : (apiBase as string);
+  const target = `${base}${ensureLeading(path)}`;
 
-  // Finalize headers (KMS S2S, version header, expect-empty, header history)
   const inboundHeaders = (opts.headers || {}) as Record<
     string,
     string | undefined
   >;
-  const headers = await finalizeHeaders(
-    ver,
-    inboundHeaders,
-    (opts as any)?.s2s?.extra
-  );
-
+  const headers = await finalizeHeaders(ver, inboundHeaders);
   const mergedOpts: S2SRequestOptions<TBody> = { ...opts, headers };
 
   return s2sRequest<TResp, TBody>(target, mergedOpts);
@@ -270,12 +260,13 @@ export async function prewarmSlug(
 ): Promise<void> {
   const ver = normVersion(apiVersion);
   const key = `${normSlug(slug)}::${ver}`;
-  if (apiBaseCache.has(key)) return;
+  if (apiBaseCache.has(key) && rootBaseCache.has(key)) return;
   const cfg = await resolveServiceConfig(slug, ver);
-  const apiBase = computeApiBase(cfg);
-  apiBaseCache.set(key, apiBase);
+  const { root, api } = computeBases(cfg);
+  apiBaseCache.set(key, api);
+  rootBaseCache.set(key, root);
   logger.info(
-    { slug, apiVersion: ver, apiBase },
-    "[httpClientBySlug] prewarmed api base"
+    { slug, apiVersion: ver, apiBase: api, rootBase: root },
+    "[httpClientBySlug] prewarmed bases"
   );
 }

@@ -1,130 +1,115 @@
-// backend/services/shared/svcconfig/client.ts
+/**
+ * NowVibin — Shared
+ * File: backend/services/shared/src/svcconfig/client.ts
+ *
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md
+ * - ADRs:
+ *   - docs/adr/0033-centralized-env-loading-and-deferred-config.md
+ *   - docs/adr/0034-centralized-discovery-dual-port-internal-jwks.md
+ *   - docs/adr/0036-single-s2s-client-kms-only-callBySlug.md
+ *
+ * Purpose
+ * - Provide an in-process svcconfig snapshot mirror used by gateway + workers.
+ * - Start **gracefully** even if no authority or LKG is present:
+ *     1) If an authority URL is provided, fetch from it.
+ *     2) Else, load from LKG (Last Known Good).
+ *     3) Else, start with an EMPTY snapshot (routes will 502 “unknown slug”),
+ *        but the process **does not crash**. Operators can seed LKG or bring up
+ *        authority and hot-update via Redis.
+ *
+ * Contract
+ * - No mandatory SVCCONFIG_BASE_URL.
+ * - No hidden fallbacks or import-time crashes.
+ * - Optional Redis hot updates; payload must provide data (we never fetch “because Redis said so”).
+ */
 
-import axios from "axios";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import {
   SvcConfigSchema,
   type SvcConfig,
 } from "../contracts/svcconfig.contract";
-import { s2sAuthHeader } from "../utils/s2s/s2sAuthHeader";
-
-// ──────────────────────────────────────────────────────────────────────────────
-/**
- * ENV (KMS / CTX+HOP era — no HS256 shared secrets)
- * Required:
- *   SVCCONFIG_BASE_URL         e.g., http://127.0.0.1:4015  (no trailing slash)
- *
- * Optional:
- *   SVCCONFIG_POLL_MS          default 0 (disabled). Set >0 to enable polling.
- *   SVCCONFIG_LKG_PATH         default: CWD/.lkg/svcconfig.json
- *   REDIS_URL                  enable hot updates via pub/sub
- *   SVCCONFIG_CHANNEL          default "svcconfig:changed"
- *
- * Notes:
- * - Authorization, if needed, is provided via s2sAuthHeader('svcconfig'),
- *   which may return an empty object in dev/open modes.
- */
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v || !String(v).trim()) throw new Error(`Missing required env: ${name}`);
-  return String(v).trim();
-}
-
-const BASE = requireEnv("SVCCONFIG_BASE_URL");
-
-// Polling disabled by default; set >0 to enable
-const POLL_MS = Math.max(0, Number(process.env.SVCCONFIG_POLL_MS ?? 0));
 
 const LKG_PATH =
   process.env.SVCCONFIG_LKG_PATH ||
   path.resolve(process.cwd(), ".lkg/svcconfig.json");
-
-const REDIS_URL = process.env.REDIS_URL || "";
+const REDIS_URL = (process.env.REDIS_URL || "").trim();
 const CHANNEL = process.env.SVCCONFIG_CHANNEL || "svcconfig:changed";
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Types & in-memory state
-export type SvcconfigSnapshot = {
-  version: string; // local monotonic version
-  updatedAt: number; // epoch ms of last refresh
-  services: Record<string, SvcConfig>; // keyed by slug (lowercase)
-};
+// Optional authority (HTTP). If omitted, we never perform HTTP.
+const AUTH_BASE = (process.env.SVCCONFIG_BASE_URL || "").trim();
+const AUTH_LIST_PATH = process.env.SVCCONFIG_LIST_PATH || "";
+const AUTH_CANDIDATES = [
+  "/api/svcconfig",
+  "/svcconfig",
+  "/api/config",
+  "/api/services",
+  "/snapshot",
+  "/api/snapshot",
+];
 
+const joinUrl = (b: string, s: string) =>
+  `${b.replace(/\/+$/, "")}${s.startsWith("/") ? s : `/${s}`}`;
+
+// ── State
+export type SvcconfigSnapshot = {
+  version: string;
+  updatedAt: number;
+  services: Record<string, SvcConfig>;
+};
 type State = {
   versionCounter: number;
   snapshot: SvcconfigSnapshot | null;
-  lastFetchMs: number;
-  source: "empty" | "cache" | "lkg";
+  lastRefreshMs: number;
+  source: "empty" | "lkg" | "authority" | "redis";
 };
-
 const STATE: State = {
   versionCounter: 0,
   snapshot: null,
-  lastFetchMs: 0,
+  lastRefreshMs: 0,
   source: "empty",
 };
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Fetch list from authority (svcconfig service)
-function join(base: string, seg: string): string {
-  const b = base.replace(/\/+$/, "");
-  const s = seg.startsWith("/") ? seg : `/${seg}`;
-  return `${b}${s}`;
-}
-
-async function fetchAll(): Promise<SvcConfig[]> {
-  // ⬇️ points at /api/svcconfig (list handler returns { items: [] })
-  const url = join(BASE, "/api/svcconfig");
-  const headers = {
-    ...s2sAuthHeader("svcconfig"), // may be {} in dev/open; never uses HS256
-  };
-
-  const r = await axios.get(url, {
-    timeout: 3000,
-    headers,
-    validateStatus: () => true,
-  });
-
-  if (
-    !(r.status >= 200 && r.status < 300) ||
-    !Array.isArray((r.data as any)?.items)
-  ) {
-    throw new Error(`svcconfig list failed: HTTP ${r.status}`);
+// ── Coercion
+function mapServices(obj: Record<string, unknown>): Record<string, SvcConfig> {
+  const out: Record<string, SvcConfig> = {};
+  for (const v of Object.values(obj)) {
+    const p = SvcConfigSchema.safeParse(v);
+    if (!p.success || !p.data?.slug) continue;
+    const slug = String(p.data.slug).toLowerCase();
+    out[slug] = { ...p.data, slug };
   }
-
-  const out: SvcConfig[] = [];
-  for (const raw of (r.data as any).items as unknown[]) {
+  return out;
+}
+function coerceItemsToServices(items: unknown): Record<string, SvcConfig> {
+  if (!Array.isArray(items)) return {};
+  const out: Record<string, SvcConfig> = {};
+  for (const raw of items) {
     const p = SvcConfigSchema.safeParse(raw);
-    if (p.success) {
-      // enforce lowercase slug; other defaults handled by zod .default()
-      out.push({ ...p.data, slug: p.data.slug.toLowerCase() });
+    if (p.success && p.data?.slug) {
+      const slug = String(p.data.slug).toLowerCase();
+      out[slug] = { ...p.data, slug };
     }
   }
   return out;
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-function repopulate(items: SvcConfig[]) {
-  const services: Record<string, SvcConfig> = {};
-  for (const it of items) {
-    if (!it?.slug) continue;
-    services[it.slug.toLowerCase()] = it;
-  }
-  STATE.versionCounter++;
-  STATE.snapshot = {
-    version: String(STATE.versionCounter),
-    updatedAt: Date.now(),
-    services,
-  };
-  STATE.source = "cache";
-  STATE.lastFetchMs = Date.now();
+function coerceAnyToServices(parsed: any): Record<string, SvcConfig> {
+  if (parsed?.snapshot?.services)
+    return Array.isArray(parsed.snapshot.services)
+      ? coerceItemsToServices(parsed.snapshot.services)
+      : mapServices(parsed.snapshot.services);
+  if (parsed?.services)
+    return Array.isArray(parsed.services)
+      ? coerceItemsToServices(parsed.services)
+      : mapServices(parsed.services);
+  if (Array.isArray(parsed?.items)) return coerceItemsToServices(parsed.items);
+  if (Array.isArray(parsed)) return coerceItemsToServices(parsed);
+  return {};
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// LKG helpers
-export async function writeLKG(snapshot: SvcconfigSnapshot): Promise<void> {
+// ── Persistence
+async function writeLKG(snapshot: SvcconfigSnapshot): Promise<void> {
   await fsp.mkdir(path.dirname(LKG_PATH), { recursive: true });
   await fsp.writeFile(
     LKG_PATH,
@@ -132,91 +117,145 @@ export async function writeLKG(snapshot: SvcconfigSnapshot): Promise<void> {
     "utf8"
   );
 }
-
-export async function readLKG(): Promise<SvcconfigSnapshot | null> {
+async function readLKG(): Promise<SvcconfigSnapshot | null> {
   try {
     const raw = await fsp.readFile(LKG_PATH, "utf8");
-    const parsed = JSON.parse(raw) as {
-      v: number;
-      snapshot: SvcconfigSnapshot;
+    const parsed = JSON.parse(raw) as any;
+    const services = coerceAnyToServices(parsed);
+    if (!services || Object.keys(services).length === 0) return null;
+    return {
+      version: String(parsed?.version ?? 0),
+      updatedAt: Date.now(),
+      services,
     };
-    if (parsed?.snapshot && typeof parsed.snapshot.version === "string")
-      return parsed.snapshot;
+  } catch {
+    return null;
+  }
+}
+function repopulateFromServices(
+  services: Record<string, SvcConfig>,
+  source: State["source"]
+) {
+  STATE.versionCounter++;
+  STATE.snapshot = {
+    version: String(STATE.versionCounter),
+    updatedAt: Date.now(),
+    services,
+  };
+  STATE.lastRefreshMs = Date.now();
+  STATE.source = source;
+}
+function repopulateEmpty() {
+  STATE.versionCounter++;
+  STATE.snapshot = {
+    version: String(STATE.versionCounter),
+    updatedAt: Date.now(),
+    services: {},
+  };
+  STATE.lastRefreshMs = Date.now();
+  STATE.source = "empty";
+}
+
+// ── Optional authority
+async function fetchFromAuthority(): Promise<Record<string, SvcConfig> | null> {
+  if (!AUTH_BASE) return null;
+  try {
+    const { default: axios } = await import("axios");
+    const endpoints = AUTH_LIST_PATH ? [AUTH_LIST_PATH] : AUTH_CANDIDATES;
+    for (const ep of endpoints) {
+      const url = joinUrl(AUTH_BASE, ep);
+      try {
+        const r = await axios.get(url, {
+          timeout: 3000,
+          validateStatus: () => true,
+        });
+        if (r.status < 200 || r.status >= 300) continue;
+        const services = coerceAnyToServices(r.data);
+        if (Object.keys(services).length) {
+          console.info("[svcconfigClient] authority discovered", {
+            url,
+            count: Object.keys(services).length,
+          });
+          return services;
+        }
+      } catch {
+        /* try next */
+      }
+    }
+    console.warn(
+      "[svcconfigClient] authority reachable but no recognized endpoints",
+      { base: AUTH_BASE }
+    );
     return null;
   } catch {
     return null;
   }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Public mirror API
+// ── Public API
 export async function startSvcconfigMirror(): Promise<void> {
-  // Initial fetch
-  try {
-    const items = await fetchAll();
-    repopulate(items);
+  const fromAuth = await fetchFromAuthority();
+  if (fromAuth) {
+    repopulateFromServices(fromAuth, "authority");
     try {
       await writeLKG(STATE.snapshot!);
     } catch {}
-  } catch {
-    // Try LKG if network fails
+  } else {
     const lkg = await readLKG();
-    if (lkg) {
-      STATE.snapshot = lkg;
-      STATE.source = "lkg";
-      STATE.lastFetchMs = Date.now();
-    } else {
-      STATE.snapshot = null;
-      STATE.source = "empty";
-      STATE.lastFetchMs = Date.now();
+    if (lkg) repopulateFromServices(lkg.services, "lkg");
+    else {
+      repopulateEmpty();
+      console.warn(
+        "[svcconfigClient] no authority and no LKG — starting with EMPTY snapshot"
+      );
     }
   }
 
-  // Redis hot updates (optional)
   if (REDIS_URL) {
     try {
       const { createClient } = await import("redis");
       const client = createClient({ url: REDIS_URL });
       await client.connect();
       await client.subscribe(CHANNEL, async (payload) => {
-        console.info("[svcconfigClient] redis invalidation", {
-          channel: CHANNEL,
-          payload,
-        });
         try {
-          const items = await fetchAll();
-          repopulate(items);
+          const msg = JSON.parse(payload);
+          const next = coerceAnyToServices(msg);
+          if (!next || Object.keys(next).length === 0) {
+            const maybe = await fetchFromAuthority();
+            if (maybe && Object.keys(maybe).length) {
+              repopulateFromServices(maybe, "authority");
+              try {
+                await writeLKG(STATE.snapshot!);
+              } catch {}
+            } else {
+              console.warn(
+                "[svcconfigClient] redis payload ignored (no services)"
+              );
+            }
+            return;
+          }
+          repopulateFromServices(next, "redis");
           try {
             await writeLKG(STATE.snapshot!);
           } catch {}
-        } catch {
-          // ignore; rely on next LKG or operator action
+        } catch (err) {
+          console.warn("[svcconfigClient] redis update ignored", { err });
         }
       });
-      client.on("error", () => {
-        /* ignore; operator should notice Redis down */
+      client.on("error", (err) =>
+        console.warn("[svcconfigClient] redis error", { err })
+      );
+      console.info("[svcconfigClient] redis subscription enabled", {
+        channel: CHANNEL,
       });
-    } catch {
-      // ignore; no Redis, no hot updates
+    } catch (err) {
+      console.warn(
+        "[svcconfigClient] redis not available; hot updates disabled",
+        { err: (err as Error)?.message || String(err) }
+      );
     }
-  }
-
-  // Poll fallback — disabled unless POLL_MS > 0
-  if (POLL_MS > 0) {
-    console.info("[svcconfigClient] polling enabled", { intervalMs: POLL_MS });
-    setInterval(async () => {
-      try {
-        const items = await fetchAll();
-        repopulate(items);
-        try {
-          await writeLKG(STATE.snapshot!);
-        } catch {}
-      } catch {
-        // ignore; keep last good snapshot/LKG
-      }
-    }, POLL_MS);
   } else {
-    console.info("[svcconfigClient] polling disabled");
+    console.info("[svcconfigClient] redis disabled; static snapshot in use");
   }
 }
 
@@ -229,7 +268,7 @@ export function getSvcconfigReadiness() {
   const now = Date.now();
   const ageMs = snap ? now - snap.updatedAt : Number.POSITIVE_INFINITY;
   return {
-    ok: !!snap,
+    ok: !!snap && Object.keys(snap.services).length > 0,
     source: STATE.source,
     version: snap?.version ?? null,
     ageMs: Number.isFinite(ageMs) ? ageMs : null,

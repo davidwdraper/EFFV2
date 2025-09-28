@@ -1,4 +1,3 @@
-// backend/services/gateway/src/services/auditWal.ts
 /**
  * Docs:
  * - Design: docs/design/backend/gateway/audit-wal.md
@@ -20,7 +19,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AuditEvent } from "@eff/shared/src/contracts/auditEvent.contract";
 import { logger } from "@eff/shared/src/utils/logger";
-import { sendBatch, nextBackoffMs } from "./auditDispatch";
+import { sendBatch } from "./auditDispatch"; // <- removed nextBackoffMs import
 
 type WalCfg = {
   dir: string;
@@ -344,6 +343,16 @@ class AuditWal {
 }
 
 // Helpers
+
+/** Exponential backoff with jitter; capped. attempt starts at 1. */
+function nextBackoffMs(attempt: number): number {
+  const BASE = 250; // 250ms, 500, 1000, 2000, 4000...
+  const MAX = 10000; // cap at 10s
+  const exp = Math.min(MAX, BASE * Math.pow(2, Math.max(0, attempt - 1)));
+  const jitter = 0.9 + Math.random() * 0.2; // ±10% jitter
+  return Math.floor(exp * jitter);
+}
+
 function fmtYmd(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");

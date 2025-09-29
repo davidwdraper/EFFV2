@@ -182,7 +182,7 @@ async function resolveServiceConfig(
     );
   if (cfg.enabled !== true)
     throw new Error(
-      `[httpClientBySlug] service "${slug}" version "${wantedVer}" is disabled`
+      `[httpClientBySlug] service "${slug}" version "${wantedVer}") is disabled`
     );
 
   return cfg as SvcConfig;
@@ -242,10 +242,23 @@ export async function s2sRequestBySlug<TResp = unknown, TBody = unknown>(
   const headers = await finalizeHeaders(ver, inboundHeaders);
 
   const method: HttpMethod = normalizeMethod(opts.method as any);
+
+  // Sane defaults: faster connect, reasonable total in dev; POSTs never retried here.
+  const defaultTimeoutMs =
+    Number(process.env.S2S_DEFAULT_TIMEOUT_MS || "") ||
+    (method === "POST" || method === "PATCH" || method === "PUT"
+      ? 10_000
+      : 8_000);
+
   const mergedOpts: S2SRequestOptions<TBody> = {
     ...opts,
     method, // <- correctly typed literal union
     headers,
+    timeoutMs: opts.timeoutMs ?? defaultTimeoutMs,
+    // no automatic retries for mutating calls
+    ...(method === "POST" || method === "PATCH" || method === "PUT"
+      ? { retries: 0 as any }
+      : {}),
     ...(method === "GET" || method === "HEAD"
       ? { body: undefined as any }
       : {}),

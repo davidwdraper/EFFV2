@@ -1,4 +1,4 @@
-// PATH: backend/services/auth/src/handlers/auth/create.ts
+// backend/services/auth/src/handlers/auth/create.ts
 /**
  * Docs:
  * - Arch: docs/architecture/backend/OVERVIEW.md
@@ -26,12 +26,14 @@ function pickText(resp: any): string | undefined {
   return typeof resp?.text === "string" ? resp.text : undefined;
 }
 
-const DOWNSTREAM_TIMEOUT = Number(
-  process.env.TIMEOUT_AUTH_DOWNSTREAM_MS || 6000
-);
+// Use a higher but bounded default for dev; override per-env if needed.
+const DOWNSTREAM_TIMEOUT =
+  Number(process.env.TIMEOUT_AUTH_DOWNSTREAM_MS || "") || 10_000;
 
-const USER_CREATE_PATH = "/users";
-const USER_PATCH_PATH = (id: string) => `/users/${encodeURIComponent(id)}`;
+// Create/PATCH paths now use configured routes (no hardcoding)
+const USER_CREATE_PATH = () => config.userRouteUsers; // e.g., "/users"
+const USER_PATCH_PATH = (id: string) =>
+  `${config.userRouteUsers.replace(/\/+$/, "")}/${encodeURIComponent(id)}`;
 
 export default async function create(
   req: Request,
@@ -68,7 +70,7 @@ export default async function create(
       config.userApiVersion,
       {
         method: "PUT",
-        path: USER_CREATE_PATH,
+        path: USER_CREATE_PATH(),
         timeoutMs: DOWNSTREAM_TIMEOUT,
         headers: { "content-type": "application/json" },
         body: createBody,
@@ -112,7 +114,10 @@ export default async function create(
     }
 
     // 2) Hash & PATCH password into user
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // Keep cost reasonable in dev; let bcrypt default be overridden via env if needed.
+    const bcryptCost = Number(process.env.BCRYPT_COST || "") || 10;
+    const hashedPassword = await bcrypt.hash(password, bcryptCost);
+
     const respPatch = await callBySlug<any>(
       config.userSlug,
       config.userApiVersion,

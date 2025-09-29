@@ -17,7 +17,7 @@ import create from "../handlers/auth/create";
 import login from "../handlers/auth/login";
 import passwordReset from "../handlers/auth/passwordReset";
 
-const router = Router();
+const router: Router = Router();
 
 router.post("/create", create);
 router.post("/login", login);

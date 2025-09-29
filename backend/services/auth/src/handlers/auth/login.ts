@@ -1,4 +1,4 @@
-// PATH: backend/services/auth/src/handlers/auth/login.ts
+// backend/services/auth/src/handlers/auth/login.ts
 /**
  * POST /api/auth/login
  * Body: { email, password }
@@ -14,6 +14,9 @@ import { generateToken } from "../../utils/jwtUtils";
 function pickPayload(resp: any) {
   return resp?.body ?? resp?.data ?? resp?.payload ?? undefined;
 }
+
+const DOWNSTREAM_TIMEOUT =
+  Number(process.env.TIMEOUT_AUTH_DOWNSTREAM_MS || "") || 10_000;
 
 export default async function login(
   req: Request,
@@ -35,7 +38,7 @@ export default async function login(
     const resp = await callBySlug<any>(config.userSlug, config.userApiVersion, {
       method: "GET",
       path: `${config.userRoutePrivateEmail}/${encodeURIComponent(email)}`,
-      timeoutMs: 5000,
+      timeoutMs: DOWNSTREAM_TIMEOUT,
     });
 
     const status = Number(resp.status || 0);

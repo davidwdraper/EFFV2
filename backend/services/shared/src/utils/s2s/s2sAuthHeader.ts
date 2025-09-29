@@ -1,25 +1,34 @@
-// /backend/services/shared/src/utils/s2s/s2sAuthHeader.ts
+// backend/services/shared/src/utils/s2s/s2sAuthHeader.ts
 /**
- * S2S auth header builder
+ * S2S auth header builder — INTERNAL to callBySlug/httpClientBySlug
  * --------------------------------------------------------------------------
- * Usage:
- *   import { s2sAuthHeader } from "@eff/shared/src/utils/s2s/s2sAuthHeader";
- *   axios.post(url, body, { headers: { ...s2sAuthHeader("act") } })
+ * Purpose:
+ *   Used *only* by shared S2S clients (`callBySlug`, `httpClientBySlug`)
+ *   to mint and attach a KMS-signed S2S JWT on every internal hop.
  *
- * Current behavior:
- *   Reads a static bearer token from env (S2S_BEARER or S2S_TOKEN).
+ * 🚫 Do NOT import or call this directly from application code.
+ *    - All service-to-service calls must go through callBySlug().
+ *    - Direct use outside the internal client is unsupported and will break CI.
  *
- * Future-ready:
- *   You can later mint short-lived S2S JWTs here (e.g. using mintS2S.ts)
- *   without touching any service code.
+ * Rationale:
+ *   Consolidates S2S identity and enforces ADR-0035 single-path policy.
+ *
+ * Notes:
+ *   - TTL defaults to S2S_MAX_TTL_SEC (<= 900s hard cap) inside mintS2S().
+ *   - This helper remains async to guarantee minting at call time.
  */
-export function s2sAuthHeader(_svc: string): Record<string, string> {
-  const token =
-    process.env.S2S_BEARER && process.env.S2S_BEARER.trim() !== ""
-      ? process.env.S2S_BEARER
-      : process.env.S2S_TOKEN && process.env.S2S_TOKEN.trim() !== ""
-      ? process.env.S2S_TOKEN
-      : undefined;
 
-  return token ? { Authorization: `Bearer ${token}` } : {};
+import { mintS2S } from "./mintS2S";
+
+/**
+ * Internal-only helper for callBySlug/httpClientBySlug.
+ * Returns a bearer header with a freshly minted S2S JWT.
+ */
+export async function s2sAuthHeader(): Promise<Record<string, string>> {
+  const token = await mintS2S({});
+  return { Authorization: `Bearer ${token}` };
 }
+
+// Explicit default export to satisfy legacy imports inside httpClientBySlug.
+// Still considered internal; not for app-level use.
+export default s2sAuthHeader;

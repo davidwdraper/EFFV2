@@ -99,7 +99,8 @@ export async function forwardToService(
       restPath = String(parsed.restPath || "");
     } else {
       // WHY: belt-and-suspenders parsing. Should be rare, but avoids 500 on edge cases.
-      const m = req.path.match(/^\/?([^/.]+)\.([^/]+)\/(.*)$/);
+      // NOTE: Updated to slash form: /<slug>/<version>/<rest>
+      const m = req.path.match(/^\/?([^/]+)\/([^/]+)\/(.*)$/);
       if (m) {
         slug = (m[1] || "").toLowerCase();
         version = m[2] || "";
@@ -113,7 +114,7 @@ export async function forwardToService(
           type: "about:blank",
           title: "Not Found",
           status: 404,
-          detail: "Malformed route. Expected /api/<slug>.V<digit>/…",
+          detail: "Malformed route. Expected /api/<slug>/V<digit>/…",
           instance: (req as any).id,
         });
       }

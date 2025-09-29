@@ -1,3 +1,4 @@
+// backend/services/shared/src/utils/s2s/callBySlug.ts
 /**
  * NowVibin — Backend Shared
  * File: backend/services/shared/src/utils/s2s/callBySlug.ts
@@ -16,15 +17,10 @@
  * - Prevents drift: URL resolution, X-NV-Api-Version stamping, and auth all flow
  *   through the same shared client (`s2sRequestBySlug`).
  *
- * Contract:
- * - External version markers are V-prefixed on the wire ("V1"/"v1"). Internally we
- *   accept "V1", "v1", or "1" and normalize to "V<digit>".
- * - NEVER forward inbound client Authorization. The shared S2S client mints S2S.
- *
  * Notes:
  * - Path may be absolute ("/acts/123") or relative ("acts/123"); both OK.
- * - Body may be string/Buffer/Uint8Array/Readable (NDJSON streaming supported).
- * - Per ADR-0034, underlying resolution should prefer the gateway’s internal proxy.
+ * - Body must be fetch-compatible types; Node streams are NOT supported here.
+ * - Health endpoints are unversioned on workers; version header is telemetry.
  */
 
 import {
@@ -33,7 +29,6 @@ import {
   type S2SRequestOptions,
 } from "../../utils/s2s/httpClientBySlug";
 import { logger } from "../../utils/logger";
-import type { Readable } from "node:stream";
 
 /** Normalize "V1" | "v1" | "1" → "V1" for consistent header/telemetry. */
 function normApiVersion(v: string): string {
@@ -78,22 +73,20 @@ function normalizeMethod(m?: string): HttpMethod {
 }
 
 export type CallBySlugOpts<TBody = unknown> = {
-  /** HTTP method; defaults to "GET". */
   method?: string;
-  /** Service-local path (with or without leading slash), e.g., "/acts" or "acts/123". */
   path: string;
-  /** Optional querystring fragments. Arrays repeat the key. */
   query?: Record<string, unknown>;
-  /** Body (JSON, string, Buffer, Uint8Array, or Readable stream for NDJSON). */
-  body?: TBody | Readable | string | Buffer | Uint8Array;
-  /** Optional headers to forward/add (NEVER include Authorization). */
+  body?:
+    | TBody
+    | string
+    | Uint8Array
+    | ArrayBuffer
+    | URLSearchParams
+    | FormData
+    | Blob
+    | ReadableStream<any>;
   headers?: Record<string, string | undefined>;
-  /** Optional request timeout (ms). */
   timeoutMs?: number;
-  /**
-   * Optional extra S2S JWT claims (namespaced) — forwarded to mint layer.
-   * Example: { extra: { nv: { purpose: "audit_wal_drain" } } }
-   */
   s2s?: { extra?: Record<string, unknown> };
 };
 
@@ -104,59 +97,54 @@ function isJsonContentType(v?: string): boolean {
 
 /**
  * Prepare body & headers:
- * - Accepts string/Buffer/Uint8Array/Readable.
- * - Sets content-length for in-memory bodies; leaves streams lengthless.
- * - Defaults to JSON when body is object/array and no content-type provided.
- * - Disables 100-continue by default (Expect: '') to avoid PUT hangs.
+ * - Accepts only fetch-compatible bodies (no Node streams).
+ * - Sets content-type JSON when serializing plain objects.
+ * - DOES NOT set or pass "Expect" header (unsupported by undici/fetch).
  */
 function prepareBodyAndHeaders(
   body: unknown,
   headersIn: Record<string, string | undefined>
 ): {
-  bodyOut?: string | Buffer | Uint8Array | Readable;
+  bodyOut?:
+    | string
+    | Uint8Array
+    | ArrayBuffer
+    | URLSearchParams
+    | FormData
+    | Blob
+    | ReadableStream<any>;
   headersOut: Record<string, string>;
 } {
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(headersIn || {})) {
-    if (typeof v === "string" && v.length) headers[k.toLowerCase()] = v;
+    if (typeof v === "string" && v.length) headers[k] = v;
   }
-
-  // Default: disable 100-continue unless caller explicitly set otherwise
-  if (headers["expect"] === undefined) headers["expect"] = "";
 
   if (body == null) return { bodyOut: undefined, headersOut: headers };
 
-  const ct = headers["content-type"];
+  const ctKey = Object.keys(headers).find(
+    (k) => k.toLowerCase() === "content-type"
+  );
+  const ct = ctKey ? headers[ctKey] : undefined;
 
-  // Stream passthrough (NDJSON typical)
-  if (typeof (body as any)?.pipe === "function") {
-    if (!ct) headers["content-type"] = "application/x-ndjson";
-    return { bodyOut: body as any, headersOut: headers };
-  }
-
-  // String/Buffer/Uint8Array: set length
+  // Strings and binary-like types are pass-through
   if (
     typeof body === "string" ||
-    Buffer.isBuffer(body) ||
-    body instanceof Uint8Array
+    body instanceof Uint8Array ||
+    body instanceof ArrayBuffer ||
+    body instanceof URLSearchParams ||
+    (typeof FormData !== "undefined" && body instanceof FormData) ||
+    (typeof Blob !== "undefined" && body instanceof Blob) ||
+    (typeof (globalThis as any).ReadableStream !== "undefined" &&
+      body instanceof (globalThis as any).ReadableStream)
   ) {
-    const len =
-      typeof body === "string"
-        ? Buffer.byteLength(body)
-        : Buffer.isBuffer(body)
-        ? body.length
-        : (body as Uint8Array).byteLength;
-    headers["content-length"] = String(len);
-    if (!ct && typeof body === "string")
-      headers["content-type"] = "application/json; charset=utf-8";
     return { bodyOut: body as any, headersOut: headers };
   }
 
   // Plain object/array → JSON
   if (!ct || isJsonContentType(ct)) {
     const text = JSON.stringify(body);
-    headers["content-type"] = ct || "application/json; charset=utf-8";
-    headers["content-length"] = String(Buffer.byteLength(text));
+    headers[ctKey || "Content-Type"] = ct || "application/json; charset=utf-8";
     return { bodyOut: text, headersOut: headers };
   }
 
@@ -204,15 +192,12 @@ export async function callBySlug<TResp = unknown, TBody = unknown>(
   const reqOpts: S2SRequestOptions<any> = {
     method,
     headers: headersOut,
-    body: bodyOut as any,
+    body: method === "GET" || method === "HEAD" ? undefined : (bodyOut as any),
     timeoutMs: effectiveTimeoutMs,
-    // Forward any extra S2S claims down to the mint layer
     s2s: opts.s2s,
   };
 
   try {
-    // NOTE: httpClientBySlug should resolve via the gateway’s internal proxy
-    // per ADR-0034. Ensure that module honors GATEWAY_INTERNAL_BASE_URL.
     return await s2sRequestBySlug<TResp, any>(slug, ver, pathWithQs, reqOpts);
   } catch (err) {
     logger.error(

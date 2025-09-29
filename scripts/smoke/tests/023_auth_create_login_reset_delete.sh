@@ -1,12 +1,12 @@
 # PATH: scripts/smoke/tests/023_auth_create_login_reset_delete.sh
 #!/usr/bin/env bash
 # Auth full flow VIA GATEWAY (4000):
-#   1) POST /api/auth.V1/auth/create
-#   2) POST /api/auth.V1/auth/login
-#   3) POST /api/auth.V1/auth/password_reset
-#   4) DELETE /api/user.V1/users/:id   (cleanup)
+#   1) POST /api/auth/V1/auth/create
+#   2) POST /api/auth/V1/auth/login
+#   3) POST /api/auth/V1/auth/password_reset
+#   4) DELETE /api/user/V1/users/:id   (cleanup)
 #
-# Conforms to APR-0029 (versioned edge path) and uses gateway_req for headers.
+# Conforms to APR-0029 (versioned edge path, SLASH form) and uses gateway_req for headers.
 
 t23() {
   set -euo pipefail
@@ -14,11 +14,11 @@ t23() {
   local gw="${GW:-http://127.0.0.1:4000}"
   local max_time="${NV_CURL_MAXTIME:-15}"
 
-  local create_url="$gw/api/auth.V1/auth/create"
-  local login_url="$gw/api/auth.V1/auth/login"
-  local reset_url="$gw/api/auth.V1/auth/password_reset"
+  local create_url="$gw/api/auth/V1/auth/create"
+  local login_url="$gw/api/auth/V1/auth/login"
+  local reset_url="$gw/api/auth/V1/auth/password_reset"
 
-  local user_base="$gw/api/user.V1/users"
+  local user_base="$gw/api/user/V1/users"
 
   # Unique email
   local suffix email pass1 pass2

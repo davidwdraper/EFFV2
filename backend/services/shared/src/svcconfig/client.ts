@@ -1,277 +1,371 @@
+// backend/services/shared/src/svcconfig/client.ts
 /**
  * NowVibin — Shared
- * File: backend/services/shared/src/svcconfig/client.ts
  *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
  * - ADRs:
+ *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md
  *   - docs/adr/0033-centralized-env-loading-and-deferred-config.md
  *   - docs/adr/0034-centralized-discovery-dual-port-internal-jwks.md
- *   - docs/adr/0036-single-s2s-client-kms-only-callBySlug.md
  *
- * Purpose
- * - Provide an in-process svcconfig snapshot mirror used by gateway + workers.
- * - Start **gracefully** even if no authority or LKG is present:
- *     1) If an authority URL is provided, fetch from it.
- *     2) Else, load from LKG (Last Known Good).
- *     3) Else, start with an EMPTY snapshot (routes will 502 “unknown slug”),
- *        but the process **does not crash**. Operators can seed LKG or bring up
- *        authority and hot-update via Redis.
+ * Purpose:
+ * - Gateway: holds full in-memory mirror (canonical contract).
+ * - Other services: resolve slugs via gateway internal (no full map).
  *
- * Contract
- * - No mandatory SVCCONFIG_BASE_URL.
- * - No hidden fallbacks or import-time crashes.
- * - Optional Redis hot updates; payload must provide data (we never fetch “because Redis said so”).
+ * Notes:
+ * - Authority currently emits a lean record (no policy/etag/configRevision).
+ *   We transform it into the canonical gateway contract on ingest.
+ * - No import-time env reads; read at call time.
  */
 
-import fsp from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
+import axios from "axios";
+import { z } from "zod";
 import {
   SvcConfigSchema,
   type SvcConfig,
+  type RoutePolicy,
+  UserAssertionMode,
 } from "../contracts/svcconfig.contract";
+import { s2sAuthHeader } from "../utils/s2s/s2sAuthHeader";
+import { logger } from "../utils/logger";
 
-const LKG_PATH =
-  process.env.SVCCONFIG_LKG_PATH ||
-  path.resolve(process.cwd(), ".lkg/svcconfig.json");
-const REDIS_URL = (process.env.REDIS_URL || "").trim();
-const CHANNEL = process.env.SVCCONFIG_CHANNEL || "svcconfig:changed";
+// ──────────────────────────────────────────────────────────────────────────────
+// Types & schemas
 
-// Optional authority (HTTP). If omitted, we never perform HTTP.
-const AUTH_BASE = (process.env.SVCCONFIG_BASE_URL || "").trim();
-const AUTH_LIST_PATH = process.env.SVCCONFIG_LIST_PATH || "";
-const AUTH_CANDIDATES = [
-  "/api/svcconfig",
-  "/svcconfig",
-  "/api/config",
-  "/api/services",
-  "/snapshot",
-  "/api/snapshot",
-];
+// Matches what the authority returns today.
+const AuthorityItemSchema = z.object({
+  slug: z.string().min(1),
+  version: z.number().int().min(1), // numeric in DB
+  enabled: z.boolean(),
+  allowProxy: z.boolean(),
+  baseUrl: z.string().url(),
+  outboundApiPrefix: z.string().min(1).default("/api"),
+  healthPath: z.string().min(1).default("/health/live"),
+  exposeHealth: z.boolean().default(true),
+  protectedGetPrefixes: z.array(z.string()).default([]),
+  publicPrefixes: z.array(z.string()).default([]),
+  updatedAt: z.string().min(1).optional(), // ISO
+  updatedBy: z.string().min(1).optional(),
+  notes: z.string().optional(),
+});
 
-const joinUrl = (b: string, s: string) =>
-  `${b.replace(/\/+$/, "")}${s.startsWith("/") ? s : `/${s}`}`;
+type AuthorityItem = z.infer<typeof AuthorityItemSchema>;
 
-// ── State
+// ──────────────────────────────────────────────────────────────────────────────
+// Snapshot state (gateway only)
+
 export type SvcconfigSnapshot = {
-  version: string;
-  updatedAt: number;
-  services: Record<string, SvcConfig>;
-};
-type State = {
-  versionCounter: number;
-  snapshot: SvcconfigSnapshot | null;
-  lastRefreshMs: number;
-  source: "empty" | "lkg" | "authority" | "redis";
-};
-const STATE: State = {
-  versionCounter: 0,
-  snapshot: null,
-  lastRefreshMs: 0,
-  source: "empty",
+  version: string; // monotonic counter as string
+  updatedAt: number; // epoch ms
+  services: Record<string, SvcConfig>; // keyed by slug (lowercase)
 };
 
-// ── Coercion
-function mapServices(obj: Record<string, unknown>): Record<string, SvcConfig> {
-  const out: Record<string, SvcConfig> = {};
-  for (const v of Object.values(obj)) {
-    const p = SvcConfigSchema.safeParse(v);
-    if (!p.success || !p.data?.slug) continue;
-    const slug = String(p.data.slug).toLowerCase();
-    out[slug] = { ...p.data, slug };
-  }
-  return out;
+let SNAPSHOT: SvcconfigSnapshot | null = null;
+let versionCounter = 0;
+let inflight: Promise<void> | null = null;
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Small utils
+
+function need(name: string): string {
+  const v = process.env[name];
+  if (!v || !String(v).trim())
+    throw new Error(`Missing required env var: ${name}`);
+  return String(v).trim();
 }
-function coerceItemsToServices(items: unknown): Record<string, SvcConfig> {
-  if (!Array.isArray(items)) return {};
-  const out: Record<string, SvcConfig> = {};
-  for (const raw of items) {
-    const p = SvcConfigSchema.safeParse(raw);
-    if (p.success && p.data?.slug) {
-      const slug = String(p.data.slug).toLowerCase();
-      out[slug] = { ...p.data, slug };
-    }
-  }
-  return out;
+function maybe(name: string): string | undefined {
+  const v = process.env[name];
+  return v && String(v).trim() ? String(v).trim() : undefined;
 }
-function coerceAnyToServices(parsed: any): Record<string, SvcConfig> {
-  if (parsed?.snapshot?.services)
-    return Array.isArray(parsed.snapshot.services)
-      ? coerceItemsToServices(parsed.snapshot.services)
-      : mapServices(parsed.snapshot.services);
-  if (parsed?.services)
-    return Array.isArray(parsed.services)
-      ? coerceItemsToServices(parsed.services)
-      : mapServices(parsed.services);
-  if (Array.isArray(parsed?.items)) return coerceItemsToServices(parsed.items);
-  if (Array.isArray(parsed)) return coerceItemsToServices(parsed);
-  return {};
+function join(base: string, seg: string): string {
+  const b = base.replace(/\/+$/, "");
+  const s = seg.startsWith("/") ? seg : `/${seg}`;
+  return `${b}${s}`;
+}
+function versionLabel(v: number): string {
+  if (!Number.isInteger(v) || v < 1) throw new Error(`Invalid version: ${v}`);
+  return `V${v}`;
+}
+function normalizePrefix(prefix: string, apiPrefix: string): string {
+  const a = apiPrefix.endsWith("/") ? apiPrefix.slice(0, -1) : apiPrefix;
+  return prefix.startsWith("/") ? `${a}${prefix}` : `${a}/${prefix}`;
 }
 
-// ── Persistence
-async function writeLKG(snapshot: SvcconfigSnapshot): Promise<void> {
-  await fsp.mkdir(path.dirname(LKG_PATH), { recursive: true });
-  await fsp.writeFile(
-    LKG_PATH,
-    JSON.stringify({ v: 1, snapshot }, null, 2),
-    "utf8"
-  );
-}
-async function readLKG(): Promise<SvcconfigSnapshot | null> {
-  try {
-    const raw = await fsp.readFile(LKG_PATH, "utf8");
-    const parsed = JSON.parse(raw) as any;
-    const services = coerceAnyToServices(parsed);
-    if (!services || Object.keys(services).length === 0) return null;
-    return {
-      version: String(parsed?.version ?? 0),
-      updatedAt: Date.now(),
-      services,
-    };
-  } catch {
-    return null;
+// Build a minimal, deterministic RoutePolicy from authority prefixes.
+function synthesizePolicy(ai: AuthorityItem): RoutePolicy {
+  const U = UserAssertionMode.enum;
+  const rules = [];
+
+  // Health (if exposed), GET-only and public.
+  if (ai.exposeHealth) {
+    rules.push({
+      method: "GET",
+      path: ai.healthPath,
+      public: true,
+      userAssertion: U.optional,
+    });
   }
+
+  // Public prefixes -> GET public
+  for (const p of ai.publicPrefixes) {
+    rules.push({
+      method: "GET",
+      path: normalizePrefix(p, ai.outboundApiPrefix),
+      public: true,
+      userAssertion: U.optional,
+    });
+  }
+
+  // Protected GET prefixes -> GET protected
+  for (const p of ai.protectedGetPrefixes) {
+    rules.push({
+      method: "GET",
+      path: normalizePrefix(p, ai.outboundApiPrefix),
+      public: false,
+      userAssertion: U.required,
+    });
+  }
+
+  return {
+    revision: 1,
+    defaults: {
+      public: false,
+      userAssertion: U.required,
+    },
+    rules,
+  };
 }
-function repopulateFromServices(
-  services: Record<string, SvcConfig>,
-  source: State["source"]
-) {
-  STATE.versionCounter++;
-  STATE.snapshot = {
-    version: String(STATE.versionCounter),
+
+// Synthesize a stable etag from key fields (not cryptographic; just versioned).
+function synthesizeEtag(ai: AuthorityItem): string {
+  // slug|v|updatedAt|enabled|allowProxy
+  const parts = [
+    ai.slug.toLowerCase(),
+    String(ai.version),
+    ai.updatedAt ?? "na",
+    ai.enabled ? "1" : "0",
+    ai.allowProxy ? "1" : "0",
+  ];
+  return parts.join("|");
+}
+
+// Transform authority item -> canonical gateway SvcConfig
+function toGatewayConfig(ai: AuthorityItem): SvcConfig {
+  const base: SvcConfig = {
+    slug: ai.slug.toLowerCase(),
+    version: ai.version, // numeric in DB
+    baseUrl: ai.baseUrl,
+    outboundApiPrefix: ai.outboundApiPrefix || "/api",
+    enabled: ai.enabled,
+    allowProxy: ai.allowProxy,
+
+    // Canonical fields required by the gateway contract:
+    configRevision: 1, // greenfield default until authority supplies it
+    policy: synthesizePolicy(ai),
+    etag: synthesizeEtag(ai),
+
+    updatedAt: ai.updatedAt ?? new Date().toISOString(),
+  };
+
+  // Validate against canonical contract (throws if we missed something)
+  const parsed = SvcConfigSchema.parse(base);
+  return parsed;
+}
+
+function repopulate(items: SvcConfig[]) {
+  const services: Record<string, SvcConfig> = {};
+  for (const it of items) services[it.slug.toLowerCase()] = it;
+  versionCounter++;
+  SNAPSHOT = {
+    version: String(versionCounter),
     updatedAt: Date.now(),
     services,
   };
-  STATE.lastRefreshMs = Date.now();
-  STATE.source = source;
-}
-function repopulateEmpty() {
-  STATE.versionCounter++;
-  STATE.snapshot = {
-    version: String(STATE.versionCounter),
-    updatedAt: Date.now(),
-    services: {},
-  };
-  STATE.lastRefreshMs = Date.now();
-  STATE.source = "empty";
 }
 
-// ── Optional authority
-async function fetchFromAuthority(): Promise<Record<string, SvcConfig> | null> {
-  if (!AUTH_BASE) return null;
-  try {
-    const { default: axios } = await import("axios");
-    const endpoints = AUTH_LIST_PATH ? [AUTH_LIST_PATH] : AUTH_CANDIDATES;
-    for (const ep of endpoints) {
-      const url = joinUrl(AUTH_BASE, ep);
-      try {
-        const r = await axios.get(url, {
-          timeout: 3000,
-          validateStatus: () => true,
-        });
-        if (r.status < 200 || r.status >= 300) continue;
-        const services = coerceAnyToServices(r.data);
-        if (Object.keys(services).length) {
-          console.info("[svcconfigClient] authority discovered", {
-            url,
-            count: Object.keys(services).length,
-          });
-          return services;
-        }
-      } catch {
-        /* try next */
+// ──────────────────────────────────────────────────────────────────────────────
+// Authority fetch (gateway only)
+
+async function fetchAuthorityListTransformed(): Promise<SvcConfig[]> {
+  const BASE =
+    maybe("SVCCONFIG_AUTHORITY_BASE_URL") ?? need("SVCCONFIG_BASE_URL");
+  const LIST = need("SVCCONFIG_LIST_PATH");
+  const url = join(BASE, LIST);
+
+  const r = await axios.get(url, {
+    timeout: Number(process.env.SVCCONFIG_TIMEOUT_MS || 3000),
+    headers: { ...s2sAuthHeader("svcconfig") },
+    validateStatus: () => true,
+  });
+  if (r.status < 200 || r.status >= 300) {
+    throw new Error(`svcconfig list failed: HTTP ${r.status}`);
+  }
+
+  const rawItems = Array.isArray(r.data?.items) ? r.data.items : [];
+  const accepted: SvcConfig[] = [];
+  const errors: any[] = [];
+  let sampleRaw: any | undefined;
+
+  for (const it of rawItems) {
+    const aiP = AuthorityItemSchema.safeParse(it);
+    if (!aiP.success) {
+      errors.push(aiP.error?.issues?.[0]);
+      if (!sampleRaw) {
+        sampleRaw = Object.fromEntries(
+          Object.entries(it || {}).map(([k, v]) => [k, typeof v])
+        );
+      }
+      continue;
+    }
+    try {
+      accepted.push(toGatewayConfig(aiP.data));
+    } catch (e) {
+      errors.push((e as Error).message);
+      if (!sampleRaw) {
+        const v = aiP.data;
+        sampleRaw = Object.fromEntries(
+          Object.entries(v).map(([k, val]) => [k, typeof val])
+        );
       }
     }
-    console.warn(
-      "[svcconfigClient] authority reachable but no recognized endpoints",
-      { base: AUTH_BASE }
-    );
-    return null;
-  } catch {
-    return null;
   }
+
+  logger.debug(
+    {
+      base: BASE,
+      path: LIST,
+      received: rawItems.length,
+      accepted: accepted.length,
+      sampleErr: errors[0],
+      sampleRawTypes: sampleRaw,
+    },
+    "[svcconfigClient] authority parse/transform stats"
+  );
+
+  if (accepted.length === 0)
+    throw new Error("svcconfig list contained 0 valid items");
+  return accepted;
 }
 
-// ── Public API
-export async function startSvcconfigMirror(): Promise<void> {
-  const fromAuth = await fetchFromAuthority();
-  if (fromAuth) {
-    repopulateFromServices(fromAuth, "authority");
-    try {
-      await writeLKG(STATE.snapshot!);
-    } catch {}
-  } else {
-    const lkg = await readLKG();
-    if (lkg) repopulateFromServices(lkg.services, "lkg");
-    else {
-      repopulateEmpty();
-      console.warn(
-        "[svcconfigClient] no authority and no LKG — starting with EMPTY snapshot"
-      );
-    }
-  }
+// ──────────────────────────────────────────────────────────────────────────────
+// Public API — Gateway: full mirror
 
-  if (REDIS_URL) {
+export async function startAuthorityMirror(): Promise<void> {
+  if (inflight) return inflight; // idempotent
+  inflight = (async () => {
     try {
-      const { createClient } = await import("redis");
-      const client = createClient({ url: REDIS_URL });
-      await client.connect();
-      await client.subscribe(CHANNEL, async (payload) => {
-        try {
-          const msg = JSON.parse(payload);
-          const next = coerceAnyToServices(msg);
-          if (!next || Object.keys(next).length === 0) {
-            const maybe = await fetchFromAuthority();
-            if (maybe && Object.keys(maybe).length) {
-              repopulateFromServices(maybe, "authority");
-              try {
-                await writeLKG(STATE.snapshot!);
-              } catch {}
-            } else {
-              console.warn(
-                "[svcconfigClient] redis payload ignored (no services)"
-              );
-            }
-            return;
-          }
-          repopulateFromServices(next, "redis");
-          try {
-            await writeLKG(STATE.snapshot!);
-          } catch {}
-        } catch (err) {
-          console.warn("[svcconfigClient] redis update ignored", { err });
-        }
-      });
-      client.on("error", (err) =>
-        console.warn("[svcconfigClient] redis error", { err })
+      const items = await fetchAuthorityListTransformed();
+      repopulate(items);
+      logger.info(
+        { count: Object.keys(SNAPSHOT!.services).length },
+        "[svcconfigClient] snapshot populated from authority"
       );
-      console.info("[svcconfigClient] redis subscription enabled", {
-        channel: CHANNEL,
-      });
     } catch (err) {
-      console.warn(
-        "[svcconfigClient] redis not available; hot updates disabled",
-        { err: (err as Error)?.message || String(err) }
+      logger.warn(
+        { err: String(err) },
+        "[svcconfigClient] authority fetch failed"
       );
+    } finally {
+      inflight = null;
     }
-  } else {
-    console.info("[svcconfigClient] redis disabled; static snapshot in use");
+  })();
+  return inflight;
+}
+
+// Back-compat alias for older callers
+export const startSvcconfigMirror = startAuthorityMirror;
+
+// Current snapshot (may be null before first successful fetch)
+export function getSvcconfigSnapshot(): SvcconfigSnapshot | null {
+  return SNAPSHOT;
+}
+
+export const svcconfigMirror = {
+  current(): SvcconfigSnapshot | null {
+    return SNAPSHOT;
+  },
+  baseUrlOf(slug: string): string | undefined {
+    const s = SNAPSHOT?.services?.[String(slug || "").toLowerCase()];
+    return s?.baseUrl;
+  },
+  get(slug: string): SvcConfig | undefined {
+    return SNAPSHOT?.services?.[String(slug || "").toLowerCase()];
+  },
+};
+
+// ──────────────────────────────────────────────────────────────────────────────
+// LKG helpers (gateway only)
+
+export async function loadLKGSnapshot(lkgPathAbs: string): Promise<boolean> {
+  try {
+    const raw = await fs.readFile(lkgPathAbs, "utf8");
+    const json = JSON.parse(raw);
+    const items = Object.values(json?.services ?? {});
+    const parsed: SvcConfig[] = [];
+    for (const it of items) {
+      const p = SvcConfigSchema.safeParse(it);
+      if (p.success)
+        parsed.push({ ...p.data, slug: p.data.slug.toLowerCase() });
+    }
+    if (parsed.length === 0) throw new Error("LKG contained 0 valid items");
+    repopulate(parsed);
+    logger.info({ lkgPathAbs }, "[svcconfigClient] snapshot loaded from LKG");
+    return true;
+  } catch (err) {
+    logger.warn(
+      { lkgPathAbs, err: String(err) },
+      "[svcconfigClient] LKG load failed"
+    );
+    return false;
   }
 }
 
-export function getSvcconfigSnapshot(): SvcconfigSnapshot | null {
-  return STATE.snapshot;
+export async function saveLKGSnapshotIfFresh(
+  lkgPathAbs: string
+): Promise<void> {
+  if (!SNAPSHOT) return;
+  try {
+    await fs.mkdir(path.dirname(lkgPathAbs), { recursive: true });
+    await fs.writeFile(lkgPathAbs, JSON.stringify(SNAPSHOT, null, 2), "utf8");
+  } catch (err) {
+    logger.warn(
+      { lkgPathAbs, err: String(err) },
+      "[svcconfigClient] LKG save failed (non-fatal)"
+    );
+  }
 }
 
-export function getSvcconfigReadiness() {
-  const snap = STATE.snapshot;
-  const now = Date.now();
-  const ageMs = snap ? now - snap.updatedAt : Number.POSITIVE_INFINITY;
-  return {
-    ok: !!snap && Object.keys(snap.services).length > 0,
-    source: STATE.source,
-    version: snap?.version ?? null,
-    ageMs: Number.isFinite(ageMs) ? ageMs : null,
-    services: snap ? Object.keys(snap.services) : [],
-  };
+// ──────────────────────────────────────────────────────────────────────────────
+// Public API — Leaf services: gateway-backed resolver (skinny; no full map)
+
+export async function startGatewayBackedResolver(): Promise<void> {
+  // no-op; resolution is lazy per call in httpClientBySlug
+}
+
+export async function resolveViaGateway(
+  slug: string,
+  version?: string
+): Promise<SvcConfig> {
+  const base = need("GATEWAY_INTERNAL_BASE_URL"); // e.g., http://127.0.0.1:4001
+  const target = join(
+    base,
+    `/internal/svcconfig/resolve/${encodeURIComponent(slug)}${
+      version ? `/${encodeURIComponent(versionLabel(Number(version)))}` : ""
+    }`
+  );
+  const r = await axios.get(target, {
+    timeout: Number(process.env.SVCCONFIG_TIMEOUT_MS || 3000),
+    headers: { ...s2sAuthHeader("gateway") },
+    validateStatus: () => true,
+  });
+  if (r.status < 200 || r.status >= 300) {
+    throw new Error(`gateway resolve failed: HTTP ${r.status}`);
+  }
+  const parsed = SvcConfigSchema.safeParse(r.data);
+  if (!parsed.success)
+    throw new Error("gateway resolve returned invalid SvcConfig");
+  return { ...parsed.data, slug: parsed.data.slug.toLowerCase() };
 }

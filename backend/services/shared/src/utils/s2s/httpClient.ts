@@ -1,3 +1,4 @@
+// backend/services/shared/src/utils/s2s/httpClient.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
@@ -12,39 +13,41 @@
  *   This module just performs the HTTP request with whatever headers it’s given.
  *
  * Notes:
- * - Inside shared, use **relative** imports to avoid self-aliasing.
- * - Body may be string/Buffer/Uint8Array/Readable; we don’t re-serialize.
+ * - Uses global WHATWG fetch (Node ≥18). No Node streams as bodies; only Web-supported types.
+ * - Body may be string/Uint8Array/Blob/Web ReadableStream; we don’t re-serialize unless JSON CT.
+ * - Strips hop-by-hop headers (e.g., Expect/Connection) that undici/fetch do not support.
  */
 
 export type MintS2SOptions = {
-  /**
-   * Extra claims to merge into the S2S JWT payload.
-   * Example: { nv: { purpose: "audit_wal_drain" } }
-   * NOTE: This is carried through S2SRequestOptions for typing only.
-   *       httpClient.ts does not mint; httpClientBySlug.ts reads and mints.
-   */
+  /** Extra claims to merge into the S2S JWT payload (typed pass-through only). */
   extra?: Record<string, unknown>;
 };
 
 export interface S2SRequestOptions<TBody = unknown> {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
   /**
-   * Body may already be a string/Buffer/Uint8Array/Readable from upper layers.
-   * We pass through as-is and do NOT JSON.stringify again.
+   * Body:
+   * - Allowed: string | Uint8Array | ArrayBuffer | URLSearchParams | FormData | Blob | ReadableStream (web)
+   * - NOT allowed: Node.js Readable streams (will throw UND_ERR_NOT_SUPPORTED via undici/fetch).
    */
-  body?: TBody | string | Buffer | Uint8Array | import("node:stream").Readable;
-  /** Headers to send (case-preserved); may already include Content-Length. */
+  body?:
+    | TBody
+    | string
+    | Uint8Array
+    | ArrayBuffer
+    | URLSearchParams
+    | FormData
+    | Blob
+    | ReadableStream<any>;
+  /** Headers to send (case-preserved). */
   headers?: Record<string, string>;
   /** Request timeout in ms (defaults below). */
   timeoutMs?: number;
   /** Optional end-user assertion to forward (if present). */
   userAssertionJwt?: string;
-  /**
-   * S2S mint options (carried for type compatibility).
-   * httpClientBySlug.ts reads this to mint via KMS. This shim ignores it.
-   */
+  /** S2S mint options (typed pass-through only). */
   s2s?: MintS2SOptions;
-  /** Optional low-level HTTP toggles (reserved for future use). */
+  /** Optional low-level HTTP toggles (reserved). */
   http?: { http1?: boolean };
 }
 
@@ -61,6 +64,28 @@ const DEFAULT_S2S_TIMEOUT_MS = Number(
   process.env.TIMEOUT_S2S_DEFAULT_MS ?? 6000
 );
 
+function sanitizeHeaders(
+  input: Record<string, string>
+): Record<string, string> {
+  // Remove hop-by-hop and unsupported headers for fetch/undici
+  const drop = new Set([
+    "connection",
+    "proxy-connection",
+    "transfer-encoding",
+    "keep-alive",
+    "upgrade",
+    "te",
+    "expect", // fetch/undici does not support 100-continue here; caused UND_ERR_NOT_SUPPORTED
+  ]);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input)) {
+    const key = k.toLowerCase();
+    if (drop.has(key)) continue;
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+
 export async function s2sRequest<TResp = unknown, TBody = unknown>(
   url: string,
   opts: S2SRequestOptions<TBody> = {}
@@ -71,47 +96,76 @@ export async function s2sRequest<TResp = unknown, TBody = unknown>(
       ? opts.timeoutMs
       : DEFAULT_S2S_TIMEOUT_MS;
 
-  // Build headers (copy-through). Do NOT mint Authorization here.
-  const headers: Record<string, string> = {};
+  // Build headers (copy-through then sanitize). Do NOT mint Authorization here.
+  const rawHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(opts.headers ?? {})) {
-    if (typeof v === "string") headers[k] = v;
+    if (typeof v === "string") rawHeaders[k] = v;
   }
 
   // Optionally forward end-user assertion if provided by caller
   if (opts.userAssertionJwt) {
-    headers["X-NV-User-Assertion"] = opts.userAssertionJwt;
+    rawHeaders["X-NV-User-Assertion"] = opts.userAssertionJwt;
   }
 
-  const method = opts.method ?? "GET";
+  const headers = sanitizeHeaders(rawHeaders);
+
+  const method = (opts.method ?? "GET") as NonNullable<
+    S2SRequestOptions["method"]
+  >;
 
   // Prepare body. IMPORTANT:
-  // If body is already a string/Buffer/Uint8Array/Readable, pass through as-is.
-  // Only JSON.stringify when caller set a JSON content-type and provided a plain object.
-  let body: BodyInit | undefined;
+  // - Never send a body with GET/HEAD.
+  // - Only JSON.stringify when caller set a JSON content-type and provided a plain object.
+  let body: any | undefined;
   const hasCT = Object.keys(headers).some(
     (k) => k.toLowerCase() === "content-type"
   );
+
   if (opts.body !== undefined && !["GET", "HEAD"].includes(method)) {
-    // Respect existing Content-Type if provided
-    if (!hasCT) headers["Content-Type"] = "application/json; charset=utf-8";
     const ct = Object.entries(headers).find(
       ([k]) => k.toLowerCase() === "content-type"
     )?.[1];
 
     const isString = typeof opts.body === "string";
-    const isBuffer =
-      typeof Buffer !== "undefined" && Buffer.isBuffer(opts.body);
-    const isUint8 = opts.body instanceof Uint8Array;
-    const isReadable = typeof (opts.body as any)?.pipe === "function"; // Node Readable stream
+    const isUint8 =
+      typeof Uint8Array !== "undefined" && opts.body instanceof Uint8Array;
+    const isArrayBuf =
+      typeof ArrayBuffer !== "undefined" && opts.body instanceof ArrayBuffer;
+    const isWebStream =
+      typeof (globalThis as any).ReadableStream !== "undefined" &&
+      opts.body instanceof (globalThis as any).ReadableStream;
+    const isBlob =
+      typeof (globalThis as any).Blob !== "undefined" &&
+      opts.body instanceof (globalThis as any).Blob;
+    const isURLSearchParams =
+      typeof URLSearchParams !== "undefined" &&
+      opts.body instanceof URLSearchParams;
+    const isFormData =
+      typeof FormData !== "undefined" && opts.body instanceof FormData;
 
-    if (isString || isBuffer || isUint8 || isReadable) {
-      // Body already serialized or is a stream; pass through as-is.
-      body = opts.body as any;
+    if (
+      isString ||
+      isUint8 ||
+      isArrayBuf ||
+      isWebStream ||
+      isBlob ||
+      isURLSearchParams ||
+      isFormData
+    ) {
+      body = opts.body as any; // pass-through
     } else if (ct && ct.toLowerCase().startsWith("application/json")) {
-      // Plain object + JSON CT: serialize once here.
       body = JSON.stringify(opts.body as any);
+    } else if (!hasCT) {
+      // Default to JSON if no CT provided and body is a plain object/array
+      const t = typeof opts.body;
+      if (t === "object") {
+        headers["Content-Type"] = "application/json; charset=utf-8";
+        body = JSON.stringify(opts.body as any);
+      } else {
+        body = String(opts.body);
+      }
     } else {
-      // Non-JSON content: pass through (caller is responsible for correctness).
+      // Unknown combination; pass through — fetch may still accept it if compatible.
       body = opts.body as any;
     }
   }
@@ -121,7 +175,6 @@ export async function s2sRequest<TResp = unknown, TBody = unknown>(
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let signal: AbortSignal;
   if (typeof (AbortSignal as any)?.timeout === "function") {
-    // Node 18.17+ / modern runtimes
     signal = (AbortSignal as any).timeout(effectiveTimeout);
   } else {
     controller = new AbortController();

@@ -1,10 +1,11 @@
+// backend/services/gateway/src/routes/internal/proxy.ts
 /**
  * NowVibin — Gateway (Internal)
  * File: backend/services/gateway/src/routes/internal/proxy.ts
  *
  * Purpose:
  * - Internal S2S proxy: ANY /internal/call/:slug/* → forwards to resolved service.
- * - Factory export to avoid TS2742 (portable types). Fail-closed; no env fallbacks.
+ * - Fail-closed; no env fallbacks. Uses svcconfig mirror (or snapshot shim).
  */
 
 import type { Request } from "express";
@@ -12,23 +13,34 @@ import { Router } from "express";
 import { Readable } from "node:stream";
 import { mintS2S } from "@eff/shared/src/utils/s2s/mintS2S";
 
-// Defensive getter for svcconfig mirror (no env fallbacks)
-function getMirror():
-  | { baseUrlOf?: (slug: string) => string | undefined }
-  | undefined {
+// Timeout for upstream calls (ms)
+const TIMEOUT_MS = Number(process.env.INTERNAL_PROXY_TIMEOUT_MS ?? 6000);
+
+// --- svcconfig access (mirror first, snapshot shim second) ---
+function getMirrorApi(): { baseUrlOf: (slug: string) => string | undefined } {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const mod = require("@eff/shared/src/svcconfig/client");
-  return (
-    mod?.svcconfigMirror?.current?.() ??
-    mod?.mirror?.current?.() ??
-    (typeof mod?.current === "function" ? mod.current() : undefined) ??
-    (typeof mod?.default?.current === "function"
-      ? mod.default.current()
-      : undefined)
-  );
+  // Prefer real mirror object
+  if (mod?.svcconfigMirror?.baseUrlOf) return mod.svcconfigMirror as any;
+  if (mod?.mirror?.baseUrlOf) return mod.mirror as any;
+
+  // Fallback shim over snapshot
+  const getSnap =
+    mod?.getSvcconfigSnapshot ??
+    mod?.current ??
+    mod?.default?.current ??
+    (() => null);
+
+  return {
+    baseUrlOf(slug: string) {
+      const snap = getSnap?.();
+      const s = snap?.services?.[String(slug || "").toLowerCase()];
+      return s?.baseUrl;
+    },
+  };
 }
 
-// Compute remainder after ":slug" without using req.params[0]
+// Compute remainder after ":slug" without using params[0] typings
 function extractTail(req: Request, slug: string): string {
   const base = `/${slug}`; // router is mounted at "/internal/call"
   let tail = req.path.startsWith(base) ? req.path.slice(base.length) : "";
@@ -37,16 +49,74 @@ function extractTail(req: Request, slug: string): string {
   return tail;
 }
 
+// Drop hop-by-hop / unsupported headers for fetch/undici
+function sanitizeHeaders(input: Record<string, string | string[] | undefined>) {
+  const drop = new Set([
+    "connection",
+    "proxy-connection",
+    "transfer-encoding",
+    "keep-alive",
+    "upgrade",
+    "te",
+    "expect",
+    "host",
+  ]);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input)) {
+    const key = k.toLowerCase();
+    if (drop.has(key)) continue;
+    if (Array.isArray(v)) {
+      if (v.length) out[k] = v.join(", ");
+    } else if (v != null) {
+      out[k] = String(v);
+    }
+  }
+  return out;
+}
+
+// Buffer request body into a fetch-compatible type (string/Uint8Array)
+// Never used for GET/HEAD.
+async function bufferBody(
+  req: Request
+): Promise<string | Uint8Array | undefined> {
+  // If body middleware already parsed JSON, reuse it
+  const ct = String(req.headers["content-type"] || "").toLowerCase();
+  const method = String(req.method || "GET").toUpperCase();
+  if (method === "GET" || method === "HEAD") return undefined;
+
+  if (
+    req.body &&
+    typeof req.body === "object" &&
+    ct.startsWith("application/json")
+  ) {
+    return JSON.stringify(req.body);
+  }
+
+  // Otherwise consume the raw stream
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(
+      typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer)
+    );
+  }
+  if (!chunks.length) return undefined;
+  return Buffer.concat(chunks);
+}
+
 export function createProxyRouter(): import("express").Router {
   const r = Router();
 
-  // Keep the wildcard; typings don’t expose params[0], so we avoid it.
+  // ANY method under /internal/call/:slug/*
   r.all("/:slug/*", async (req, res) => {
-    const slug = String(req.params.slug || "").trim();
-    if (!slug) return res.status(400).json({ error: "missing slug" });
+    const slug = String(req.params.slug || "")
+      .trim()
+      .toLowerCase();
+    if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
+      return res.status(404).json({ error: "unknown_slug", detail: slug });
+    }
 
-    const m = getMirror();
-    const base = m?.baseUrlOf?.(slug);
+    const mirror = getMirrorApi();
+    const base = mirror.baseUrlOf(slug);
     if (!base) {
       return res.status(502).json({
         error: "unresolvable_slug",
@@ -56,92 +126,91 @@ export function createProxyRouter(): import("express").Router {
 
     const tail = extractTail(req, slug);
     const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
-    const target = `${base.replace(/\/+$/, "")}${tail}${qs}`;
+    const target = `${base.replace(/\/+$/, "")}${tail}${qs}`.replace(
+      /([^:]\/)\/+/g,
+      "$1"
+    );
 
-    // Copy headers except Authorization; normalize to strings
-    const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      const key = k.toLowerCase();
-      if (key === "authorization") continue;
-      if (Array.isArray(v)) headers[key] = v.join(", ");
-      else if (v != null) headers[key] = String(v);
-    }
-
-    // Mint S2S for this hop (internal audience/issuer only)
-    headers["authorization"] = `Bearer ${await mintS2S({
+    // Sanitize inbound headers and mint S2S
+    const headers = sanitizeHeaders(req.headers);
+    delete headers.authorization; // never forward client auth
+    headers.authorization = `Bearer ${await mintS2S({
       extra: { nv: { proxiedBy: "gateway", purpose: "internal_proxy" } },
     })}`;
+    headers["accept"] = headers["accept"] || "application/json";
+
+    // Prepare body: never for GET/HEAD; otherwise buffer to string/Uint8Array
+    const method = String(req.method || "GET").toUpperCase();
+    const body =
+      method === "GET" || method === "HEAD" ? undefined : await bufferBody(req);
+
+    // Timeout
+    let controller: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let signal: AbortSignal;
+    if (typeof (AbortSignal as any)?.timeout === "function") {
+      signal = (AbortSignal as any).timeout(TIMEOUT_MS);
+    } else {
+      controller = new AbortController();
+      timeoutId = setTimeout(() => controller!.abort(), TIMEOUT_MS);
+      signal = controller.signal;
+    }
 
     let upstream: Response;
     try {
       upstream = await fetch(target, {
-        method: req.method,
+        method,
         headers,
-        body: (req as any).readable ? (req as any) : undefined,
+        body: body as any,
+        signal,
       });
     } catch (e: any) {
-      return res.status(502).json({
-        error: "upstream_connect_error",
-        detail: String(e?.message || e),
-        slug,
-        target,
-      });
+      if (timeoutId) clearTimeout(timeoutId);
+      return res
+        .status(
+          /AbortError|timeout/i.test(String(e?.message || "")) ? 504 : 502
+        )
+        .json({
+          error: "upstream_connect_error",
+          detail: String(e?.message || e),
+          slug,
+          target,
+        });
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
 
     res.status(upstream.status);
     upstream.headers.forEach((val, key) => {
-      if (key.toLowerCase() !== "transfer-encoding") res.setHeader(key, val);
+      const k = key.toLowerCase();
+      if (k === "transfer-encoding" || k === "connection") return;
+      res.setHeader(key, val);
     });
 
-    // Bridge WHATWG ReadableStream → Node stream for piping
-    const body = upstream.body;
-    if (body) {
-      // Node 18+: Readable.fromWeb exists
-      const nodeStream =
-        typeof (Readable as any).fromWeb === "function"
-          ? (Readable as any).fromWeb(body as any)
-          : (body as any); // On older fetch impls it may already be a Node stream
+    const bodyStream = upstream.body;
+    if (!bodyStream) return res.end();
 
-      if (typeof (nodeStream as any).pipe === "function") {
-        (nodeStream as any).pipe(res);
-      } else if (typeof (body as any).pipeTo === "function") {
-        // Fallback: use WHATWG piping to a web WritableStream wrapper
-        // but Express expects Node streams; safest is to buffer small bodies.
-        const chunks: Uint8Array[] = [];
-        const reader = (body as ReadableStream<Uint8Array>).getReader();
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (value) chunks.push(value);
-          }
-          res.end(Buffer.concat(chunks));
-        } catch (e: any) {
-          res.status(502).json({
-            error: "upstream_body_read_error",
-            detail: String(e?.message || e),
-          });
-        }
-      } else {
-        // Last resort
-        const chunks: Uint8Array[] = [];
-        const reader = (body as ReadableStream<Uint8Array>).getReader();
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (value) chunks.push(value);
-          }
-          res.end(Buffer.concat(chunks));
-        } catch (e: any) {
-          res.status(502).json({
-            error: "upstream_body_read_error",
-            detail: String(e?.message || e),
-          });
-        }
+    // Bridge WHATWG ReadableStream → Node stream for piping
+    if (typeof (Readable as any).fromWeb === "function") {
+      const nodeStream = (Readable as any).fromWeb(bodyStream as any);
+      return nodeStream.pipe(res);
+    }
+
+    // Fallback: manual read for environments without fromWeb
+    try {
+      const reader = (bodyStream as ReadableStream<Uint8Array>).getReader();
+      const chunks: Uint8Array[] = [];
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
       }
-    } else {
-      res.end();
+      return res.end(Buffer.concat(chunks));
+    } catch (e: any) {
+      return res.status(502).json({
+        error: "upstream_body_read_error",
+        detail: String(e?.message || e),
+      });
     }
   });
 

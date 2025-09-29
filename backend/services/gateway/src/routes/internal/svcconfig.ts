@@ -1,6 +1,6 @@
+// backend/services/gateway/src/routes/internal/svcconfig.ts
 /**
  * NowVibin — Gateway (Internal)
- * File: backend/services/gateway/src/routes/internal/svcconfig.ts
  *
  * Purpose:
  * - Internal-only discovery endpoints backed by the shared svcconfig mirror.

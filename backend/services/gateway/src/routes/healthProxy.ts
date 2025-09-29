@@ -1,3 +1,4 @@
+// backend/services/gateway/src/routes/healthProxy.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
@@ -20,6 +21,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { callBySlug } from "@eff/shared/src/utils/s2s/callBySlug";
+import { logger } from "@eff/shared/src/utils/logger";
 
 const router: Router = Router();
 
@@ -32,7 +34,6 @@ router.get(
     const slug = String(req.params.slug || "").toLowerCase();
     const kind = String(req.params.kind || "live");
 
-    // Cheap slug sanity (avoid path traversal / weird hangs)
     if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
       return res.status(404).json({
         type: "about:blank",
@@ -46,7 +47,7 @@ router.get(
       // Health is unversioned at workers; we use V1 as envelope header only
       const resp = await callBySlug<any>(slug, "V1", {
         method: "GET",
-        path: `/health/${kind}`, // strip /api/:slug and hit worker directly
+        path: `/health/${kind}`, // routes to rootBase by httpClientBySlug
         headers: { Accept: "application/json" },
         timeoutMs: UPSTREAM_TIMEOUT_MS,
       });
@@ -69,6 +70,8 @@ router.get(
       const isTimeout =
         /AbortError|timeout|ETIMEDOUT|ESOCKETTIMEDOUT/i.test(msg) ||
         msg.includes(String(UPSTREAM_TIMEOUT_MS));
+
+      logger.error({ slug, err: String(err) }, "[health] upstream error");
 
       return res.status(isTimeout ? 504 : 502).json({
         type: "about:blank",

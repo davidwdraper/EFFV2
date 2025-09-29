@@ -1,6 +1,6 @@
+// backend/services/gateway/src/routes/internal/router.ts
 /**
  * NowVibin — Gateway (Internal)
- * File: backend/services/gateway/src/routes/internal/router.ts
  *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md

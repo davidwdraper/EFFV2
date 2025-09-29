@@ -1,3 +1,4 @@
+// backend/services/shared/src/utils/s2s/httpClientBySlug.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
@@ -8,16 +9,14 @@
  *   - docs/adr/0029-versioned-slug-routing-and-svcconfig.md   // APR-0029
  *   - docs/adr/0036-single-s2s-client-kms-only-callBySlug.md  // NEW
  *
- * Why:
- * - Resolve target service API bases via svcconfig **snapshot**.
- * - Add **uniform, KMS-only S2S identity** + **X-NV-Api-Version** in one place so
- *   gateway and service→service behave identically (no drift).
- * - Preserve/extend X-NV-Header-History across hops for auditability.
+ * Purpose:
+ * - Resolve target service bases via svcconfig **snapshot**.
+ * - Add uniform, KMS-only S2S identity + X-NV-Api-Version.
+ * - Preserve/extend X-NV-Header-History across hops.
  *
  * Notes:
  * - Caches base per (slug, apiVersion) in-process.
- * - Never auto-mints X-NV-User-Assertion; only forwards if present.
- * - Disables 'Expect: 100-continue' by default to avoid PUT hangs.
+ * - Health paths go to **rootBase**, not apiBase.
  */
 
 import {
@@ -57,6 +56,25 @@ const normVersion = (v: string) => {
   return `V${m[1]}`;
 };
 
+// Typed HTTP method union to satisfy S2SRequestOptions.method
+type HttpMethod = Exclude<S2SRequestOptions<any>["method"], undefined>;
+function normalizeMethod(
+  m?: S2SRequestOptions<any>["method"] | string
+): HttpMethod {
+  const s = String(m ?? "GET").toUpperCase();
+  switch (s) {
+    case "GET":
+    case "POST":
+    case "PUT":
+    case "PATCH":
+    case "DELETE":
+    case "HEAD":
+      return s;
+    default:
+      return "GET";
+  }
+}
+
 // Cache: (slug,version) -> apiBase; and a rootBase for health
 const apiBaseCache = new Map<string, string>();
 const rootBaseCache = new Map<string, string>();
@@ -88,7 +106,7 @@ async function ensureSvcconfigReady(timeoutMs = 1000): Promise<void> {
     await sleep(backoff);
     backoff = Math.min(backoff * 2, 200);
   }
-  // NOTE: we do NOT throw here anymore; callers will surface "unknown slug" if empty.
+  // NOTE: do not throw; downstream will attempt a targeted refresh on miss.
 }
 
 function pickByVersion(
@@ -122,16 +140,42 @@ function pickByVersion(
   return null;
 }
 
+/**
+ * Resolve a service config, with a ONE-TIME, on-demand refresh if the slug is missing.
+ */
 async function resolveServiceConfig(
   slug: string,
   apiVersion: string
 ): Promise<SvcConfig> {
   await ensureSvcconfigReady();
-  const snap = getSvcconfigSnapshot();
+
+  const wantedVer = normVersion(apiVersion);
+
+  // 1) Try current snapshot
+  let snap = getSvcconfigSnapshot();
   if (!snap)
     throw new Error("[httpClientBySlug] svcconfig snapshot not initialized");
-  const wantedVer = normVersion(apiVersion);
-  const cfg = pickByVersion(snap.services, slug, wantedVer);
+
+  let cfg = pickByVersion(snap.services, slug, wantedVer);
+
+  // 2) Not found? Force a refresh from authority and retry exactly once.
+  if (!cfg) {
+    try {
+      logger.warn(
+        { slug, apiVersion: wantedVer },
+        "[httpClientBySlug] miss in snapshot; forcing svcconfig refresh"
+      );
+      await startSvcconfigMirror(); // idempotent bootstrap/refresh
+      snap = getSvcconfigSnapshot();
+      if (snap) cfg = pickByVersion(snap.services, slug, wantedVer);
+    } catch (err) {
+      logger.warn(
+        { slug, apiVersion: wantedVer, err },
+        "[httpClientBySlug] svcconfig refresh failed"
+      );
+    }
+  }
+
   if (!cfg)
     throw new Error(
       `[httpClientBySlug] unknown (slug="${slug}", version="${wantedVer}")`
@@ -140,6 +184,7 @@ async function resolveServiceConfig(
     throw new Error(
       `[httpClientBySlug] service "${slug}" version "${wantedVer}" is disabled`
     );
+
   return cfg as SvcConfig;
 }
 
@@ -153,6 +198,82 @@ function isHealthPath(p: string): boolean {
     s === "ready" ||
     s.startsWith("ready") ||
     s.startsWith("live")
+  );
+}
+
+/**
+ * Perform an S2S request to a service by slug.
+ * - `path` is service-local. Health paths are sent to ROOT (no outboundApiPrefix).
+ * - Adds a breadcrumb with the exact upstream target and base selection.
+ * - For GET/HEAD, ensures no body is passed (avoids undici UND_ERR_NOT_SUPPORTED).
+ */
+export async function s2sRequestBySlug<TResp = unknown, TBody = unknown>(
+  slug: string,
+  apiVersion: string,
+  path: string,
+  opts: S2SRequestOptions<TBody> = {}
+): Promise<S2SResponse<TResp>> {
+  const ver = normVersion(apiVersion);
+  const key = `${normSlug(slug)}::${ver}`;
+  let apiBase = apiBaseCache.get(key);
+  let rootBase = rootBaseCache.get(key);
+
+  if (!apiBase || !rootBase) {
+    const cfg = await resolveServiceConfig(slug, ver);
+    const bases = computeBases(cfg);
+    apiBase = bases.api;
+    rootBase = bases.root;
+    apiBaseCache.set(key, apiBase);
+    rootBaseCache.set(key, rootBase);
+    logger.info(
+      { slug, apiVersion: ver, apiBase, rootBase },
+      "[httpClientBySlug] cached bases"
+    );
+  }
+
+  const baseKind = isHealthPath(path) ? "root" : "api";
+  const base = baseKind === "root" ? (rootBase as string) : (apiBase as string);
+  const target = `${base}${ensureLeading(path)}`.replace(/([^:]\/)\/+/g, "$1");
+
+  const inboundHeaders = (opts.headers || {}) as Record<
+    string,
+    string | undefined
+  >;
+  const headers = await finalizeHeaders(ver, inboundHeaders);
+
+  const method: HttpMethod = normalizeMethod(opts.method as any);
+  const mergedOpts: S2SRequestOptions<TBody> = {
+    ...opts,
+    method, // <- correctly typed literal union
+    headers,
+    ...(method === "GET" || method === "HEAD"
+      ? { body: undefined as any }
+      : {}),
+  };
+
+  logger.debug(
+    { slug, ver, path, target, baseKind, method },
+    "[httpClientBySlug] upstream"
+  );
+
+  return s2sRequest<TResp, TBody>(target, mergedOpts);
+}
+
+/** Optional prewarm (safe to call multiple times). */
+export async function prewarmSlug(
+  slug: string,
+  apiVersion: string
+): Promise<void> {
+  const ver = normVersion(apiVersion);
+  const key = `${normSlug(slug)}::${ver}`;
+  if (apiBaseCache.has(key) && rootBaseCache.has(key)) return;
+  const cfg = await resolveServiceConfig(slug, ver);
+  const { root, api } = computeBases(cfg);
+  apiBaseCache.set(key, api);
+  rootBaseCache.set(key, root);
+  logger.info(
+    { slug, apiVersion: ver, apiBase: api, rootBase: root },
+    "[httpClientBySlug] prewarmed bases"
   );
 }
 
@@ -210,63 +331,4 @@ async function finalizeHeaders(
     /* non-fatal */
   }
   return out;
-}
-
-/**
- * Perform an S2S request to a service by slug.
- * - `path` is service-local. Health paths are sent to ROOT (no outboundApiPrefix).
- */
-export async function s2sRequestBySlug<TResp = unknown, TBody = unknown>(
-  slug: string,
-  apiVersion: string,
-  path: string,
-  opts: S2SRequestOptions<TBody> = {}
-): Promise<S2SResponse<TResp>> {
-  const ver = normVersion(apiVersion);
-  const key = `${normSlug(slug)}::${ver}`;
-  let apiBase = apiBaseCache.get(key);
-  let rootBase = rootBaseCache.get(key);
-
-  if (!apiBase || !rootBase) {
-    const cfg = await resolveServiceConfig(slug, ver);
-    const bases = computeBases(cfg);
-    apiBase = bases.api;
-    rootBase = bases.root;
-    apiBaseCache.set(key, apiBase);
-    rootBaseCache.set(key, rootBase);
-    logger.info(
-      { slug, apiVersion: ver, apiBase, rootBase },
-      "[httpClientBySlug] cached bases"
-    );
-  }
-
-  const base = isHealthPath(path) ? (rootBase as string) : (apiBase as string);
-  const target = `${base}${ensureLeading(path)}`;
-
-  const inboundHeaders = (opts.headers || {}) as Record<
-    string,
-    string | undefined
-  >;
-  const headers = await finalizeHeaders(ver, inboundHeaders);
-  const mergedOpts: S2SRequestOptions<TBody> = { ...opts, headers };
-
-  return s2sRequest<TResp, TBody>(target, mergedOpts);
-}
-
-/** Optional prewarm (safe to call multiple times). */
-export async function prewarmSlug(
-  slug: string,
-  apiVersion: string
-): Promise<void> {
-  const ver = normVersion(apiVersion);
-  const key = `${normSlug(slug)}::${ver}`;
-  if (apiBaseCache.has(key) && rootBaseCache.has(key)) return;
-  const cfg = await resolveServiceConfig(slug, ver);
-  const { root, api } = computeBases(cfg);
-  apiBaseCache.set(key, api);
-  rootBaseCache.set(key, root);
-  logger.info(
-    { slug, apiVersion: ver, apiBase: api, rootBase: root },
-    "[httpClientBySlug] prewarmed bases"
-  );
 }

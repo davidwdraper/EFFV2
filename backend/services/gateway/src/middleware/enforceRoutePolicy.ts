@@ -2,37 +2,45 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
- * - ADR-0032: Route policy via svcconfig
+ * - ADR-0032: Route policy via svcconfig (mirror only)
  * - ADR-0032 NOTE: Health-route gateway bypass (exception for maintainability)
  *
- * Enforces per-route policy fetched from svcconfig. Default = require user JWT
- * unless a rule explicitly allows anonymous or forbids assertions.
+ * Purpose:
+ * - Enforce per-route policy fetched from the **local svcconfig mirror**.
+ * - Default = require **user JWT** unless a rule explicitly allows anonymous
+ *   or forbids assertions.
+ * - Avoid ESM/CJS collisions by **lazy-loading** `jose` with a native dynamic
+ *   import that TypeScript will not down-level to `require()`.
  *
- * This middleware expects api.ts to have populated:
- *   (req as any).parsedApiRoute = { slug, version, restPath }
- * where version is like "v1" or "V1".
+ * Expectations:
+ * - api.ts populates (req as any).parsedApiRoute = { slug, version, restPath }
+ *   where version is like "v1" or "V1".
  */
 
 import type { Request, Response, NextFunction } from "express";
 import type { SvcConfig } from "@eff/shared/src/contracts/svcconfig.contract"; // type-only
-import { fetchSvcConfig } from "../clients/svcconfigClient";
 
-// --- user JWT verification (edge) ---
+// ── User JWT verification (edge) ──────────────────────────────────────────────
 const USER_JWKS_URL = process.env.USER_JWKS_URL || "";
 const USER_JWT_ISSUER = process.env.USER_JWT_ISSUER || "";
 const USER_JWT_AUDIENCE = process.env.USER_JWT_AUDIENCE || "";
 const CLOCK_SKEW = Number(process.env.USER_JWT_CLOCK_SKEW_SEC || "60");
 
-// jose is ESM-only; gateway compiles to CJS. Use cached dynamic import everywhere.
-let __jose__: Promise<typeof import("jose")> | null = null;
-function getJose() {
-  return (__jose__ ??= import("jose"));
+/**
+ * jose is ESM-only; our gateway currently builds to CJS.
+ * IMPORTANT: plain `import('jose')` can get down-leveled by TS in CJS mode into
+ * a Promise-wrapped **require()**, which explodes at runtime.
+ * Use `(0, eval)('import("jose")')` to force a **native dynamic import**.
+ */
+type JoseMod = typeof import("jose");
+let __jose__: Promise<JoseMod> | null = null;
+function getJose(): Promise<JoseMod> {
+  // eslint-disable-next-line no-eval
+  return (__jose__ ??= (0, eval)("import('jose')") as Promise<JoseMod>);
 }
 
 // Remote JWKS cache (created via jose once)
-let userJwks: ReturnType<
-  Awaited<typeof import("jose")>["createRemoteJWKSet"]
-> | null = null;
+let userJwks: ReturnType<Awaited<JoseMod>["createRemoteJWKSet"]> | null = null;
 
 async function getUserJWKS() {
   if (userJwks) return userJwks;
@@ -122,6 +130,74 @@ function matchRule(
   return best?.rule || null;
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Mirror-backed cfg getter (no network). Accepts a few shapes defensively.
+// ──────────────────────────────────────────────────────────────────────────────
+function getCfgFromMirror(slug: string, major: number): SvcConfig {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = require("@eff/shared/src/svcconfig/client") as {
+    getSvcconfigSnapshot: () =>
+      | { services: Record<string, any> | undefined }
+      | null
+      | undefined;
+  };
+
+  const snap = mod.getSvcconfigSnapshot?.();
+  if (!snap || !snap.services) {
+    const e: any = new Error("svcconfig snapshot unavailable at gateway");
+    e.status = 503;
+    throw e;
+  }
+
+  const bySlug = snap.services[slug];
+  let cfg: any = undefined;
+
+  // Common flat shape: one cfg per slug
+  if (bySlug?.baseUrl) {
+    if (Number(bySlug.version ?? 1) === major) cfg = bySlug;
+  }
+
+  // Versioned map under slug?
+  if (!cfg && bySlug && typeof bySlug === "object") {
+    const key = `V${major}`;
+    if (bySlug[key]) cfg = bySlug[key];
+  }
+
+  // Flattened key "slug.V1"
+  if (!cfg) {
+    const flatKey = `${slug}.V${major}`.toLowerCase();
+    if ((snap.services as any)[flatKey]) cfg = (snap.services as any)[flatKey];
+  }
+
+  if (!cfg) {
+    const e: any = new Error(`Unknown service slug "${slug}" for V${major}`);
+    e.status = 404;
+    throw e;
+  }
+
+  if (cfg.enabled !== true) {
+    const e: any = new Error(`Service "${slug}" (V${major}) is disabled`);
+    e.status = 503;
+    throw e;
+  }
+
+  return cfg as SvcConfig;
+}
+
+// ── Public route bypass (avoid touching jose for these) ───────────────────────
+const PUBLIC_MATCHERS: RegExp[] = [
+  /^\/v\d+\/health$/, // health bypass (per ADR note)
+  /^\/v\d+\/auth\/create$/, // auth create (public)
+  /^\/v\d+\/auth\/login$/, // auth login (public)
+  /^\/\.well-known\/jwks\.json$/, // JWKS
+];
+
+function isPublic(normPath: string): boolean {
+  return PUBLIC_MATCHERS.some((rx) => rx.test(normPath));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 export async function enforceRoutePolicy(
   req: Request,
   res: Response,
@@ -145,17 +221,13 @@ export async function enforceRoutePolicy(
       .replace(/\/+$/, "");
     const method = req.method.toUpperCase();
 
-    // ────────────────────── Health bypass (maintainability) ──────────────────────
-    // Health endpoints are mounted before auth in workers; allow them through
-    // the gateway without requiring user tokens or policy entries.
-    if (method === "GET" && /^\/v\d+\/health$/.test(normPath)) {
-      return next();
-    }
-    // ────────────────────────────────────────────────────────────────────────────
+    // ────────────────────── Health & public bypass ─────────────────────────────
+    if (isPublic(normPath)) return next();
+    // ──────────────────────────────────────────────────────────────────────────
 
-    // Fetch config + policy for {slug, major}
-    const cfg: SvcConfig = await fetchSvcConfig(slug, major);
-    const rule = matchRule(method, normPath, cfg.policy.rules);
+    // Fetch config + policy for {slug, major} from the **local mirror only**.
+    const cfg: SvcConfig = getCfgFromMirror(slug, major);
+    const rule = matchRule(method, normPath, (cfg as any)?.policy?.rules ?? []);
 
     const auth = String(req.headers.authorization || "");
 

@@ -1,0 +1,27 @@
+{
+  "name": "@nv/gateway",
+  "private": true,
+  "version": "0.1.2",
+  "description": "NowVibin Gateway — minimal boot with Hello endpoint",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
+    "dev": "ts-node-dev --respawn --transpile-only --require tsconfig-paths/register src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^18.19.39",
+    "rimraf": "^5.0.5",
+    "ts-node-dev": "^2.0.0",
+    "tsconfig-paths": "^4.2.0",
+    "tsc-alias": "^1.8.10",
+    "typescript": "^5.4.5"
+  }
+}

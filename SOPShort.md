@@ -134,7 +134,7 @@ Always, always, always: first line of every file drop should look like
 
 ✅ This version is ready to paste at the start of each new session.
 
-Do be dropped for future sessions:
+To be dropped for future sessions:
 
 You have saved the NowVibin Backend — Core SOP (Reduced, Clean) as the fresh baseline for all new backend sessions.
 
@@ -145,3 +145,4 @@ Always put header at top of each file, and reference appropriate docs and ADRs.
 Create new ADRs when needed. Provide the ADR prior to writing code.
 Ask for the ADR generation script, so you can produce the ADR documentation content.
 No god-files. If a file gets even close to 200 lines it needs to be split. Files that are nothing more than worker bees for a parent with no likely reuse, should be grouped together in a sub-folder.
+Everything is written as TS classes, using OO best practices. There has to be a good reason to not use a class.

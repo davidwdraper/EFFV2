@@ -8,6 +8,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json"
   },
+  "dependencies": {
+    "mongodb": "^6.7.0"
+  },
   "devDependencies": {
     "@types/node": "^18.19.39",
     "tsc-alias": "^1.8.10",

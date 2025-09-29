@@ -1,4 +1,4 @@
-// tsconfig.json  (repo root; solution file)
+// tsconfig.json  (repo root "solution" tsconfig)
 {
   "files": [],
   "references": [
@@ -8,6 +8,7 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
+      "@nv/shared": ["backend/shared/src/index"],
       "@nv/shared/*": ["backend/shared/src/*"]
     }
   }

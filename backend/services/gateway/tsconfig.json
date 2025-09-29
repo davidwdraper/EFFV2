@@ -12,10 +12,14 @@
     "forceConsistentCasingInFileNames": true,
 
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+
+    "baseUrl": "../../../",
+    "paths": {
+      "@nv/shared": ["backend/shared/src/index"],
+      "@nv/shared/*": ["backend/shared/src/*"]
+    }
   },
   "include": ["src"],
-  "references": [
-    { "path": "../../shared" } // <- tells TS/VS Code that gateway depends on shared
-  ]
+  "references": [{ "path": "../../shared" }]
 }

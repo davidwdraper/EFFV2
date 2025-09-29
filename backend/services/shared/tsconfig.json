@@ -15,6 +15,11 @@
 
     "baseUrl": "."
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/index.ts"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/index.ts",
+    "src/index.internal.ts"
+  ],
   "exclude": ["dist", "node_modules", "**/*.test.ts", "**/__tests__/**"]
 }

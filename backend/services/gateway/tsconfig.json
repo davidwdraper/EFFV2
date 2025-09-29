@@ -13,34 +13,34 @@
  * - DEV: resolve all @eff/shared imports to shared **src** so ts-node-dev works without prebuilds.
  * - RUNTIME (built JS): Node uses @eff/shared package exports, where "./src/*" is mapped to "./dist/*".
  */
+// backend/services/gateway/tsconfig.json
+// backend/services/gateway/tsconfig.json
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "composite": true,
-    "declaration": true,
-    "declarationMap": true,
-
-    "module": "CommonJS",
-    "moduleResolution": "node",
     "target": "ES2020",
-
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "lib": ["ES2020"],
     "rootDir": ".",
     "outDir": "dist",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
 
     "baseUrl": ".",
     "paths": {
-      "@eff/shared/src/*": ["../shared/src/*"]
+      "@eff/shared/*": ["../shared/*"] // ✅ map to shared (not shared/src)
     },
 
-    "strict": true,
-    "esModuleInterop": true,
+    "types": ["node"],
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "sourceMap": true,
-    "resolveJsonModule": true,
-    "noEmitOnError": true
+    "composite": true
   },
-  "include": ["src/**/*.ts", "index.ts"],
-  "exclude": ["dist", "node_modules", "**/*.test.ts", "**/__tests__/**"],
-  "references": [{ "path": "../shared" }]
+  "include": ["index.ts", "index.internal.ts", "src/**/*.ts"],
+  "exclude": ["dist", "node_modules"],
+  "references": [{ "path": "../shared" }],
+  "ts-node": {
+    "require": ["tsconfig-paths/register"]
+  }
 }

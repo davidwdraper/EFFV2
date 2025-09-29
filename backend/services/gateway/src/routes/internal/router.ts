@@ -11,25 +11,22 @@
  *
  * Purpose:
  * - Factory that builds the internal-only router under S2S guard (mounted by app.internal).
- * - Imports match actual exports: jwks = default router; svcconfig/proxy = factories.
+ * - JWKS is mounted in app.internal BEFORE verifyS2S — do NOT mount it here.
  */
 
 import { Router } from "express";
-import jwksRouter from "./jwks"; // default export (router instance)
-import { createSvcconfigRouter } from "./svcconfig"; // named factory
-import { createProxyRouter } from "./proxy"; // named factory
+import { createSvcconfigRouter } from "./svcconfig";
+import { createProxyRouter } from "./proxy";
 
 export function createInternalRouter(): import("express").Router {
   const r = Router();
 
-  // Internal JWKS
-  r.use("/.well-known/jwks.json", jwksRouter);
+  // DO NOT mount JWKS here (it must be public on the internal listener).
+  // r.use("/.well-known/jwks.json", jwksRouter); // ← removed on purpose
 
-  // Discovery + Proxy (factories)
   r.use("/_internal/svcconfig", createSvcconfigRouter());
   r.use("/internal/call", createProxyRouter());
 
-  // Lightweight internal health
   r.get("/_internal/health", (_req, res) => res.json({ status: "ok" }));
 
   return r;

@@ -1,6 +1,6 @@
+// backend/services/gateway/src/app.internal.ts
 /**
  * NowVibin — Backend
- * File: backend/services/gateway/src/app.internal.ts
  *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md
@@ -11,7 +11,6 @@
  *
  * Purpose:
  * - Internal control-plane listener (PRIVATE): discovery, S2S JWKS, S2S proxy.
- * - Protected by S2S auth; NOT exposed on public edge.
  */
 
 import express, { type Express } from "express";
@@ -23,21 +22,24 @@ import {
 } from "@eff/shared/src/middleware/problemJson";
 import { verifyS2S } from "@eff/shared/src/middleware/verifyS2S";
 import { createInternalRouter } from "./routes/internal/router";
+import jwksRouter from "./routes/internal/jwks";
 
 export function createInternalApp(): Express {
   const app: Express = express();
 
-  // S2S-only plane
   app.use(requestIdMiddleware());
   app.use(makeHttpLogger("gateway-internal"));
 
-  // Enforce S2S on everything internal — pass the middleware directly
-  app.use(verifyS2S);
+  // 🚨 SEARCH-REMOVE: TEMP_PUBLIC_JWKS
+  // JWKS MUST BE PUBLIC (on the internal port) — mount BEFORE verifyS2S
+  app.use("/.well-known/jwks.json", jwksRouter);
 
-  // Mount internal surface
+  // Everything else on the internal plane requires S2S
+  app.use(verifyS2S());
+
+  // Internal-only routes (svcconfig/proxy/ping)
   app.use("/", createInternalRouter());
 
-  // Tails
   app.use(notFoundProblemJson(["/"]));
   app.use(errorProblemJson());
 

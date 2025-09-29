@@ -1,5 +1,6 @@
 // backend/services/user/src/routes/userRoutes.ts
 import { Router } from "express";
+import type { Router as ExpressRouter } from "express";
 import { cacheGet, invalidateOnSuccess } from "@eff/shared/src/utils/cache";
 
 // 🔧 Direct handler imports (no barrels)
@@ -11,12 +12,12 @@ import { getById } from "../controllers/handlers/getById";
 import { patchUser } from "../controllers/handlers/patchUser";
 import { remove } from "../controllers/handlers/remove";
 
-const router = Router();
+const router: ExpressRouter = Router();
 
 /**
  * Policy:
- * - Create = PUT / (collection root). Mongo generates _id.
- * - No POST / (back-compat removed).
+ * - Create originally = PUT / (collection root). Mongo generates _id.
+ * - To reduce brittleness for upstream callers, we also accept POST /.
  * - No PUT /:id (replace-by-id forbidden).
  * - PATCH /:id, DELETE /:id remain.
  *
@@ -27,8 +28,9 @@ const router = Router();
  * - Therefore, no per-route `authenticate` here.
  */
 
-// CREATE (collection root)
+// CREATE (collection root) — accept PUT and POST for compatibility
 router.put("/", invalidateOnSuccess(["user", "user-directory"])(create));
+router.post("/", invalidateOnSuccess(["user", "user-directory"])(create));
 
 // LIST + READ
 router.get("/", cacheGet("user", "USER_CACHE_TTL_SEC"), list);

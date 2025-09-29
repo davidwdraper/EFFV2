@@ -11,6 +11,10 @@
  * - @eff/shared emits CommonJS; `jose` is ESM-only → use **dynamic import**.
  * - No barrels/shims per SOP. Intra-package imports are **relative**.
  * - Strict policy (ES256, exact iss/aud, bounded clock skew).
+ *
+ * Hard cap:
+ * - Wrap `jwtVerify` with a local Promise.race deadline so we never exceed
+ *   a small, predictable budget (e.g., 800–1200ms) even on first JWKS fetch.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
@@ -31,6 +35,12 @@ type S2SConfig = {
 
 let memo: S2SConfig | null = null;
 
+// local deadline to bound total verify latency (including first JWKS fetch)
+const VERIFY_DEADLINE_MS = Math.max(
+  200,
+  Math.min(Number(process.env.S2S_VERIFY_DEADLINE_MS || 900), 2000)
+);
+
 async function getS2SConfig(): Promise<S2SConfig> {
   if (memo) return memo;
 
@@ -38,8 +48,11 @@ async function getS2SConfig(): Promise<S2SConfig> {
   const issuer = requireEnv("S2S_JWT_ISSUER");
   const audience = requireEnv("S2S_JWT_AUDIENCE");
   const clockSkewSec = requireNumber("S2S_CLOCK_SKEW_SEC");
-  const jwksCooldownMs = requireNumber("S2S_JWKS_COOLDOWN_MS");
-  const jwksTimeoutMs = requireNumber("S2S_JWKS_TIMEOUT_MS");
+
+  // Safer defaults: keep JWKS fetch brief to avoid 5s hangs on cold start
+  const jwksCooldownMs =
+    Number(process.env.S2S_JWKS_COOLDOWN_MS || 30_000) || 30_000;
+  const jwksTimeoutMs = Number(process.env.S2S_JWKS_TIMEOUT_MS || 800) || 800; // was often 5s; keep tight
 
   const { createRemoteJWKSet } = await import("jose");
   const url = new URL(jwksUrlStr);
@@ -95,6 +108,32 @@ function problem(
   };
 }
 
+function raceWithTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  tag: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => {
+      // 🚨 SEARCH-REMOVE: TEMP_VERIFY_DIAG
+      const e: any = new Error(`${tag}: timeout after ${ms}ms`);
+      e.name = "S2SVerifyTimeout";
+      e.status = 504;
+      reject(e);
+    }, ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(t);
+        reject(err);
+      }
+    );
+  });
+}
+
 // ── Middleware ───────────────────────────────────────────────────────────────
 export function verifyS2S(): RequestHandler {
   // Config is validated and JWKS created on first use
@@ -130,12 +169,23 @@ export function verifyS2S(): RequestHandler {
       // jose is ESM-only; import dynamically in CJS build
       const { jwtVerify } = await import("jose");
 
-      const { payload, protectedHeader } = await jwtVerify(token, cfg.jwks, {
+      const verifyPromise = jwtVerify(token, cfg.jwks, {
         algorithms: ["ES256"], // KMS key is ES256; lock it down
         issuer: cfg.issuer,
         audience: cfg.audience,
         clockTolerance: cfg.clockSkewSec,
       });
+
+      const t0 = Date.now();
+      const { payload, protectedHeader } = await raceWithTimeout(
+        verifyPromise,
+        VERIFY_DEADLINE_MS,
+        "verifyS2S"
+      );
+      const dt = Date.now() - t0;
+      if (dt > VERIFY_DEADLINE_MS - 50) {
+        logger.warn({ dt }, "[verifyS2S] verify hit deadline edge");
+      }
 
       const p = payload as Record<string, unknown>;
       (req as any).caller = {
@@ -148,11 +198,23 @@ export function verifyS2S(): RequestHandler {
       };
 
       return next();
-    } catch (err: unknown) {
+    } catch (err: any) {
+      const name = err?.name as string | undefined;
+
+      if (name === "S2SVerifyTimeout") {
+        // Hard, local deadline — fail fast so upstream doesn’t hang
+        logger.error(
+          { err: String(err?.message || err) },
+          "[verifyS2S] timeout"
+        );
+        return res
+          .status(504)
+          .type("application/problem+json")
+          .json(problem(504, "Gateway Timeout", "S2S verify timeout", req));
+      }
+
       // Avoid importing jose error classes just to do instanceof checks in CJS.
       // Compare by error name (stable across jose versions).
-      const name = (err as any)?.name as string | undefined;
-
       if (name === "JWTExpired") {
         return res
           .status(401)

@@ -1,14 +1,14 @@
+// backend/services/gateway/src/routes/internal/jwks.ts
 /**
  * NowVibin — Gateway (Internal)
- * File: backend/services/gateway/src/routes/internal/jwks.ts
  *
  * Purpose:
- * - INTERNAL S2S JWKS endpoint (mounted at /.well-known/jwks.json).
- * - TTL-based refresh, fail-fast, no env fallbacks.
+ * - INTERNAL S2S JWKS endpoint (mounted by caller at /.well-known/jwks.json).
+ * - Router responds at "/" so it can be mounted cleanly.
  *
  * Notes:
- * - Uses the same fetcher contract as your public JWKS route; if/when you
- *   introduce a distinct internal KMS key/issuer, swap the fetcher import.
+ * - Keep this router PUBLIC on the internal plane (mounted before verifyS2S).
+ *   Otherwise jose can’t fetch keys to verify the very token required to fetch keys.
  */
 
 import { Router, type Router as ExpressRouter } from "express";
@@ -48,7 +48,8 @@ function toSigJwk(result: unknown): SigJwk {
 
 const router: ExpressRouter = Router();
 
-router.get("/.well-known/jwks.json", async (_req, res) => {
+// NOTE: respond at "/" — the caller mounts us at "/.well-known/jwks.json"
+router.get("/", async (_req, res) => {
   const now = Date.now();
 
   if (!cachedJwk || now - lastFetch > JWKS_CACHE_TTL_MS) {
@@ -58,7 +59,7 @@ router.get("/.well-known/jwks.json", async (_req, res) => {
       cachedJwk = normalized;
       lastFetch = now;
       logger.info(
-        { kid: normalized.kid, alg: normalized.alg, ageMs: 0 },
+        { kid: normalized.kid, alg: normalized.alg },
         "[jwks] refreshed (internal)"
       );
     } catch (err: any) {

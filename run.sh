@@ -33,9 +33,11 @@ echo "   ENV_FILE=$ENV_FILE"
 [[ $NV_TEST -eq 1 ]] && echo "   TEST MODE: exporting KMS_* for gateway (shell-only)"
 
 # ======= Service list ========================================================
+# NOTE: Added "gateway-internal" to start the private listener (e.g., :4001).
 SERVICES=(
   "svcconfig|backend/services/svcconfig|pnpm dev"
   "gateway|backend/services/gateway|pnpm dev"
+  "gateway-internal|backend/services/gateway|pnpm dev:internal"
   "audit|backend/services/audit|pnpm dev"
   # "geo|backend/services/geo|pnpm dev"
   # "act|backend/services/act|pnpm dev"
@@ -204,7 +206,7 @@ for i in "${!SERVICE_NAMES[@]}"; do
   svc_env="${SERVICE_ENVFILES[$i]}"
   SLUG_UPPER="$(echo "$name" | tr '[:lower:]' '[:upper:]')"
 
-    if [[ "$name" == "gateway" ]]; then
+  if [[ "$name" == "gateway" || "$name" == "gateway-internal" ]]; then
     # KMS bits read from the gateway env file (not exporting to parent)
     KMS_PROJECT_ID_GW="$(get_env "$GW_ENV_FILE" KMS_PROJECT_ID || echo "")"
     KMS_LOCATION_ID_GW="$(get_env "$GW_ENV_FILE" KMS_LOCATION_ID || echo "")"
@@ -215,20 +217,42 @@ for i in "${!SERVICE_NAMES[@]}"; do
     KMS_SIGN_KEY_ID_GW="${KMS_KEY_ID_GW:-}"
     KMS_JWKS_KEY_ID_GW="${KMS_KEY_ID_GW:-}"
 
-    echo "→ gateway inline KMS:"
+    echo "→ ${name} inline KMS:"
     echo "   parts: proj=${KMS_PROJECT_ID_GW:-<unset>} loc=${KMS_LOCATION_ID_GW:-<unset>} ring=${KMS_KEY_RING_ID_GW:-<unset>} key=${KMS_KEY_ID_GW:-<unset>}"
     echo "   full : ${KMS_CRYPTO_KEY_GW}"
     echo "   ADC  : GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}"
     echo "   SVCCONFIG_BASE_URL (effective): $(get_env "$svc_env" SVCCONFIG_BASE_URL || echo "<unset>")"
 
+    # Decide which entrypoint to run:
+    # - gateway → index.ts (public listener)
+    # - gateway-internal → index.internal.ts (internal listener)
+    ENTRY_FILE="index.ts"
+    DEV_SCRIPT="dev"
+    LOG_FILE="$ROOT/var/log/gateway.dev.log"
+    if [[ "$name" == "gateway-internal" ]]; then
+      ENTRY_FILE="index.internal.ts"
+      DEV_SCRIPT="dev:internal"
+      LOG_FILE="$ROOT/var/log/gateway.internal.dev.log"
+    fi
+
     bash -lc "
       set -Eeuo pipefail
       cd \"$path\"
 
-      # Fresh env load, then map PORT → GATEWAY_PORT if present
+      # Fresh env load, then map PORT → appropriate gateway var
       unset PORT SERVICE_PORT
       set -a; [ -f \"$svc_env\" ] && . \"$svc_env\"; set +a
-      if [ -n \"\$PORT\" ]; then export GATEWAY_PORT=\"\$PORT\" SERVICE_PORT=\"\$PORT\"; fi
+
+      # Public vs internal port mapping
+      if [ \"$name\" = \"gateway-internal\" ]; then
+        # Prefer explicit GATEWAY_INTERNAL_PORT; else use PORT if present
+        if [ -n \"\${GATEWAY_INTERNAL_PORT:-}\" ]; then export SERVICE_PORT=\"\${GATEWAY_INTERNAL_PORT}\"; fi
+        if [ -z \"\${SERVICE_PORT:-}\" ] && [ -n \"\${PORT:-}\" ]; then export SERVICE_PORT=\"\${PORT}\"; fi
+        export GATEWAY_INTERNAL_PORT=\"\${SERVICE_PORT:-4001}\"
+      else
+        if [ -n \"\${PORT:-}\" ]; then export SERVICE_PORT=\"\${PORT}\"; fi
+        export GATEWAY_PORT=\"\${SERVICE_PORT:-4000}\"
+      fi
 
       # Export runtime envs
       export NODE_ENV=\"$NODE_ENV\"
@@ -246,25 +270,25 @@ for i in "${!SERVICE_NAMES[@]}"; do
       export ACCESS_RULES_ENABLED=\"\${ACCESS_RULES_ENABLED:-}\"
       export ACCESS_FAIL_OPEN=\"\${ACCESS_FAIL_OPEN:-}\"
 
-      echo '──────────────────────────────── Gateway start context ────────────────────────────────'
+      echo '─────────────────────────────── Gateway start context ───────────────────────────────'
       echo \"SERVICE_DIR=\$PWD\"
-      echo \"GATEWAY_PORT=\${GATEWAY_PORT:-<unset>}  NODE_ENV=\$NODE_ENV\"
+      echo \"NAME=$name  SERVICE_PORT=\${SERVICE_PORT:-<unset>}  NODE_ENV=\$NODE_ENV\"
       echo \"SVCCONFIG_BASE_URL=\${SVCCONFIG_BASE_URL:-<unset>}  ENV_FILE=\$ENV_FILE\"
       echo \"KMS_KEY_NAME=\${KMS_KEY_NAME:-<unset>}\"
-      echo '──────────────────────────────────────────────────────────────────────────────────────'
+      echo '────────────────────────────────────────────────────────────────────────────────────'
 
-      # Pick start command by actually checking package.json for a dev script
-      if node -e \"try{p=require('./package.json').scripts?.dev;process.exit(p?0:1)}catch(e){process.exit(1)}\"; then
-        echo '→ starting: pnpm dev'
-        pnpm dev
-      elif [ -f src/app.ts ]; then
-        echo '→ starting: ts-node-dev src/app.ts'
-        pnpm -s exec ts-node-dev --respawn --transpile-only src/app.ts
+      # Prefer package script; fall back to direct file if missing
+      if node -e \"try{p=require('./package.json').scripts?.['$DEV_SCRIPT'];process.exit(p?0:1)}catch(e){process.exit(1)}\"; then
+        echo '→ starting: pnpm $DEV_SCRIPT'
+        pnpm $DEV_SCRIPT
+      elif [ -f \"$ENTRY_FILE\" ]; then
+        echo '→ starting: ts-node-dev $ENTRY_FILE'
+        pnpm -s exec ts-node-dev --respawn --transpile-only \"$ENTRY_FILE\"
       else
-        echo '❌ gateway: no dev script and no src/app.ts'
+        echo '❌ $name: no $DEV_SCRIPT script and no $ENTRY_FILE'
         exit 1
       fi
-    " 2>&1 | tee -a "$ROOT/var/log/gateway.dev.log" & PIDS+=($!)
+    " 2>&1 | tee -a "$LOG_FILE" & PIDS+=($!)
 
   elif [[ "$name" == "svcconfig" ]]; then
     bash -lc "cd \"$path\" && \

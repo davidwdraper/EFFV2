@@ -9,10 +9,9 @@
  * - Build and configure the Express app (routes, middleware).
  */
 
-// backend/services/gateway/src/app.ts
 import type { Express } from "express";
 import express = require("express");
-import { helloRouter } from "./routes/hello";
+import { healthRouter } from "./routes/health";
 
 export class GatewayApp {
   private readonly app: Express;
@@ -25,7 +24,9 @@ export class GatewayApp {
   private configure(): void {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
-    this.app.use("/api/hello", helloRouter());
+
+    // Health should be top-level and fast
+    this.app.use("/health", healthRouter());
   }
 
   public get instance(): Express {

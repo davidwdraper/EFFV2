@@ -60,7 +60,6 @@ export class SvcConfig {
     return Object.freeze({ ...this.mirror });
   }
 
-  // ── internals (unchanged) ───────────────────────────────────────────────────
   private async refreshFromDb(
     reason: "boot" | "poll" | "change"
   ): Promise<void> {
@@ -77,8 +76,16 @@ export class SvcConfig {
     }
     this.mirror = next;
     this.writeLkg();
+
+    // ── New: info log of all slugs and URLs ────────────────────────────────
+    const summary = Object.values(this.mirror).map((r) => ({
+      slug: r.slug,
+      version: r.version,
+      baseUrl: r.baseUrl,
+    }));
     this.log(30, `[svcconfig] mirror refreshed from DB (${reason})`, {
       services: Object.keys(this.mirror).length,
+      routes: summary,
     });
   }
 

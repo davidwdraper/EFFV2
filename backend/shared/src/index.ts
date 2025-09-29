@@ -11,3 +11,14 @@ export * from "./env";
 
 // Contracts
 export * from "./contracts/ServiceConfig";
+
+// Health
+export type {
+  HealthStatus,
+  HealthCheckResult,
+  HealthReport,
+  IHealthCheck,
+} from "./health/types";
+export { HealthService } from "./health/HealthService";
+export { CallbackCheck } from "./health/checks/CallbackCheck";
+export { ProcessCheck } from "./health/checks/ProcessCheck";

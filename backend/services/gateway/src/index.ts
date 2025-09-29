@@ -4,14 +4,19 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - docs/adr/adr0001-gateway-embedded-svcconfig-and-svcfacilitator.md
+ *
+ * Purpose:
+ * - Bootstrap: load envs, warm SvcConfig mirror (DB → .LKG), then start HTTP.
  */
 
 import http from "http";
 import { resolve } from "path";
 import { config as loadEnv } from "dotenv";
 import { GatewayApp } from "./app";
-import { requireEnv, requireNumber } from "@nv/shared/env";
+import { requireEnv, requireNumber } from "@nv/shared";
+import { getSvcConfig } from "./services/svcconfig";
 
+// Load env files (no CLI helpers)
 loadEnv({ path: resolve(process.cwd(), ".env") });
 loadEnv({ path: resolve(process.cwd(), ".env.dev"), override: true });
 
@@ -23,10 +28,15 @@ class GatewayServer {
     this.port = requireNumber("PORT", portStr);
   }
 
-  public start(): void {
+  public async start(): Promise<void> {
+    // 1️⃣ Warm the service-config mirror before accepting traffic.
+    await getSvcConfig().load();
+
+    // 2️⃣ Start HTTP server.
     const app = new GatewayApp().instance;
     const server = http.createServer(app);
-    server.listen(this.port, "0.0.0.0", () =>
+
+    server.listen(this.port, "0.0.0.0", () => {
       console.log(
         JSON.stringify({
           level: 30,
@@ -34,8 +44,9 @@ class GatewayServer {
           msg: "listening",
           port: this.port,
         })
-      )
-    );
+      );
+    });
+
     server.on("error", (err) => {
       console.error(
         JSON.stringify({
@@ -50,4 +61,15 @@ class GatewayServer {
   }
 }
 
-new GatewayServer().start();
+// Kick off boot sequence and catch startup errors loudly.
+new GatewayServer().start().catch((err) => {
+  console.error(
+    JSON.stringify({
+      level: 50,
+      service: "gateway",
+      msg: "boot_failed",
+      err: String(err),
+    })
+  );
+  process.exit(1);
+});

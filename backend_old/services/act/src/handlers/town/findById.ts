@@ -6,7 +6,7 @@ import { zodBadRequest, respond } from "@eff/shared/src/contracts/http";
 import { notFound } from "@eff/shared/src/http/errors";
 import * as repo from "../../repo/townRepo";
 import { toTownListItem } from "../../dto/townDto";
-import { zIdParam, zTownListItem } from "../town/schemas";
+import { zIdParam, zTownListItem } from "./schemas";
 
 /**
  * GET /towns/:id

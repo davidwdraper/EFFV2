@@ -24,7 +24,7 @@
 
 import crypto from "node:crypto";
 import { KeyManagementServiceClient } from "@google-cloud/kms";
-import { reqEnv, numEnv } from "../../utils/envHelpers";
+import { reqEnv, numEnv } from "../envHelpers";
 
 /* --------------------------------- types ---------------------------------- */
 

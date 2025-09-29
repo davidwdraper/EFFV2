@@ -23,12 +23,12 @@
  *   via its `extra` field and pass the caller’s `iss`/`aud` through options.
  */
 
-import { logger } from "../../utils/logger";
+import { logger } from "../logger";
 import {
   zUserAssertionClaims,
   type UserAssertionClaims,
 } from "../../contracts/userAssertion.contract";
-import { mintS2S } from "../../utils/s2s/mintS2S";
+import { mintS2S } from "./mintS2S";
 
 /** Resolve TTL for user assertions (seconds). */
 function resolveTtl(): number {

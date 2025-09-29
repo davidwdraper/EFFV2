@@ -28,7 +28,7 @@ import axios from "axios";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { currentServiceName, logger } from "../utils/logger";
+import { currentServiceName, logger } from "./logger";
 
 // ─────────────────────────── Env (fail-fast where it matters) ─────────────────
 const LOG_SERVICE_URL = (process.env.LOG_SERVICE_URL || "").trim();

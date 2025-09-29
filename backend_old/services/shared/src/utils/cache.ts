@@ -1,6 +1,6 @@
 // backend/services/shared/utils/cache.ts
 import type { Request, Response, RequestHandler } from "express";
-import { getRedis } from "../utils/redis";
+import { getRedis } from "./redis";
 
 // ----------------- Low-level helpers (Promise-based) -----------------
 

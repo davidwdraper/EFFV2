@@ -27,8 +27,8 @@ import {
   s2sRequestBySlug,
   type S2SResponse,
   type S2SRequestOptions,
-} from "../../utils/s2s/httpClientBySlug";
-import { logger } from "../../utils/logger";
+} from "./httpClientBySlug";
+import { logger } from "../logger";
 
 /** Normalize "V1" | "v1" | "1" → "V1" for consistent header/telemetry. */
 function normApiVersion(v: string): string {

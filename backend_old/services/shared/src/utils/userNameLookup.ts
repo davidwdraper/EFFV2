@@ -11,7 +11,7 @@
 import axios from "axios";
 // If your logger lives at src/utils/logger.ts relative to this file, this import is correct.
 // Adjust path only if your tree differs.
-import { logger } from "../utils/logger";
+import { logger } from "./logger";
 import { requireUrl, requireNumber } from "../env";
 
 // ---- ENV CONFIG (no fallbacks; fail fast) ----

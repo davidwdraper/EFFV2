@@ -1,6 +1,6 @@
 // backend/services/shared/utils/redis.ts
 import { createClient } from "redis";
-import { logger } from "../utils/logger";
+import { logger } from "./logger";
 
 // Use the exact concrete client type from createClient()
 type RedisClient = ReturnType<typeof createClient>;

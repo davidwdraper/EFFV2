@@ -1,6 +1,6 @@
 // PATH: backend/services/shared/src/contracts/user.contract.ts
 import { z } from "zod";
-import { zObjectId, zIsoDate } from "../contracts/common";
+import { zObjectId, zIsoDate } from "./common";
 
 /**
  * Canonical User domain object (source of truth).

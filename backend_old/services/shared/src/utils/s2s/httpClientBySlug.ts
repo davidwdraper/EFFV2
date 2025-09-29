@@ -23,15 +23,12 @@ import {
   s2sRequest,
   type S2SRequestOptions,
   type S2SResponse,
-} from "../../utils/s2s/httpClient";
-export type {
-  S2SRequestOptions,
-  S2SResponse,
-} from "../../utils/s2s/httpClient";
+} from "./httpClient";
+export type { S2SRequestOptions, S2SResponse } from "./httpClient";
 
 import type { SvcConfig } from "../../contracts/svcconfig.contract";
-import { logger } from "../../utils/logger";
-import { mintS2S } from "../../utils/s2s/mintS2S";
+import { logger } from "../logger";
+import { mintS2S } from "./mintS2S";
 import {
   getSvcconfigSnapshot,
   startSvcconfigMirror,

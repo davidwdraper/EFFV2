@@ -1,4 +1,4 @@
-// tsconfig.base.json (repo root)
+// tsconfig.base.json
 {
   "compilerOptions": {
     "target": "ES2020",

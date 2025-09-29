@@ -1,0 +1,10 @@
+// jsconfig.json  (repo root)
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@nv/shared/*": ["backend/shared/src/*"]
+    }
+  },
+  "exclude": ["node_modules", "**/dist"]
+}

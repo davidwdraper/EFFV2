@@ -12,7 +12,7 @@
 import { Router } from "express";
 import { HelloController } from "../controllers/HelloController";
 
-export function helloRouter(): Router {
+export function helloRouter(): ReturnType<typeof Router> {
   const r = Router();
   const ctrl = new HelloController();
   r.get("/", (req, res) => ctrl.getHello(req, res));

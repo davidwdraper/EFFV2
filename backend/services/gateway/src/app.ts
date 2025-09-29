@@ -9,7 +9,9 @@
  * - Build and configure the Express app (routes, middleware).
  */
 
-import express, { Express } from "express";
+// backend/services/gateway/src/app.ts
+import type { Express } from "express";
+import express = require("express");
 import { helloRouter } from "./routes/hello";
 
 export class GatewayApp {

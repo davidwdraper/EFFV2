@@ -25,3 +25,15 @@ export { ProcessCheck } from "./health/checks/ProcessCheck";
 
 // Bootstrap
 export { Bootstrap } from "./bootstrap/Bootstrap";
+
+// S2S
+export { SvcClient } from "./svc/SvcClient";
+export { SvcReceiver } from "./svc/SvcReceiver";
+export type {
+  SvcMethod,
+  SvcCallOptions,
+  SvcResponse,
+  UrlResolver,
+  HttpLikeRequest,
+  HttpLikeResponse,
+} from "./svc/types";

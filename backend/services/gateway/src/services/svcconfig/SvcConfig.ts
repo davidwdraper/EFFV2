@@ -1,6 +1,15 @@
 // backend/services/gateway/src/services/svcconfig/SvcConfig.ts
 /**
- * SvcConfig: loads and mirrors service-configs with LKG fallback.
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADRs:
+ *   - ADR0001 gateway svcconfig
+ *   - ADR0003 gateway pushes mirror to svcfacilitator
+ *
+ * CHANGE SUMMARY:
+ * - Add DI: setMirrorPusher()
+ * - Push mirror after boot/LKG and after each DB refresh (poll/change).
+ * - First push is mandatory: hard stop on failure.
  */
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
@@ -12,6 +21,7 @@ import {
 } from "@nv/shared";
 import type { ServiceConfigRecord } from "@nv/shared/contracts/ServiceConfig";
 import type { SvcMirror, ServiceKey } from "./types";
+import type { IMirrorPusher } from "./IMirrorPusher";
 
 export class SvcConfig {
   private readonly db: DbClient;
@@ -20,22 +30,28 @@ export class SvcConfig {
   private readonly pollMs: number;
   private usePolling = false;
 
-  constructor(dbClient?: DbClient) {
-    // Allow DI in tests; default to a client built from env (prefix-aware).
-    // Looks for SVCCONFIG_DB_DRIVER/URI/NAME first, then generic DB_* then MONGO_*.
-    this.db = dbClient ?? createDbClientFromEnv({ prefix: "SVCCONFIG" });
+  // NEW: pusher + first-push gate
+  private mirrorPusher?: IMirrorPusher;
+  private firstPushDone = false;
 
+  constructor(dbClient?: DbClient) {
+    this.db = dbClient ?? createDbClientFromEnv({ prefix: "SVCCONFIG" });
     this.lkgPath =
       process.env.SVCCONFIG_LKG_PATH?.trim() ||
       "backend/services/gateway/var/svcconfig.lkg.json";
-
     const pollStr = process.env.SVCCONFIG_POLL_MS?.trim() || "5000";
     this.pollMs = requireNumber("SVCCONFIG_POLL_MS", pollStr);
   }
 
+  /** DI: install a mirror pusher to notify downstreams. */
+  public setMirrorPusher(p: IMirrorPusher): void {
+    this.mirrorPusher = p;
+  }
+
+  /** Public: load mirror on boot, push to downstream, then start updates. */
   public async load(): Promise<void> {
     try {
-      await this.refreshFromDb("boot");
+      await this.refreshFromDb("boot"); // will push
       await this.startRealtimeUpdates();
     } catch (err) {
       this.log(
@@ -43,7 +59,7 @@ export class SvcConfig {
         "[svcconfig] DB load failed on boot; attempting .LKG fallback",
         { err: String(err) }
       );
-      this.loadFromLkgOrDie();
+      this.loadFromLkgOrDie(); // will push
       await this.tryStartPolling();
     }
   }
@@ -59,6 +75,8 @@ export class SvcConfig {
   public getMirror(): Readonly<SvcMirror> {
     return Object.freeze({ ...this.mirror });
   }
+
+  // ── internals ───────────────────────────────────────────────────────────────
 
   private async refreshFromDb(
     reason: "boot" | "poll" | "change"
@@ -77,7 +95,6 @@ export class SvcConfig {
     this.mirror = next;
     this.writeLkg();
 
-    // ── New: info log of all slugs and URLs ────────────────────────────────
     const summary = Object.values(this.mirror).map((r) => ({
       slug: r.slug,
       version: r.version,
@@ -87,6 +104,8 @@ export class SvcConfig {
       services: Object.keys(this.mirror).length,
       routes: summary,
     });
+
+    await this.tryPush(reason); // NEW: push on every refresh
   }
 
   private async startRealtimeUpdates(): Promise<void> {
@@ -102,18 +121,18 @@ export class SvcConfig {
           })
         );
       });
-      stream.on("error", async (err: unknown) => {
-        this.log(40, "[svcconfig] change stream error; switching to polling", {
-          err: String(err),
-        });
+      stream.on("error", async () => {
+        this.log(
+          20,
+          "[svcconfig] change streams unavailable; switching to polling"
+        );
         await this.tryStartPolling();
       });
       this.log(20, "[svcconfig] change stream watching");
-    } catch (err) {
+    } catch {
       this.log(
-        40,
-        "[svcconfig] change streams not available; enabling polling",
-        { err: String(err) }
+        20,
+        "[svcconfig] change streams not available; enabling polling"
       );
       await this.tryStartPolling();
     }
@@ -125,7 +144,7 @@ export class SvcConfig {
     this.log(20, `[svcconfig] polling every ${this.pollMs}ms`);
     const tick = async () => {
       try {
-        await this.refreshFromDb("poll");
+        await this.refreshFromDb("poll"); // will push
       } catch (err) {
         this.log(
           40,
@@ -159,12 +178,25 @@ export class SvcConfig {
         services: Object.keys(this.mirror).length,
         lkgPath: this.lkgPath,
       });
+      void this.tryPush("boot"); // still enforce first-push
     } catch (err) {
       this.log(50, "[svcconfig] no DB and no LKG; refusing to start", {
         err: String(err),
         lkgPath: this.lkgPath,
       });
       process.exit(1);
+    }
+  }
+
+  private async tryPush(reason: "boot" | "poll" | "change"): Promise<void> {
+    if (!this.mirrorPusher) return;
+    const ok = await this.mirrorPusher.push(this.getMirror(), reason);
+    if (!this.firstPushDone) {
+      if (!ok) {
+        this.log(50, "[svcconfig] initial mirror push FAILED — hard stop");
+        process.exit(1);
+      }
+      this.firstPushDone = true;
     }
   }
 

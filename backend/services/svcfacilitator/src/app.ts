@@ -8,10 +8,10 @@
  * Purpose:
  * - Build and configure the Express app (routes, middleware).
  */
-
 import type { Express } from "express";
 import express = require("express");
 import { healthRouter } from "./routes/Health";
+import { mirrorRouter } from "./routes/mirror";
 
 export class SvcFacilitatorApp {
   private readonly app: Express;
@@ -28,7 +28,8 @@ export class SvcFacilitatorApp {
     // Health
     this.app.use("/health", healthRouter());
 
-    // Step 2: we'll add /mirror/load and /svc/:slug/url here.
+    // Mirror ops
+    this.app.use("/mirror", mirrorRouter());
   }
 
   public get instance(): Express {

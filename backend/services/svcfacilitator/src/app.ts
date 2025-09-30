@@ -11,7 +11,7 @@
 
 import type { Express } from "express";
 import express = require("express");
-import { healthRouter } from "./routes/health";
+import { healthRouter } from "./routes/Health";
 
 export class SvcFacilitatorApp {
   private readonly app: Express;

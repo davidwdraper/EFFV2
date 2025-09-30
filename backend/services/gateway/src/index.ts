@@ -6,63 +6,28 @@
  *   - docs/adr/adr0001-gateway-embedded-svcconfig-and-svcfacilitator.md
  *
  * Purpose:
- * - Bootstrap: load envs, warm SvcConfig mirror (DB → .LKG), then start HTTP.
+ * - Bootstrap via shared Bootstrap: load envs, warm SvcConfig mirror, start HTTP.
  */
 
-import http from "http";
-import { resolve } from "path";
-import { config as loadEnv } from "dotenv";
+import { Bootstrap } from "@nv/shared";
 import { GatewayApp } from "./app";
-import { requireEnv, requireNumber } from "@nv/shared";
 import { getSvcConfig } from "./services/svcconfig";
 
-// Load env files (no CLI helpers)
-loadEnv({ path: resolve(process.cwd(), ".env") });
-loadEnv({ path: resolve(process.cwd(), ".env.dev"), override: true });
+async function main(): Promise<void> {
+  const boot = new Bootstrap({
+    service: "gateway",
+    // Reads PORT from env; defaults handled inside Bootstrap.
+    // Loads .env then .env.dev (override) before preStart.
+    preStart: async () => {
+      // Ensure svcconfig is loaded before we accept traffic.
+      await getSvcConfig().load();
+    },
+  });
 
-class GatewayServer {
-  private readonly port: number;
-
-  constructor() {
-    const portStr = requireEnv("PORT");
-    this.port = requireNumber("PORT", portStr);
-  }
-
-  public async start(): Promise<void> {
-    // 1️⃣ Warm the service-config mirror before accepting traffic.
-    await getSvcConfig().load();
-
-    // 2️⃣ Start HTTP server.
-    const app = new GatewayApp().instance;
-    const server = http.createServer(app);
-
-    server.listen(this.port, "0.0.0.0", () => {
-      console.log(
-        JSON.stringify({
-          level: 30,
-          service: "gateway",
-          msg: "listening",
-          port: this.port,
-        })
-      );
-    });
-
-    server.on("error", (err) => {
-      console.error(
-        JSON.stringify({
-          level: 50,
-          service: "gateway",
-          msg: "server_error",
-          err: String(err),
-        })
-      );
-      process.exitCode = 1;
-    });
-  }
+  await boot.run(() => new GatewayApp().instance);
 }
 
-// Kick off boot sequence and catch startup errors loudly.
-new GatewayServer().start().catch((err) => {
+main().catch((err) => {
   console.error(
     JSON.stringify({
       level: 50,

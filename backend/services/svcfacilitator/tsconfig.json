@@ -1,0 +1,24 @@
+// backend/services/svcfacilitator/tsconfig.json
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "rootDir": "src",
+    "outDir": "dist",
+
+    "baseUrl": "../../../",
+    "paths": {
+      "@nv/shared": ["backend/shared/src/index"],
+      "@nv/shared/*": ["backend/shared/src/*"]
+    }
+  },
+  "include": ["src"]
+}

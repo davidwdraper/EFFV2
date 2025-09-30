@@ -22,3 +22,6 @@ export type {
 export { HealthService } from "./health/HealthService";
 export { CallbackCheck } from "./health/checks/CallbackCheck";
 export { ProcessCheck } from "./health/checks/ProcessCheck";
+
+// Bootstrap
+export { Bootstrap } from "./bootstrap/Bootstrap";

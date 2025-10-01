@@ -146,3 +146,4 @@ Create new ADRs when needed. Provide the ADR prior to writing code.
 Ask for the ADR generation script, so you can produce the ADR documentation content.
 No god-files. If a file gets even close to 200 lines it needs to be split. Files that are nothing more than worker bees for a parent with no likely reuse, should be grouped together in a sub-folder.
 Everything is written as TS classes, using OO best practices. There has to be a good reason to not use a class.
+Remember when building scripts that we're running old macOS Bash verson.

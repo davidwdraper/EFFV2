@@ -1,4 +1,3 @@
-# scripts/run.sh
 #!/usr/bin/env bash
 # =============================================================================
 # NowVibin Dev Runner (prod-parity-ish)
@@ -8,6 +7,9 @@
 set -Eeuo pipefail
 export GOOGLE_APPLICATION_CREDENTIALS="${GOOGLE_APPLICATION_CREDENTIALS:-$HOME/.config/nowvibin/gateway-dev.json}"
 ENV_FILE=.env.dev
+
+export TMPDIR="$HOME/.tmp"
+mkdir -p "$TMPDIR"
 
 # ======= Arg parsing =========================================================
 NV_TEST=0
@@ -35,8 +37,8 @@ echo "   ENV_FILE=$ENV_FILE"
 # ======= Service list (current reality) =====================================
 # Keep this tight; uncomment/add as services come online.
 SERVICES=(
-  "gateway|backend/services/gateway|pnpm dev"
   "svcfacilitator|backend/services/svcfacilitator|pnpm dev"
+  "gateway|backend/services/gateway|pnpm dev"
   # "auth|backend/services/auth|pnpm dev"
   # "user|backend/services/user|pnpm dev"
   # "audit|backend/services/audit|pnpm dev"
@@ -201,6 +203,12 @@ for i in "${!SERVICE_NAMES[@]}"; do
       exit 1
     fi
   " 2>&1 | tee -a "$LOG_FILE" & PIDS+=($!)
+
+  # ---- Minimal race fix: if we just launched svcfacilitator, pause 5s -------
+  if [[ "$name" = "svcfacilitator" ]]; then
+    echo "⏳ svcfacilitator started; waiting 10s to warm up…"
+    sleep 10
+  fi
 done
 
 echo "📜 PIDs: ${PIDS[*]}"

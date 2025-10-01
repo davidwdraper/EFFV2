@@ -334,14 +334,14 @@
     "notes": "Geo service",
     "__v": 0
   },
-  "svcconfig@1": {
-    "_id": "68d79061208846c04ae8d7d9",
-    "slug": "svcconfig",
+  "svcfacilitator@1": {
+    "_id": "68dc54740178d369024c8bdd",
+    "slug": "svcfacilitator",
     "version": 1,
     "enabled": true,
     "allowProxy": true,
-    "baseUrl": "http://127.0.0.1:4002",
-    "outboundApiPrefix": "/api",
+    "baseUrl": "http://127.0.0.1:4015",
+    "outboundApiPrefix": "/",
     "configRevision": 1,
     "policy": {
       "revision": 1,
@@ -349,24 +349,10 @@
         "public": false,
         "userAssertion": "required"
       },
-      "rules": [
-        {
-          "method": "GET",
-          "path": "/v1/health",
-          "userAssertion": "optional",
-          "public": true,
-          "opId": "health"
-        }
-      ]
+      "rules": []
     },
-    "etag": "c_dFF9nRh50l-dqwE_mPXqIpynuSrZnuFB17L-t-y_g",
-    "healthPath": "/health",
-    "exposeHealth": true,
-    "protectedGetPrefixes": [],
-    "publicPrefixes": [],
-    "updatedAt": "2025-09-27T07:21:05.207Z",
-    "updatedBy": "seed-script",
-    "notes": "svcconfig service",
-    "__v": 0
+    "updatedAt": "2025-09-30T00:00:00.000Z",
+    "updatedBy": "manual-seed",
+    "notes": "SvcFacilitator (dev)"
   }
 }

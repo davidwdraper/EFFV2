@@ -1,10 +1,42 @@
-# backend/tests/smoke/tests/001-gateway-health.sh
 #!/usr/bin/env bash
-set -Eeuo pipefail
+# ============================================================================
+# Smoke: Gateway health
+# Requires service to be running on PORT=4000
+# Canonical path: /api/gateway/health/live
+# macOS bash 3.2 compatible
+# Docs:
+# - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+# - ADRs:
+#   - docs/adr/adr0001-gateway-embedded-svcconfig-and-svcfacilitator.md
+# ============================================================================
+set -euo pipefail
 
-: "${GATEWAY_BASE_URL:?GATEWAY_BASE_URL not set}"
-: "${TIMEOUT_MS:=3000}"
+URL="http://127.0.0.1:4000/api/gateway/health/live"
 
-# Hit /health and assert status=="ok"
-resp="$(curl -sS --max-time "$(( (TIMEOUT_MS+999)/1000 ))" "$GATEWAY_BASE_URL/health")"
-echo "$resp" | jq -e '.status=="ok"' >/dev/null
+# Ask for JSON only; don't include headers in the jq stream
+RESP="$(curl -sS -H 'Accept: application/json' "$URL" || true)"
+
+# If empty, fail with context
+if [ -z "${RESP}" ]; then
+  echo "ERROR: Empty response from $URL"
+  exit 1
+fi
+
+# Try to parse as JSON; if jq fails, show raw response and bail
+if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
+  echo "ERROR: Non-JSON response from $URL:"
+  echo "$RESP"
+  exit 1
+fi
+
+# Assert expected envelope
+STATUS="$(echo "$RESP" | jq -r '.data.status')"
+SERVICE="$(echo "$RESP" | jq -r '.service')"
+
+if [ "$STATUS" != "live" ] || [ "$SERVICE" != "gateway" ]; then
+  echo "ERROR: Unexpected payload:"
+  echo "$RESP" | jq .
+  exit 1
+fi
+
+echo "OK: $SERVICE is $STATUS"

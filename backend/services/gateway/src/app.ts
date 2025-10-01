@@ -11,8 +11,7 @@
 
 import type { Express } from "express";
 import express = require("express");
-import { healthRouter } from "./routes/health";
-
+import { mountServiceHealth } from "@nv/shared/health/mount";
 export class GatewayApp {
   private readonly app: Express;
 
@@ -25,8 +24,8 @@ export class GatewayApp {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
 
-    // Health should be top-level and fast
-    this.app.use("/health", healthRouter());
+    // Shared health: canonical, no drift
+    mountServiceHealth(this.app, { service: "gateway" });
   }
 
   public get instance(): Express {

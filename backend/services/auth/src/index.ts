@@ -8,7 +8,7 @@
  * - Bootstrap the Auth service using shared Bootstrap and start HTTP server.
  */
 
-import { Bootstrap } from "@nv/shared/src/bootstrap/Bootstrap";
+import { Bootstrap } from "@nv/shared/bootstrap/Bootstrap";
 import { AuthApp } from "./app";
 
 async function main(): Promise<void> {

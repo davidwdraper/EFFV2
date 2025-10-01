@@ -1,27 +1,20 @@
 {
   "name": "@nv/auth",
-  "private": true,
   "version": "0.1.0",
-  "description": "NowVibin Service Facilitator — S2S helper endpoints",
+  "private": true,
+  "_nvHeader": "SOP header: auth service. CJS runtime. Uses @nv/shared via alias.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "clean": "rimraf dist",
-    "build": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
     "dev": "NODE_OPTIONS='-r tsconfig-paths/register' tsx watch src/index.ts",
-    "start": "node dist/index.js"
-  },
-  "dependencies": {
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "build": "tsc -p tsconfig.json",
+    "start": "node -r tsconfig-paths/register dist/index.js",
+    "clean": "rm -rf dist"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
-    "@types/node": "^18.19.39",
-    "rimraf": "^5.0.5",
-    "tsc-alias": "^1.8.10",
-    "tsconfig-paths": "^4.2.0",
-    "tsx": "^4.16.2",
-    "typescript": "^5.9.2"
+    "typescript": "^5.6.3",
+    "@types/node": "^20.12.12",
+    "tsx": "^4.19.2",
+    "tsconfig-paths": "^4.2.0"
   }
 }

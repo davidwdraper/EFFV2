@@ -10,7 +10,7 @@
  */
 
 import type { Request, Response } from "express";
-import { SvcReceiver } from "@nv/shared/src/svc/SvcReceiver";
+import { SvcReceiver } from "@nv/shared/svc/SvcReceiver";
 
 type CreateBody = { email?: string; password?: string; displayName?: string };
 type SignonBody = { email?: string; password?: string };

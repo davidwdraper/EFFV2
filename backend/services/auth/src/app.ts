@@ -1,4 +1,3 @@
-// backend/services/auth/src/app.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -10,7 +9,8 @@
 
 import type { Express } from "express";
 import express = require("express");
-import { mountHealth } from "@nv/shared/src/health/Health";
+import { mountServiceHealth } from "@nv/shared/health/mount"; // canonical /api/<service>/health/*
+import { mountHealth } from "@nv/shared/health/Health"; // legacy /health/*
 import { authRouter } from "./routes/auth";
 
 export class AuthApp {
@@ -25,7 +25,10 @@ export class AuthApp {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
 
-    // Health (shared implementation)
+    // Canonical health: /api/auth/health/{live,ready}
+    mountServiceHealth(this.app, { service: "auth" });
+
+    // Back-compat shim for any old callers/tests hitting /health/*
     mountHealth(this.app, { service: "auth" });
 
     // Auth endpoints (mock returns for now; minting later)

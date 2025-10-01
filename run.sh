@@ -39,7 +39,7 @@ echo "   ENV_FILE=$ENV_FILE"
 SERVICES=(
   "svcfacilitator|backend/services/svcfacilitator|pnpm dev"
   "gateway|backend/services/gateway|pnpm dev"
-  #"auth|backend/services/auth|pnpm dev"
+  "auth|backend/services/auth|pnpm dev"
   # "user|backend/services/user|pnpm dev"
   # "audit|backend/services/audit|pnpm dev"
 )
@@ -206,8 +206,8 @@ for i in "${!SERVICE_NAMES[@]}"; do
 
   # ---- Minimal race fix: if we just launched svcfacilitator, pause 5s -------
   if [[ "$name" = "svcfacilitator" ]]; then
-    echo "⏳ svcfacilitator started; waiting 10s to warm up…"
-    sleep 10
+    echo "⏳ svcfacilitator started; waiting 5s to warm up…"
+    sleep 5
   fi
 done
 

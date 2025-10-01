@@ -1,10 +1,18 @@
-// backend/services/auth/tsconfig.json  (SERVICE — THIN, IDENTICAL SHAPE)
 {
+  "//": "SvcFacilitator tsconfig: consume @nv/shared build outputs; exclude obsolete local HealthController.",
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    "declaration": true,
+    "sourceMap": true,
+
+    "baseUrl": "../../../",
+    "paths": {
+      "@nv/shared": ["backend/services/shared/dist/index"],
+      "@nv/shared/*": ["backend/services/shared/dist/*"]
+    }
   },
-  "include": ["src"],
-  "exclude": ["dist", "node_modules"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules", "src/controllers/HealthController.ts"]
 }

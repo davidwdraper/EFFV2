@@ -7,11 +7,15 @@
  *
  * Purpose:
  * - Build and configure the Express app (routes, middleware).
+ * - Health routes mounted via shared helper (no drift).
  */
-import type { Express } from "express";
+
+import type { Express, Request, Response, NextFunction } from "express";
 import express = require("express");
-import { healthRouter } from "./routes/Health";
+import { mountServiceHealth } from "@nv/shared/health/mount";
 import { mirrorRouter } from "./routes/mirror";
+
+const SERVICE = "svcfacilitator";
 
 export class SvcFacilitatorApp {
   private readonly app: Express;
@@ -25,11 +29,22 @@ export class SvcFacilitatorApp {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
 
-    // Health
-    this.app.use("/health", healthRouter());
+    // Canonical health: /api/svcfacilitator/health/{live,ready}
+    mountServiceHealth(this.app, { service: SERVICE });
 
-    // Mirror ops
+    // Tooling
     this.app.use("/mirror", mirrorRouter());
+
+    // Final JSON error handler (jq-safe)
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    this.app.use(
+      (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+        console.error("[svcfacilitator:error]", err);
+        res
+          .status(500)
+          .json({ type: "about:blank", title: "Internal Server Error" });
+      }
+    );
   }
 
   public get instance(): Express {

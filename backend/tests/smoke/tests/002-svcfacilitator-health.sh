@@ -1,10 +1,39 @@
 # backend/tests/smoke/tests/002-svcfacilitator-health.sh
 #!/usr/bin/env bash
-set -Eeuo pipefail
+# ============================================================================
+# Smoke: svcFacilitator health
+# Requires service to be running on PORT=4015
+# Canonical path: /api/svcfacilitator/health/live
+# macOS bash 3.2 compatible
+# ============================================================================
+set -euo pipefail
 
-: "${SVCFAC_BASE_URL:?SVCFAC_BASE_URL not set}"
-: "${TIMEOUT_MS:=3000}"
+URL="http://127.0.0.1:4015/api/svcfacilitator/health/live"
 
-# Hit /health and assert status=="ok"
-resp="$(curl -sS --max-time "$(( (TIMEOUT_MS+999)/1000 ))" "$SVCFAC_BASE_URL/health")"
-echo "$resp" | jq -e '.status=="ok"' >/dev/null
+# Ask for JSON only; don't include headers in the jq stream
+RESP="$(curl -sS -H 'Accept: application/json' "$URL" || true)"
+
+# If empty, fail with context
+if [ -z "${RESP}" ]; then
+  echo "ERROR: Empty response from $URL"
+  exit 1
+fi
+
+# Try to parse as JSON; if jq fails, show raw response and bail
+if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
+  echo "ERROR: Non-JSON response from $URL:"
+  echo "$RESP"
+  exit 1
+fi
+
+# Assert the shape/content you expect; tweak as needed
+STATUS="$(echo "$RESP" | jq -r '.data.status')"
+SERVICE="$(echo "$RESP" | jq -r '.service')"
+
+if [ "$STATUS" != "live" ] || [ "$SERVICE" != "svcfacilitator" ]; then
+  echo "ERROR: Unexpected payload:"
+  echo "$RESP" | jq .
+  exit 1
+fi
+
+echo "OK: $SERVICE is $STATUS"

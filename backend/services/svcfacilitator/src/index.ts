@@ -9,7 +9,7 @@
  * - Bootstrap via shared Bootstrap and start HTTP server.
  */
 
-import { Bootstrap } from "@nv/shared";
+import { Bootstrap } from "@nv/shared/bootstrap/Bootstrap";
 import { SvcFacilitatorApp } from "./app";
 
 async function main(): Promise<void> {

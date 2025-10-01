@@ -1,15 +1,9 @@
-// tsconfig.json  (repo root "solution" tsconfig)
 {
-  "files": [],
-  "references": [
-    { "path": "backend/shared" },
-    { "path": "backend/services/gateway" }
-  ],
+  "//": "SOP/ADR header: Root TS config extends tsconfig.base.json. No emit here; per-service tsconfigs handle builds.",
+  "extends": "./tsconfig.base.json",
+  "packageManager": "pnpm@9.15.9",
   "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@nv/shared": ["backend/shared/src/index"],
-      "@nv/shared/*": ["backend/shared/src/*"]
-    }
-  }
+    "noEmit": true
+  },
+  "exclude": ["node_modules", "**/dist"]
 }

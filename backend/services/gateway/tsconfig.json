@@ -1,25 +1,10 @@
-// backend/services/gateway/tsconfig.json
+// backend/services/gateway/tsconfig.json  (SERVICE — THIN, IDENTICAL SHAPE)
 {
-  "extends": "../../../tsconfig.json",
+  "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "CommonJS",
-    "moduleResolution": "Node",
-    "strict": true,
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-
     "rootDir": "src",
-    "outDir": "dist",
-
-    "baseUrl": "../../../",
-    "paths": {
-      "@nv/shared": ["backend/shared/src/index"],
-      "@nv/shared/*": ["backend/shared/src/*"]
-    }
+    "outDir": "dist"
   },
   "include": ["src"],
-  "references": [{ "path": "../../shared" }]
+  "exclude": ["dist", "node_modules"]
 }

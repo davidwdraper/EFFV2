@@ -39,7 +39,7 @@ echo "   ENV_FILE=$ENV_FILE"
 SERVICES=(
   "svcfacilitator|backend/services/svcfacilitator|pnpm dev"
   "gateway|backend/services/gateway|pnpm dev"
-  # "auth|backend/services/auth|pnpm dev"
+  #"auth|backend/services/auth|pnpm dev"
   # "user|backend/services/user|pnpm dev"
   # "audit|backend/services/audit|pnpm dev"
 )
@@ -115,7 +115,7 @@ fi
 echo "🔧 NODE_ENV=${NODE_ENV}  LOG_LEVEL=${LOG_LEVEL}"
 
 # ======= Build @nv/shared (per-package build, no root typescript needed) =====
-SHARED_DIR="$ROOT/backend/shared"
+SHARED_DIR="$ROOT/backend/services/shared"
 echo "🛠️  Building @nv/shared (package build)…"
 if [[ -d "$SHARED_DIR" ]]; then
   if command -v pnpm >/dev/null 2>&1; then

@@ -1,4 +1,3 @@
-// tsconfig.base.json
 {
   "compilerOptions": {
     "target": "ES2020",
@@ -6,11 +5,18 @@
     "moduleResolution": "Node",
     "strict": true,
     "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
+    "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
     "baseUrl": ".",
     "paths": {
-      "@nv/shared/*": ["backend/services/shared/src/*"]
-    }
+      "@nv/shared": ["backend/services/shared/dist/index"],
+      "@nv/shared/*": ["backend/services/shared/dist/*"]
+    },
+
+    "types": ["node"],
+    "resolveJsonModule": true,
+    "noEmitOnError": true
   }
 }

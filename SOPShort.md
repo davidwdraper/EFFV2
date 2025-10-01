@@ -140,7 +140,7 @@ You have saved the NowVibin Backend — Core SOP (Reduced, Clean) as the fresh b
 
 plus...
 Always ask for files before dropping unless it's a new file.
-Always put path/file on first line.
+Always put path/file on first line and make sure this line is within the dropped code block (not outside).
 Always put header at top of each file, and reference appropriate docs and ADRs.
 Create new ADRs when needed. Provide the ADR prior to writing code.
 Ask for the ADR generation script, so you can produce the ADR documentation content.

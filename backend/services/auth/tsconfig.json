@@ -1,12 +1,7 @@
-// backend/services/shared/tsconfig.json  (SHARED IS ITS OWN PROJECT)
+// backend/services/auth/tsconfig.json  (SERVICE — THIN, IDENTICAL SHAPE)
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "composite": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-
     "rootDir": "src",
     "outDir": "dist"
   },

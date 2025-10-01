@@ -6,20 +6,19 @@
  *   - docs/adr/adr0002-svcfacilitator-minimal.md
  *
  * Purpose:
- * - Expose a simple health endpoint using shared HealthService (process-only).
+ * - Mount shared health endpoints for this service.
  */
 
-import type { Request, Response } from "express";
-import { HealthService, ProcessCheck } from "@nv/shared";
+import type { Express } from "express";
+import { mountHealth } from "@nv/shared/src/health/Health";
 
 export class HealthController {
-  async getHealth(_req: Request, res: Response): Promise<void> {
-    const svc = new HealthService("svcfacilitator");
-    svc.add(new ProcessCheck({ critical: false }));
+  constructor(
+    private readonly app: Express,
+    private readonly service: string
+  ) {}
 
-    const report = await svc.run();
-    const http =
-      report.status === "ok" ? 200 : report.status === "degraded" ? 200 : 503;
-    res.status(http).json(report);
+  public mount(): void {
+    mountHealth(this.app, { service: this.service });
   }
 }

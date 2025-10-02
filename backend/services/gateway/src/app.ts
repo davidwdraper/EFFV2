@@ -7,11 +7,14 @@
  *
  * Purpose:
  * - Build and configure the Express app (routes, middleware).
+ * - Mount health first, then the generic API proxy.
  */
 
 import type { Express } from "express";
 import express = require("express");
 import { mountServiceHealth } from "@nv/shared/health/mount";
+import { ApiProxyRouter } from "./routes/proxy";
+
 export class GatewayApp {
   private readonly app: Express;
 
@@ -24,8 +27,12 @@ export class GatewayApp {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
 
-    // Shared health: canonical, no drift
+    // 1) Health first so it isn't captured by the generic /api proxy.
     mountServiceHealth(this.app, { service: "gateway" });
+
+    // 2) Generic pass-through for /api/<slug>/v<#>/...
+    //    This supports both versioned and (temporarily) unversioned URLs.
+    this.app.use("/api", new ApiProxyRouter().router());
   }
 
   public get instance(): Express {

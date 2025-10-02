@@ -1,4 +1,4 @@
-// backend/services/auth/src/routes/auth.ts
+// backend/services/user/src/routes/auth.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)

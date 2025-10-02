@@ -13,5 +13,5 @@ import type { Request, Response } from "express";
 import { SvcReceiver } from "@nv/shared/svc/SvcReceiver";
 
 export class UseController {
-  private readonly rx = new SvcReceiver("auth");
+  private readonly rx = new SvcReceiver("user");
 }

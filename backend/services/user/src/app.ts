@@ -1,19 +1,20 @@
-// backend/services/auth/src/app.ts
+// backend/services/user/src/app.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs: ADR-0004 (Auth Service Skeleton — no minting)
+ * - ADRs:
+ *   - docs/adr/0004-auth-service-skeleton.md (pattern reference)
+ *   - docs/adr/00xx-user-service-skeleton.md (TBD: this service)
  *
  * Purpose:
- * - Build and configure the Auth app.
- * - Expose ONLY unversioned health: /api/auth/health/{live,ready}
- * - All non-health APIs must live under /api/auth/v1/...
+ * - Build and configure the User app.
+ * - Expose ONLY unversioned health: /api/user/health/{live,ready}
+ * - All non-health APIs must live under /api/user/v1/...
  */
 
 import type { Express } from "express";
 import express = require("express");
 import { mountServiceHealth } from "@nv/shared/health/mount";
-//import { userRouter } from "./routes/user";
 
 export class UserApp {
   private readonly app: Express;
@@ -27,11 +28,11 @@ export class UserApp {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
 
-    // Health (unversioned by design)
-    mountServiceHealth(this.app, { service: "user", base: "/api/auth/health" });
+    // Health (unversioned by design) — NOTE: user, not auth
+    mountServiceHealth(this.app, { service: "user", base: "/api/user/health" });
 
-    // Future: versioned APIs belong under /api/auth/v1/...
-    //this.app.use("/user", userRouter());
+    // Future: versioned APIs belong under /api/user/v1/...
+    // this.app.use("/api/user/v1/...", userRouter());
   }
 
   public get instance(): Express {

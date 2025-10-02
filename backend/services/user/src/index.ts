@@ -2,19 +2,18 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs: ADR-0004 (Auth Service Skeleton — no minting)
+ * - ADRs:
+ *   - docs/adr/00xx-user-service-skeleton.md (TBD)
  *
  * Purpose:
- * - Bootstrap the Auth service using shared Bootstrap and start HTTP server.
+ * - Bootstrap the User service using shared Bootstrap and start HTTP server.
  */
 
 import { Bootstrap } from "@nv/shared/bootstrap/Bootstrap";
 import { UserApp } from "./app";
 
 async function main(): Promise<void> {
-  await new Bootstrap({
-    service: "user",
-  }).run(() => new UserApp().instance);
+  await new Bootstrap({ service: "user" }).run(() => new UserApp().instance);
 }
 
 main().catch((err) => {

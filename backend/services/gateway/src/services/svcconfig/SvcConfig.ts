@@ -1,4 +1,4 @@
-// backend/services/gateway/src/services/svcconfig/SvcConfig.ts
+// backend / services / gateway / src / services / svcconfig / SvcConfig.ts;
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -10,6 +10,7 @@
  * - Add DI: setMirrorPusher()
  * - Push mirror after boot/LKG and after each DB refresh (poll/change).
  * - First push is mandatory: hard stop on failure.
+ * - NEW: resolveFromApiPath() uses shared UrlHelper to parse /api/:slug/v#:tail
  */
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
@@ -22,6 +23,7 @@ import {
 import type { ServiceConfigRecord } from "@nv/shared/contracts/ServiceConfig";
 import type { SvcMirror, ServiceKey } from "./types";
 import type { IMirrorPusher } from "./IMirrorPusher";
+import { UrlHelper } from "@nv/shared/http/UrlHelper";
 
 export class SvcConfig {
   private readonly db: DbClient;
@@ -76,6 +78,43 @@ export class SvcConfig {
     return Object.freeze({ ...this.mirror });
   }
 
+  /**
+   * NEW: Resolve from an inbound API path (e.g., "/api/auth/v1/create?x=1").
+   * - Parses slug/version/tail via shared UrlHelper.
+   * - Looks up baseUrl from the in-memory mirror (source of truth).
+   * - defaultVersion applies when the URL omits "/v#".
+   */
+  public resolveFromApiPath(
+    pathWithQuery: string,
+    defaultVersion = 1
+  ): {
+    slug: string;
+    version: number;
+    baseUrl: string;
+    tail: string;
+    query?: string;
+  } {
+    const addr = UrlHelper.parseApiPath(pathWithQuery);
+    const version = addr.version ?? defaultVersion;
+    const key: ServiceKey = `${addr.slug}@${version}`;
+    const rec = this.mirror[key];
+    if (!rec || !rec.enabled) {
+      throw new Error(`[svcconfig] Unknown or disabled service: ${key}`);
+    }
+    // Normalize tail to always start with "/"
+    const tail =
+      addr.subpath && addr.subpath.startsWith("/")
+        ? addr.subpath
+        : `/${addr.subpath || ""}`;
+    return {
+      slug: addr.slug,
+      version,
+      baseUrl: rec.baseUrl,
+      tail,
+      query: addr.query,
+    };
+  }
+
   // ── internals ───────────────────────────────────────────────────────────────
 
   private async refreshFromDb(
@@ -100,12 +139,13 @@ export class SvcConfig {
       version: r.version,
       baseUrl: r.baseUrl,
     }));
-    this.log(30, `[svcconfig] mirror refreshed from DB (${reason})`, {
+    this.log(30, "[svcconfig] mirror refreshed from DB", {
+      reason,
       services: Object.keys(this.mirror).length,
       routes: summary,
     });
 
-    await this.tryPush(reason); // NEW: push on every refresh
+    await this.tryPush(reason); // push on every refresh
   }
 
   private async startRealtimeUpdates(): Promise<void> {

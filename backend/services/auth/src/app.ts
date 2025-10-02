@@ -7,13 +7,13 @@
  * Purpose:
  * - Build and configure the Auth app.
  * - Expose ONLY unversioned health: /api/auth/health/{live,ready}
- * - All non-health APIs must live under /api/auth/v1/...
+ * - All non-health APIs live under /api/auth/v1/...
  */
 
 import type { Express } from "express";
 import express = require("express");
 import { mountServiceHealth } from "@nv/shared/health/mount";
-import { authRouter } from "./routes/auth";
+import { authRouter } from "./routes/auth.route";
 
 export class AuthApp {
   private readonly app: Express;
@@ -30,8 +30,8 @@ export class AuthApp {
     // Health (unversioned by design)
     mountServiceHealth(this.app, { service: "auth", base: "/api/auth/health" });
 
-    // Future: versioned APIs belong under /api/auth/v1/...
-    this.app.use("/auth", authRouter());
+    // Versioned APIs under /api/auth/v1/...
+    this.app.use("/api/auth", authRouter());
   }
 
   public get instance(): Express {

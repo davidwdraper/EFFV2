@@ -1,4 +1,3 @@
-// backend/services/shared/tsconfig.json  (SHARED IS ITS OWN PROJECT)
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {

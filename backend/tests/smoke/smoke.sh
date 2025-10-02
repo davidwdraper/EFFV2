@@ -1,5 +1,11 @@
 # backend/tests/smoke/smoke.sh
 #!/usr/bin/env bash
+# ============================================================================
+# Smoke Test Runner (macOS bash 3.2 compatible)
+# - No args: list available tests with their explicit numeric IDs (from filename).
+# - --all : run all tests in ID order.
+# - <ID>  : run a single test by its numeric ID (e.g., 6 or 006 runs 006-*.sh).
+# ============================================================================
 set -Eeuo pipefail
 
 # --- Locate repo root ---------------------------------------------------------
@@ -13,6 +19,17 @@ LIB="$SMOKE_DIR/lib.sh"
 # --- Helpers ------------------------------------------------------------------
 has_cmd(){ command -v "$1" >/dev/null 2>&1; }
 get_env(){ local f="$1" k="$2"; [ -f "$f" ] || { echo ""; return 0; }; grep -E "^${k}=" "$f" | tail -n1 | cut -d'=' -f2- || true; }
+normalize_id(){ # strip leading zeros safely (bash arithmetic, base-10)
+  local s="$1"
+  echo $((10#$s))
+}
+
+usage() {
+  echo "Usage:"
+  echo "  $(basename "$0")           # list tests"
+  echo "  $(basename "$0") --all     # run all tests"
+  echo "  $(basename "$0") <ID>      # run a single test by its numeric ID (e.g., 6 or 006)"
+}
 
 # --- Dependencies -------------------------------------------------------------
 for dep in curl jq; do has_cmd "$dep" || { echo "❌ Missing $dep" >&2; exit 2; }; done
@@ -33,46 +50,117 @@ export TIMEOUT_MS="${TIMEOUT_MS:-3000}"
 
 # --- Discover tests (Bash 3.2 friendly) --------------------------------------
 mkdir -p "$TEST_DIR"
-TESTS_LIST="$(mktemp -t nv_smoke_list.XXXXXX)"
-# No GNU-only flags; plain find + sort
-find "$TEST_DIR" -maxdepth 1 -type f -name "*.sh" | sort > "$TESTS_LIST"
+TESTS_FILE="$(mktemp -t nv_smoke_list.XXXXXX)"
+find "$TEST_DIR" -maxdepth 1 -type f -name "*.sh" | sort > "$TESTS_FILE"
 
-TESTS=()
-while IFS= read -r line; do
-  [ -n "$line" ] && TESTS[${#TESTS[@]}]="$line"
-done < "$TESTS_LIST"
-rm -f "$TESTS_LIST"
+# Build parallel arrays: IDS[i], FILES[i]
+IDS=()
+FILES=()
+while IFS= read -r t; do
+  [ -n "$t" ] || continue
+  base="$(basename "$t")"
+  # Expect filenames like '006-something.sh' (numeric prefix + dash)
+  if echo "$base" | grep -Eq '^[0-9]+-.*\.sh$'; then
+    id="$(echo "$base" | sed -E 's/^([0-9]+).*/\1/')"
+    IDS[${#IDS[@]}]="$id"
+    FILES[${#FILES[@]}]="$t"
+  fi
+done < "$TESTS_FILE"
+rm -f "$TESTS_FILE"
 
-echo "▶ smoke: found ${#TESTS[@]} test(s)"
-i=1
-for t in "${TESTS[@]}"; do
-  echo "  $i) $(basename "$t")"
-  i=$((i+1))
-done
-echo
+COUNT="${#FILES[@]}"
 
-# --- Run tests ----------------------------------------------------------------
+# --- No args: list tests and usage, exit -------------------------------------
+if [ $# -eq 0 ]; then
+  echo "▶ smoke: found ${COUNT} test(s)"
+  for (( i=0; i<COUNT; i++ )); do
+    echo "  ${IDS[$i]}) $(basename "${FILES[$i]}")"
+  done
+  echo
+  usage
+  exit 0
+fi
+
+# --- Arg parsing --------------------------------------------------------------
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  usage
+  exit 0
+fi
+
+RUN_MODE="single"
+RUN_IDX=-1
+if [ "$1" = "--all" ]; then
+  RUN_MODE="all"
+else
+  REQ_ID_RAW="$1"
+  if ! echo "$REQ_ID_RAW" | grep -Eq '^[0-9]+$'; then
+    echo "❌ Invalid ID: $REQ_ID_RAW" >&2
+    echo
+    usage
+    exit 2
+  fi
+  req_n="$(normalize_id "$REQ_ID_RAW")"
+  found=0
+  for (( i=0; i<COUNT; i++ )); do
+    cur_n="$(normalize_id "${IDS[$i]}")"
+    if [ "$cur_n" -eq "$req_n" ]; then
+      RUN_IDX="$i"
+      found=1
+      break
+    fi
+  done
+  if [ "$found" -ne 1 ]; then
+    echo "❌ No test with ID: $REQ_ID_RAW" >&2
+    echo "Available tests:"
+    for (( i=0; i<COUNT; i++ )); do echo "  ${IDS[$i]}  $(basename "${FILES[$i]}")"; done
+    exit 2
+  fi
+fi
+
+# --- Runner helpers -----------------------------------------------------------
+run_test() {
+  local tpath="$1"
+  local name; name="$(basename "$tpath")"
+  echo "── running: $name"
+  if bash "$tpath"; then
+    echo "✅ PASS: $name"
+    return 0
+  else
+    echo "❌ FAIL: $name"
+    return 1
+  fi
+}
+
+# --- Execute ------------------------------------------------------------------
 PASS=0
 FAIL=0
 FAILED_LIST=()
 
-for t in "${TESTS[@]}"; do
-  name="$(basename "$t")"
-  echo "── running: $name"
-  if bash "$t"; then
-    echo "✅ PASS: $name"
+if [ "$RUN_MODE" = "all" ]; then
+  for (( i=0; i<COUNT; i++ )); do
+    echo
+    if run_test "${FILES[$i]}"; then
+      PASS=$((PASS+1))
+    else
+      FAIL=$((FAIL+1))
+      FAILED_LIST+=("$(basename "${FILES[$i]}")")
+    fi
+  done
+else
+  echo
+  if run_test "${FILES[$RUN_IDX]}"; then
     PASS=$((PASS+1))
   else
-    echo "❌ FAIL: $name"
     FAIL=$((FAIL+1))
-    FAILED_LIST+=("$name")
+    FAILED_LIST+=("$(basename "${FILES[$RUN_IDX]}")")
   fi
-  echo
-done
+fi
 
+echo
 echo "Summary: ${PASS} passed, ${FAIL} failed"
 if [ "$FAIL" -gt 0 ]; then
   printf 'Failures:\n'
   for f in "${FAILED_LIST[@]}"; do echo " - $f"; done
   exit 1
 fi
+exit 0

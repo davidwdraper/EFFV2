@@ -8,14 +8,18 @@
  * Purpose:
  * - Generic pass-through proxy: /api/<slug>/v<#>/... (STRICT)
  * - Exception: health is unversioned: /api/<slug>/health/{live,ready}
- * - Parse slug/version via UrlHelper; forward via shared SvcClient singleton.
- * - Unwrap SvcClient wrapper so the gateway returns the *upstream* envelope.
+ * - Parse ONLY (slug/version) via UrlHelper. Do NOT rebuild paths.
+ * - Outbound URL = svcconfig baseUrl + exact inbound URL (path + query).
+ *
+ * Debug (temp):
+ * - Log baseUrl, downstreamPath, and finalUrl to catch mismatches fast.
  */
 
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { getSvcClient } from "../clients/svcClient";
 import { UrlHelper } from "@nv/shared/http/UrlHelper";
+import { getSvcConfig } from "../services/svcconfig"; // DEBUG: to log baseUrl
 
 export class ApiProxyRouter {
   private readonly r = Router();
@@ -28,10 +32,18 @@ export class ApiProxyRouter {
     return this.r;
   }
 
+  private isHealthSubpath(subpath: string): boolean {
+    return (
+      subpath === "/health" ||
+      subpath === "/health/" ||
+      subpath.startsWith("/health/")
+    );
+  }
+
   private async handle(req: Request, res: Response): Promise<void> {
     let addr;
     try {
-      addr = UrlHelper.parseApiPath(req.originalUrl); // preserves query
+      addr = UrlHelper.parseApiPath(req.originalUrl); // includes query
     } catch (e: any) {
       res.status(400).json({
         ok: false,
@@ -41,7 +53,7 @@ export class ApiProxyRouter {
       return;
     }
 
-    const isHealth = addr.subpath.startsWith("/health/");
+    const isHealth = this.isHealthSubpath(addr.subpath);
     if (!isHealth && addr.version === undefined) {
       res.status(400).json({
         ok: false,
@@ -55,89 +67,72 @@ export class ApiProxyRouter {
     }
 
     const client = getSvcClient();
-    const resolutionVersion = isHealth ? 1 : (addr.version as number);
+    const version = isHealth ? 1 : (addr.version as number);
 
-    // health: unversioned; normal: versioned
-    const path = isHealth
-      ? UrlHelper.buildServiceRoute({ ...addr, version: undefined }, undefined)
-      : UrlHelper.buildServiceRoute(addr, resolutionVersion);
+    // EXACT inbound path+query after the port
+    const downstreamPath = req.originalUrl;
+
+    // DEBUG: compute and log the final URL we expect SvcClient to hit
+    try {
+      const baseUrl = getSvcConfig().getUrlFromSlug(addr.slug, version);
+      const finalUrl =
+        baseUrl.replace(/\/+$/, "") + "/" + downstreamPath.replace(/^\/+/, "");
+      // Minimal structured log
+      console.log(
+        JSON.stringify({
+          level: 20,
+          service: "gateway",
+          msg: "proxy_debug",
+          slug: addr.slug,
+          version,
+          baseUrl,
+          downstreamPath,
+          finalUrl,
+        })
+      );
+    } catch (e) {
+      // If svcconfig can’t resolve, let the SvcClient path handle the error below
+    }
+
+    const requestId = req.header("x-request-id") || undefined;
+    const auth = req.header("authorization");
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      "x-api-version": String(version),
+      ...(auth ? { authorization: auth } : {}),
+    };
 
     try {
-      const resp: any = await client.call({
+      const resp = await client.call({
         slug: addr.slug,
-        version: resolutionVersion,
-        path,
+        version,
+        path: downstreamPath, // includes query
         method: req.method as any,
-        headers: {
-          "x-request-id": (req.headers["x-request-id"] as string) || "",
-          accept: "application/json",
-        },
+        requestId,
+        headers,
+        // no query here; it’s already in originalUrl
         body:
           req.method === "GET" || req.method === "HEAD"
             ? undefined
             : (req.body as unknown),
       });
 
-      // ---- Unwrap SvcClient wrapper to upstream envelope -------------------
-      // SvcClient typically returns: { ok, status, headers, data: <upstream> }
-      // We want to return <upstream> as-is if it looks like a service envelope.
-      let upstream = resp?.data;
-      const looksLikeEnvelope =
-        upstream &&
-        typeof upstream === "object" &&
-        ("ok" in upstream || "service" in upstream || "data" in upstream);
-
-      let outBody: any;
-      if (looksLikeEnvelope) {
-        outBody = upstream;
-      } else if (resp?.body !== undefined) {
-        outBody = resp.body;
-      } else if (resp?.json !== undefined) {
-        outBody = resp.json;
-      } else if (resp?.text !== undefined) {
-        outBody = String(resp.text);
-      } else {
-        res.status(502).json({
-          ok: false,
-          service: "gateway",
-          data: {
-            status: "bad_gateway",
-            detail: "upstream returned no usable body",
-          },
-        });
+      if (resp.ok && resp.data !== undefined) {
+        res
+          .status(resp.status)
+          .set(resp.headers)
+          .send(resp.data as any);
         return;
       }
 
-      // ---- Headers: drop hop-by-hop and content-length ---------------------
-      const rawHeaders: Record<string, string> = (resp.headers ?? {}) as any;
-      const drop = new Set([
-        "connection",
-        "keep-alive",
-        "proxy-connection",
-        "transfer-encoding",
-        "upgrade",
-        "content-length",
-      ]);
-      const safeHeaders: Record<string, string> = {};
-      for (const [k, v] of Object.entries(rawHeaders)) {
-        if (!drop.has(k.toLowerCase())) safeHeaders[k] = String(v);
-      }
-
-      // Ensure JSON CT if sending an object and CT not already set
-      if (
-        typeof outBody === "object" &&
-        outBody !== null &&
-        !Object.keys(safeHeaders).some(
-          (h) => h.toLowerCase() === "content-type"
-        )
-      ) {
-        safeHeaders["content-type"] = "application/json; charset=utf-8";
-      }
-
-      res
-        .status(resp.status ?? 200)
-        .set(safeHeaders)
-        .send(outBody);
+      res.status(resp.status || 502).json({
+        ok: false,
+        service: "gateway",
+        data: {
+          status: "bad_gateway",
+          detail: resp.error?.message || "upstream error",
+        },
+      });
     } catch (err: any) {
       res.status(502).json({
         ok: false,

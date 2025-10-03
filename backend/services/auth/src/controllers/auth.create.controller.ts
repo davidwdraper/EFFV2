@@ -15,7 +15,7 @@
  * Notes:
  * - Password is OUTSIDE the user contract by design.
  * - For all auth endpoints (create, signon, changePassword), the User service is called.
- * - TODO (SOP alignment): switch to PUT /api/user/v1/users once the User service exposes the canonical resource route.
+ * - SOP alignment: Auth → User uses PUT /api/user/v1/users (plural) for create.
  */
 
 import type { Request, Response } from "express";
@@ -69,16 +69,15 @@ export class AuthCreateController extends AuthControllerBase {
           .toString("base64url")
           .slice(0, 24)}`;
 
-        // 4) Call User service
+        // 4) Call User service → PUT /api/user/v1/users  (SOP-aligned)
         let upstream: SvcResponse<unknown>;
         try {
           upstream = (await this.callUser(
-            "create",
+            "users", // ← plural resource, not "create"
             { user: user.toJSON(), hashedPassword },
-            { method: "POST", requestId }
+            { method: "PUT", requestId } // ← PUT, not POST
           )) as unknown as SvcResponse<unknown>;
         } catch (err: any) {
-          // Loud + helpful 502 response
           return this.fail(
             502,
             "bad_gateway",

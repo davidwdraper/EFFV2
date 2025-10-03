@@ -7,11 +7,10 @@
  *
  * Purpose:
  * - Wire CRUD endpoints (read/update/delete) to dedicated controllers.
- * - Versioned paths under /v1/...; CREATE is intentionally excluded (Auth-only).
+ * - Paths here are relative to the /api/<SVC_NAME>/v1 mount in app.ts.
  *
  * Notes:
- * - No POST here. No PUT /users here (create is via Auth S2S endpoint).
- * - Future: when S2S JWT lands, apply verifyS2S guard before these routes.
+ * - CREATE is intentionally excluded (Auth-only via S2S).
  */
 
 import { Router } from "express";
@@ -26,14 +25,14 @@ export function usersCrudRouter(): Router {
   const update = new UserUpdateController();
   const remove = new UserDeleteController();
 
-  // READ: GET /v1/users/:id
-  r.get("/v1/users/:id", (req, res) => void read.handle(req, res));
+  // READ: GET /users/:id
+  r.get("/users/:id", (req, res) => void read.handle(req, res));
 
-  // UPDATE: PATCH /v1/users/:id
-  r.patch("/v1/users/:id", (req, res) => void update.handle(req, res));
+  // UPDATE: PATCH /users/:id
+  r.patch("/users/:id", (req, res) => void update.handle(req, res));
 
-  // DELETE: DELETE /v1/users/:id
-  r.delete("/v1/users/:id", (req, res) => void remove.handle(req, res));
+  // DELETE: DELETE /users/:id
+  r.delete("/users/:id", (req, res) => void remove.handle(req, res));
 
   return r;
 }

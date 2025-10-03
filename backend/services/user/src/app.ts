@@ -19,7 +19,7 @@
 import type { Express } from "express";
 import express = require("express");
 import { mountServiceHealth } from "@nv/shared/health/mount";
-import { usersRouter } from "./routes/s2s.auth.routes";
+import { userAuthRouter } from "./routes/s2s.auth.routes";
 import { usersCrudRouter } from "./routes/users.crud.routes";
 
 function getSvcName(): string {
@@ -47,7 +47,7 @@ export class UserApp {
 
     // Versioned APIs — mounted under /api/<SVC_NAME>/v1
     // S2S-only endpoints from Auth (PUT /users, POST /signon, POST /changepassword)
-    this.app.use(`/api/${svc}/v1`, usersRouter());
+    this.app.use(`/api/${svc}/v1`, userAuthRouter());
 
     // CRUD endpoints (GET/PATCH/DELETE /users/:id) — no create here
     this.app.use(`/api/${svc}/v1`, usersCrudRouter());

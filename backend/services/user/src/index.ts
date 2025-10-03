@@ -20,7 +20,7 @@ main().catch((err) => {
   console.error(
     JSON.stringify({
       level: 50,
-      service: "user",
+      service: "user", // <-- needs to come from .env
       msg: "boot_failed",
       err: String(err),
     })

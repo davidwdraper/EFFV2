@@ -28,7 +28,7 @@ Route & Service Rules
 URL convention (no exceptions)
 
 http(s)://<host>:<port>/api/<slug>/v<major>/<rest>
-http(s)://<host>:<port>/<healthRoute>
+http(s)://<host>:<port>/api/<slug>/health
 
 <slug> = singular service name; REST resources = plural.
 
@@ -79,8 +79,6 @@ Use shared logger util → pino-http; propagate x-request-id.
 Audit middleware flushes once per request.
 
 Separate SECURITY logs (guardrail denials) from WAL audit (passed requests).
-
-LogSvc is primary sink; FS NDJSON is fallback.
 
 Security & S2S (critical)
 
@@ -134,16 +132,10 @@ Always, always, always: first line of every file drop should look like
 
 ✅ This version is ready to paste at the start of each new session.
 
-To be dropped for future sessions:
+Additional - this has been working well:
 
-You have saved the NowVibin Backend — Core SOP (Reduced, Clean) as the fresh baseline for all new backend sessions.
+Every file drop is preceeded by design discussion. Then you drop drop new files or merge into pre-existing files after asking me for my copy, unless you have the file in memory during the current session. Your drops should be just one file at a time, unless I ask for more. Always suggest code reuse in shared and/or base Typescript classes. Use dependency injection where helpful. Baby steps and file at a time moving forward - I'll drive the design.
 
-plus...
-Always ask for files before dropping unless it's a new file.
-Always put path/file on first line and make sure this line is within the dropped code block (not outside).
-Always put header at top of each file, and reference appropriate docs and ADRs.
-Create new ADRs when needed. Provide the ADR prior to writing code.
-Ask for the ADR generation script, so you can produce the ADR documentation content.
-No god-files. If a file gets even close to 200 lines it needs to be split. Files that are nothing more than worker bees for a parent with no likely reuse, should be grouped together in a sub-folder.
-Everything is written as TS classes, using OO best practices. There has to be a good reason to not use a class.
-Remember when building scripts that we're running old macOS Bash verson.
+We're building out the new backend a bit at a time, starting with plumbing. We just went green on user health via the gateway, and are working on e2e to on auth.create endpoint, which is test -> gateway -> auth -> user -> okay
+There is no logging, audit, JWT or user-auth, yet. auth service password is mock hashed.
+In the last abandoned backend, we were spending more time debugging than writing new code. That was because the initial design was poor, and we were refactoring and constantly doing regressions with difficult errors to solve. We now write a few files, then test.

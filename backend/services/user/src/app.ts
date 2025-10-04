@@ -21,6 +21,7 @@ import express = require("express");
 import { mountServiceHealth } from "@nv/shared/health/mount";
 import { userAuthRouter } from "./routes/s2s.auth.routes";
 import { usersCrudRouter } from "./routes/users.crud.routes";
+import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 
 function getSvcName(): string {
   const n = process.env.SVC_NAME?.trim();
@@ -44,6 +45,8 @@ export class UserApp {
 
     // Health (unversioned) — /api/<SVC_NAME>/health/{live,ready}
     mountServiceHealth(this.app, { service: svc, base: `/api/${svc}/health` });
+
+    this.app.use(responseErrorLogger("user"));
 
     // Versioned APIs — mounted under /api/<SVC_NAME>/v1
     // S2S-only endpoints from Auth (PUT /users, POST /signon, POST /changepassword)

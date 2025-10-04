@@ -26,7 +26,7 @@ import dotenv from "dotenv";
 
 export type EnvMode = "dev" | "test" | "docker" | "production" | string;
 
-export class EnvLoader {
+class EnvLoaderClass {
   /** Locate repo root by walking up from a starting directory. */
   static findRepoRoot(startDir: string = process.cwd()): string {
     let dir = startDir;
@@ -44,7 +44,7 @@ export class EnvLoader {
       dir = parent;
     }
 
-    // Fall back: best guess = two levels up from a service folder
+    // Fall back: best guess = current startDir
     return startDir;
   }
 
@@ -107,3 +107,8 @@ export class EnvLoader {
     return n;
   }
 }
+
+// Export in both shapes so existing imports don't break.
+const EnvLoader = EnvLoaderClass;
+export { EnvLoader };
+export default EnvLoader;

@@ -16,5 +16,8 @@
     "@types/node": "^20.12.12",
     "tsx": "^4.19.2",
     "tsconfig-paths": "^4.2.0"
+  },
+  "dependencies": {
+    "@nv/shared": "workspace:*"
   }
 }

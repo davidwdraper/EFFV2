@@ -130,12 +130,21 @@ Always, always, always: first line of every file drop should look like
 
 // backend/services/log/src/app.ts
 
-✅ This version is ready to paste at the start of each new session.
-
 Additional - this has been working well:
 
 Every file drop is preceeded by design discussion. Then you drop drop new files or merge into pre-existing files after asking me for my copy, unless you have the file in memory during the current session. Your drops should be just one file at a time, unless I ask for more. Always suggest code reuse in shared and/or base Typescript classes. Use dependency injection where helpful. Baby steps and file at a time moving forward - I'll drive the design.
 
-We're building out the new backend a bit at a time, starting with plumbing. We just went green on user health via the gateway, and are working on e2e to on auth.create endpoint, which is test -> gateway -> auth -> user -> okay
+We're building out the new backend a bit at a time, starting with plumbing.
 There is no logging, audit, JWT or user-auth, yet. auth service password is mock hashed.
-In the last abandoned backend, we were spending more time debugging than writing new code. That was because the initial design was poor, and we were refactoring and constantly doing regressions with difficult errors to solve. We now write a few files, then test.
+In the last abandoned backend, we were spending more time debugging than writing new code. That was because the initial design was poor, and we were refactoring and constantly doing regressions with difficult errors to solve. We now write a few files, then test. Baby Steps.
+
+Last session we simplified how the gateway built proxy URLs. We decided that all that was needed was to:
+
+- parse the inbound URL to get the slug and version, using shared UrlHelper.
+- use the slug and version to lookup the destination port from the svcconfig mirror that the gateway holds
+- replace the port from the inbound URL with the target port to make an outbound URL
+- strip credetionals (not there yet) from the inbound headers and move to outbound
+- move the payload
+- proxy the call
+
+After we did the above, we broke the gateway. So that now needs debugging.

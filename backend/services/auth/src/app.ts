@@ -14,6 +14,7 @@ import type { Express } from "express";
 import express = require("express");
 import { mountServiceHealth } from "@nv/shared/health/mount";
 import { authRouter } from "./routes/auth.route";
+import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 
 export class AuthApp {
   private readonly app: Express;
@@ -29,6 +30,8 @@ export class AuthApp {
 
     // Health (unversioned by design)
     mountServiceHealth(this.app, { service: "auth", base: "/api/auth/health" });
+
+    this.app.use(responseErrorLogger("auth"));
 
     // Versioned APIs under /api/auth/v1/...
     this.app.use("/api/auth", authRouter());

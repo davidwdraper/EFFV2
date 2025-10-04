@@ -1,7 +1,0 @@
-// backend/services/user/src/validators/user.directory.dto.ts
-import {
-  zDirectoryDiscovery,
-  type DirectoryDiscovery,
-} from "@eff/shared/src/contracts/user.directory.contract";
-
-export { zDirectoryDiscovery, type DirectoryDiscovery };

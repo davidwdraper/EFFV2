@@ -1,298 +1,211 @@
 // backend/services/gateway/src/services/svcconfig/SvcConfig.ts
 /**
- * Docs:
+ * Docs / SOP
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR0001 gateway svcconfig
- *   - ADR0003 gateway pushes mirror to svcfacilitator
+ * - ADR0001: Gateway-Embedded SvcConfig (mirror)
+ * - ADR0003: Gateway <-> SvcFacilitator (mirror publish/consume)
  *
- * CHANGE SUMMARY:
- * - Add DI: setMirrorPusher()
- * - Push mirror after boot/LKG and after each DB refresh (poll/change).
- * - First push is mandatory: hard stop on failure.
- * - NEW: resolveFromApiPath() uses shared UrlHelper to parse /api/:slug/v#:tail
- * - NEW: getPortFromSlug() returns numeric port for a given slug@version
+ * Purpose
+ * - Maintain an in-memory mirror of service endpoints keyed by <slug>@<version>.
+ * - Load strictly from the svcFacilitator (not per-service env).
+ * - Provide strict lookups for URL/port; no silent v1 fallback.
  *
- * Env:
- * - SVCCONFIG_LKG_PATH (optional; default: backend/services/gateway/var/svcconfig.lkg.json)
- * - SVCCONFIG_POLL_MS  (optional; default: 5000)
+ * Boot Contract
+ * - Require SVCFACILITATOR_BASE_URL
+ * - GET {SVCFACILITATOR_BASE_URL}{SVCFACILITATOR_CONFIG_PATH}
+ *     Default path: /api/svcfacilitator/v1/svcconfig
+ *   Response must be an array of records: { slug, version, baseUrl, enabled }
+ *
+ * Routing Policy (current)
+ * - All proxied routes are VERSIONED (incl. health): /api/<slug>/v<major>/...
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
-import { dirname } from "path";
-import { requireNumber, DbClient, createDbClientFromEnv } from "@nv/shared";
-import type { ServiceConfigRecord } from "@nv/shared/contracts/ServiceConfig";
-import type { SvcMirror, ServiceKey } from "./types";
-import type { IMirrorPusher } from "./IMirrorPusher";
-import { UrlHelper } from "@nv/shared/http/UrlHelper";
-import { getLogger } from "@nv/shared/util/logger.provider";
+import assert from "assert";
+import { setTimeout as sleep } from "timers/promises";
+// If you already export this type from shared, feel free to swap this local copy.
+export interface ServiceConfigRecord {
+  slug: string;
+  version: number;
+  baseUrl: string;
+  enabled: boolean;
+}
+
+export interface SvcEntry extends ServiceConfigRecord {}
 
 export class SvcConfig {
-  private readonly db: DbClient;
-  private mirror: SvcMirror = {};
-  private readonly lkgPath: string;
-  private readonly pollMs: number;
-  private usePolling = false;
+  private readonly entries = new Map<string, SvcEntry>();
 
-  // NEW: pusher + first-push gate
-  private mirrorPusher?: IMirrorPusher;
-  private firstPushDone = false;
+  constructor() {}
 
-  // Bound logger for this background job (human one-liners)
-  private readonly logBound = getLogger().bind({
-    slug: "svcconfig",
-    version: 1,
-    url: "/svcconfig",
-  });
+  // ------------------------------ Load / Refresh -----------------------------
 
-  constructor(dbClient?: DbClient) {
-    this.db = dbClient ?? createDbClientFromEnv({ prefix: "SVCCONFIG" });
-    this.lkgPath =
-      process.env.SVCCONFIG_LKG_PATH?.trim() ||
-      "backend/services/gateway/var/svcconfig.lkg.json";
-    const pollStr = process.env.SVCCONFIG_POLL_MS?.trim() || "5000";
-    this.pollMs = requireNumber("SVCCONFIG_POLL_MS", pollStr);
-  }
-
-  /** DI: install a mirror pusher to notify downstreams. */
-  public setMirrorPusher(p: IMirrorPusher): void {
-    this.mirrorPusher = p;
-  }
-
-  /** Public: load mirror on boot, push to downstream, then start updates. */
+  /**
+   * Load/refresh the mirror from svcFacilitator.
+   * Will retry a few times on transient startup races.
+   */
   public async load(): Promise<void> {
-    try {
-      await this.refreshFromDb("boot"); // will push
-      await this.startRealtimeUpdates();
-    } catch (err) {
-      this.error(
-        "[svcconfig] DB load failed on boot; attempting .LKG fallback",
-        {
-          err: String(err),
-        }
+    this.entries.clear();
+
+    const base = (process.env.SVCFACILITATOR_BASE_URL || "").trim();
+    if (!base) {
+      // Hard stop per SOP — gateway can’t run without facilitator bootstrap
+      // eslint-disable-next-line no-console
+      console.error(
+        "❌ [svcconfig] SVCFACILITATOR_BASE_URL is required but not set"
       );
-      this.loadFromLkgOrDie(); // will push
-      await this.tryStartPolling();
-    }
-  }
-
-  public getUrlFromSlug(slug: string, version = 1): string {
-    const key: ServiceKey = `${slug}@${version}`;
-    const rec = this.mirror[key];
-    if (!rec || !rec.enabled)
-      throw new Error(`[svcconfig] Unknown or disabled service: ${key}`);
-    return rec.baseUrl;
-  }
-
-  /**
-   * NEW: Return the numeric TCP port for the service identified by slug@version.
-   * - Parses the baseUrl; if the URL has an explicit port, return it.
-   * - Otherwise, infer from protocol (https → 443, http → 80).
-   */
-  public getPortFromSlug(slug: string, version = 1): number {
-    const baseUrl = this.getUrlFromSlug(slug, version);
-    let u: URL;
-    try {
-      u = new URL(baseUrl);
-    } catch {
-      throw new Error(
-        `[svcconfig] Invalid baseUrl for ${slug}@${version}: ${baseUrl}`
-      );
-    }
-    if (u.port) return Number(u.port);
-    return u.protocol === "https:" ? 443 : 80;
-  }
-
-  public getMirror(): Readonly<SvcMirror> {
-    return Object.freeze({ ...this.mirror });
-  }
-
-  /**
-   * NEW: Resolve from an inbound API path (e.g., "/api/auth/v1/create?x=1").
-   * - Parses slug/version/tail via shared UrlHelper.
-   * - Looks up baseUrl from the in-memory mirror (source of truth).
-   * - defaultVersion applies when the URL omits "/v#".
-   */
-  public resolveFromApiPath(
-    pathWithQuery: string,
-    defaultVersion = 1
-  ): {
-    slug: string;
-    version: number;
-    baseUrl: string;
-    tail: string;
-    query?: string;
-  } {
-    const addr = UrlHelper.parseApiPath(pathWithQuery);
-    const version = addr.version ?? defaultVersion;
-    const key: ServiceKey = `${addr.slug}@${version}`;
-    const rec = this.mirror[key];
-    if (!rec || !rec.enabled) {
-      throw new Error(`[svcconfig] Unknown or disabled service: ${key}`);
-    }
-    // Normalize tail to always start with "/"
-    const tail =
-      addr.subpath && addr.subpath.startsWith("/")
-        ? addr.subpath
-        : `/${addr.subpath || ""}`;
-    return {
-      slug: addr.slug,
-      version,
-      baseUrl: rec.baseUrl,
-      tail,
-      query: addr.query,
-    };
-  }
-
-  // ── internals ───────────────────────────────────────────────────────────────
-
-  private async refreshFromDb(
-    reason: "boot" | "poll" | "change"
-  ): Promise<void> {
-    const coll: any = await this.db.getCollection<ServiceConfigRecord>(
-      process.env.SVCCONFIG_COLLECTION?.trim() || "service_configs"
-    );
-    const docs: ServiceConfigRecord[] = await coll.find({}).toArray();
-
-    const next: SvcMirror = {};
-    for (const d of docs) {
-      if (!d.slug || typeof d.version !== "number") continue;
-      const key: ServiceKey = `${d.slug}@${d.version}`;
-      next[key] = d;
-    }
-    this.mirror = next;
-    this.writeLkg();
-
-    const summary = Object.values(this.mirror).map((r) => ({
-      slug: r.slug,
-      version: r.version,
-      baseUrl: r.baseUrl,
-    }));
-
-    await this.tryPush(reason); // push on every refresh
-  }
-
-  private async startRealtimeUpdates(): Promise<void> {
-    try {
-      const coll: any = await this.db.getCollection<ServiceConfigRecord>(
-        process.env.SVCCONFIG_COLLECTION?.trim() || "service_configs"
-      );
-      const stream = coll.watch([], { fullDocument: "updateLookup" });
-      stream.on("change", () => {
-        this.refreshFromDb("change").catch((err) =>
-          this.warn("[svcconfig] refresh after change failed", {
-            err: String(err),
-          })
-        );
-      });
-      stream.on("error", async () => {
-        this.info(
-          "[svcconfig] change streams unavailable; switching to polling"
-        );
-        await this.tryStartPolling();
-      });
-      this.info("[svcconfig] change stream watching");
-    } catch {
-      this.info("[svcconfig] change streams not available; enabling polling");
-      await this.tryStartPolling();
-    }
-  }
-
-  private async tryStartPolling(): Promise<void> {
-    if (this.usePolling) return;
-    this.usePolling = true;
-    this.info(`[svcconfig] polling every ${this.pollMs}ms`);
-    const tick = async () => {
-      try {
-        await this.refreshFromDb("poll"); // will push
-      } catch (err) {
-        this.warn(
-          "[svcconfig] polling refresh failed (keeping current mirror)",
-          {
-            err: String(err),
-          }
-        );
-      } finally {
-        setTimeout(tick, this.pollMs).unref();
-      }
-    };
-    setTimeout(tick, this.pollMs).unref();
-  }
-
-  private writeLkg(): void {
-    try {
-      mkdirSync(dirname(this.lkgPath), { recursive: true });
-      writeFileSync(this.lkgPath, JSON.stringify(this.mirror, null, 2), "utf8");
-    } catch (err) {
-      this.warn("[svcconfig] failed to write LKG", {
-        err: String(err),
-        lkgPath: this.lkgPath,
-      });
-    }
-  }
-
-  private loadFromLkgOrDie(): void {
-    try {
-      const raw = readFileSync(this.lkgPath, "utf8");
-      this.mirror = JSON.parse(raw) as SvcMirror;
-      this.info("[svcconfig] loaded mirror from LKG", {
-        services: Object.keys(this.mirror).length,
-        lkgPath: this.lkgPath,
-      });
-      void this.tryPush("boot"); // still enforce first-push
-    } catch (err) {
-      this.error("[svcconfig] no DB and no LKG; refusing to start", {
-        err: String(err),
-        lkgPath: this.lkgPath,
-      });
       process.exit(1);
     }
+    const path = (
+      process.env.SVCFACILITATOR_CONFIG_PATH ||
+      "/api/svcfacilitator/v1/svcconfig"
+    ).trim();
+
+    const url = this.join(base, path);
+
+    // Simple, bounded retry to handle “facilitator not quite up yet”
+    const maxAttempts = 5;
+    let lastErr: unknown = undefined;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const resp = await fetch(url, {
+          method: "GET",
+          headers: { accept: "application/json" },
+        } as any);
+
+        if (!resp.ok) {
+          throw new Error(
+            `HTTP ${resp.status} while fetching svcconfig from facilitator`
+          );
+        }
+
+        const data = (await resp.json()) as unknown;
+
+        // Expect either a direct array, or an envelope with { ok, data: [...] }
+        const records: unknown = Array.isArray(data)
+          ? data
+          : (data as any)?.data ?? (data as any)?.records;
+
+        if (!Array.isArray(records)) {
+          throw new Error("Unexpected facilitator payload (no records array)");
+        }
+
+        let loaded = 0;
+        for (const raw of records) {
+          const rec = this.toSvcEntry(raw);
+          if (!rec) continue;
+          const key = this.key(rec.slug, rec.version);
+          this.entries.set(key, rec);
+          loaded++;
+        }
+
+        if (loaded === 0) {
+          throw new Error("facilitator returned 0 usable records");
+        }
+
+        // All good
+        this.validateAll();
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < maxAttempts) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[svcconfig] facilitator fetch failed (attempt ${attempt}/${maxAttempts}): ${String(
+              err
+            )}`
+          );
+          await sleep(250 * attempt); // backoff a bit
+          continue;
+        }
+      }
+    }
+
+    // eslint-disable-next-line no-console
+    console.error(
+      `❌ [svcconfig] failed to load mirror from facilitator: ${String(
+        lastErr
+      )}`
+    );
+    process.exit(1);
   }
 
-  private async tryPush(reason: "boot" | "poll" | "change"): Promise<void> {
-    if (!this.mirrorPusher) return;
-    const ok = await this.mirrorPusher.push(this.getMirror(), reason);
-    if (!this.firstPushDone) {
-      if (!ok) {
-        this.error("[svcconfig] initial mirror push FAILED — hard stop");
-        process.exit(1);
-      }
-      this.firstPushDone = true;
+  // ------------------------------ Lookups -----------------------------------
+
+  /** Return base URL for <slug>@<version>. Throws if not found or disabled. */
+  public getUrlFromSlug(slug: string, version: number): string {
+    const key = this.key(slug, version);
+    const entry = this.entries.get(key);
+    if (!entry)
+      throw new Error(`[svcconfig] Unknown or disabled service: ${key}`);
+    if (!entry.enabled) throw new Error(`[svcconfig] Service disabled: ${key}`);
+    return entry.baseUrl;
+  }
+
+  /** Return port parsed from base URL for <slug>@<version>. */
+  public getPortFromSlug(slug: string, version: number): number {
+    const baseUrl = this.getUrlFromSlug(slug, version);
+    try {
+      const u = new URL(baseUrl);
+      if (u.port) return Number(u.port);
+      return u.protocol === "https:" ? 443 : 80;
+    } catch {
+      throw new Error(
+        `[svcconfig] Invalid base URL for ${slug}@${version}: ${baseUrl}`
+      );
     }
   }
 
-  // ── logging helpers (greenfield; no legacy numeric levels) ──────────────────
+  // Diagnostics
+  public has(slug: string, version: number): boolean {
+    return this.entries.has(this.key(slug, version));
+  }
+  public debugKeys(): string[] {
+    return Array.from(this.entries.keys());
+  }
+  public snapshot(): SvcEntry[] {
+    return Array.from(this.entries.values());
+  }
 
-  private debug(msg: string, extra?: Record<string, unknown>): void {
-    this.logBound.debug(formatTail(msg, extra));
-  }
-  private info(msg: string, extra?: Record<string, unknown>): void {
-    this.logBound.info(formatTail(msg, extra));
-  }
-  private warn(msg: string, extra?: Record<string, unknown>): void {
-    this.logBound.warn(formatTail(msg, extra));
-  }
-  private error(msg: string, extra?: Record<string, unknown>): void {
-    this.logBound.error(formatTail(msg, extra));
-  }
-}
+  // ------------------------------ Internals ---------------------------------
 
-// format "<msg> - k=v k2=v2" when extra is provided
-function formatTail(msg: string, extra?: Record<string, unknown>): string {
-  if (!extra || Object.keys(extra).length === 0) return msg;
-  const tail = Object.entries(extra)
-    .map(([k, v]) => `${k}=${stringify(v)}`)
-    .join(" ");
-  return `${msg} - ${tail}`;
-}
+  private key(slug: string, version: number): string {
+    return `${slug}@${version}`;
+  }
 
-function stringify(v: unknown): string {
-  if (v == null) return String(v);
-  if (typeof v === "string") return v;
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  try {
-    return JSON.stringify(v);
-  } catch {
-    return String(v);
+  private toSvcEntry(raw: any): SvcEntry | null {
+    const slug = String(raw?.slug ?? "").trim();
+    const version = Number(raw?.version);
+    const baseUrl = String(raw?.baseUrl ?? "").trim();
+    const enabled = Boolean(raw?.enabled);
+
+    if (!slug || !Number.isFinite(version) || !/^https?:\/\//.test(baseUrl)) {
+      return null;
+    }
+    return { slug, version, baseUrl, enabled };
+  }
+
+  private validateAll(): void {
+    if (this.entries.size === 0) {
+      throw new Error("mirror is empty after facilitator load");
+    }
+    for (const [key, e] of this.entries) {
+      assert(
+        e.slug && typeof e.slug === "string",
+        `[svcconfig] bad slug for ${key}`
+      );
+      assert(Number.isFinite(e.version), `[svcconfig] bad version for ${key}`);
+      assert(
+        /^https?:\/\//.test(e.baseUrl),
+        `[svcconfig] bad baseUrl for ${key}`
+      );
+      assert(e.enabled === true, `[svcconfig] service disabled: ${key}`);
+    }
+  }
+
+  private join(base: string, path: string): string {
+    const a = base.replace(/\/+$/, "");
+    const b = path.startsWith("/") ? path : `/${path}`;
+    return `${a}${b}`;
   }
 }

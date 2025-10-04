@@ -1,4 +1,4 @@
-// backend/shared/src/index.ts
+// backend/services/shared/src/index.ts
 /**
  * Curated exports (no god-barrel).
  */

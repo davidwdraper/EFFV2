@@ -22,6 +22,7 @@ import { mountServiceHealth } from "@nv/shared/health/mount";
 import { makeProxy } from "./routes/proxy";
 import { SvcConfig } from "./services/svcconfig/SvcConfig";
 import { edgeHitLogger } from "./middleware/edge.hit.logger"; // ← added
+import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 
 const SERVICE = "gateway";
 
@@ -48,6 +49,7 @@ export class GatewayApp {
 
     // 3) Edge logging — logs every inbound API hit before proxying
     this.app.use(edgeHitLogger());
+    this.app.use(responseErrorLogger("gateway"));
 
     // 4) Proxy LAST — origin swap only, path/query unchanged
     this.app.use("/api", makeProxy(this.svcConfig));

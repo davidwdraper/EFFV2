@@ -1,10 +1,18 @@
 # backend/tests/smoke/smoke.sh
 #!/usr/bin/env bash
 # ============================================================================
-# Smoke Test Runner (macOS bash 3.2 compatible)
-# - No args: list available tests with their explicit numeric IDs (from filename).
+# NowVibin — Smoke Test Runner (macOS Bash 3.2 compatible)
+# Docs:
+# - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+# - ADRs: docs/adr/adr0001-gateway-embedded-svcconfig-and-svcfacilitator.md
+#
+# Behavior:
+# - No args: list available tests with their explicit numeric IDs.
 # - --all : run all tests in ID order.
 # - <ID>  : run a single test by its numeric ID (e.g., 6 or 006 runs 006-*.sh).
+# Notes:
+# - Merges STDERR into STDOUT so per-request URL traces (from lib.sh) are visible
+#   even when tests pass. Exit codes are preserved via PIPESTATUS[0].
 # ============================================================================
 set -Eeuo pipefail
 
@@ -59,7 +67,6 @@ FILES=()
 while IFS= read -r t; do
   [ -n "$t" ] || continue
   base="$(basename "$t")"
-  # Expect filenames like '006-something.sh' (numeric prefix + dash)
   if echo "$base" | grep -Eq '^[0-9]+-.*\.sh$'; then
     id="$(echo "$base" | sed -E 's/^([0-9]+).*/\1/')"
     IDS[${#IDS[@]}]="$id"
@@ -122,7 +129,13 @@ run_test() {
   local tpath="$1"
   local name; name="$(basename "$tpath")"
   echo "── running: $name"
-  if bash "$tpath"; then
+  # Merge STDERR→STDOUT so URL traces (printed to STDERR by lib.sh) are visible.
+  # Preserve the child script's exit code using PIPESTATUS[0].
+  set +e  # don't exit on failure until we capture rc
+  bash "$tpath" 2>&1 | cat
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if [ $rc -eq 0 ]; then
     echo "✅ PASS: $name"
     return 0
   else

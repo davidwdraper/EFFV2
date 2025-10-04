@@ -18,9 +18,13 @@
  * - **Logging** (service-side):
  *     - EDGE once per endpoint hit: "EDGE YYYY-MM-DD HH:MM:SS <slug> v<version> <url>"
  *     - INFO once per endpoint hit: "INFO YYYY-MM-DD HH:MM:SS <slug> v<version> <url>"
+ *
+ * Additions:
+ * - `h(fn)`: tiny route adapter returning an Express handler that always flows
+ *   through `handle(...)` so EDGE/INFO logging cannot be forgotten.
  */
 
-import type { Request, Response } from "express";
+import type { Request, Response, RequestHandler, NextFunction } from "express";
 import { SvcReceiver } from "../svc/SvcReceiver";
 import type { SvcResponse } from "../svc/types";
 import { UrlHelper } from "../http/UrlHelper";
@@ -102,11 +106,14 @@ export abstract class BaseController {
   }
 
   // ── Convenience: standardized handler wrapper (optional for children) ─────
-
   /**
    * Also emits:
    *   EDGE once at entry (toggle via LOG_EDGE)
    *   INFO once at entry (toggle via LOG_LEVEL)
+   *
+   * Note:
+   * - We delegate response writing to SvcReceiver; `fn` returns a HandlerResult
+   *   which SvcReceiver uses to shape the HTTP response.
    */
   protected async handle<TCtx = { body: unknown; requestId: string }>(
     req: Request,
@@ -135,5 +142,24 @@ export abstract class BaseController {
       res as any,
       async ({ body, requestId }) => fn({ body, requestId } as any)
     );
+  }
+
+  // ── Route adapter: guarantees logging by routing through handle(...) ───────
+  /**
+   * Usage in routers:
+   *   const ctrl = new UserController();
+   *   router.get("/health", ctrl.h(async ({ requestId }) => ctrl.health(requestId)));
+   *   router.post("/v1/create", ctrl.h(async ({ body, requestId }) => ctrl.create(body, requestId)));
+   *
+   * This avoids drift: every route uses the same logging + envelope path.
+   */
+  public h<TCtx = { body: unknown; requestId: string }>(
+    fn: (
+      ctx: TCtx & { body: unknown; requestId: string }
+    ) => Promise<HandlerResult>
+  ): RequestHandler {
+    return (req: Request, res: Response, _next: NextFunction) => {
+      void this.handle<TCtx>(req, res, fn);
+    };
   }
 }

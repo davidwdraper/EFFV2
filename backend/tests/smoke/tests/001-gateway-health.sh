@@ -13,6 +13,9 @@ set -euo pipefail
 
 URL="http://127.0.0.1:4000/api/gateway/health/live"
 
+# Always show exactly what we're hitting
+echo "→ GET ${URL}"
+
 # Ask for JSON only; don't include headers in the jq stream
 RESP="$(curl -sS -H 'Accept: application/json' "$URL" || true)"
 

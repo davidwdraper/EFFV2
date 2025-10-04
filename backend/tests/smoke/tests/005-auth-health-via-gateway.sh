@@ -10,6 +10,9 @@ set -euo pipefail
 
 URL="http://127.0.0.1:4000/api/auth/health/live"
 
+# Always show exactly what we're hitting
+echo "→ GET ${URL}"
+
 RESP="$(curl -sS -H 'Accept: application/json' "$URL" || true)"
 
 if [ -z "${RESP}" ]; then

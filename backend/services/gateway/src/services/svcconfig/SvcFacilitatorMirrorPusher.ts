@@ -31,19 +31,6 @@ export class SvcFacilitatorMirrorPusher implements IMirrorPusher {
       timeoutMs: 3000,
     });
 
-    console.log(
-      JSON.stringify({
-        level: res.ok ? 30 : res.status === 0 ? 40 : 30,
-        service: "gateway",
-        msg: "[mirror] push svcfacilitator",
-        ok: res.ok,
-        status: res.status,
-        requestId: res.requestId,
-        reason,
-        services: Object.keys(mirror).length,
-      })
-    );
-
     return !!res.ok;
   }
 }

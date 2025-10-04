@@ -1,4 +1,4 @@
-// backend / services / gateway / src / services / svcconfig / SvcConfig.ts;
+// backend/services/gateway/src/services/svcconfig/SvcConfig.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -11,19 +11,21 @@
  * - Push mirror after boot/LKG and after each DB refresh (poll/change).
  * - First push is mandatory: hard stop on failure.
  * - NEW: resolveFromApiPath() uses shared UrlHelper to parse /api/:slug/v#:tail
+ * - NEW: getPortFromSlug() returns numeric port for a given slug@version
+ *
+ * Env:
+ * - SVCCONFIG_LKG_PATH (optional; default: backend/services/gateway/var/svcconfig.lkg.json)
+ * - SVCCONFIG_POLL_MS  (optional; default: 5000)
  */
+
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
-import {
-  requireEnv,
-  requireNumber,
-  DbClient,
-  createDbClientFromEnv,
-} from "@nv/shared";
+import { requireNumber, DbClient, createDbClientFromEnv } from "@nv/shared";
 import type { ServiceConfigRecord } from "@nv/shared/contracts/ServiceConfig";
 import type { SvcMirror, ServiceKey } from "./types";
 import type { IMirrorPusher } from "./IMirrorPusher";
 import { UrlHelper } from "@nv/shared/http/UrlHelper";
+import { getLogger } from "@nv/shared/util/logger.provider";
 
 export class SvcConfig {
   private readonly db: DbClient;
@@ -35,6 +37,13 @@ export class SvcConfig {
   // NEW: pusher + first-push gate
   private mirrorPusher?: IMirrorPusher;
   private firstPushDone = false;
+
+  // Bound logger for this background job (human one-liners)
+  private readonly logBound = getLogger().bind({
+    slug: "svcconfig",
+    version: 1,
+    url: "/svcconfig",
+  });
 
   constructor(dbClient?: DbClient) {
     this.db = dbClient ?? createDbClientFromEnv({ prefix: "SVCCONFIG" });
@@ -56,10 +65,11 @@ export class SvcConfig {
       await this.refreshFromDb("boot"); // will push
       await this.startRealtimeUpdates();
     } catch (err) {
-      this.log(
-        50,
+      this.error(
         "[svcconfig] DB load failed on boot; attempting .LKG fallback",
-        { err: String(err) }
+        {
+          err: String(err),
+        }
       );
       this.loadFromLkgOrDie(); // will push
       await this.tryStartPolling();
@@ -72,6 +82,25 @@ export class SvcConfig {
     if (!rec || !rec.enabled)
       throw new Error(`[svcconfig] Unknown or disabled service: ${key}`);
     return rec.baseUrl;
+  }
+
+  /**
+   * NEW: Return the numeric TCP port for the service identified by slug@version.
+   * - Parses the baseUrl; if the URL has an explicit port, return it.
+   * - Otherwise, infer from protocol (https → 443, http → 80).
+   */
+  public getPortFromSlug(slug: string, version = 1): number {
+    const baseUrl = this.getUrlFromSlug(slug, version);
+    let u: URL;
+    try {
+      u = new URL(baseUrl);
+    } catch {
+      throw new Error(
+        `[svcconfig] Invalid baseUrl for ${slug}@${version}: ${baseUrl}`
+      );
+    }
+    if (u.port) return Number(u.port);
+    return u.protocol === "https:" ? 443 : 80;
   }
 
   public getMirror(): Readonly<SvcMirror> {
@@ -139,11 +168,6 @@ export class SvcConfig {
       version: r.version,
       baseUrl: r.baseUrl,
     }));
-    this.log(30, "[svcconfig] mirror refreshed from DB", {
-      reason,
-      services: Object.keys(this.mirror).length,
-      routes: summary,
-    });
 
     await this.tryPush(reason); // push on every refresh
   }
@@ -156,24 +180,20 @@ export class SvcConfig {
       const stream = coll.watch([], { fullDocument: "updateLookup" });
       stream.on("change", () => {
         this.refreshFromDb("change").catch((err) =>
-          this.log(40, "[svcconfig] refresh after change failed", {
+          this.warn("[svcconfig] refresh after change failed", {
             err: String(err),
           })
         );
       });
       stream.on("error", async () => {
-        this.log(
-          20,
+        this.info(
           "[svcconfig] change streams unavailable; switching to polling"
         );
         await this.tryStartPolling();
       });
-      this.log(20, "[svcconfig] change stream watching");
+      this.info("[svcconfig] change stream watching");
     } catch {
-      this.log(
-        20,
-        "[svcconfig] change streams not available; enabling polling"
-      );
+      this.info("[svcconfig] change streams not available; enabling polling");
       await this.tryStartPolling();
     }
   }
@@ -181,15 +201,16 @@ export class SvcConfig {
   private async tryStartPolling(): Promise<void> {
     if (this.usePolling) return;
     this.usePolling = true;
-    this.log(20, `[svcconfig] polling every ${this.pollMs}ms`);
+    this.info(`[svcconfig] polling every ${this.pollMs}ms`);
     const tick = async () => {
       try {
         await this.refreshFromDb("poll"); // will push
       } catch (err) {
-        this.log(
-          40,
+        this.warn(
           "[svcconfig] polling refresh failed (keeping current mirror)",
-          { err: String(err) }
+          {
+            err: String(err),
+          }
         );
       } finally {
         setTimeout(tick, this.pollMs).unref();
@@ -203,7 +224,7 @@ export class SvcConfig {
       mkdirSync(dirname(this.lkgPath), { recursive: true });
       writeFileSync(this.lkgPath, JSON.stringify(this.mirror, null, 2), "utf8");
     } catch (err) {
-      this.log(40, "[svcconfig] failed to write LKG", {
+      this.warn("[svcconfig] failed to write LKG", {
         err: String(err),
         lkgPath: this.lkgPath,
       });
@@ -214,13 +235,13 @@ export class SvcConfig {
     try {
       const raw = readFileSync(this.lkgPath, "utf8");
       this.mirror = JSON.parse(raw) as SvcMirror;
-      this.log(30, "[svcconfig] loaded mirror from LKG", {
+      this.info("[svcconfig] loaded mirror from LKG", {
         services: Object.keys(this.mirror).length,
         lkgPath: this.lkgPath,
       });
       void this.tryPush("boot"); // still enforce first-push
     } catch (err) {
-      this.log(50, "[svcconfig] no DB and no LKG; refusing to start", {
+      this.error("[svcconfig] no DB and no LKG; refusing to start", {
         err: String(err),
         lkgPath: this.lkgPath,
       });
@@ -233,20 +254,45 @@ export class SvcConfig {
     const ok = await this.mirrorPusher.push(this.getMirror(), reason);
     if (!this.firstPushDone) {
       if (!ok) {
-        this.log(50, "[svcconfig] initial mirror push FAILED — hard stop");
+        this.error("[svcconfig] initial mirror push FAILED — hard stop");
         process.exit(1);
       }
       this.firstPushDone = true;
     }
   }
 
-  private log(
-    level: 20 | 30 | 40 | 50,
-    msg: string,
-    extra?: Record<string, unknown>
-  ): void {
-    console.log(
-      JSON.stringify({ level, service: "gateway", msg, ...(extra || {}) })
-    );
+  // ── logging helpers (greenfield; no legacy numeric levels) ──────────────────
+
+  private debug(msg: string, extra?: Record<string, unknown>): void {
+    this.logBound.debug(formatTail(msg, extra));
+  }
+  private info(msg: string, extra?: Record<string, unknown>): void {
+    this.logBound.info(formatTail(msg, extra));
+  }
+  private warn(msg: string, extra?: Record<string, unknown>): void {
+    this.logBound.warn(formatTail(msg, extra));
+  }
+  private error(msg: string, extra?: Record<string, unknown>): void {
+    this.logBound.error(formatTail(msg, extra));
+  }
+}
+
+// format "<msg> - k=v k2=v2" when extra is provided
+function formatTail(msg: string, extra?: Record<string, unknown>): string {
+  if (!extra || Object.keys(extra).length === 0) return msg;
+  const tail = Object.entries(extra)
+    .map(([k, v]) => `${k}=${stringify(v)}`)
+    .join(" ");
+  return `${msg} - ${tail}`;
+}
+
+function stringify(v: unknown): string {
+  if (v == null) return String(v);
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
   }
 }

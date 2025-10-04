@@ -9,15 +9,22 @@
  * - Provides helpers to shape success/error envelopes and to pass upstream
  *   envelopes through unchanged (for S2S proxy-style endpoints).
  *
+ * Env:
+ * - LOG_LEVEL (optional) debug|info|warn|error|silent  [default: info]
+ * - LOG_EDGE  (optional) 1|true|on to enable EDGE one-liners               [default: off]
+ *
  * Design:
- * - Keep this generic (no service-specific logic).
- * - Child controllers call `this.rx.receive(...)` inside `handle(...)` and
- *   return the tuples produced by helpers here.
+ * - Child controllers call `this.rx.receive(...)` inside `handle(...)`.
+ * - **Logging** (service-side):
+ *     - EDGE once per endpoint hit: "EDGE YYYY-MM-DD HH:MM:SS <slug> v<version> <url>"
+ *     - INFO once per endpoint hit: "INFO YYYY-MM-DD HH:MM:SS <slug> v<version> <url>"
  */
 
 import type { Request, Response } from "express";
 import { SvcReceiver } from "../svc/SvcReceiver";
 import type { SvcResponse } from "../svc/types";
+import { UrlHelper } from "../http/UrlHelper";
+import { log } from "../util/Logger";
 
 export type HandlerResult = { status: number; body: unknown };
 
@@ -34,9 +41,6 @@ export abstract class BaseController {
 
   // ── Success/Error envelope helpers ─────────────────────────────────────────
 
-  /**
-   * Shape a success envelope `{ ok:true, service, data, requestId }`.
-   */
   protected ok(
     status: number,
     data: unknown,
@@ -48,10 +52,6 @@ export abstract class BaseController {
     };
   }
 
-  /**
-   * Shape an error envelope `{ ok:false, service, data:{status, detail}, requestId }`.
-   * `code` is a short machine-readable status (e.g., "invalid_request").
-   */
   protected fail(
     status: number,
     code: string,
@@ -71,13 +71,6 @@ export abstract class BaseController {
 
   // ── Upstream pass-through (SvcClient → controller response) ────────────────
 
-  /**
-   * Pass an SvcClient response upstream:
-   * - On success: return the upstream envelope as-is (status + body = resp.data).
-   * - On error:   map to a clean bad_gateway/upstream_error envelope.
-   *
-   * This keeps controllers tiny and ensures consistent error surfacing.
-   */
   protected passUpstream<T = unknown>(
     resp: SvcResponse<T>,
     requestId: string,
@@ -111,12 +104,9 @@ export abstract class BaseController {
   // ── Convenience: standardized handler wrapper (optional for children) ─────
 
   /**
-   * Optional wrapper to reduce boilerplate in child controllers.
-   * Usage:
-   *   return this.handle(req, res, async ({ body, requestId }) => {
-   *     // ...validate...
-   *     return this.ok(200, { ... }, requestId);
-   *   });
+   * Also emits:
+   *   EDGE once at entry (toggle via LOG_EDGE)
+   *   INFO once at entry (toggle via LOG_LEVEL)
    */
   protected async handle<TCtx = { body: unknown; requestId: string }>(
     req: Request,
@@ -125,6 +115,21 @@ export abstract class BaseController {
       ctx: TCtx & { body: unknown; requestId: string }
     ) => Promise<HandlerResult>
   ): Promise<void> {
+    // Derive slug/version for logging
+    let slug = this.service;
+    let version = 1;
+    try {
+      const addr = UrlHelper.parseApiPath(req.originalUrl);
+      slug = addr.slug || this.service;
+      version = addr.version ?? 1;
+    } catch {
+      // not an /api/* path — keep defaults
+    }
+
+    const bound = log.bind({ slug, version, url: req.originalUrl });
+    bound.edge(); // "EDGE YYYY-MM-DD HH:MM:SS <slug> v<version> <url>" (if LOG_EDGE=on)
+    bound.info(); // "INFO YYYY-MM-DD HH:MM:SS <slug> v<version> <url>"
+
     return this.rx.receive(
       req as any,
       res as any,

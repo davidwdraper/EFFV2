@@ -1,35 +1,32 @@
-// backend/shared/src/svc/resolution/facilitator.resolver.ts
+// backend/services/shared/src/svc/resolution/facilitator.resolver.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0007 (Non-gateway S2S via svcfacilitator + TTL cache)
+ * - ADR-0007: S2S resolution via svcfacilitator (fixed contract)
+ *
+ * Contract (authoritative):
+ *   GET {BASE}/api/svcfacilitator/resolve?slug=<slug>&version=<major>
+ *   → 200 JSON: { ok: true, data: { baseUrl: "http://host:port" } }
  *
  * Purpose:
- * - Single-responsibility helper that resolves (slug, version) → baseUrl
- *   by calling the svcfacilitator and caching results with TTL.
- *
- * Notes:
- * - Controllers/services know NOTHING about the facilitator; only SvcClient
- *   (or the gateway) uses this helper.
- * - Fail-fast on missing config; no silent fallbacks.
- * - Includes small utilities to invalidate/seed cache for tests.
+ * - Resolve (slug, version) → baseUrl with small TTL cache.
+ * - Fail fast on missing/invalid config or response shape.
  */
 
 import type { UrlResolver } from "../types";
 
 export type FacilitatorResolverOptions = {
-  /** Base URL to the facilitator, e.g. "http://127.0.0.1:4015". Required unless provided via env. */
+  /** e.g., "http://127.0.0.1:4015". If omitted, read SVCFACILITATOR_BASE_URL. */
   baseUrl?: string;
-  /** Resolve path on the facilitator. Default: "/api/svcfacilitator/resolve". */
-  resolvePath?: string;
-  /** TTL for cache entries in ms. Default: env SVC_RESOLVE_TTL_MS or 300000 (5 min). */
+  /** Base path for facilitator API (without query). Default: "/api/svcfacilitator". */
+  apiBasePath?: string;
+  /** Cache TTL ms (default 300_000). */
   ttlMs?: number;
-  /** Timeout for facilitator HTTP call in ms. Default: env SVC_RESOLVE_TIMEOUT_MS or 3000. */
+  /** HTTP timeout ms (default 3000). */
   timeoutMs?: number;
-  /** Optional fetch impl injection (tests). Defaults to global fetch. */
+  /** Optional fetch impl for tests. */
   fetchImpl?: typeof fetch;
-  /** Optional service-name header value; defaults to env SVC_NAME if present. */
+  /** Optional x-service-name header. Defaults to SVC_NAME if present. */
   serviceName?: string;
 };
 
@@ -37,29 +34,27 @@ type CacheEntry = { baseUrl: string; exp: number };
 
 export class FacilitatorResolver {
   private readonly baseUrl: string;
-  private readonly resolvePath: string;
+  private readonly apiBasePath: string;
   private readonly ttlMs: number;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly serviceName?: string;
 
-  // Per-process cache (shared across instances of this helper).
   private static cache = new Map<string, CacheEntry>();
 
   constructor(opts: FacilitatorResolverOptions = {}) {
     const envBase = (process.env.SVCFACILITATOR_BASE_URL || "").trim();
     this.baseUrl = (opts.baseUrl ?? envBase).trim();
-    this.resolvePath = (
-      opts.resolvePath ?? "/api/svcfacilitator/resolve"
-    ).trim();
-    this.ttlMs = num(opts.ttlMs ?? process.env.SVC_RESOLVE_TTL_MS, 300000);
-    this.timeoutMs = num(
+    this.apiBasePath = (opts.apiBasePath ?? "/api/svcfacilitator").trim();
+    this.ttlMs = parseNum(
+      opts.ttlMs ?? process.env.SVC_RESOLVE_TTL_MS,
+      300_000
+    );
+    this.timeoutMs = parseNum(
       opts.timeoutMs ?? process.env.SVC_RESOLVE_TIMEOUT_MS,
-      3000
+      3_000
     );
     this.fetchImpl = opts.fetchImpl ?? fetch;
-
-    // Avoid mixing ?? and || without parentheses — make env value undefined if blank.
     const envSvcName = (process.env.SVC_NAME ?? "").trim() || undefined;
     this.serviceName = opts.serviceName ?? envSvcName;
 
@@ -70,11 +65,9 @@ export class FacilitatorResolver {
     }
   }
 
-  /** UrlResolver function: resolves a baseUrl for (slug, version) with TTL caching. */
+  /** Fixed-shape UrlResolver: (slug, version) → baseUrl */
   public readonly resolve: UrlResolver = async (slug, version) => {
     if (!slug) throw new Error("FacilitatorResolver: slug is required");
-
-    // ✅ Handle possibly-undefined version (UrlResolver may declare it optional); default to v1.
     const ver = version ?? 1;
     if (!Number.isFinite(ver) || ver <= 0) {
       throw new Error(
@@ -84,74 +77,49 @@ export class FacilitatorResolver {
 
     const key = `${slug}@v${ver}`;
     const now = Date.now();
-
-    // Cache hit
     const hit = FacilitatorResolver.cache.get(key);
     if (hit && hit.exp > now) return hit.baseUrl;
 
-    // Cache miss → fetch from facilitator
-    const url =
-      stripTrailingSlash(this.baseUrl) +
-      this.resolvePath +
-      `?slug=${encodeURIComponent(slug)}&version=${encodeURIComponent(ver)}`;
+    const base = stripSlash(this.baseUrl);
+    const root = this.apiBasePath.replace(/\/+$/, "");
+    const url = `${base}${root}/resolve?slug=${encodeURIComponent(
+      slug
+    )}&version=${encodeURIComponent(ver)}`;
 
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
-
-    let resp: Response;
-    try {
-      resp = await this.fetchImpl(url, {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          ...(this.serviceName ? { "x-service-name": this.serviceName } : {}),
-        },
-        signal: ctl.signal,
-      });
-    } catch (e) {
-      clearTimeout(timer);
-      throw new Error(`FacilitatorResolver: fetch failed: ${String(e)}`);
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!resp.ok) {
-      throw new Error(
-        `FacilitatorResolver: HTTP ${resp.status} from facilitator`
-      );
-    }
+    const r = await this.req(url);
+    if (!r.ok)
+      throw new Error(`FacilitatorResolver: HTTP ${r.status} from facilitator`);
 
     let json: any;
     try {
-      json = await resp.json();
+      json = await r.json();
     } catch {
       throw new Error(
         "FacilitatorResolver: non-JSON response from facilitator"
       );
     }
 
-    // Expected shape: { ok: true, data: { baseUrl: "http://127.0.0.1:4020" } }
-    const base = json?.data?.baseUrl;
-    if (typeof base !== "string" || !base) {
+    const found = json?.data?.baseUrl;
+    if (typeof found !== "string" || !found) {
       throw new Error(
-        "FacilitatorResolver: invalid response shape — missing data.baseUrl"
+        "FacilitatorResolver: invalid response shape — expected data.baseUrl"
       );
     }
 
     FacilitatorResolver.cache.set(key, {
-      baseUrl: base,
+      baseUrl: found,
       exp: now + this.ttlMs,
     });
-    return base;
+    return found;
   };
 
-  /** Test helper: clear whole cache or a single key (slug@vN). */
+  /** Test helper: clear cache or single key (slug@vN). */
   public static invalidate(key?: string): void {
     if (key) FacilitatorResolver.cache.delete(key);
     else FacilitatorResolver.cache.clear();
   }
 
-  /** Test/helper: seed a value manually (e.g., for offline tests). */
+  /** Test helper: seed known mapping. */
   public static seed(
     slug: string,
     version: number,
@@ -159,25 +127,41 @@ export class FacilitatorResolver {
     ttlMs?: number
   ): void {
     const exp =
-      Date.now() + (ttlMs ?? num(process.env.SVC_RESOLVE_TTL_MS, 300000));
+      Date.now() + (ttlMs ?? parseNum(process.env.SVC_RESOLVE_TTL_MS, 300_000));
     FacilitatorResolver.cache.set(`${slug}@v${version}`, { baseUrl, exp });
+  }
+
+  // ── internals ─────────────────────────────────────────────────────────────
+
+  private async req(u: string): Promise<Response> {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
+    try {
+      return await this.fetchImpl(u, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          ...(this.serviceName ? { "x-service-name": this.serviceName } : {}),
+        },
+        signal: ctl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
-/** Convenience factory returning a plain UrlResolver function. */
 export function buildFacilitatorResolver(
   opts?: FacilitatorResolverOptions
 ): UrlResolver {
-  const inst = new FacilitatorResolver(opts);
-  return inst.resolve;
+  return new FacilitatorResolver(opts).resolve;
 }
 
-// ===== helpers ===================================================================
-
-function stripTrailingSlash(s: string): string {
+// ── helpers ─────────────────────────────────────────────────────────────────
+function stripSlash(s: string): string {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
-function num(v: string | number | undefined, d: number): number {
+function parseNum(v: string | number | undefined, d: number): number {
   if (typeof v === "number") return Number.isFinite(v) && v > 0 ? v : d;
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : d;

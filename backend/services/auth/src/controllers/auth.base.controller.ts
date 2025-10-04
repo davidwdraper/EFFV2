@@ -4,66 +4,51 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0004 (Auth Service Skeleton — no minting)
- *   - ADR-0007 (Non-gateway S2S via svcfacilitator + TTL cache) — handled inside shared SvcClient
+ *   - ADR-0007 (Non-gateway S2S via svcfacilitator + TTL cache) — encapsulated inside shared SvcClient
  *
  * Purpose:
  * - Auth layer base controller.
  * - Extends shared BaseController for envelope handling.
- * - Provides a shared SvcClient (resolution/TTL cache happens inside SvcClient).
+ * - Centralizes S2S calls to the User service for all auth actions.
  *
  * Notes:
- * - NO facilitator logic here; services/controllers know nothing about it.
- * - Gateway remains the exception (injects its own resolver) — untouched.
- * - For all auth endpoints (create, signon, changePassword), the User service is called.
+ * - For ALL auth endpoints (create/signon/changepassword), the User service is called.
+ * - Controllers have ZERO knowledge of svcfacilitator/resolvers; shared SvcClient handles it.
+ * - PATHS (aligned to User service):
+ *     - Create user (CRUD):        PUT  /api/user/v1/create          ← use callUser("create", …, { method: "PUT" })
+ *     - Signon (non-CRUD):         POST /api/user/v1/signon          ← via callUserAuth("signon", …)
+ *     - Change password (non-CRUD):POST /api/user/v1/changepassword  ← via callUserAuth("changepassword", …)
+ *
+ * Env (used):
+ * - SVC_NAME           (recommended) service identity used in envelopes/headers
+ * - S2S_TIMEOUT_MS     (optional) S2S HTTP timeout; default 5000 (applied in shared client)
  */
 
-// S2S slug for the downstream User service.
-// Defining it here keeps the call sites clear and avoids scattering literals.
-const S2S_USER_SLUG = "user";
-
 import { BaseController } from "@nv/shared/controllers/base.controller";
-import { SvcClient } from "@nv/shared";
 import type { SvcResponse } from "@nv/shared/svc/types";
+import { getSvcClient } from "@nv/shared/svc/client"; // no barrels/shims
 
-function getSvcName(): string {
-  const name = process.env.SVC_NAME;
-  if (!name || !name.trim()) {
-    throw new Error("SVC_NAME is required but not set");
-  }
-  return name.trim();
-}
+// S2S target: always the User service for auth flows.
+const S2S_SLUG = "user" as const;
 
-let _client: SvcClient | null = null;
-
-/** Lazy singleton SvcClient for this service. */
-function getSvcClient(): SvcClient {
-  if (_client) return _client;
-
-  _client = new SvcClient(undefined as any, {
-    timeoutMs: Number(process.env.S2S_TIMEOUT_MS ?? "5000") || 5000,
-    headers: {
-      "x-service-name": getSvcName(),
-      accept: "application/json",
-    },
-  });
-
-  return _client;
-}
+export type AuthAction = "create" | "signon" | "changepassword";
 
 export abstract class AuthControllerBase extends BaseController {
   protected constructor() {
-    super(getSvcName());
+    super((process.env.SVC_NAME ?? "").trim());
   }
 
-  /** Shared SvcClient accessor. */
-  protected get client(): SvcClient {
+  /** Shared SvcClient accessor (lazy singleton from shared; facilitator hidden). */
+  protected get client() {
     return getSvcClient();
   }
 
   /**
-   * Helper: call the User service under /api/user/v{version}/{subpath}
-   * Default method = POST, version = 1.
-   * Returns the raw SvcResponse so callers can pass it through unchanged.
+   * Helper: Generic call to the User service under an arbitrary subpath.
+   * Use this for CRUD-y calls like "create" (PUT /create).
+   *
+   * Example:
+   *   await this.callUser("create", body, { method: "PUT", requestId });
    */
   protected callUser<TReq, TRes = unknown>(
     subpath: string,
@@ -77,18 +62,60 @@ export abstract class AuthControllerBase extends BaseController {
     } = {}
   ): Promise<SvcResponse<TRes>> {
     const version = opts.version ?? 1;
-    const path = `/api/${S2S_USER_SLUG}/v${version}/${subpath.replace(
-      /^\/+/,
-      ""
-    )}`;
-
+    const path = `/api/${S2S_SLUG}/v${version}/${subpath.replace(/^\/+/, "")}`;
     return this.client.call<TRes>({
-      slug: S2S_USER_SLUG,
+      slug: S2S_SLUG,
       version,
       path,
       method: (opts.method ?? "POST") as any,
       requestId: opts.requestId,
-      headers: { ...(opts.headers ?? {}) },
+      headers: { accept: "application/json", ...(opts.headers ?? {}) },
+      query: opts.query,
+      body,
+    }) as unknown as Promise<SvcResponse<TRes>>;
+  }
+
+  /**
+   * Helper: Canonical User S2S paths for auth (non-CRUD) actions.
+   *
+   * Paths (fixed):
+   *   - signon         → POST /api/user/v{version}/signon
+   *   - changepassword → POST /api/user/v{version}/changepassword
+   *
+   * Note:
+   *   - "create" is handled via callUser("create", …, { method: "PUT" })
+   *     and NOT by this helper.
+   */
+  protected callUserAuth<TReq, TRes = unknown>(
+    action: Extract<AuthAction, "signon" | "changepassword">,
+    body: TReq,
+    opts: {
+      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+      version?: number;
+      requestId?: string;
+      headers?: Record<string, string>;
+      query?: Record<string, string | number | boolean | undefined>;
+    } = {}
+  ): Promise<SvcResponse<TRes>> {
+    const version = opts.version ?? 1;
+
+    // Defaults for non-CRUD auth actions
+    const defaults: Record<"signon" | "changepassword", "POST"> = {
+      signon: "POST",
+      changepassword: "POST",
+    };
+    const method = (opts.method ?? defaults[action]) as any;
+
+    // No "/auth/" segment — paths are flat at the service root per SOP.
+    const path = `/api/${S2S_SLUG}/v${version}/${action}`;
+
+    return this.client.call<TRes>({
+      slug: S2S_SLUG,
+      version,
+      path,
+      method,
+      requestId: opts.requestId,
+      headers: { accept: "application/json", ...(opts.headers ?? {}) },
       query: opts.query,
       body,
     }) as unknown as Promise<SvcResponse<TRes>>;

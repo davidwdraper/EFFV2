@@ -7,9 +7,9 @@
  *
  * Purpose:
  * - S2S-only endpoints invoked by the Auth service (wired to controllers):
- *   - PUT   /users            (create user; ONLY via Auth)
- *   - POST  /signon           (stub controller)
- *   - POST  /changepassword   (stub controller)
+ *   - PUT   /create          (create user; ONLY via Auth)
+ *   - POST  /signon          (stub controller)
+ *   - POST  /changepassword  (stub controller)
  *
  * Notes:
  * - These paths are **relative** to the mount point in app.ts:
@@ -69,8 +69,8 @@ export function userAuthRouter(): Router {
   const signon = new UserSignonController();
   const change = new UserChangePasswordController();
 
-  // SOP: Create = PUT to plural resource
-  r.put("/users", (req, res) => void create.handle(req, res));
+  // Create user (explicit path: /create)
+  r.put("/create", (req, res) => void create.handle(req, res));
 
   // Auth-driven ops
   r.post("/signon", (req, res) => void signon.handle(req, res));

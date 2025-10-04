@@ -1,14 +1,14 @@
 // backend/services/auth/src/controllers/auth.changepassword.controller.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0004 (Auth Service Skeleton — no minting)
+ * - SOP: Reduced, Clean
+ * - Purpose: POST /api/auth/v1/changepassword (public)
+ *   Validate payload, mock-hash new password, S2S to User:
+ *     POST /api/user/v1/changepassword
  *
- * Purpose:
- * - POST /api/auth/v1/changepassword
- * - Derives from shared BaseController (via AuthControllerBase) for envelope handling.
- * - Skeleton: validate contract + old/new passwords; no persistence yet.
+ * Minimal contract (for now):
+ * - Identify user by email (via UserContract).
+ * - Provide newPassword (plain); we send hashedPassword to User.
  */
 
 import type { Request, Response } from "express";
@@ -16,9 +16,8 @@ import { AuthControllerBase } from "./auth.base.controller";
 import { UserContract } from "@nv/shared/contracts/user.contract";
 
 type ChangePasswordEnvelope = {
-  user?: unknown; // must conform to UserContract (email required)
-  oldPassword?: string; // separate from contract
-  newPassword?: string; // separate from contract
+  user?: unknown; // must include email per UserContract
+  newPassword?: string; // plain; we mock-hash for now
 };
 
 export class AuthChangePasswordController extends AuthControllerBase {
@@ -33,7 +32,7 @@ export class AuthChangePasswordController extends AuthControllerBase {
       async ({ body, requestId }) => {
         const b = (body || {}) as ChangePasswordEnvelope;
 
-        // Validate user contract
+        // Validate user (email required)
         let user: UserContract;
         try {
           user = UserContract.from(b.user);
@@ -46,39 +45,30 @@ export class AuthChangePasswordController extends AuthControllerBase {
           );
         }
 
-        // Validate passwords
-        const oldPwd =
-          typeof b.oldPassword === "string" ? b.oldPassword.trim() : "";
-        const newPwd =
-          typeof b.newPassword === "string" ? b.newPassword.trim() : "";
-
-        if (!oldPwd || !newPwd) {
+        // Validate newPassword
+        const pwd = b.newPassword;
+        if (!pwd || typeof pwd !== "string" || !pwd.trim()) {
           return this.fail(
             400,
             "invalid_request",
-            "oldPassword and newPassword are required",
-            requestId
-          );
-        }
-        if (oldPwd === newPwd) {
-          return this.fail(
-            400,
-            "invalid_request",
-            "newPassword must differ from oldPassword",
+            "newPassword is required",
             requestId
           );
         }
 
-        // Skeleton response — no persistence yet
-        return this.ok(
-          200,
-          {
-            email: user.email,
-            changed: true,
-            note: "ChangePassword skeleton; no persistence/minting implemented yet.",
-          },
-          requestId
+        // Mock hash (placeholder)
+        const hashedPassword = `mockhash:${Buffer.from(pwd)
+          .toString("base64url")
+          .slice(0, 24)}`;
+
+        // S2S: POST /api/user/v1/changepassword
+        const upstream = await this.callUserAuth(
+          "changepassword",
+          { user: user.toJSON(), hashedPassword },
+          { requestId }
         );
+
+        return this.passUpstream(upstream as any, requestId);
       }
     );
   }

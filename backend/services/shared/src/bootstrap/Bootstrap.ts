@@ -1,4 +1,4 @@
-// backend/shared/src/bootstrap/Bootstrap.ts
+// backend/services/shared/src/bootstrap/Bootstrap.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -7,34 +7,56 @@
  * - Uniform, minimal service bootstrap: load envs (optional), run preStart(),
  *   start HTTP server, structured logs, and graceful shutdown.
  *
- * Usage (in a service's index.ts):
- *   const bootstrap = new Bootstrap({ service: "gateway", preStart: async () => {
- *     await getSvcConfig().load();
- *   }});
- *   await bootstrap.run(() => new GatewayApp().instance);
+ * Environment loading (Separation of Concerns):
+ * - Delegated to EnvLoader (shared/env/EnvLoader.ts).
+ * - Order: ENV_FILE (if set) → repo-root .env → repo-root .env.<mode> →
+ *          service-local .env → service-local .env.<mode>
+ * - Root keys are authoritative; service-local files do NOT override them.
+ * - Fail-fast for required keys.
  */
 
-import http from "http";
+import http, { type RequestListener } from "http";
 import { resolve } from "path";
-import { config as loadEnv } from "dotenv";
-import type { RequestListener } from "http";
-import { requireEnv, requireNumber } from "../env";
+import { existsSync } from "fs";
+import { log as sharedLog, type BoundCtx } from "../util/Logger";
+import { EnvLoader } from "../env/EnvLoader";
 
 export interface BootstrapOptions {
-  service: string; // e.g., "gateway", "svcfacilitator"
-  portEnvName?: string; // default: "PORT"
-  host?: string; // default: "0.0.0.0"
-  loadEnvFiles?: boolean; // default: true (.env, then .env.dev override)
-  preStart?: () => Promise<void>; // run before listening (e.g., warm caches)
-  onReady?: () => void; // called after listen
-  onShutdown?: () => Promise<void>; // graceful shutdown hook
+  service: string;
+  portEnvName?: string;
+  host?: string;
+  loadEnvFiles?: boolean;
+  preStart?: () => Promise<void>;
+  onReady?: () => void;
+  onShutdown?: () => Promise<void>;
+  logContext?: Record<string, unknown>;
 }
+
+type LoggerCore = {
+  debug: (msg?: string, fields?: Record<string, unknown>) => void;
+  info: (msg?: string, fields?: Record<string, unknown>) => void;
+  warn: (msg?: string, fields?: Record<string, unknown>) => void;
+  error: (msg?: string, fields?: Record<string, unknown>) => void;
+  bind: (ctx: BoundCtx) => {
+    debug: (msg?: string, fields?: Record<string, unknown>) => void;
+    info: (msg?: string, fields?: Record<string, unknown>) => void;
+    warn: (msg?: string, fields?: Record<string, unknown>) => void;
+    error: (msg?: string, fields?: Record<string, unknown>) => void;
+    edge: (msg?: string, fields?: Record<string, unknown>) => void;
+  };
+};
 
 export class Bootstrap {
   private readonly opts: Required<
-    Omit<BootstrapOptions, "preStart" | "onReady" | "onShutdown">
+    Omit<BootstrapOptions, "preStart" | "onReady" | "onShutdown" | "logContext">
   > &
-    Pick<BootstrapOptions, "preStart" | "onReady" | "onShutdown">;
+    Pick<
+      BootstrapOptions,
+      "preStart" | "onReady" | "onShutdown" | "logContext"
+    >;
+
+  private baseCtx: Record<string, unknown>;
+  public readonly logger: LoggerCore;
 
   constructor(options: BootstrapOptions) {
     this.opts = {
@@ -45,53 +67,85 @@ export class Bootstrap {
       preStart: options.preStart,
       onReady: options.onReady,
       onShutdown: options.onShutdown,
+      logContext: options.logContext,
+    };
+
+    this.baseCtx = {
+      service: this.opts.service,
+      ...(options.logContext ?? {}),
+    };
+
+    const fmt = (msg?: string, extra?: Record<string, unknown>) => {
+      const merged = { ...this.baseCtx, ...(extra ?? {}) };
+      const keys = Object.keys(merged);
+      if (!msg && keys.length === 0) return undefined;
+      if (keys.length === 0) return msg;
+      const tail = keys.map((k) => `${k}=${stringifyVal(merged[k])}`).join(" ");
+      return (msg ? `${msg} - ` : "") + tail;
+    };
+
+    this.logger = {
+      debug: (msg, fields) => sharedLog.debug(fmt(msg, fields)),
+      info: (msg, fields) => sharedLog.info(fmt(msg, fields)),
+      warn: (msg, fields) => sharedLog.warn(fmt(msg, fields)),
+      error: (msg, fields) => sharedLog.error(fmt(msg, fields)),
+      bind: (ctx: BoundCtx) => sharedLog.bind(ctx),
     };
   }
 
-  /** Start the HTTP server with an Express app or any Node request handler. */
+  public setLogContext(fields: Record<string, unknown>): void {
+    this.baseCtx = { ...this.baseCtx, ...fields };
+  }
+
   public async run(buildHandler: () => RequestListener): Promise<void> {
+    // === Env loading (delegated) ============================================
     if (this.opts.loadEnvFiles) {
-      loadEnv({ path: resolve(process.cwd(), ".env") });
-      loadEnv({ path: resolve(process.cwd(), ".env.dev"), override: true });
+      EnvLoader.loadAll({ cwd: process.cwd() });
+      // Optional trace to confirm critical env presence; keep it quiet in prod.
+      this.logger.debug("env_loaded", {
+        ENV_FILE: process.env.ENV_FILE ?? "<unset>",
+        MODE: process.env.MODE ?? process.env.NODE_ENV ?? "dev",
+      });
     }
 
-    // Validate port from env
-    const portStr = requireEnv(this.opts.portEnvName);
-    const port = requireNumber(this.opts.portEnvName, portStr);
+    // === Required runtime configuration =====================================
+    const port = EnvLoader.requireNumber(this.opts.portEnvName);
 
-    // Pre-start hook
+    // === Pre-start hook (DB connect, warm caches, etc.) ======================
     if (this.opts.preStart) {
       await this.safe("preStart", this.opts.preStart);
     }
 
-    // Build app and server
+    // === HTTP server bootstrap ==============================================
     const handler = buildHandler();
     const server = http.createServer(handler);
 
-    // Start listening
     server.listen(port, this.opts.host, () => {
-      this.log(30, "listening", { port, host: this.opts.host });
-      if (this.opts.onReady) this.opts.onReady();
+      this.emit(30, "listening", {
+        port,
+        host: this.opts.host,
+        pid: process.pid,
+      });
+      this.opts.onReady?.();
     });
 
     server.on("error", (err) => {
-      this.log(50, "server_error", { err: String(err) });
+      this.emit(50, "server_error", { err: String(err) });
       process.exitCode = 1;
     });
 
-    // Graceful shutdown
+    // === Graceful shutdown ===================================================
     const shutdown = async (signal: NodeJS.Signals) => {
-      this.log(20, "shutdown_signal", { signal });
+      this.emit(20, "shutdown_signal", { signal });
       try {
         await this.opts.onShutdown?.();
       } catch (err) {
-        this.log(40, "shutdown_hook_error", { err: String(err) });
+        this.emit(40, "shutdown_hook_error", { err: String(err) });
       } finally {
         server.close(() => {
-          this.log(20, "closed");
+          this.emit(20, "closed");
           process.exit(0);
         });
-        // hard exit if close hangs
         setTimeout(() => process.exit(0), 3000).unref();
       }
     };
@@ -104,23 +158,40 @@ export class Bootstrap {
     try {
       await fn();
     } catch (err) {
-      this.log(50, `${name}_failed`, { err: String(err) });
+      this.emit(50, `${name}_failed`, { err: String(err) });
       throw err;
     }
   }
 
-  private log(
+  private emit(
     level: 20 | 30 | 40 | 50,
     msg: string,
     extra?: Record<string, unknown>
   ): void {
-    console.log(
-      JSON.stringify({
-        level,
-        service: this.opts.service,
-        msg,
-        ...(extra ?? {}),
-      })
-    );
+    switch (level) {
+      case 20:
+        this.logger.debug(msg, extra);
+        break;
+      case 30:
+        this.logger.info(msg, extra);
+        break;
+      case 40:
+        this.logger.warn(msg, extra);
+        break;
+      case 50:
+        this.logger.error(msg, extra);
+        break;
+    }
+  }
+}
+
+function stringifyVal(v: unknown): string {
+  if (v == null) return String(v);
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
   }
 }

@@ -1,14 +1,14 @@
 // backend/services/auth/src/controllers/auth.signon.controller.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0004 (Auth Service Skeleton — no minting)
+ * - SOP: Reduced, Clean
+ * - Purpose: POST /api/auth/v1/signon (public)
+ *   Validate payload, mock-hash, S2S to User:
+ *     POST /api/user/v1/signon
  *
- * Purpose:
- * - POST /api/auth/v1/signon
- * - Derives from shared BaseController (via AuthControllerBase) for envelope handling.
- * - Skeleton: validate contract + password; no minting yet.
+ * Notes:
+ * - Controllers do NOT know about resolution; base + SvcClient handle it.
+ * - Password handled at auth; user service receives hashedPassword only.
  */
 
 import type { Request, Response } from "express";
@@ -16,8 +16,8 @@ import { AuthControllerBase } from "./auth.base.controller";
 import { UserContract } from "@nv/shared/contracts/user.contract";
 
 type SignonEnvelope = {
-  user?: unknown; // must conform to UserContract (email required)
-  password?: string; // separate from contract
+  user?: unknown; // must include email per UserContract
+  password?: string; // plain; we mock-hash for now
 };
 
 export class AuthSignonController extends AuthControllerBase {
@@ -32,7 +32,7 @@ export class AuthSignonController extends AuthControllerBase {
       async ({ body, requestId }) => {
         const b = (body || {}) as SignonEnvelope;
 
-        // Validate user contract
+        // Validate user (email required)
         let user: UserContract;
         try {
           user = UserContract.from(b.user);
@@ -45,9 +45,9 @@ export class AuthSignonController extends AuthControllerBase {
           );
         }
 
-        // Validate password presence
-        const pwd = typeof b.password === "string" ? b.password.trim() : "";
-        if (!pwd) {
+        // Validate password
+        const pwd = b.password;
+        if (!pwd || typeof pwd !== "string" || !pwd.trim()) {
           return this.fail(
             400,
             "invalid_request",
@@ -56,16 +56,19 @@ export class AuthSignonController extends AuthControllerBase {
           );
         }
 
-        // Skeleton response — no minting yet
-        return this.ok(
-          200,
-          {
-            email: user.email,
-            signedIn: false,
-            note: "Signon skeleton; token minting not implemented yet.",
-          },
-          requestId
+        // Mock hash (placeholder)
+        const hashedPassword = `mockhash:${Buffer.from(pwd)
+          .toString("base64url")
+          .slice(0, 24)}`;
+
+        // S2S: POST /api/user/v1/signon
+        const upstream = await this.callUserAuth(
+          "signon",
+          { user: user.toJSON(), hashedPassword },
+          { requestId }
         );
+
+        return this.passUpstream(upstream as any, requestId);
       }
     );
   }

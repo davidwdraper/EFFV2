@@ -8,23 +8,21 @@
  *   - ADR-0007 (Non-gateway S2S via svcfacilitator + TTL cache)
  *
  * Purpose:
- * - POST /api/auth/v1/create
- * - Validate + hash password, then CALL User service via facilitator-backed SvcClient.
- * - Pass the upstream envelope through unchanged on success.
+ * - POST /api/auth/v1/create  (public)
+ * - Validate + mock-hash password, then CALL User service:
+ *     PUT /api/user/v1/create  (S2S)
  *
  * Notes:
- * - Password is OUTSIDE the user contract by design.
- * - For all auth endpoints (create, signon, changePassword), the User service is called.
- * - SOP alignment: Auth → User uses PUT /api/user/v1/users (plural) for create.
+ * - Password is OUTSIDE the user contract by design; we pass hashedPassword to User.
+ * - Controllers do not know about svcfacilitator; shared SvcClient handles resolution.
  */
 
 import type { Request, Response } from "express";
 import { AuthControllerBase } from "./auth.base.controller";
 import { UserContract } from "@nv/shared/contracts/user.contract";
-import type { SvcResponse } from "@nv/shared/svc/types";
 
 type CreateEnvelope = {
-  user?: unknown;
+  user?: unknown; // must conform to UserContract (email required)
   password?: string;
 };
 
@@ -40,7 +38,7 @@ export class AuthCreateController extends AuthControllerBase {
       async ({ body, requestId }) => {
         const b = (body || {}) as CreateEnvelope;
 
-        // 1) Validate user contract
+        // Validate user contract
         let user: UserContract;
         try {
           user = UserContract.from(b.user);
@@ -53,7 +51,7 @@ export class AuthCreateController extends AuthControllerBase {
           );
         }
 
-        // 2) Validate password
+        // Validate password presence
         const pwd = b.password;
         if (!pwd || typeof pwd !== "string" || !pwd.trim()) {
           return this.fail(
@@ -64,31 +62,20 @@ export class AuthCreateController extends AuthControllerBase {
           );
         }
 
-        // 3) Mock hash (temporary)
+        // Temporary mock hash — replace with real crypto per future ADR.
         const hashedPassword = `mockhash:${Buffer.from(pwd)
           .toString("base64url")
           .slice(0, 24)}`;
 
-        // 4) Call User service → PUT /api/user/v1/users  (SOP-aligned)
-        let upstream: SvcResponse<unknown>;
-        try {
-          upstream = (await this.callUser(
-            "users", // ← plural resource, not "create"
-            { user: user.toJSON(), hashedPassword },
-            { method: "PUT", requestId } // ← PUT, not POST
-          )) as unknown as SvcResponse<unknown>;
-        } catch (err: any) {
-          return this.fail(
-            502,
-            "bad_gateway",
-            `User upstream error: ${String(
-              err?.message || err
-            )}. Is User service responding?`,
-            requestId
-          );
-        }
+        // S2S per aligned path:
+        //   User create = PUT /api/user/v1/create
+        const upstream = await this.callUser(
+          "create",
+          { user: user.toJSON(), hashedPassword },
+          { method: "PUT", requestId }
+        );
 
-        // 5) Pass upstream envelope unchanged
+        // Pass upstream envelope (or map to clean bad_gateway on error)
         return this.passUpstream(upstream as any, requestId);
       }
     );

@@ -3,23 +3,33 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - docs/adr/adr0001-gateway-embedded-svcconfig-and-svcfacilitator.md
+ *   - ADR0001 (gateway svcconfig)
+ *   - ADR0003 (gateway pushes mirror to svcfacilitator)
  *
  * Purpose:
- * - Build and configure the Express app (routes, middleware).
- * - Mount health first, then the generic API proxy.
+ * - Compose the Gateway Express app.
+ * - Mount health FIRST, then local routes (if any), then the proxy LAST.
+ *
+ * Notes:
+ * - Proxy only swaps origin (host:port) based on SvcConfig mirror — path/query unchanged.
+ * - Never proxy gateway’s own endpoints; health is mounted before proxy.
  */
 
 import type { Express } from "express";
 import express = require("express");
 import { mountServiceHealth } from "@nv/shared/health/mount";
-import { ApiProxyRouter } from "./routes/proxy";
+import { makeProxy } from "./routes/proxy"; // ← use routes/proxy.ts
+import { SvcConfig } from "./services/svcconfig/SvcConfig";
+
+const SERVICE = "gateway";
 
 export class GatewayApp {
   private readonly app: Express;
+  private readonly svcConfig: SvcConfig;
 
-  constructor() {
+  constructor(svcConfig?: SvcConfig) {
     this.app = express();
+    this.svcConfig = svcConfig ?? new SvcConfig();
     this.configure();
   }
 
@@ -27,12 +37,15 @@ export class GatewayApp {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
 
-    // 1) Health first so it isn't captured by the generic /api proxy.
-    mountServiceHealth(this.app, { service: "gateway" });
+    // 1) Health FIRST — never proxied
+    //    Exposes: /api/gateway/health/{live,ready}
+    mountServiceHealth(this.app, { service: SERVICE });
 
-    // 2) Generic pass-through for /api/<slug>/v<#>/...
-    //    This supports both versioned and (temporarily) unversioned URLs.
-    this.app.use("/api", new ApiProxyRouter().router());
+    // 2) (Optional) Any local gateway routes go here
+    // this.app.use("/api/gateway", gatewayRouter());
+
+    // 3) Proxy LAST — origin swap only, path/query unchanged
+    this.app.use("/api", makeProxy(this.svcConfig));
   }
 
   public get instance(): Express {

@@ -13,6 +13,9 @@
  * - All logs via shared logger (no console.*).
  */
 
+import path from "path";
+process.env.SERVICE_CWD = path.resolve(__dirname, "..");
+
 import { ServiceBase } from "@nv/shared/bootstrap/ServiceBase";
 import { getLogger } from "@nv/shared/util/logger.provider";
 import { SvcFacilitatorApp } from "./app";

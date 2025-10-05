@@ -16,7 +16,7 @@
  */
 
 import http, { type RequestListener } from "http";
-import { resolve } from "path";
+import path, { resolve } from "path";
 import { existsSync } from "fs";
 import { log as sharedLog, type BoundCtx } from "../util/Logger";
 import { EnvLoader } from "../env/EnvLoader";
@@ -100,11 +100,29 @@ export class Bootstrap {
   public async run(buildHandler: () => RequestListener): Promise<void> {
     // === Env loading (delegated) ============================================
     if (this.opts.loadEnvFiles) {
-      EnvLoader.loadAll({ cwd: process.cwd() });
+      // Determine the *service* directory so service-local .env.* are considered.
+      const repoRootCwd = process.cwd();
+      const envFile = process.env.ENV_FILE || "";
+      const envFileDir = envFile
+        ? path.isAbsolute(envFile)
+          ? path.dirname(envFile)
+          : path.dirname(path.resolve(repoRootCwd, envFile))
+        : null;
+      const serviceDir =
+        process.env.SERVICE_CWD || // explicit override from service entry
+        envFileDir || // if ENV_FILE points to service/.env.dev, use its dir
+        repoRootCwd; // fallback to repo root
+
+      EnvLoader.loadAll({
+        cwd: serviceDir,
+        debugLogger: (m) => this.logger.debug(m),
+      });
+
       // Optional trace to confirm critical env presence; keep it quiet in prod.
       this.logger.debug("env_loaded", {
         ENV_FILE: process.env.ENV_FILE ?? "<unset>",
         MODE: process.env.MODE ?? process.env.NODE_ENV ?? "dev",
+        SERVICE_CWD: serviceDir,
       });
     }
 

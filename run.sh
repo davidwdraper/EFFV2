@@ -14,11 +14,13 @@ mkdir -p "$TMPDIR"
 # ======= Arg parsing =========================================================
 NV_TEST=0
 MODE=""
+SHARED_ONLY=0
 for a in "$@"; do
   case "$a" in
     --test) NV_TEST=1 ;;
+    --shared) SHARED_ONLY=1 ;;
     dev|docker) MODE="$a" ;;
-    *) echo "❌ Unknown arg: $a"; echo "Usage: ENV_FILE=.env.dev ./scripts/run.sh [--test] [dev|docker]"; exit 2 ;;
+    *) echo "❌ Unknown arg: $a"; echo "Usage: ENV_FILE=.env.dev ./scripts/run.sh [--test] [--shared] [dev|docker]"; exit 2 ;;
   esac
 done
 [[ -z "$MODE" ]] && MODE="dev"
@@ -33,6 +35,7 @@ ENV_FILE="${ENV_FILE:-.env.dev}"
 echo "▶ run.sh starting MODE=$MODE (root=$ROOT)"
 echo "   ENV_FILE=$ENV_FILE"
 [[ $NV_TEST -eq 1 ]] && echo "   TEST MODE: exporting KMS_* for gateway (shell-only)"
+[[ $SHARED_ONLY -eq 1 ]] && echo "   SHARED-ONLY: will build @nv/shared and exit"
 
 # ======= Service list (current reality) =====================================
 # Keep this tight; uncomment/add as services come online.
@@ -91,7 +94,7 @@ if [[ "$MODE" == "docker" ]]; then
 fi
 
 # ======= Dev mode ============================================================
-[[ "$MODE" == "dev" ]] || { echo "❌ Invalid mode. Usage: ENV_FILE=.env.dev ./scripts/run.sh [--test] [dev|docker]"; exit 1; }
+[[ "$MODE" == "dev" ]] || { echo "❌ Invalid mode. Usage: ENV_FILE=.env.dev ./scripts/run.sh [--test] [--shared] [dev|docker]"; exit 1; }
 [[ -f "$ENV_FILE" ]] || { echo "❌ ENV_FILE not found: $ENV_FILE"; exit 1; }
 
 # ---- Parity guard: require ADC via SA file in all environments --------------
@@ -127,6 +130,12 @@ if [[ -d "$SHARED_DIR" ]]; then
   echo "✅ @nv/shared built."
 else
   echo "❌ Shared package not found at $SHARED_DIR"; exit 1
+fi
+
+# ======= Optional: exit early when --shared ==================================
+if [[ $SHARED_ONLY -eq 1 ]]; then
+  echo "🏁 --shared specified: exiting after @nv/shared build."
+  exit 0
 fi
 
 # ======= Optional: sync ports step (only if script exists) ===================

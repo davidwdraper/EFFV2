@@ -4,28 +4,36 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - docs/adr/adr0002-svcfacilitator-minimal.md
+ *   - ADR-0009 (ServiceBase — class-based service entrypoint)
+ *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
  *
  * Purpose:
- * - Bootstrap via shared Bootstrap and start HTTP server.
+ * - Class-based entrypoint using shared ServiceBase to eliminate drift.
+ * - Pre-start hydrates svcconfig mirror (DB → LKG fallback).
+ * - All logs via shared logger (no console.*).
  */
 
-import { Bootstrap } from "@nv/shared/bootstrap/Bootstrap";
+import { ServiceBase } from "@nv/shared/bootstrap/ServiceBase";
+import { getLogger } from "@nv/shared/util/logger.provider";
 import { SvcFacilitatorApp } from "./app";
+import { preStartHydrateMirror } from "./boot/boot.hydrate";
 
-async function main(): Promise<void> {
-  await new Bootstrap({
-    service: "svcfacilitator",
-  }).run(() => new SvcFacilitatorApp().instance);
+class Main extends ServiceBase {
+  protected override async preStart(): Promise<void> {
+    await preStartHydrateMirror();
+  }
+
+  protected override buildApp() {
+    return new SvcFacilitatorApp().instance;
+  }
 }
 
-main().catch((err) => {
-  console.error(
-    JSON.stringify({
-      level: 50,
-      service: "svcfacilitator",
-      msg: "boot_failed",
-      err: String(err),
-    })
-  );
+new Main("svcfacilitator", { logVersion: 1 }).run().catch((err) => {
+  const log = getLogger().bind({
+    slug: "svcfacilitator",
+    version: 1,
+    url: "/main",
+  });
+  log.error(`boot_failed - ${String(err)}`);
   process.exit(1);
 });

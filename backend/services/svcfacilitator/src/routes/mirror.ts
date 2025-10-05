@@ -4,7 +4,7 @@
  * - /mirror routes
  */
 import { Router } from "express";
-import { MirrorController } from "../controllers/MirrorController";
+import { MirrorController } from "../controllers/mirror.controller";
 
 export function mirrorRouter(): Router {
   const r = Router();

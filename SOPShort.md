@@ -137,14 +137,3 @@ Every file drop is preceeded by design discussion. Then you drop drop new files 
 We're building out the new backend a bit at a time, starting with plumbing.
 There is no logging, audit, JWT or user-auth, yet. auth service password is mock hashed.
 In the last abandoned backend, we were spending more time debugging than writing new code. That was because the initial design was poor, and we were refactoring and constantly doing regressions with difficult errors to solve. We now write a few files, then test. Baby Steps.
-
-Last session we simplified how the gateway built proxy URLs. We decided that all that was needed was to:
-
-- parse the inbound URL to get the slug and version, using shared UrlHelper.
-- use the slug and version to lookup the destination port from the svcconfig mirror that the gateway holds
-- replace the port from the inbound URL with the target port to make an outbound URL
-- strip credetionals (not there yet) from the inbound headers and move to outbound
-- move the payload
-- proxy the call
-
-After we did the above, we broke the gateway. So that now needs debugging.

@@ -6,14 +6,16 @@
  *   - ADR0001 (gateway svcconfig)
  *   - ADR0003 (gateway pushes mirror to svcfacilitator)
  *   - ADR0006 (Gateway Edge Logging — pre-audit, toggleable)
+ *   - ADR0013 (Versioned Gateway Health — consistency with internal services)
  *
  * Purpose:
  * - Compose the Gateway Express app.
- * - Mount health FIRST, then local routes (if any), then the proxy LAST.
+ * - Mount health FIRST (versioned), then local routes (if any), then the proxy LAST.
  *
  * Notes:
  * - Proxy only swaps origin (host:port) based on SvcConfig mirror — path/query unchanged.
  * - Never proxy gateway’s own endpoints; health is mounted before proxy.
+ * - Health endpoints are VERSIONED for consistency: /api/gateway/v1/health/{live,ready}
  */
 
 import type { Express } from "express";
@@ -21,10 +23,11 @@ import express = require("express");
 import { mountServiceHealth } from "@nv/shared/health/mount";
 import { makeProxy } from "./routes/proxy";
 import { SvcConfig } from "./services/svcconfig/SvcConfig";
-import { edgeHitLogger } from "./middleware/edge.hit.logger"; // ← added
+import { edgeHitLogger } from "./middleware/edge.hit.logger";
 import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 
 const SERVICE = "gateway";
+const GATEWAY_VERSION = 1;
 
 export class GatewayApp {
   private readonly app: Express;
@@ -41,15 +44,19 @@ export class GatewayApp {
     this.app.use(express.json());
 
     // 1) Health FIRST — never proxied
-    //    Exposes: /api/gateway/health/{live,ready}
-    mountServiceHealth(this.app, { service: SERVICE });
+    //    Exposes: /api/gateway/v1/health/{live,ready}
+    {
+      const health = express.Router();
+      mountServiceHealth(health, { service: SERVICE });
+      this.app.use(`/api/${SERVICE}/v${GATEWAY_VERSION}`, health);
+    }
 
     // 2) (Optional) Any local gateway routes go here
-    // this.app.use("/api/gateway", gatewayRouter());
+    // this.app.use(`/api/${SERVICE}/v${GATEWAY_VERSION}`, gatewayRouter());
 
     // 3) Edge logging — logs every inbound API hit before proxying
     this.app.use(edgeHitLogger());
-    this.app.use(responseErrorLogger("gateway"));
+    this.app.use(responseErrorLogger(SERVICE));
 
     // 4) Proxy LAST — origin swap only, path/query unchanged
     this.app.use("/api", makeProxy(this.svcConfig));

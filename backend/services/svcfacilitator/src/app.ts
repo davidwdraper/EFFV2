@@ -4,12 +4,13 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - docs/adr/adr0002-svcfacilitator-minimal.md
- *   - ADR-0007 (Fixed contract for resolution)
+ *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
+ *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
  *
  * Purpose:
  * - Build and configure the Express app (routes, middleware).
  * - Health routes mounted via shared helper (no drift).
- * - Mount /api/svcfacilitator/resolve for slug→baseUrl lookups.
+ * - Mount /api/svcfacilitator/{resolve,mirror} per URL convention.
  *
  * Route order (SOP):
  * - Health first
@@ -38,19 +39,21 @@ export class SvcFacilitatorApp {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
 
-    // Health: /api/svcfacilitator/health/{live,ready}
+    // 1) Health: /api/svcfacilitator/health/{live,ready}
     mountServiceHealth(this.app, { service: SERVICE });
 
-    // Resolution API: /api/svcfacilitator/resolve
+    // 2) Resolution API (public): /api/svcfacilitator/resolve
     this.app.use("/api/svcfacilitator", resolveRouter());
 
-    // Tooling (mirror inspector)
-    this.app.use("/mirror", mirrorRouter());
+    // 3) Mirror tooling (pushed by gateway): /api/svcfacilitator/mirror
+    //    (was "/mirror" — corrected to follow URL convention)
+    this.app.use("/api/svcfacilitator/mirror", mirrorRouter());
 
-    // Final JSON error handler (jq-safe)
+    // 4) Final JSON error handler (jq-safe)
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     this.app.use(
       (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+        // Keep it loud until structured logger is wired here.
         console.error("[svcfacilitator:error]", err);
         res
           .status(500)

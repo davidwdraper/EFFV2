@@ -8,7 +8,7 @@
  * - Deterministic, fail-safe environment loading for a monorepo.
  *
  * Design:
- * - Detect the true repo root (presence of .git or pnpm-workspace.yaml).
+ * - Detect the true repo root (preferring .git or pnpm-workspace.yaml).
  * - Load repo-root envs first (.env, then .env.<mode>), then service-local
  *   (.env, then .env.<mode>) WITHOUT override — root wins for shared keys.
  * - Respect ENV_FILE when provided (absolute or repo-root relative).
@@ -32,19 +32,35 @@ class EnvLoaderClass {
     let dir = startDir;
     const fsRoot = path.parse(dir).root;
 
+    // Authoritative markers for the monorepo root
     while (true) {
       const hasGit = fs.existsSync(path.join(dir, ".git"));
       const hasWorkspace = fs.existsSync(path.join(dir, "pnpm-workspace.yaml"));
-      const hasRootPkg = fs.existsSync(path.join(dir, "package.json"));
-
-      if (hasGit || hasWorkspace || hasRootPkg) return dir;
+      if (hasGit || hasWorkspace) return dir;
 
       const parent = path.dirname(dir);
       if (parent === dir || parent === fsRoot) break;
       dir = parent;
     }
 
-    // Fall back: best guess = current startDir
+    // Optional: best-effort fallback to the highest directory with a workspaces package.json
+    dir = startDir;
+    while (true) {
+      const pkgPath = path.join(dir, "package.json");
+      if (fs.existsSync(pkgPath)) {
+        try {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+          if (pkg && (pkg.workspaces || pkg.packages)) return dir;
+        } catch {
+          /* ignore JSON parse errors */
+        }
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir || parent === fsRoot) break;
+      dir = parent;
+    }
+
+    // Final fallback: current startDir
     return startDir;
   }
 
@@ -58,10 +74,16 @@ class EnvLoaderClass {
   static loadAll(options?: { mode?: EnvMode; cwd?: string }): void {
     const cwd = options?.cwd ?? process.cwd();
     const repoRoot = this.findRepoRoot(cwd);
-    const mode = (process.env.MODE ??
+
+    // Resolve mode early; normalize to lowercase for filesystem consistency
+    const resolvedMode = (
+      process.env.MODE ??
       process.env.NODE_ENV ??
       options?.mode ??
-      "dev") as EnvMode;
+      "dev"
+    )
+      .toString()
+      .toLowerCase() as EnvMode;
 
     // 1) Explicit ENV_FILE from runner (absolute or repo-root relative)
     const envFileFromRunner = process.env.ENV_FILE;
@@ -79,13 +101,13 @@ class EnvLoaderClass {
       if (fs.existsSync(p)) dotenv.config({ path: p, override });
     };
 
-    // 2) Repo-root first (root wins)
+    // 2) Repo-root first (root wins; no override)
     loadIf(path.join(repoRoot, ".env"));
-    loadIf(path.join(repoRoot, `.env.${mode}`));
+    loadIf(path.join(repoRoot, `.env.${resolvedMode}`));
 
     // 3) Service-local without override (do not clobber root)
     loadIf(path.join(cwd, ".env"), /*override*/ false);
-    loadIf(path.join(cwd, `.env.${mode}`), /*override*/ false);
+    loadIf(path.join(cwd, `.env.${resolvedMode}`), /*override*/ false);
   }
 
   /** Fail-fast accessor for required env variables. */

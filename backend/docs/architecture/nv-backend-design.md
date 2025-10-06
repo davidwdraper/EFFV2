@@ -342,3 +342,64 @@ Copy code
   - Confirm numbering for `adr0002-*` duplicates; update Chapter 3 and code headers.
 
 ---
+
+## Chapter 10 — Technical Debt Register
+
+> **Purpose:**  
+> Track short-term refactor residue and medium-term cleanup tasks that don’t warrant ADRs but must be resolved for long-term maintainability.  
+> Each entry should be ticked (✅) once verified complete in a later session.  
+> Old, resolved items are removed during normal document grooming.
+
+### Bootstrap / Base Hierarchy
+
+- [ ] ✅ **Rename complete:** `ServiceBase.ts` → `ServiceEntrypoint.ts`
+- [ ] Remove temporary alias `export { ServiceEntrypoint as ServiceBase }` after all imports migrate.
+- [ ] Introduce and stabilize `shared/base/ServiceBase.ts` (inheritance root).
+- [ ] Migrate `ControllerBase`, `RepoBase`, and routers to extend `ServiceBase`.
+- [ ] Eliminate all `logger.provider` imports and global logger mutations.
+
+### Gateway
+
+- [ ] Verify `gateway/src/routes/health.ts` is mounted early, before proxy.
+- [ ] Standardize health path to `/api/gateway/v1/health` (single source of truth).
+- [ ] Update header in `gateway/src/app.ts` (`ADR-0003` wording: “Gateway pulls svc map”).
+- [ ] Remove any stale or duplicate health-mount logic from `app.ts`.
+
+### Documentation & ADR Hygiene
+
+- [ ] Update all code headers referencing **ADR-0009** → **ADR-0014**.
+- [ ] Cross-check ADR index (Chapter 3) for numbering continuity.
+- [ ] Confirm all “Proposed” ADRs move to “Accepted” once implemented.
+- [ ] Add link references between ADRs 0001 ↔ 0003 ↔ 0013 ↔ 0014 for traceability.
+
+### Testing & Verification
+
+- [ ] Re-run `001-gateway-health.sh` after refactor; confirm `.service="gateway"`, `.data.status="live"`.
+- [ ] Add smoke for `auth` → `user` flow after ServiceBase migration.
+- [ ] Add unit test: `ServiceEntrypoint` lifecycle (preStart → onReady → onShutdown).
+
+### Future Debt Candidates
+
+- [ ] Consolidate edge logging toggles (`EDGE_LOG_ENABLED`, `LOG_LEVEL`) under unified config.
+- [ ] Introduce shared `ConfigValidator` once ServiceBase exposes `this.config`.
+- [ ] Audit each service for `FORCE_HTTPS` enforcement consistency.
+
+### WAL Refactor Checklist
+
+- [ ] Refactor **Gateway** to emit persistent logs via `@nv/shared/wal` when enabled (per ADR-0017).
+- [ ] Refactor **Audit** to use `@nv/shared/wal` for all audit events (no direct HTTP-only writes).
+- [ ] Consolidate existing gateway and audit WAL logic under the shared `LogWal` class.
+- [ ] Ensure WAL metrics (`wal_backlog_records`, `wal_ship_errors_total`, etc.) appear in both gateway and audit health endpoints.
+- [ ] Verify shared WAL handles multiple record kinds: `log`, `audit`, and any future feature requiring durability.
+- [ ] Remove legacy per-service WAL or queue code after shared class adoption.
+
+- [ ] Edge logging, via log.edge() both at the gateway and in SvcReceiver
+
+---
+
+_**Process:**_  
+At session start, review this list aloud.  
+At session end, tick off completed items and prune resolved ones.  
+If any item grows beyond 1–2 lines or affects multiple services, promote it to a standalone ADR.
+
+---

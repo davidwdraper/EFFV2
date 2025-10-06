@@ -2,28 +2,23 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADRs:
+ *   - ADR-0013 (Versioned Health Envelope)
+ *   - ADR-0015 (Structured Logger with bind() Context)
  *
  * Purpose:
- * - Mount health endpoints on either an Express app OR an Express Router.
- * - Keeps gateway health “gateway-specific” and never proxied, while allowing
- *   versioned mounts like /api/gateway/v1/health/{live,ready}.
+ * - Mount health endpoints on an Express app or Router.
+ * - Returns the canonical envelope:
+ *     { ok:true, service, data:{ status:"live|ready|not_ready", detail?:{...} } }
  *
- * Routes (mounted at the caller’s base):
- *   GET <base>/health/live   → 200 if process is alive
- *   GET <base>/health/ready  → 200 if readyCheck() resolves truthy; else 503
- *
- * Usage:
- *   // Versioned, service-scoped health on a Router:
- *   const r = express.Router();
- *   mountServiceHealth(r, { service: "gateway" });
- *   app.use("/api/gateway/v1", r);
- *
- *   // Or directly on an Express app:
- *   mountServiceHealth(app, { service: "svcfacilitator" });
+ * Routes (mounted at caller’s base):
+ *   GET <base>/health/live
+ *   GET <base>/health/ready
  */
 
 import type { Express, Request, Response, Router } from "express";
-import { getLogger } from "../util/logger.provider";
+import os from "os";
+import { getLogger } from "../logger/Logger";
 
 type MountTarget = Express | Router;
 
@@ -42,27 +37,66 @@ export function mountServiceHealth(
   opts: HealthOptions
 ): void {
   const { service, readyCheck } = opts;
-  const log = getLogger().bind({ slug: service, version: 1, url: "/health" });
-
-  // Liveness — if we can run handler code, the process is alive.
-  (target as any).get("/health/live", (_req: Request, res: Response) => {
-    res.status(200).json({ ok: true, service, status: "live" });
+  const log = getLogger().bind({
+    service,
+    url: "/health",
+    component: "mountServiceHealth",
   });
 
-  // Readiness — caller controls with an optional check (DB, deps, etc.)
+  // ── Liveness — process is alive if handler runs ────────────────────────────
+  (target as any).get("/health/live", (_req: Request, res: Response) => {
+    log.edge({ route: "live" }, "health/live hit");
+    res.status(200).json({
+      ok: true,
+      service,
+      data: {
+        status: "live",
+        detail: {
+          uptime: Math.floor(process.uptime()),
+          host: os.hostname(),
+          pid: process.pid,
+        },
+      },
+    });
+  });
+
+  // ── Readiness — optional readiness check ───────────────────────────────────
   (target as any).get("/health/ready", async (_req: Request, res: Response) => {
     try {
+      log.debug({ route: "ready" }, "health/ready check start");
+
       if (!readyCheck) {
-        return res.status(200).json({ ok: true, service, status: "ready" });
+        log.info({ route: "ready", ready: true }, "no readyCheck provided");
+        return res.status(200).json({
+          ok: true,
+          service,
+          data: { status: "ready" },
+        });
       }
+
       const ready = await readyCheck();
       if (ready) {
-        return res.status(200).json({ ok: true, service, status: "ready" });
+        log.info({ route: "ready", ready: true }, "service ready");
+        return res.status(200).json({
+          ok: true,
+          service,
+          data: { status: "ready" },
+        });
       }
-      return res.status(503).json({ ok: false, service, status: "not_ready" });
+
+      log.warn({ route: "ready", ready: false }, "service not ready");
+      return res.status(503).json({
+        ok: false,
+        service,
+        data: { status: "not_ready" },
+      });
     } catch (e) {
-      log.warn(`ready_check_error - ${String(e)}`);
-      return res.status(503).json({ ok: false, service, status: "not_ready" });
+      log.error({ route: "ready", err: String(e) }, "ready_check_error");
+      return res.status(503).json({
+        ok: false,
+        service,
+        data: { status: "not_ready" },
+      });
     }
   });
 }

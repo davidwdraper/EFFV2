@@ -2,6 +2,10 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADRs:
+ *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
+ *   - ADR-0015 (Structured Logger with bind() Context)
+ *   - ADR-0006 (Gateway Edge Logging — first-class edge() channel)
  *
  * Purpose:
  * - Super controller base for all services.
@@ -9,37 +13,27 @@
  * - Provides helpers to shape success/error envelopes and to pass upstream
  *   envelopes through unchanged (for S2S proxy-style endpoints).
  *
- * Env:
- * - LOG_LEVEL (optional) debug|info|warn|error|silent  [default: info]
- * - LOG_EDGE  (optional) 1|true|on to enable EDGE one-liners               [default: off]
- *
- * Design:
- * - Child controllers call `this.rx.receive(...)` inside `handle(...)`.
- * - **Logging** (service-side):
- *     - EDGE once per endpoint hit: "EDGE YYYY-MM-DD HH:MM:SS <slug> v<version> <url>"
- *     - INFO once per endpoint hit: "INFO YYYY-MM-DD HH:MM:SS <slug> v<version> <url>"
- *
- * Additions:
- * - `h(fn)`: tiny route adapter returning an Express handler that always flows
- *   through `handle(...)` so EDGE/INFO logging cannot be forgotten.
+ * Notes:
+ * - Controllers extend ServiceBase to get `this.log` (bound logger) and env helpers.
+ * - Uses overloaded logger methods:
+ *     log.info("msg")  OR  log.info({ctx}, "msg")
+ *     log.edge({ctx}, "edge hit")   // category defaults to "edge"
  */
 
 import type { Request, Response, RequestHandler, NextFunction } from "express";
+import { ServiceBase } from "../base/ServiceBase";
 import { SvcReceiver } from "../svc/SvcReceiver";
 import type { SvcResponse } from "../svc/types";
 import { UrlHelper } from "../http/UrlHelper";
-import { log } from "../util/Logger";
 
 export type HandlerResult = { status: number; body: unknown };
 
-export abstract class BaseController {
-  /** Service name for envelopes (e.g., "auth", "user"). */
-  protected readonly service: string;
+export abstract class BaseController extends ServiceBase {
   /** Uniform envelope I/O */
   protected readonly rx: SvcReceiver;
 
   protected constructor(service: string) {
-    this.service = service;
+    super({ service, context: { controller: "BaseController" } });
     this.rx = new SvcReceiver(service);
   }
 
@@ -94,9 +88,11 @@ export abstract class BaseController {
         },
       };
     }
+
     const detail =
       resp.error?.message ||
       (resp.status === 0 ? "network_error" : "upstream error");
+
     return this.fail(
       resp.status || badGatewayStatus,
       upstreamCode,
@@ -108,8 +104,8 @@ export abstract class BaseController {
   // ── Convenience: standardized handler wrapper (optional for children) ─────
   /**
    * Also emits:
-   *   EDGE once at entry (toggle via LOG_EDGE)
-   *   INFO once at entry (toggle via LOG_LEVEL)
+   *   EDGE once at entry (first-class `edge()` method)
+   *   INFO once at entry (structured)
    *
    * Note:
    * - We delegate response writing to SvcReceiver; `fn` returns a HandlerResult
@@ -133,14 +129,27 @@ export abstract class BaseController {
       // not an /api/* path — keep defaults
     }
 
-    const bound = log.bind({ slug, version, url: req.originalUrl });
-    bound.edge(); // "EDGE YYYY-MM-DD HH:MM:SS <slug> v<version> <url>" (if LOG_EDGE=on)
-    bound.info(); // "INFO YYYY-MM-DD HH:MM:SS <slug> v<version> <url>"
+    const requestId =
+      (req.headers["x-request-id"] as string | undefined) ||
+      (res.getHeader("x-request-id") as string | undefined) ||
+      "";
+
+    const bound = this.bindLog({
+      slug,
+      version,
+      url: req.originalUrl,
+      method: req.method,
+      requestId,
+    });
+
+    // Proper overloaded calls (no-arg forms removed)
+    bound.edge({ hit: "entry" }, "edge hit");
+    bound.info({ event: "controller_entry" }, "controller entry");
 
     return this.rx.receive(
       req as any,
       res as any,
-      async ({ body, requestId }) => fn({ body, requestId } as any)
+      async ({ body, requestId: rid }) => fn({ body, requestId: rid } as any)
     );
   }
 

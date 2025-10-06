@@ -4,6 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0006 (Gateway/Service Edge & Error Logging — one line per request)
+ *   - ADR-0015 (Structured Logger with bind() Context)
  *
  * Purpose:
  * - App-level, per-request completion logger.
@@ -19,7 +20,7 @@
 
 import type { Request, Response, NextFunction } from "express";
 import { UrlHelper } from "../http/UrlHelper";
-import { log } from "../util/Logger";
+import { getLogger } from "../logger/Logger";
 
 type NvBody = {
   ok?: boolean;
@@ -29,6 +30,12 @@ type NvBody = {
 };
 
 export function responseErrorLogger(serviceLabel: string) {
+  // Base handle for this middleware instance
+  const baseLog = getLogger().bind({
+    service: serviceLabel,
+    component: "responseErrorLogger",
+  });
+
   return function responseErrorLoggerMW(
     req: Request,
     res: Response,
@@ -71,7 +78,7 @@ export function responseErrorLogger(serviceLabel: string) {
 
       if (!(isOkFalse || is4xx || is5xx)) return; // success → quiet
 
-      const bound = log.bind({
+      const bound = baseLog.bind({
         slug,
         version,
         requestId,
@@ -79,16 +86,32 @@ export function responseErrorLogger(serviceLabel: string) {
         url: req.originalUrl,
         status,
         upstreamStatus: captured?.data?.status,
-      } as any); // keep strictly within BoundCtx; cast guarded
+      });
 
       const detail = captured?.data?.detail;
+
       if (is5xx) {
-        bound.error(detail || "server_error");
+        bound.error(
+          {
+            category: "response_error",
+            envelopeOk: captured?.ok,
+            detail: detail || "server_error",
+          },
+          "response error"
+        );
       } else {
-        bound.warn(detail || "request_failed");
+        bound.warn(
+          {
+            category: "response_error",
+            envelopeOk: captured?.ok,
+            detail: detail || "request_failed",
+          },
+          "response error"
+        );
       }
     });
 
     return next();
+    // Note: never throw from logging; finish hook must be best-effort.
   };
 }

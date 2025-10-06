@@ -32,7 +32,7 @@
 import fs from "fs";
 import path from "path";
 import { EnvLoader } from "../env/EnvLoader";
-import { getLogger } from "../util/logger.provider";
+import { getLogger, type IBoundLogger } from "../logger/Logger";
 
 export type LkgNormalizeFn<T> = (input: unknown) => T;
 export type LkgValidateFn<T> = (data: T) => void;
@@ -58,16 +58,7 @@ export class LkgStoreBase<T extends object = Record<string, unknown>> {
   private readonly wrapKey?: string;
   private readonly normalize?: LkgNormalizeFn<T>;
   private readonly validate?: LkgValidateFn<T>;
-  private readonly log = getLogger().bind({
-    slug: "shared",
-    version: 1,
-    url: "/lkg",
-  });
-  private readonly boundLog = getLogger().bind({
-    slug: "shared",
-    version: 1,
-    url: "/lkg",
-  });
+  private readonly log: IBoundLogger;
 
   constructor(opts: LkgStoreOptions<T>) {
     this.envVarName = opts.envVarName;
@@ -76,14 +67,14 @@ export class LkgStoreBase<T extends object = Record<string, unknown>> {
     this.normalize = opts.normalize;
     this.validate = opts.validate;
 
-    // Use provided logging context, fallback to generic shared/lkg
+    // Use provided logging context; fallback to generic shared/lkg
     const ctx = {
-      slug: opts.logCtx.slug,
+      service: opts.logCtx.slug || "shared",
       version: opts.logCtx.version ?? 1,
       url: opts.logCtx.url ?? "/lkg",
+      component: "LkgStoreBase",
     };
-    (this as any).log = getLogger().bind(ctx);
-    (this as any).boundLog = (this as any).log; // alias for clarity in code below
+    this.log = getLogger().bind(ctx);
   }
 
   /** Resolve absolute file path or null if neither env nor default configured. */
@@ -126,7 +117,7 @@ export class LkgStoreBase<T extends object = Record<string, unknown>> {
 
     if (this.validate) this.validate(data);
 
-    this.boundLog.info(`lkg_load_success - path=${p}`);
+    this.log.info({ path: p }, "lkg_load_success");
     return data;
   }
 
@@ -135,7 +126,7 @@ export class LkgStoreBase<T extends object = Record<string, unknown>> {
     try {
       return this.load();
     } catch (e) {
-      this.boundLog.warn(`lkg_load_failed - ${String(e)}`);
+      this.log.warn({ err: String(e) }, "lkg_load_failed");
       return null;
     }
   }
@@ -147,7 +138,7 @@ export class LkgStoreBase<T extends object = Record<string, unknown>> {
   public save(data: T, meta?: Record<string, unknown>): void {
     const p = this.resolvePath();
     if (!p) {
-      this.boundLog.warn("lkg_save_skipped - no path configured");
+      this.log.warn("lkg_save_skipped - no path configured");
       return;
     }
 
@@ -172,9 +163,9 @@ export class LkgStoreBase<T extends object = Record<string, unknown>> {
         /* ignore */
       }
 
-      this.boundLog.info(`lkg_save_success - path=${p}`);
+      this.log.info({ path: p }, "lkg_save_success");
     } catch (e) {
-      this.boundLog.warn(`lkg_save_failed - ${String(e)}`);
+      this.log.warn({ err: String(e) }, "lkg_save_failed");
     }
   }
 

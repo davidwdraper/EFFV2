@@ -44,17 +44,24 @@ export class GatewayApp {
     this.app.use(express.json());
 
     // 1) Health FIRST — never proxied
-    //    Exposes: /api/gateway/v1/health/{live,ready}
+    //    mountServiceHealth adds "/health/{live,ready}" under the base you give it.
+    //    Therefore: mount base at /api/gateway/v1  (NOT “…/health”).
     {
-      const health = express.Router();
-      mountServiceHealth(health, { service: SERVICE });
-      this.app.use(`/api/${SERVICE}/v${GATEWAY_VERSION}/health`, health);
+      const r = express.Router();
+      mountServiceHealth(r, { service: SERVICE });
+      this.app.use(`/api/${SERVICE}/v${GATEWAY_VERSION}`, r);
+      // Resulting routes:
+      //   GET /api/gateway/v1/health/live
+      //   GET /api/gateway/v1/health/ready
     }
+
     // 2) Edge logging — logs every inbound API hit before proxying
     this.app.use(edgeHitLogger());
+
+    // 3) Error logger — one line on 4xx/5xx after handlers/proxy
     this.app.use(responseErrorLogger(SERVICE));
 
-    // 3) Proxy LAST — origin swap only, path/query unchanged
+    // 4) Proxy LAST — origin swap only, path/query unchanged
     this.app.use("/api", makeProxy(this.svcConfig));
   }
 

@@ -11,7 +11,7 @@
 # ============================================================================
 set -euo pipefail
 
-URL="http://127.0.0.1:4000/api/gateway/v1/health"
+URL="http://127.0.0.1:4000/api/gateway/v1/health/live"
 
 # Always show exactly what we're hitting
 echo "→ GET ${URL}"

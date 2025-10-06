@@ -6,16 +6,19 @@
  *   - docs/adr/adr0002-svcfacilitator-minimal.md
  *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
  *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
+ *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
+ *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint vs ServiceBase)
  *
  * Purpose:
  * - Build and configure the Express app (routes, middleware).
- * - Health routes mounted via shared helper (no drift).
+ * - Health endpoints are mounted via shared helper ON A VERSIONED BASE:
+ *     /api/svcfacilitator/v1/health/{live,ready}
  * - Mount /api/svcfacilitator/{resolve,mirror} per URL convention.
  * - Expose versioned svcconfig read for gateway compatibility:
- *     GET /api/svcfacilitator/v1/svcconfig  → { mirror: {...} }
+ *     GET /api/svcfacilitator/v1/svcconfig  → { ok, mirror, services }
  *
  * Route order (SOP):
- * - Health first
+ * - Health first (versioned)
  * - Public API (resolve)
  * - Tooling (mirror)
  * - Versioned svcconfig read (compat)
@@ -43,8 +46,10 @@ export class SvcFacilitatorApp {
     this.app.disable("x-powered-by");
     this.app.use(express.json());
 
-    // 1) Health: /api/svcfacilitator/health/{live,ready}
-    mountServiceHealth(this.app, { service: SERVICE });
+    // 1) Health (versioned) — mount helper on a versioned base router
+    const v1 = express.Router();
+    mountServiceHealth(v1 as any, { service: SERVICE });
+    this.app.use("/api/svcfacilitator/v1", v1);
 
     // 2) Resolution API (public): /api/svcfacilitator/resolve
     this.app.use("/api/svcfacilitator", resolveRouter());
@@ -70,8 +75,7 @@ export class SvcFacilitatorApp {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     this.app.use(
       (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-        // Keep it loud until structured logger is wired here.
-        // (SOP says pino edge logs; we’ll swap this for global error middleware later.)
+        // Loud until structured logger is wired here per ADR-0015.
         // eslint-disable-next-line no-console
         console.error("[svcfacilitator:error]", err);
         res

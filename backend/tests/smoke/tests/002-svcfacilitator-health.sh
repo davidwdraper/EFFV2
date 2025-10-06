@@ -8,7 +8,7 @@
 # ============================================================================
 set -euo pipefail
 
-URL="http://127.0.0.1:4015/api/svcfacilitator/health/live"
+URL="http://127.0.0.1:4015/api/svcfacilitator/v1/health/live"
 
 # Always show exactly what we're hitting
 echo "→ GET ${URL}"

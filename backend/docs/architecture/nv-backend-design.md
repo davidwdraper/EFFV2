@@ -314,21 +314,7 @@ Copy code
 
 **When starting a new session, paste the following:**
 
-1. **This document** (latest version).
-2. **Active Work Pointer:** “We’re on Chapter 4 → Step X.”
-3. **Service in focus:** `gateway | auth | user | svcfacilitator`.
-4. **Smoke snippet (if failing):** paste the last failing test output.
-5. **Only the files we’ll touch next** (full content, with path-on-line-1):
-   - `// backend/services/shared/src/bootstrap/ServiceBase.ts` (old) → to be renamed
-   - `// backend/services/shared/src/bootstrap/ServiceEntrypoint.ts` (NEW, after rename)
-   - `// backend/services/shared/src/base/ServiceBase.ts` (NEW)
-   - `// backend/services/shared/src/base/ControllerBase.ts` (extends ServiceBase)
-   - `// backend/services/gateway/src/app.ts`
-   - `// backend/services/gateway/src/routes/health.ts`
-   - `// backend/services/gateway/src/routes/proxy.ts`
-   - `// backend/services/shared/src/problem/problem.ts`
-   - `// backend/services/shared/src/middleware/requestId.ts` (if present)  
-     _(If any are unchanged, say “unchanged” to avoid paste bloat.)_
+We are starting off debugging the failure of svcfacilitator to fail a direct health call
 
 **Session rule:** I will propose an ADR or confirm an existing one **before** dropping a file.
 

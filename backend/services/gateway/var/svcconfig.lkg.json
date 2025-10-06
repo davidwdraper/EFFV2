@@ -1,0 +1,93 @@
+{
+  "savedAt": "2025-10-05T03:12:54.481Z",
+  "meta": {
+    "host": "US_C02C96F9MD6T",
+    "source": "facilitator"
+  },
+  "mirror": {
+    "audit@1": {
+      "slug": "audit",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "baseUrl": "http://127.0.0.1:4050",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "ofFSp6bDDkKF5d27e72SOxpS_-K1EJkGcRoP29wYRIg",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.206Z",
+      "updatedBy": "seed-script",
+      "notes": "Audit service"
+    },
+    "gateway@1": {
+      "slug": "gateway",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "baseUrl": "http://127.0.0.1:4000",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "8LwWtHKzCh8OYy2YdYax9RIplK2Xf-2zBNKBWavhELg",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.182Z",
+      "updatedBy": "seed-script",
+      "notes": "Gateway service config"
+    },
+    "auth@1": {
+      "slug": "auth",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "baseUrl": "http://127.0.0.1:4010",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "pU6MpyDYLpwfMzNgo2prq__VUhXUuwBYtMQ2BFRCxvg",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.197Z",
+      "updatedBy": "seed-script",
+      "notes": "Auth service"
+    },
+    "user@1": {
+      "slug": "user",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "baseUrl": "http://127.0.0.1:4020",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "hpQL7cFPFz4Nst2DDLZH_z4C0ZcGDQh6eqzPzHcuZKk",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.200Z",
+      "updatedBy": "seed-script",
+      "notes": "User service"
+    },
+    "act@1": {
+      "slug": "act",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "baseUrl": "http://127.0.0.1:4030",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "esesUQFGqhxKZOXwB7nnivkJyfnlzncfhsE7ahTsWS4",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.202Z",
+      "updatedBy": "seed-script",
+      "notes": "Act service"
+    },
+    "geo@1": {
+      "slug": "geo",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "baseUrl": "http://127.0.0.1:4040",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "_ESjxtjMXpuakX3p6jUEj7822pMPYWOStl2VsHQfe5w",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.204Z",
+      "updatedBy": "seed-script",
+      "notes": "Geo service"
+    }
+  }
+}

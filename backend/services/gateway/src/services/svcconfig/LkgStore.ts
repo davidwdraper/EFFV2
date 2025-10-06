@@ -5,36 +5,45 @@
  * - ADR-0012: Gateway SvcConfig (contract + LKG fallback)
  *
  * Purpose:
- * - Gateway-specific LKG store built on shared LkgStoreBase.
- * - Stores/loads the contract-clean mirror under the "mirror" key.
+ * - Gateway-specific LKG store with explicit env resolution, path logging, and safe R/W.
  *
- * Env:
- * - GATEWAY_SVCCONFIG_LKG_PATH  (optional) absolute or repo-root-relative JSON path
+ * Env precedence (service-local overrides root; final override is ENV_FILE-based loader):
+ * - 1) GATEWAY_SVCCONFIG_LKG_PATH
+ * - 2) SVCCONFIG_LKG_PATH
  *
  * Snapshot shape:
  * {
  *   "savedAt": "<ISO>",
+ *   "meta": { ... optional },
  *   "mirror": {
  *     "<slug>@<version>": { ...ServiceConfigRecordJSON }
  *   }
  * }
  */
 
+import fs from "fs";
+import path from "path";
+import os from "os";
+import { getLogger } from "@nv/shared/util/logger.provider";
+import { EnvLoader } from "@nv/shared/env/EnvLoader";
 import type { ServiceConfigRecordJSON } from "@nv/shared/contracts/svcconfig.contract";
 import {
   ServiceConfigRecord,
   svcKey,
 } from "@nv/shared/contracts/svcconfig.contract";
-import { LkgStoreBase } from "@nv/shared/lkg/LkgStoreBase";
 
 export type Mirror = Record<string, ServiceConfigRecordJSON>;
 
-/**
- * Normalize unknown JSON into a canonical Mirror using the OO contract.
- * - Ensures keys match payload (`slug@version`)
- * - Lowercases slug via the contract rules
- * - Drops invalid entries by throwing (caller catches in tryLoad)
- */
+const log = getLogger().bind({
+  slug: "gateway",
+  version: 1,
+  url: "/svcconfig/lkg",
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Mirror normalization / validation
+// ────────────────────────────────────────────────────────────────────────────
+
 function normalizeMirror(input: unknown): Mirror {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("mirror: expected object");
@@ -53,9 +62,7 @@ function normalizeMirror(input: unknown): Mirror {
   return out;
 }
 
-/** Optional additional invariants (kept minimal for now). */
 function validateMirror(m: Mirror): void {
-  // Allow empty; gateway may start with zero services in some dev setups.
   for (const [k, rec] of Object.entries(m)) {
     if (!/^https?:\/\//.test(rec.baseUrl)) {
       throw new Error(`mirror invalid baseUrl for ${k}`);
@@ -63,30 +70,222 @@ function validateMirror(m: Mirror): void {
   }
 }
 
-/**
- * GatewaySvcConfigLkgStore
- * - Thin, typed facade around LkgStoreBase for svcconfig mirror.
- */
-export class GatewaySvcConfigLkgStore extends LkgStoreBase<Mirror> {
-  constructor(opts?: { path?: string }) {
-    super({
-      envVarName: opts?.path ? undefined : "GATEWAY_SVCCONFIG_LKG_PATH",
-      defaultPath: opts?.path,
-      wrapKey: "mirror",
-      normalize: normalizeMirror,
-      validate: validateMirror,
-      logCtx: { slug: "gateway", version: 1, url: "/svcconfig/lkg" },
-    });
+// ────────────────────────────────────────────────────────────────────────────
+// Path resolution & filesystem helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+function resolveLkgPath(): { envKey: string; absolutePath: string } {
+  // Precedence: gateway-specific → shared
+  const keys = ["GATEWAY_SVCCONFIG_LKG_PATH", "SVCCONFIG_LKG_PATH"] as const;
+  let chosenKey: string | null = null;
+  let raw: string | null = null;
+
+  for (const k of keys) {
+    const v = (process.env[k] || "").trim();
+    if (v) {
+      chosenKey = k;
+      raw = v;
+      break;
+    }
   }
 
-  /** Convenience alias consistent with our callers. */
-  public loadMirror(): Mirror {
-    return this.load();
+  if (!chosenKey || !raw) {
+    const detail = {
+      tried: keys,
+      present: keys.map((k) => Boolean(process.env[k])),
+    };
+    throw new Error(
+      `LKG path env not set (expected one of ${keys.join(
+        ", "
+      )}) - detail=${JSON.stringify(detail)}`
+    );
   }
+
+  const base = (EnvLoader as any).findRepoRoot?.() ?? process.cwd();
+  const absolutePath = path.isAbsolute(raw) ? raw : path.join(base, raw);
+
+  return { envKey: chosenKey, absolutePath };
+}
+
+function ensureFileExists(filePath: string): void {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(filePath)) {
+    const payload = JSON.stringify(
+      {
+        savedAt: new Date().toISOString(),
+        meta: { host: os.hostname() },
+        mirror: {},
+      },
+      null,
+      2
+    );
+    const tmp = path.join(
+      dir,
+      `.gateway-lkg.${Date.now()}.${process.pid}.${Math.random()
+        .toString(36)
+        .slice(2)}.tmp`
+    );
+    fs.writeFileSync(tmp, payload, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(tmp, filePath);
+    try {
+      const dfd = fs.openSync(dir, "r");
+      fs.fsyncSync(dfd);
+      fs.closeSync(dfd);
+    } catch {
+      /* best-effort */
+    }
+    log.debug(
+      `GWY630 lkg_created ${JSON.stringify({
+        path: filePath,
+        reason: "auto_seed_empty",
+      })}`
+    );
+  }
+}
+
+function readJson(filePath: string): unknown {
+  const raw = fs.readFileSync(filePath, "utf8");
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`LKG parse error: ${String(e)} (${filePath})`);
+  }
+}
+
+function writeJsonAtomic(filePath: string, data: unknown): void {
+  const dir = path.dirname(filePath);
+  const tmp = path.join(
+    dir,
+    `.gateway-lkg.${Date.now()}.${process.pid}.${Math.random()
+      .toString(36)
+      .slice(2)}.tmp`
+  );
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  fs.renameSync(tmp, filePath);
+  try {
+    const dfd = fs.openSync(dir, "r");
+    fs.fsyncSync(dfd);
+    fs.closeSync(dfd);
+  } catch {
+    /* best-effort */
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// GatewaySvcConfigLkgStore (self-contained; no base class dependency)
+// ────────────────────────────────────────────────────────────────────────────
+
+export class GatewaySvcConfigLkgStore {
+  private readonly pathInfo: { envKey: string; absolutePath: string };
+
+  constructor(opts?: { path?: string }) {
+    if (opts?.path) {
+      const absolutePath = path.isAbsolute(opts.path)
+        ? opts.path
+        : path.join(
+            (EnvLoader as any).findRepoRoot?.() ?? process.cwd(),
+            opts.path
+          );
+      this.pathInfo = { envKey: "<inline_path>", absolutePath };
+    } else {
+      this.pathInfo = resolveLkgPath();
+    }
+
+    log.debug(
+      `GWY600 lkg_path_resolved ${JSON.stringify({
+        envKey: this.pathInfo.envKey,
+        path: this.pathInfo.absolutePath,
+      })}`
+    );
+
+    // Ensure directory+file exist (empty envelope) so reads never crash.
+    try {
+      ensureFileExists(this.pathInfo.absolutePath);
+      const st = fs.statSync(this.pathInfo.absolutePath);
+      log.debug(
+        `GWY610 lkg_ready ${JSON.stringify({
+          path: this.pathInfo.absolutePath,
+          mtime: st.mtime.toISOString(),
+        })}`
+      );
+    } catch (e) {
+      log.error(
+        `GWY620 lkg_init_fail ${JSON.stringify({
+          path: this.pathInfo.absolutePath,
+          error: String(e),
+        })}`
+      );
+      // Don't throw here; callers can still attempt to load and fail-fast later.
+    }
+  }
+
   public tryLoadMirror(): Mirror | null {
-    return this.tryLoad();
+    try {
+      const obj = readJson(this.pathInfo.absolutePath) as any;
+      const normalized = normalizeMirror(obj?.mirror);
+      validateMirror(normalized);
+      const count = Object.keys(normalized).length;
+      log.debug(
+        `GWY640 lkg_load_ok ${JSON.stringify({
+          path: this.pathInfo.absolutePath,
+          count,
+        })}`
+      );
+      return normalized;
+    } catch (e) {
+      log.warn(
+        `GWY621 lkg_load_fail ${JSON.stringify({
+          path: this.pathInfo.absolutePath,
+          error: String(e),
+        })}`
+      );
+      return null;
+    }
   }
-  public saveMirror(m: Mirror, meta?: Record<string, unknown>): void {
-    this.save(m, meta);
+
+  public loadMirror(): Mirror {
+    const m = this.tryLoadMirror();
+    if (!m) {
+      throw new Error(
+        `LKG missing or invalid at ${this.pathInfo.absolutePath} (env=${this.pathInfo.envKey})`
+      );
+    }
+    return m;
+  }
+
+  public saveMirror(mirror: Mirror, meta?: Record<string, unknown>): void {
+    const payload = {
+      savedAt: new Date().toISOString(),
+      meta: { host: os.hostname(), ...(meta ?? {}) },
+      mirror,
+    };
+    try {
+      writeJsonAtomic(this.pathInfo.absolutePath, payload);
+      log.debug(
+        `GWY630 lkg_write_ok ${JSON.stringify({
+          path: this.pathInfo.absolutePath,
+          count: Object.keys(mirror).length,
+        })}`
+      );
+    } catch (e) {
+      log.warn(
+        `GWY631 lkg_write_fail ${JSON.stringify({
+          path: this.pathInfo.absolutePath,
+          error: String(e),
+        })}`
+      );
+    }
+  }
+
+  // Useful for diagnostics if needed.
+  public getResolvedPath(): string {
+    return this.pathInfo.absolutePath;
+  }
+  public getEnvKey(): string {
+    return this.pathInfo.envKey;
   }
 }

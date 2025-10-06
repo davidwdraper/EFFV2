@@ -48,17 +48,13 @@ export class GatewayApp {
     {
       const health = express.Router();
       mountServiceHealth(health, { service: SERVICE });
-      this.app.use(`/api/${SERVICE}/v${GATEWAY_VERSION}`, health);
+      this.app.use(`/api/${SERVICE}/v${GATEWAY_VERSION}/health`, health);
     }
-
-    // 2) (Optional) Any local gateway routes go here
-    // this.app.use(`/api/${SERVICE}/v${GATEWAY_VERSION}`, gatewayRouter());
-
-    // 3) Edge logging — logs every inbound API hit before proxying
+    // 2) Edge logging — logs every inbound API hit before proxying
     this.app.use(edgeHitLogger());
     this.app.use(responseErrorLogger(SERVICE));
 
-    // 4) Proxy LAST — origin swap only, path/query unchanged
+    // 3) Proxy LAST — origin swap only, path/query unchanged
     this.app.use("/api", makeProxy(this.svcConfig));
   }
 

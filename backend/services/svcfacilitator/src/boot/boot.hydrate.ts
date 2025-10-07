@@ -25,7 +25,7 @@ import {
   svcKey,
 } from "@nv/shared/contracts/svcconfig.contract";
 import { mirrorStore } from "../services/mirrorStore";
-import { getLogger } from "@nv/shared/util/logger.provider";
+import { getLogger } from "@nv/shared/logger/Logger";
 
 const log = getLogger().bind({
   slug: "svcfacilitator",

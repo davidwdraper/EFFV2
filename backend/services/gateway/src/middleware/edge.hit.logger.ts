@@ -10,12 +10,13 @@
  *   for every inbound /api/* request at the gateway,
  *   AFTER DoS/DDoS guards and BEFORE routing/auth.
  *
- * Env:
- * - LOG_EDGE  (optional) "1|true|on" enables edge logs (default: off)
+ * Note on toggles:
+ * - Logging enable is controlled centrally by the shared logger via
+ *   LOG_EDGE_ENABLED=true|false (default true). We don't double-toggle here.
  */
 
 import type { Request, Response, NextFunction } from "express";
-import { getLogger } from "@nv/shared/util/logger.provider";
+import { getLogger } from "@nv/shared/logger/Logger";
 
 /**
  * Resilient parser:
@@ -56,17 +57,17 @@ export function edgeHitLogger() {
 
     const { slug, version } = deriveSlugAndVersion(req.originalUrl);
 
-    // Use the injected process-wide logger if present (Bootstrap installs it),
-    // otherwise the provider falls back to the base logger.
-    const logger = getLogger().bind({
-      slug,
-      version,
-      requestId,
-      url: fullUrl,
-    });
-
-    // One line, controlled by LOG_EDGE.
-    logger.edge();
+    // Structured, single edge line (message required by logger.edge overload).
+    getLogger()
+      .bind({
+        slug,
+        version,
+        requestId,
+        url: fullUrl,
+        method: req.method,
+        component: "edge.hit.logger",
+      })
+      .edge("edge_hit");
 
     return next();
   };

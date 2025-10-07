@@ -24,7 +24,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { getLogger } from "@nv/shared/util/logger.provider";
+import { getLogger } from "@nv/shared/logger/Logger";
 import { EnvLoader } from "@nv/shared/env/EnvLoader";
 import type { ServiceConfigRecordJSON } from "@nv/shared/contracts/svcconfig.contract";
 import {

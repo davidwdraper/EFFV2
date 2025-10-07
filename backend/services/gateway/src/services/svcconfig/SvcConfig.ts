@@ -12,14 +12,14 @@
  * - Provide strict lookups for URL/port/record; no silent v1 fallback.
  *
  * Env (read)
- * - SVCFACILITATOR_BASE_URL        e.g., http://127.0.0.1:4015
+ * - SVCFACILITATOR_BASE_URL        e.g., http://127.0.0.1:4001
  * - SVCFACILITATOR_CONFIG_PATH     default: /api/svcfacilitator/v1/svcconfig
  * - GATEWAY_SVCCONFIG_LKG_PATH     optional JSON path for LKG snapshot
  */
 
 import assert from "assert";
 import { setTimeout as sleep } from "timers/promises";
-import { getLogger } from "@nv/shared/util/logger.provider";
+import { getLogger } from "@nv/shared/logger/Logger";
 import {
   ServiceConfigRecord,
   type ServiceConfigRecordJSON,
@@ -34,6 +34,7 @@ export class SvcConfig {
     slug: "gateway",
     version: 1,
     url: "/svcconfig",
+    component: "SvcConfig",
   });
 
   private readonly entries = new Map<string, ServiceConfigRecordJSON>();
@@ -140,12 +141,15 @@ export class SvcConfig {
     this.loadFromLkgOrThrow();
   }
 
-  /**
-   * Load only if empty; safe to call repeatedly by boot code.
-   */
+  /** Ensure svcconfig is loaded; loads from facilitator if empty. */
   public async ensureLoaded(): Promise<void> {
     if (this.entries.size > 0) return;
     await this.load();
+  }
+
+  /** Count how many service entries are present in the mirror. */
+  public count(): number {
+    return this.entries.size;
   }
 
   // ------------------------------ Lookups -----------------------------------
@@ -178,21 +182,13 @@ export class SvcConfig {
     }
   }
 
-  // Diagnostics / helpers expected elsewhere
+  // Diagnostics
   public has(slug: string, version: number): boolean {
     return this.entries.has(svcKey(slug, version));
   }
   public debugKeys(): string[] {
     return Array.from(this.entries.keys());
   }
-  /** New: simple counters for ready checks & diags */
-  public count(): number {
-    return this.entries.size;
-  }
-  public keys(): string[] {
-    return Array.from(this.entries.keys());
-  }
-  /** Optional: raw snapshot for debug */
   public snapshot(): ServiceConfigRecordJSON[] {
     return Array.from(this.entries.values());
   }
@@ -238,19 +234,18 @@ export class SvcConfig {
       throw new Error("mirror is empty after facilitator/LKG load");
     }
     for (const [key, e] of this.entries) {
-      assert(
-        e.slug && typeof e.slug === "string",
-        `[svcconfig] bad slug for ${key}`
-      );
-      assert(Number.isFinite(e.version), `[svcconfig] bad version for ${key}`);
-      assert(
-        /^https?:\/\//.test(e.baseUrl),
-        `[svcconfig] bad baseUrl for ${key}`
-      );
-      assert(
-        e.enabled === true || e.enabled === false,
-        `[svcconfig] enabled not boolean: ${key}`
-      );
+      if (!e.slug || typeof e.slug !== "string") {
+        throw new Error(`[svcconfig] bad slug for ${key}`);
+      }
+      if (!Number.isFinite(e.version as any)) {
+        throw new Error(`[svcconfig] bad version for ${key}`);
+      }
+      if (!/^https?:\/\//.test(e.baseUrl)) {
+        throw new Error(`[svcconfig] bad baseUrl for ${key}`);
+      }
+      if (!(e.enabled === true || e.enabled === false)) {
+        throw new Error(`[svcconfig] enabled not boolean: ${key}`);
+      }
     }
   }
 

@@ -29,7 +29,7 @@
 
 import { Router, type Request, type Response } from "express";
 import os from "os";
-import { ServiceBase } from "@nv/shared/base/RouterBase";
+import { ServiceBase } from "@nv/shared/base/ServiceBase";
 import { getSvcConfig } from "../services/svcconfig/SvcConfig";
 
 export class GatewayHealthRouter extends ServiceBase {

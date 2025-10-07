@@ -1,0 +1,44 @@
+# ADR-0019 — Class Routers via RouterBase
+
+**Status:** Accepted — 2025-10-06  
+**Owner:** Backend Core
+
+## Context
+
+Router logic across services diverged:
+
+- Some services (e.g., gateway, facilitator) used plain `express.Router()` files.
+- Others used ad-hoc router classes with inconsistent logging, no async wrapping, and no structured error patterns.
+- Logging, binding, and error handling were inconsistent — some routes missed logs entirely.
+
+## Decision
+
+Introduce a unified **RouterBase** class that all routers must extend.  
+This class extends `ServiceBase`, providing a consistent environment (`this.service`, `this.log`, `this.env`)  
+and standardized route configuration via `configure()` and `wrap()` helpers.
+
+### RouterBase API
+
+- `this.r`: internal `express.Router()` instance
+- `configure()`: abstract — subclasses register routes here
+- `router()`: returns the router for mounting
+- `wrap(fn)`: wraps async route handlers for error safety and structured logging
+- `this.log`: structured logger with `service` and `component: "Router"` context
+
+### Pattern
+
+Every router class:
+
+```ts
+export class MyRouter extends RouterBase {
+  protected configure(): void {
+    this.r.get("/things/:id", this.wrap(this.getThing));
+  }
+
+  private async getThing(req: Request, res: Response) {
+    const id = req.params.id;
+    const data = await this.repo.find(id);
+    res.json({ ok: true, data });
+  }
+}
+```

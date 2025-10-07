@@ -1,19 +1,21 @@
 // backend/services/svcfacilitator/src/controllers/resolve.controller.ts
 /**
+ * NowVibin (NV)
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0010 (Resolve API — fixed read contract)
+ *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
  *
  * Purpose:
  * - Resolve "<slug>@<version>" to a canonical ServiceConfigRecord JSON.
- * - Keeps routes thin; all logging/envelopes flow through BaseController.
+ * - Keeps routes thin; shared logging/envelopes flow through ControllerBase.
  */
 
 import {
-  BaseController,
+  ControllerBase,
   type HandlerResult,
-} from "@nv/shared/controllers/base.controller";
+} from "@nv/shared/base/ControllerBase";
 import {
   ServiceConfigRecord,
   svcKey,
@@ -35,9 +37,9 @@ function pickRecordByKey(key: string): unknown | undefined {
   return raw ? raw[key] : undefined;
 }
 
-export class ResolveController extends BaseController {
+export class ResolveController extends ControllerBase {
   constructor() {
-    super("svcfacilitator");
+    super({ service: "svcfacilitator" });
   }
 
   /** GET /resolve?key=<slug@version> */

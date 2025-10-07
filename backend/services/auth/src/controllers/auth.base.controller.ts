@@ -1,41 +1,43 @@
 // backend/services/auth/src/controllers/auth.base.controller.ts
 /**
+ * NowVibin (NV)
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0004 (Auth Service Skeleton — no minting)
  *   - ADR-0007 (Non-gateway S2S via svcfacilitator + TTL cache) — encapsulated inside shared SvcClient
+ *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase → ControllerBase)
  *
  * Purpose:
  * - Auth layer base controller.
- * - Extends shared BaseController for envelope handling.
+ * - Extends shared ControllerBase (logger/env + ok/fail envelopes).
  * - Centralizes S2S calls to the User service for all auth actions.
  *
  * Notes:
  * - For ALL auth endpoints (create/signon/changepassword), the User service is called.
- * - Controllers have ZERO knowledge of svcfacilitator/resolvers; shared SvcClient handles it.
+ * - Controllers have ZERO knowledge of svcfacilitator; shared SvcClient handles it.
  * - PATHS (aligned to User service):
- *     - Create user (CRUD):        PUT  /api/user/v1/create          ← use callUser("create", …, { method: "PUT" })
- *     - Signon (non-CRUD):         POST /api/user/v1/signon          ← via callUserAuth("signon", …)
- *     - Change password (non-CRUD):POST /api/user/v1/changepassword  ← via callUserAuth("changepassword", …)
+ *     - Create user (CRUD):        PUT  /api/user/v1/create
+ *     - Signon (non-CRUD):         POST /api/user/v1/signon
+ *     - Change password (non-CRUD):POST /api/user/v1/changepassword
  *
  * Env (used):
- * - SVC_NAME           (recommended) service identity used in envelopes/headers
- * - S2S_TIMEOUT_MS     (optional) S2S HTTP timeout; default 5000 (applied in shared client)
+ * - SVC_NAME        (recommended) service identity used in envelopes/headers
+ * - S2S_TIMEOUT_MS  (optional) S2S HTTP timeout; default 5000 (applied in shared client)
  */
 
-import { BaseController } from "@nv/shared/controllers/base.controller";
+import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import type { SvcResponse } from "@nv/shared/svc/types";
-import { getSvcClient } from "@nv/shared/svc/client"; // no barrels/shims
+import { getSvcClient } from "@nv/shared/svc/client"; // keep: no barrels/shims
 
 // S2S target: always the User service for auth flows.
 const S2S_SLUG = "user" as const;
 
 export type AuthAction = "create" | "signon" | "changepassword";
 
-export abstract class AuthControllerBase extends BaseController {
+export abstract class AuthControllerBase extends ControllerBase {
   protected constructor() {
-    super((process.env.SVC_NAME ?? "").trim());
+    super({ service: (process.env.SVC_NAME ?? "").trim() || "auth" });
   }
 
   /** Shared SvcClient accessor (lazy singleton from shared; facilitator hidden). */
@@ -63,6 +65,7 @@ export abstract class AuthControllerBase extends BaseController {
   ): Promise<SvcResponse<TRes>> {
     const version = opts.version ?? 1;
     const path = `/api/${S2S_SLUG}/v${version}/${subpath.replace(/^\/+/, "")}`;
+
     return this.client.call<TRes>({
       slug: S2S_SLUG,
       version,

@@ -1,15 +1,9 @@
+// backend/services/user/tsconfig.json
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "composite": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "emitDeclarationOnly": false,
-
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/"],
-  "exclude": ["dist", "node_modules"]
+  "include": ["src/**/*"]
 }

@@ -5,6 +5,7 @@
  * - ADRs:
  *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
  *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
+ *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
  *
  * Purpose:
  * - Accept a pushed mirror from gateway, validate against the canonical contract,
@@ -21,10 +22,9 @@
  */
 
 import type { Request, Response } from "express";
-import fs from "fs";
-import path from "path";
 import os from "os";
 
+import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import { SvcReceiver } from "@nv/shared/svc/SvcReceiver";
 import { EnvLoader } from "@nv/shared/env/EnvLoader";
 import {
@@ -33,8 +33,12 @@ import {
 } from "@nv/shared/contracts/svcconfig.contract";
 import { mirrorStore } from "../services/mirrorStore";
 
-export class MirrorController {
+export class MirrorController extends ControllerBase {
   private readonly rx = new SvcReceiver("svcfacilitator");
+
+  constructor() {
+    super({ service: "svcfacilitator" });
+  }
 
   public async mirrorLoad(req: Request, res: Response): Promise<void> {
     await this.rx.receive(
@@ -92,23 +96,10 @@ export class MirrorController {
         // 2) Swap in-memory copy
         mirrorStore.setMirror(normalized);
 
-        // 3) Persist LKG atomically
+        // 3) Persist LKG atomically (moved shared bits to ControllerBase)
         try {
           const lkgPath = EnvLoader.requireEnv("SVCCONFIG_LKG_PATH");
-          const resolvedPath = path.isAbsolute(lkgPath)
-            ? lkgPath
-            : path.join(EnvLoader.findRepoRoot?.() ?? process.cwd(), lkgPath);
-
-          // Ensure directory exists
-          fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
-
-          // Write atomically: tmp → rename
-          const tmpFile = path.join(
-            path.dirname(resolvedPath),
-            `.svcfacilitator-mirror.${Date.now()}.${process.pid}.${Math.random()
-              .toString(36)
-              .slice(2)}.tmp`
-          );
+          const resolvedPath = this.resolveRepoPath(lkgPath);
 
           const payload = JSON.stringify(
             {
@@ -120,18 +111,9 @@ export class MirrorController {
             2
           );
 
-          fs.writeFileSync(tmpFile, payload, { encoding: "utf8", mode: 0o600 });
-          fs.renameSync(tmpFile, resolvedPath);
-          // Best-effort: fsync the directory to reduce rename loss on crash (optional, macOS-safe)
-          try {
-            const dirFd = fs.openSync(path.dirname(resolvedPath), "r");
-            fs.fsyncSync(dirFd);
-            fs.closeSync(dirFd);
-          } catch {
-            /* non-fatal */
-          }
+          this.writeFileAtomic(resolvedPath, payload, ".svcfacilitator-mirror");
         } catch (e) {
-          // Failure to persist LKG should not block live operation, but we report it.
+          // Failure to persist LKG should not block live operation, but report it.
           return {
             status: 200, // accept the mirror to keep system live
             body: {

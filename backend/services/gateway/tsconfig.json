@@ -1,10 +1,9 @@
-// backend/services/gateway/tsconfig.json  (SERVICE — THIN, IDENTICAL SHAPE)
+// backend/services/svcfacilitator/tsconfig.json
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src"],
-  "exclude": ["dist", "node_modules"]
+  "include": ["src/**/*"]
 }

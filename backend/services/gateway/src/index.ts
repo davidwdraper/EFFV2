@@ -1,29 +1,32 @@
 // backend/services/gateway/src/index.ts
-import { ServiceBase } from "@nv/shared/bootstrap/ServiceBase";
-import { log } from "@nv/shared/util/Logger";
-import { getLogger } from "@nv/shared/util/logger.provider";
+/**
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADR-0001 (Gateway-Embedded SvcConfig mirror)
+ * - ADR-0014 (Base Hierarchy — ServiceEntrypoint vs ServiceBase)
+ *
+ * Purpose:
+ * - Start the Gateway service.
+ * - Let GatewayApp warm its SvcConfig internally; no poking internals here.
+ *
+ * Notes:
+ * - ServiceEntrypointOptions in your tree does NOT accept `portEnv` or `port`.
+ *   It resolves PORT internally. Keep options minimal to avoid type drift.
+ */
+
+import { ServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
 import { GatewayApp } from "./app";
-import { getSvcConfig } from "./services/svcconfig/SvcConfig"; // ← direct, no barrels
 
-const svcName = (process.env.SVC_NAME || "").trim();
-if (!svcName) {
-  log
-    .bind({ slug: "gateway", version: 1, url: "/startup" })
-    .error("fatal_missing_env - SVC_NAME is required but not set");
-  process.exit(1);
+async function main(): Promise<void> {
+  const app = new GatewayApp();
+
+  await new ServiceEntrypoint({
+    service: "gateway",
+  }).run(() => app.instance);
 }
 
-class Main extends ServiceBase {
-  protected override async preStart(): Promise<void> {
-    await getSvcConfig().load();
-  }
-  protected override buildApp() {
-    return new GatewayApp().instance;
-  }
-}
-
-new Main(svcName, { logVersion: 1 }).run().catch((err) => {
-  const l = getLogger().bind({ slug: svcName, version: 1, url: "/main" });
-  l.error(`boot_failed - ${String(err)}`);
+main().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error("fatal gateway startup", err);
   process.exit(1);
 });

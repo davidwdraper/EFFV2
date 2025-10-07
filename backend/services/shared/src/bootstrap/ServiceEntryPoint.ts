@@ -1,3 +1,4 @@
+// backend/services/shared/src/bootstrap/ServiceEntrypoint.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -12,12 +13,12 @@
  *
  * Key difference from old ServiceBase:
  * - No inheritance. This is a self-contained runner.
- * - Calls setRootLogger() once; no logger.provider mutations.
+ * - No root logger mutation with a bound logger (avoids recursion).
  */
 
 import type { Express } from "express";
 import { Bootstrap, type BootstrapOptions } from "./Bootstrap";
-import { setRootLogger } from "../logger/Logger";
+// ❌ remove: import { setRootLogger } from "../logger/Logger";
 
 export type ServiceEntrypointOptions = Omit<
   BootstrapOptions,
@@ -56,7 +57,7 @@ export class ServiceEntrypoint {
       loadEnvFiles: this.opts.loadEnvFiles,
       logContext: this.opts.logContext,
       preStart: async () => {
-        setRootLogger(boot.logger);
+        // ❌ do not setRootLogger(boot.logger) — boot.logger is an IBoundLogger
         const log = boot.logger.bind({
           slug: this.service,
           version: this.opts.logVersion ?? 1,
@@ -86,7 +87,9 @@ export class ServiceEntrypoint {
       },
     });
 
-    setRootLogger(boot.logger);
+    // ❌ remove second root set (caused recursion with BoundLogger)
+    // setRootLogger(boot.logger);
+
     await boot.run(buildApp);
   }
 }

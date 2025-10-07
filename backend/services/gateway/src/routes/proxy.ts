@@ -3,9 +3,9 @@
  * Gateway Proxy (port-only swap; versioned everything incl. health)
  *
  * SOP:
- * - All proxied routes use: /api/<slug>/v<major>/...
+ * - Proxied routes use: /api/<slug>/v<major>/...
  * - Health is VERSIONED: /api/<slug>/v<major>/health/...
- * - Gateway's own health stays local at /api/gateway/health/...
+ * - Gateway's own health stays local at /api/gateway/v1/health/...
  *
  * Behavior:
  * - Never proxy /api/gateway/... (handled locally).
@@ -26,8 +26,6 @@ const SVC_NAME = (process.env.SVC_NAME || "gateway").trim() || "gateway";
 function getInboundHostParts(req: Request): { hostname: string } {
   const host = (req.get("host") || "").trim();
   if (!host) return { hostname: "127.0.0.1" };
-  // strip port if present; we ignore it because we’ll replace with targetPort
-  // (host may include IPv6 like [::1]; keep it intact minus :port)
   const idx = host.lastIndexOf(":");
   if (idx > 0 && !host.endsWith("]")) return { hostname: host.slice(0, idx) };
   return { hostname: host };
@@ -49,6 +47,47 @@ function extractPortFromBaseUrl(baseUrl: string): number {
   return u.protocol === "https:" ? 443 : 80;
 }
 
+function composeKey(slug: string, version: number): string {
+  return `${slug.toLowerCase()}@${version}`;
+}
+
+function resolvePort(svccfg: unknown, slug: string, version: number): number {
+  const key = composeKey(slug, version);
+
+  if (!svccfg) {
+    throw new Error("[svcconfig] not initialized");
+  }
+
+  const cfg = svccfg as any;
+
+  // Try a few common access patterns in priority order
+  if (typeof cfg.getPortFromSlug === "function") {
+    const p = cfg.getPortFromSlug(slug, version);
+    if (typeof p === "number") return p;
+    if (typeof p === "string") return extractPortFromBaseUrl(p);
+  }
+
+  if (typeof cfg.getUrlFromSlug === "function") {
+    const url = cfg.getUrlFromSlug(slug, version);
+    if (typeof url === "string") return extractPortFromBaseUrl(url);
+  }
+
+  if (typeof cfg.get === "function") {
+    const rec = cfg.get(key);
+    if (rec?.baseUrl) return extractPortFromBaseUrl(String(rec.baseUrl));
+    if (typeof rec?.port === "number") return rec.port;
+  }
+
+  if (cfg.mirror && typeof cfg.mirror === "object") {
+    const rec = cfg.mirror[key];
+    if (rec?.baseUrl) return extractPortFromBaseUrl(String(rec.baseUrl));
+    if (typeof rec?.port === "number") return rec.port;
+  }
+
+  // Fallthrough → unknown service
+  throw new Error(`[svcconfig] Unknown service: ${key}`);
+}
+
 // Main -----------------------------------------------------------------------
 
 export function makeProxy(svccfg: SvcConfig) {
@@ -67,7 +106,6 @@ export function makeProxy(svccfg: SvcConfig) {
       version = addr.version;
     } catch {
       // If it looks like an API path but is missing version, return 400.
-      // Accept only /api/<slug>/v<major>/... for proxied routes now.
       const m = originalUrl.match(/^\/api\/([^/]+)(?:\/|$)/i);
       if (m && m[1] && m[1].toLowerCase() !== "gateway") {
         return res.status(400).json({
@@ -83,7 +121,7 @@ export function makeProxy(svccfg: SvcConfig) {
       return next();
     }
 
-    if (!slug || slug === "gateway") return next();
+    if (!slug || slug.toLowerCase() === "gateway") return next();
     if (version == null) {
       return res.status(400).json({
         ok: false,
@@ -99,18 +137,17 @@ export function makeProxy(svccfg: SvcConfig) {
     // Resolve target port from svcconfig using <slug>@<version>
     let targetPort: number;
     try {
-      // If you have getPortFromSlug use it; otherwise extract from URL.
-      const base = (svccfg as any).getPortFromSlug
-        ? (svccfg as any).getPortFromSlug(slug, version)
-        : svccfg.getUrlFromSlug(slug, version);
-
-      targetPort =
-        typeof base === "number" ? base : extractPortFromBaseUrl(String(base));
+      targetPort = resolvePort(svccfg, slug, version);
     } catch (e: any) {
+      const key = composeKey(slug, version);
       return res.status(502).json({
         ok: false,
         service: SVC_NAME,
-        data: { status: "bad_gateway", detail: String(e?.message || e) },
+        data: {
+          status: "bad_gateway",
+          detail:
+            String(e?.message || e) || `[svcconfig] resolve failed for ${key}`,
+        },
       });
     }
 
@@ -124,7 +161,6 @@ export function makeProxy(svccfg: SvcConfig) {
 // Forwarder ------------------------------------------------------------------
 
 async function forward(upstream: string, req: Request, res: Response) {
-  // Build outbound headers: strip Authorization & Host
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
     if (v == null) continue;
@@ -135,7 +171,6 @@ async function forward(upstream: string, req: Request, res: Response) {
   headers["x-service-name"] = SVC_NAME;
   headers["accept"] = headers["accept"] || "application/json";
 
-  // Body (JSON if applicable)
   let body: BodyInit | undefined;
   if (!["GET", "HEAD"].includes(req.method)) {
     if (req.is("application/json") && typeof req.body === "object") {

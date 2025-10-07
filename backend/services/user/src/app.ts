@@ -3,60 +3,56 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - docs/adr/00xx-user-service-skeleton.md (TBD)
+ *   - ADR-0013 (Versioned Health Envelope & Routes)
+ *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint → AppBase → ServiceBase)
  *
  * Purpose:
- * - Build and configure the User app.
- * - Expose ONLY unversioned health: /api/<SVC_NAME>/health/{live,ready}
- * - Mount versioned APIs under /api/<SVC_NAME>/v1
+ * - User service on AppBase.
+ * - **Versioned** health at /api/<SVC_NAME>/v1/health/{live,ready}.
+ * - Versioned APIs mounted under /api/<SVC_NAME>/v1.
  *
- * Notes:
- * - SVC_NAME must come from env (no hard-coding “user”).
- * - S2S-only endpoints (create/signon/changepassword) are mounted via userAuthRouter().
- * - CRUD routes (read/update/delete) are mounted via usersCrudRouter(); CREATE is excluded here.
+ * Note:
+ * - We fix SVC_NAME to "user" (mirrors Auth’s pattern) to avoid env-load
+ *   timing issues—Bootstrap loads .env after AppBase ctor. If you later want
+ *   env-driven names, wire them at the ServiceEntrypoint and pass into AppBase.
  */
 
-import type { Express } from "express";
-import express = require("express");
-import { mountServiceHealth } from "@nv/shared/health/mount";
+import type { Request, Response, NextFunction } from "express";
+import { AppBase } from "@nv/shared/base/AppBase";
+import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 import { userAuthRouter } from "./routes/s2s.auth.routes";
 import { usersCrudRouter } from "./routes/users.crud.routes";
-import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 
-function getSvcName(): string {
-  const n = process.env.SVC_NAME?.trim();
-  if (!n) throw new Error("SVC_NAME is required but not set");
-  return n;
-}
+const SERVICE = "user";
 
-export class UserApp {
-  private readonly app: Express;
-
+export class UserApp extends AppBase {
   constructor() {
-    this.app = express();
-    this.configure();
+    super({ service: SERVICE });
   }
 
-  private configure(): void {
-    const svc = getSvcName();
+  protected configure(): void {
+    const baseV1 = `/api/${this.service}/v1`;
 
-    this.app.disable("x-powered-by");
-    this.app.use(express.json());
+    // 1) Versioned health (exact match with Auth pattern)
+    this.mountVersionedHealth(baseV1);
 
-    // Health (unversioned) — /api/<SVC_NAME>/health/{live,ready}
-    mountServiceHealth(this.app, { service: svc, base: `/api/${svc}/health` });
+    // 2) One-line response error logger
+    this.app.use(responseErrorLogger(this.service));
 
-    this.app.use(responseErrorLogger("user"));
+    // 3) Versioned APIs
+    this.app.use(baseV1, userAuthRouter()); // S2S endpoints
+    this.app.use(baseV1, usersCrudRouter()); // CRUD (no create here)
 
-    // Versioned APIs — mounted under /api/<SVC_NAME>/v1
-    // S2S-only endpoints from Auth (PUT /users, POST /signon, POST /changepassword)
-    this.app.use(`/api/${svc}/v1`, userAuthRouter());
-
-    // CRUD endpoints (GET/PATCH/DELETE /users/:id) — no create here
-    this.app.use(`/api/${svc}/v1`, usersCrudRouter());
-  }
-
-  public get instance(): Express {
-    return this.app;
+    // 4) Final JSON error handler (jq-safe)
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    this.app.use(
+      (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+        // eslint-disable-next-line no-console
+        console.error("[user:error]", err);
+        res
+          .status(500)
+          .json({ type: "about:blank", title: "Internal Server Error" });
+      }
+    );
   }
 }

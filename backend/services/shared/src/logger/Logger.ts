@@ -162,7 +162,10 @@ export function getLogger(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// BoundLogger (supports .bind(ctx)) — implements overloaded methods
+/**
+ * BoundLogger uses arrow functions for public methods to **capture `this`**,
+ * so calls like `const d = log.debug; d("msg")` remain safe.
+ */
 // ────────────────────────────────────────────────────────────────────────────
 
 class BoundLogger implements IBoundLogger {
@@ -182,9 +185,7 @@ class BoundLogger implements IBoundLogger {
   }
 
   // edge
-  public edge(msg: string, ...rest: unknown[]): void;
-  public edge(obj: Json, msg?: string, ...rest: unknown[]): void;
-  public edge(arg1: unknown, arg2?: unknown, ...rest: unknown[]): void {
+  public edge = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     const enabled =
       (process.env.LOG_EDGE_ENABLED ?? "true").toLowerCase() !== "false";
     if (!enabled) return;
@@ -193,47 +194,40 @@ class BoundLogger implements IBoundLogger {
         ? [{}, arg1]
         : [arg1 as Json, arg2 as string | undefined];
     const payload = this.merge(this.ctx, obj);
-    if (payload["category"] == null) (payload as any).category = "edge";
+    if ((payload as any)["category"] == null)
+      (payload as any).category = "edge";
     this.root().edge(payload, msg, ...rest);
-  }
+  };
 
   // info
-  public info(msg: string, ...rest: unknown[]): void;
-  public info(obj: Json, msg?: string, ...rest: unknown[]): void;
-  public info(arg1: unknown, arg2?: unknown, ...rest: unknown[]): void {
+  public info = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     const [obj, msg] =
       typeof arg1 === "string"
         ? [{}, arg1]
         : [arg1 as Json, arg2 as string | undefined];
     this.root().info(this.merge(this.ctx, obj), msg, ...rest);
-  }
+  };
 
   // warn
-  public warn(msg: string, ...rest: unknown[]): void;
-  public warn(obj: Json, msg?: string, ...rest: unknown[]): void;
-  public warn(arg1: unknown, arg2?: unknown, ...rest: unknown[]): void {
+  public warn = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     const [obj, msg] =
       typeof arg1 === "string"
         ? [{}, arg1]
         : [arg1 as Json, arg2 as string | undefined];
     this.root().warn(this.merge(this.ctx, obj), msg, ...rest);
-  }
+  };
 
   // error
-  public error(msg: string, ...rest: unknown[]): void;
-  public error(obj: Json, msg?: string, ...rest: unknown[]): void;
-  public error(arg1: unknown, arg2?: unknown, ...rest: unknown[]): void {
+  public error = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     const [obj, msg] =
       typeof arg1 === "string"
         ? [{}, arg1]
         : [arg1 as Json, arg2 as string | undefined];
     this.root().error(this.merge(this.ctx, obj), msg, ...rest);
-  }
+  };
 
   // debug (adds origin)
-  public debug(msg: string, ...rest: unknown[]): void;
-  public debug(obj: Json, msg?: string, ...rest: unknown[]): void;
-  public debug(arg1: unknown, arg2?: unknown, ...rest: unknown[]): void {
+  public debug = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     const includeOrigin =
       (process.env.LOG_DEBUG_ORIGIN ?? "true").toLowerCase() !== "false";
     const [obj, msg] =
@@ -245,7 +239,7 @@ class BoundLogger implements IBoundLogger {
       ? { ...base, origin: captureOrigin(2) }
       : base;
     this.root().debug(payload, msg, ...rest);
-  }
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

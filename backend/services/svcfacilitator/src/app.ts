@@ -1,5 +1,6 @@
 // backend/services/svcfacilitator/src/app.ts
 /**
+ * NowVibin (NV)
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
@@ -7,49 +8,40 @@
  *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
  *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
  *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
- *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint vs ServiceBase)
+ *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint vs ServiceBase → AppBase)
+ *   - ADR-0015 (Structured Logger with bind() Context)
  *
  * Purpose:
- * - Build and configure the Express app (routes, middleware).
- * - Health endpoints are mounted via shared helper ON A VERSIONED BASE:
+ * - OO refactor: SvcFacilitatorApp extends AppBase → ServiceBase.
+ * - Mount **versioned** health via shared helper at:
  *     /api/svcfacilitator/v1/health/{live,ready}
- * - Mount /api/svcfacilitator/{resolve,mirror} per URL convention.
- * - Expose versioned svcconfig read for gateway compatibility:
- *     GET /api/svcfacilitator/v1/svcconfig  → { ok, mirror, services }
+ * - Keep existing public/tooling routes and versioned svcconfig read.
  *
  * Route order (SOP):
  * - Health first (versioned)
  * - Public API (resolve)
  * - Tooling (mirror)
  * - Versioned svcconfig read (compat)
- * - Global error handler
+ * - Global error handler (jq-safe)
  */
 
-import type { Express, Request, Response, NextFunction } from "express";
-import express = require("express");
-import { mountServiceHealth } from "@nv/shared/health/mount";
+import type { Request, Response, NextFunction } from "express";
+import { AppBase } from "@nv/shared/base/AppBase";
 import { resolveRouter } from "./routes/resolve";
 import { mirrorRouter } from "./routes/mirror";
 import { mirrorStore } from "./services/mirrorStore";
 
 const SERVICE = "svcfacilitator";
 
-export class SvcFacilitatorApp {
-  private readonly app: Express;
-
+export class SvcFacilitatorApp extends AppBase {
   constructor() {
-    this.app = express();
-    this.configure();
+    super({ service: SERVICE });
   }
 
-  private configure(): void {
-    this.app.disable("x-powered-by");
-    this.app.use(express.json());
-
-    // 1) Health (versioned) — mount helper on a versioned base router
-    const v1 = express.Router();
-    mountServiceHealth(v1 as any, { service: SERVICE });
-    this.app.use("/api/svcfacilitator/v1", v1);
+  /** Subclass hook from AppBase — mount routes/middleware here. */
+  protected configure(): void {
+    // 1) Versioned health per ADR-0013
+    this.mountVersionedHealth("/api/svcfacilitator/v1");
 
     // 2) Resolution API (public): /api/svcfacilitator/resolve
     this.app.use("/api/svcfacilitator", resolveRouter());
@@ -75,7 +67,7 @@ export class SvcFacilitatorApp {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     this.app.use(
       (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-        // Loud until structured logger is wired here per ADR-0015.
+        // Loud until structured logger wired here per ADR-0015.
         // eslint-disable-next-line no-console
         console.error("[svcfacilitator:error]", err);
         res
@@ -83,9 +75,5 @@ export class SvcFacilitatorApp {
           .json({ type: "about:blank", title: "Internal Server Error" });
       }
     );
-  }
-
-  public get instance(): Express {
-    return this.app;
   }
 }

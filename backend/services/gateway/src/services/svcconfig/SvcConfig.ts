@@ -12,7 +12,7 @@
  * - Provide strict lookups for URL/port/record; no silent v1 fallback.
  *
  * Env (read)
- * - SVCFACILITATOR_BASE_URL        e.g., http://127.0.0.1:4001
+ * - SVCFACILITATOR_BASE_URL        e.g., http://127.0.0.1:4015
  * - SVCFACILITATOR_CONFIG_PATH     default: /api/svcfacilitator/v1/svcconfig
  * - GATEWAY_SVCCONFIG_LKG_PATH     optional JSON path for LKG snapshot
  */
@@ -140,6 +140,14 @@ export class SvcConfig {
     this.loadFromLkgOrThrow();
   }
 
+  /**
+   * Load only if empty; safe to call repeatedly by boot code.
+   */
+  public async ensureLoaded(): Promise<void> {
+    if (this.entries.size > 0) return;
+    await this.load();
+  }
+
   // ------------------------------ Lookups -----------------------------------
 
   /** Contract-clean record for <slug>@<version>. Throws if missing or disabled. */
@@ -170,13 +178,21 @@ export class SvcConfig {
     }
   }
 
-  // Diagnostics
+  // Diagnostics / helpers expected elsewhere
   public has(slug: string, version: number): boolean {
     return this.entries.has(svcKey(slug, version));
   }
   public debugKeys(): string[] {
     return Array.from(this.entries.keys());
   }
+  /** New: simple counters for ready checks & diags */
+  public count(): number {
+    return this.entries.size;
+  }
+  public keys(): string[] {
+    return Array.from(this.entries.keys());
+  }
+  /** Optional: raw snapshot for debug */
   public snapshot(): ServiceConfigRecordJSON[] {
     return Array.from(this.entries.values());
   }

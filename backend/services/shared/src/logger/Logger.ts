@@ -17,6 +17,9 @@
  * Env Toggles:
  * - LOG_DEBUG_ORIGIN=true|false  (default true)
  * - LOG_EDGE_ENABLED=true|false  (default true)
+ *
+ * Change:
+ * - Print "***ERROR***" for error lines and "**WARN" for warnings (fallback console formatter).
  */
 
 type Json = Record<string, unknown>;
@@ -89,8 +92,13 @@ function writer(tag: "EDGE" | "INFO" | "DEBUG" | "WARN" | "ERROR") {
       : tag === "DEBUG"
       ? console.debug
       : console.log;
+
+  // Display tag per requirement
+  const displayTag =
+    tag === "ERROR" ? "***ERROR***" : tag === "WARN" ? "**WARN" : tag;
+
   return (obj: Json, msg?: string, ...rest: unknown[]) => {
-    const prefix = `${tag} ${tsLocal()}`;
+    const prefix = `${displayTag} ${tsLocal()}`;
     if (msg !== undefined) c(prefix, msg, obj, ...rest);
     else c(prefix, obj, ...rest);
   };

@@ -92,3 +92,7 @@
 - We’re building the new backend **a bit at a time**, starting with plumbing.
 - There is **no logging backend, audit, JWT, or user-auth** yet; auth password is **mock hashed**.
 - The last backend bogged down in refactors/regressions. Now: **write a few files, then test.** Baby steps.
+
+Addendum:
+
+- Never add logic for backwards compatability! We're greenfield. We do it right everytime. It that requires a break, we break, then we fix. One code base, no convienience conditionals.

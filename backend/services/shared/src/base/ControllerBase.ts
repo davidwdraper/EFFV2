@@ -8,23 +8,30 @@
  *   - ADR-0015 (Structured Logger with bind() Context)
  *
  * Purpose:
- * - Base class for HTTP controllers.
- * - Inherits logger/env context from ServiceBase.
- * - Provides small, reusable utilities commonly needed by controllers.
- *
- * Notes:
- * - Keep focused: helpers here must be broadly useful across controllers.
+ * - Canonical base for all HTTP controllers.
+ * - Provides the `handle()` adapter for wrapping async controller logic.
+ * - Supplies consistent logging, context, and JSON envelope handling.
  */
 
 import fs from "fs";
 import path from "path";
-import type { Request } from "express";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { ServiceBase } from "./ServiceBase";
 
 export type HandlerResult = {
   status: number;
   body: unknown;
   headers?: Record<string, string>;
+};
+
+export type HandlerCtx = {
+  requestId: string;
+  method: string;
+  url: string;
+  headers: Record<string, unknown>;
+  params: Record<string, unknown>;
+  query: Record<string, unknown>;
+  body: unknown;
 };
 
 export abstract class ControllerBase extends ServiceBase {
@@ -36,19 +43,60 @@ export abstract class ControllerBase extends ServiceBase {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Request helpers
+  // Express adapter — canonical handle()
   // ────────────────────────────────────────────────────────────────────────────
 
-  /** Extract a request ID from headers (empty string if none). */
+  /**
+   * Turn an async `(ctx) => HandlerResult` into a standard Express handler.
+   * Handles JSON response writing, error logging, and context building.
+   */
+  public handle(
+    fn: (ctx: HandlerCtx) => Promise<HandlerResult> | HandlerResult
+  ): RequestHandler {
+    const log = this.bindLog({ kind: "http" });
+    return async (req: Request, res: Response, next: NextFunction) => {
+      const ctx = this.buildCtx(req);
+      try {
+        log.debug({ route: req.route?.path, method: req.method }, "ctrl_enter");
+        const result = await Promise.resolve(fn.call(this, ctx));
+        if (result?.headers) {
+          for (const [k, v] of Object.entries(result.headers))
+            res.setHeader(k, v);
+        }
+        res.status(result?.status ?? 200).json(result?.body ?? { ok: true });
+        log.debug({ status: res.statusCode }, "ctrl_exit");
+      } catch (err) {
+        log.error({ err: String(err) }, "ctrl_error");
+        next(err);
+      }
+    };
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Context + helpers
+  // ────────────────────────────────────────────────────────────────────────────
+
+  protected buildCtx(req: Request): HandlerCtx {
+    return {
+      requestId: this.getRequestIdFrom(req),
+      method: req.method,
+      url: req.originalUrl ?? req.url,
+      headers: req.headers as Record<string, unknown>,
+      params: (req.params ?? {}) as Record<string, unknown>,
+      query: (req.query ?? {}) as Record<string, unknown>,
+      body: req.body,
+    };
+  }
+
   protected getRequestIdFrom(req: Request): string {
     return String(req.get("x-request-id") ?? "").trim();
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Result helpers (SvcReceiver-compatible envelopes)
+  // Response helpers
   // ────────────────────────────────────────────────────────────────────────────
 
-  /** Success envelope for SvcReceiver-style handlers. */
+  /** Success envelope — used by controllers returning SvcReceiver-compatible results. */
   protected ok(
     status: number,
     data: unknown,
@@ -59,12 +107,12 @@ export abstract class ControllerBase extends ServiceBase {
       body: {
         ok: true,
         requestId,
-        ...(typeof data === "object" && data ? data : { data }),
+        ...(typeof data === "object" && data ? (data as object) : { data }),
       },
     };
   }
 
-  /** Error envelope for SvcReceiver-style handlers. */
+  /** Error envelope — canonical problem response. */
   protected fail(
     status: number,
     error: string,
@@ -75,25 +123,17 @@ export abstract class ControllerBase extends ServiceBase {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Filesystem helpers (atomic write; repo-relative path resolution)
+  // File utilities (atomic writes, repo-safe resolution)
   // ────────────────────────────────────────────────────────────────────────────
 
-  /** Ensure a directory exists (mkdir -p). */
   protected ensureDir(dirPath: string): void {
     fs.mkdirSync(dirPath, { recursive: true });
   }
 
-  /**
-   * Resolve a possibly repo-relative path to an absolute path.
-   * If `p` is absolute, return as-is; otherwise resolve from CWD (repo root in our processes).
-   */
   protected resolveRepoPath(p: string): string {
     return path.isAbsolute(p) ? p : path.join(process.cwd(), p);
   }
 
-  /**
-   * Atomically write text to a file: write to tmp in same dir → rename → fsync dir (best effort).
-   */
   protected writeFileAtomic(
     targetPath: string,
     contents: string,
@@ -101,18 +141,14 @@ export abstract class ControllerBase extends ServiceBase {
   ): void {
     const dir = path.dirname(targetPath);
     this.ensureDir(dir);
-
     const tmpFile = path.join(
       dir,
       `${tmpPrefix}.${Date.now()}.${process.pid}.${Math.random()
         .toString(36)
         .slice(2)}.tmp`
     );
-
     fs.writeFileSync(tmpFile, contents, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmpFile, targetPath);
-
-    // Best-effort durability of the rename (platform-tolerant)
     try {
       const fd = fs.openSync(dir, "r");
       fs.fsyncSync(fd);

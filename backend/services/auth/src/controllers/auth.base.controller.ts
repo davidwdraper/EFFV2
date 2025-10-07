@@ -5,34 +5,24 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0004 (Auth Service Skeleton — no minting)
- *   - ADR-0007 (Non-gateway S2S via svcfacilitator + TTL cache) — encapsulated inside shared SvcClient
- *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase → ControllerBase)
+ *   - ADR-0007 (Non-gateway S2S via svcfacilitator + TTL cache) — via shared SvcClient
+ *   - ADR-0014 (Base Hierarchy — ControllerBase extends ServiceBase)
  *
  * Purpose:
  * - Auth layer base controller.
- * - Extends shared ControllerBase (logger/env + ok/fail envelopes).
+ * - Extends shared ControllerBase (logger/env + ok/fail envelopes + handle()).
  * - Centralizes S2S calls to the User service for all auth actions.
- *
- * Notes:
- * - For ALL auth endpoints (create/signon/changepassword), the User service is called.
- * - Controllers have ZERO knowledge of svcfacilitator; shared SvcClient handles it.
- * - PATHS (aligned to User service):
- *     - Create user (CRUD):        PUT  /api/user/v1/create
- *     - Signon (non-CRUD):         POST /api/user/v1/signon
- *     - Change password (non-CRUD):POST /api/user/v1/changepassword
- *
- * Env (used):
- * - SVC_NAME        (recommended) service identity used in envelopes/headers
- * - S2S_TIMEOUT_MS  (optional) S2S HTTP timeout; default 5000 (applied in shared client)
+ * - Provides a single normalization helper for upstream SvcResponse.
  */
 
-import { ControllerBase } from "@nv/shared/base/ControllerBase";
+import {
+  ControllerBase,
+  type HandlerResult,
+} from "@nv/shared/base/ControllerBase";
 import type { SvcResponse } from "@nv/shared/svc/types";
-import { getSvcClient } from "@nv/shared/svc/client"; // keep: no barrels/shims
+import { getSvcClient } from "@nv/shared/svc/client"; // no barrels/shims
 
-// S2S target: always the User service for auth flows.
 const S2S_SLUG = "user" as const;
-
 export type AuthAction = "create" | "signon" | "changepassword";
 
 export abstract class AuthControllerBase extends ControllerBase {
@@ -46,11 +36,22 @@ export abstract class AuthControllerBase extends ControllerBase {
   }
 
   /**
-   * Helper: Generic call to the User service under an arbitrary subpath.
+   * Normalize any SvcResponse-like object to { status, body } for ControllerBase.handle().
+   * - Accepts shapes like { status, body } or { status, data } or any.
+   * - Falls back to 502 + the raw object if status/body missing.
+   */
+  protected fromUpstream<T = unknown>(
+    upstream: SvcResponse<T> | unknown
+  ): HandlerResult {
+    const u = upstream as any;
+    const status = typeof u?.status === "number" ? u.status : 502;
+    const payload = u?.body ?? u?.data ?? u;
+    return { status, body: payload };
+  }
+
+  /**
+   * Generic call to the User service under an arbitrary subpath.
    * Use this for CRUD-y calls like "create" (PUT /create).
-   *
-   * Example:
-   *   await this.callUser("create", body, { method: "PUT", requestId });
    */
   protected callUser<TReq, TRes = unknown>(
     subpath: string,
@@ -65,7 +66,6 @@ export abstract class AuthControllerBase extends ControllerBase {
   ): Promise<SvcResponse<TRes>> {
     const version = opts.version ?? 1;
     const path = `/api/${S2S_SLUG}/v${version}/${subpath.replace(/^\/+/, "")}`;
-
     return this.client.call<TRes>({
       slug: S2S_SLUG,
       version,
@@ -79,15 +79,10 @@ export abstract class AuthControllerBase extends ControllerBase {
   }
 
   /**
-   * Helper: Canonical User S2S paths for auth (non-CRUD) actions.
-   *
-   * Paths (fixed):
+   * Canonical User S2S paths for auth (non-CRUD) actions:
    *   - signon         → POST /api/user/v{version}/signon
    *   - changepassword → POST /api/user/v{version}/changepassword
-   *
-   * Note:
-   *   - "create" is handled via callUser("create", …, { method: "PUT" })
-   *     and NOT by this helper.
+   * ("create" is handled via callUser("create", …, { method: "PUT" }))
    */
   protected callUserAuth<TReq, TRes = unknown>(
     action: Extract<AuthAction, "signon" | "changepassword">,
@@ -101,17 +96,8 @@ export abstract class AuthControllerBase extends ControllerBase {
     } = {}
   ): Promise<SvcResponse<TRes>> {
     const version = opts.version ?? 1;
-
-    // Defaults for non-CRUD auth actions
-    const defaults: Record<"signon" | "changepassword", "POST"> = {
-      signon: "POST",
-      changepassword: "POST",
-    };
-    const method = (opts.method ?? defaults[action]) as any;
-
-    // No "/auth/" segment — paths are flat at the service root per SOP.
+    const method = (opts.method ?? "POST") as any;
     const path = `/api/${S2S_SLUG}/v${version}/${action}`;
-
     return this.client.call<TRes>({
       slug: S2S_SLUG,
       version,

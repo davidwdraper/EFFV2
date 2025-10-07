@@ -1,6 +1,9 @@
 {
-  "savedAt": "2025-10-07T20:41:46.107Z",
-  "requestId": "2107d2b1-5e3a-4a9f-ba1a-131a737aeca9",
+  "savedAt": "2025-10-07T23:18:10.695Z",
+  "requestId": "b9c005cb-0e29-42de-bf79-e5124f1fdb1c",
+  "rawCount": 8,
+  "activeCount": 8,
+  "invalidCount": 0,
   "mirror": {
     "audit@1": {
       "slug": "audit",
@@ -15,6 +18,20 @@
       "updatedAt": "2025-09-27T07:21:05.206Z",
       "updatedBy": "seed-script",
       "notes": "Audit service"
+    },
+    "log@1": {
+      "slug": "log",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "baseUrl": "http://127.0.0.1:4006",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "manual-seed-2025-10-07",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-20T04:12:39.658Z",
+      "updatedBy": "seed",
+      "notes": "Log service (required by gateway telemetry)"
     },
     "gateway@1": {
       "slug": "gateway",
@@ -85,6 +102,20 @@
       "updatedAt": "2025-09-27T07:21:05.204Z",
       "updatedBy": "seed-script",
       "notes": "Geo service"
+    },
+    "svcfacilitator@1": {
+      "slug": "svcfacilitator",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "baseUrl": "http://127.0.0.1:4015",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "manual-seed-2025-10-07",
+      "exposeHealth": true,
+      "updatedAt": "2025-10-07T00:00:00.000Z",
+      "updatedBy": "manual-seed",
+      "notes": "SvcFacilitator (dev)"
     }
   }
 }

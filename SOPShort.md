@@ -95,4 +95,4 @@
 
 Addendum:
 
-- Never add logic for backwards compatability! We're greenfield. We do it right everytime. It that requires a break, we break, then we fix. One code base, no convienience conditionals.
+- Never add logic for backwards compatibility! We're greenfield. We do it right every time. If it requires a break, we break, then we fix. One code base, no convenience conditionals.

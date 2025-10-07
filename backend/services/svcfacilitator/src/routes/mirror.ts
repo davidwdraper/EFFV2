@@ -6,6 +6,7 @@
  *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
  *   - ADR-0015 (Structured Logger with bind() Context)
  *   - ADR-0019 (Class Routers via RouterBase)
+ *   - ADR-0020 (SvcConfig Mirror & Push Design)
  *
  * Purpose:
  * - /mirror routes using RouterBase (class-based router with logging & guards).
@@ -17,25 +18,23 @@
 
 import type { Request, Response } from "express";
 import { RouterBase } from "@nv/shared/base/RouterBase";
-import { MirrorController } from "../controllers/mirror.controller";
+// NOTE: case-sensitive import to match the actual filename
+import { MirrorController } from "../controllers/MirrorController";
 
 export class MirrorRouter extends RouterBase {
   private readonly ctrl = new MirrorController();
 
   protected configure(): void {
+    this.router().post("/mirror/load", this.wrap(this.loadMirror)); // keep explicit prefix
+    // Back-compat path if you already mounted at /load previously:
     this.router().post("/load", this.wrap(this.loadMirror));
   }
 
   private async loadMirror(req: Request, res: Response): Promise<void> {
-    // Enforce canonical versioned path and correct slug
     if (!this.requireVersionedApiPath(req, res, "svcfacilitator")) return;
 
-    // Delegate to controller (controller returns JSON-friendly payload)
-    // If your controller currently writes directly to res, you can swap to:
-    //   return void this.ctrl.mirrorLoad(req, res);
     const data = await this.ctrl.mirrorLoad(req, res as any);
     if (!res.headersSent) {
-      // Standard envelope if controller returned data
       this.jsonOk(res, data ?? { status: "accepted" });
     }
   }

@@ -8,11 +8,13 @@
  *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
  *   - ADR-0013 (Versioned Health Envelope & Routes)
  *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint vs ServiceBase)
+ *   - ADR-0020 (SvcConfig Mirror & Push Design)
  *
  * Purpose:
  * - Composition-root entrypoint using shared ServiceEntrypoint (no inheritance).
  * - Pre-start hydrates the svcconfig mirror (DB → LKG fallback).
- * - No console.* — all logs via shared structured logger.
+ * - Immediately after hydration, run a LOUD audit comparing DB vs mirror counts
+ *   and reasons (disabled, proxying disabled, invalid schema).
  */
 
 import path from "path";
@@ -22,6 +24,7 @@ import { ServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
 import { getLogger } from "@nv/shared/logger/Logger";
 import { SvcFacilitatorApp } from "./app";
 import { preStartHydrateMirror } from "./boot/boot.hydrate";
+import { auditMirrorVsDb } from "./services/mirror.audit";
 
 const SERVICE = "svcfacilitator";
 const VERSION = 1;
@@ -30,10 +33,10 @@ async function main() {
   const entry = new ServiceEntrypoint({
     service: SERVICE,
     logVersion: VERSION,
-    // PORT is read via Bootstrap (PORT env var per SOP)
     preStart: async () => {
-      // hydrate mirror before listening
       await preStartHydrateMirror();
+      // Loud, non-fatal audit; logs INFO summary and WARN on mismatch.
+      await auditMirrorVsDb();
     },
   });
 
@@ -41,7 +44,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  // Safe fallback: structured logger (falls back to console if root not set yet)
   const log = getLogger().bind({
     slug: SERVICE,
     version: VERSION,

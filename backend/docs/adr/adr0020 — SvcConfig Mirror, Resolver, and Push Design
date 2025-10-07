@@ -1,0 +1,43 @@
+# ADR-0035 — SvcConfig Mirror, Resolver, and Push Design
+
+## Context
+
+The previous implementation of `svcconfig` within **SvcFacilitator** exposed a convenience
+endpoint (`/svcconfig` or `/svcconfig/list`) that doubled as both a diagnostic and a
+discovery endpoint. In practice, this allowed services to call the facilitator directly
+for discovery, bypassing their local cache and overloading the facilitator.
+
+This design also stripped `svcfacilitator@1` from the mirror, preventing the gateway
+from resolving its own facilitator health route without specialized code paths.
+The facilitator mirror itself was boot-time only, meaning changes in MongoDB were not
+propagated until a restart.
+
+The system needs a clean separation between:
+
+1. **Control plane discovery** (facilitator ↔ gateway),
+2. **Data plane resolution** (service → facilitator for per-slug lookups), and
+3. **Human-facing diagnostics** (convenience mirror endpoints).
+
+## Decision
+
+### 1. Single Source of Truth
+
+- **SvcFacilitator** is the _only_ service that reads from MongoDB’s `svcconfig` collection.
+- It maintains an in-memory **mirror** of all valid service configurations:
+  `{slug@version → { baseUrl, outboundApiPrefix, etag, … }}`.
+- **No service, including the gateway**, directly queries MongoDB for discovery data.
+
+### 2. Mirror Lifecycle
+
+- On startup, facilitator loads the **entire collection** unfiltered — including
+  `svcfacilitator@1`.
+- If Mongo supports **change streams**, facilitator subscribes and updates its mirror
+  in real time.
+- If not, facilitator polls the collection on a configurable interval
+  (`SVCCONFIG_POLL_SEC`, default 30s).
+- Each update recomputes a `mirrorEtag` (hash of entries).
+
+### 3. Push to Gateway
+
+- When the mirror changes, facilitator sends a **push** to the gateway’s internal
+  endpoint:

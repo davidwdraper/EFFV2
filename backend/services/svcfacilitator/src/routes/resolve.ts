@@ -17,7 +17,7 @@
 
 import type { Request, Response } from "express";
 import { RouterBase } from "@nv/shared/base/RouterBase";
-import { ResolveController } from "../controllers/resolve.controller";
+import { ResolveController } from "../controllers/ResolveController";
 
 export class ResolveRouter extends RouterBase {
   private readonly ctrl = new ResolveController();

@@ -1,0 +1,17 @@
+// svcfacilitator@1 — fix field names + values
+db.service_configs.updateOne(
+  { slug: "svcfacilitator", version: 1 },
+  {
+    $set: {
+      etag: "manual-seed-2025-10-07",
+      outboundApiPrefix: "/api",
+    },
+    $unset: { eTag: "" }, // remove the wrong-cased key
+  }
+);
+
+// (If your log@1 doc also lacks etag, set it too:)
+db.service_configs.updateOne(
+  { slug: "log", version: 1 },
+  { $set: { etag: "manual-seed-2025-10-07" } }
+);

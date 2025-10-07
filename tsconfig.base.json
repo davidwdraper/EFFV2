@@ -12,7 +12,7 @@
     "baseUrl": ".",
     "paths": {
       "@nv/shared": ["backend/services/shared/dist/index"],
-      "@nv/shared/*": ["backend/services/shared/dist/*"]
+      "@nv/shared/*": ["backend/services/shared/src/*"]
     },
 
     "types": ["node"],

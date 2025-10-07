@@ -1,3 +1,4 @@
+// tsconfig.base.json  (repo root — replace file)
 {
   "compilerOptions": {
     "target": "ES2020",
@@ -11,7 +12,7 @@
 
     "baseUrl": ".",
     "paths": {
-      "@nv/shared": ["backend/services/shared/dist/index"],
+      "@nv/shared": ["backend/services/shared/src/index"], // <- was dist/index
       "@nv/shared/*": ["backend/services/shared/src/*"]
     },
 

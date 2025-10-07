@@ -1,9 +1,15 @@
+// tsconfig.json  (repo root — editor aggregator)
 {
-  "//": "SOP/ADR header: Root TS config extends tsconfig.base.json. No emit here; per-service tsconfigs handle builds.",
+  "//": "SOP/ADR: Root TS config extends tsconfig.base.json. No emit here; per-service tsconfigs handle builds.",
   "extends": "./tsconfig.base.json",
   "packageManager": "pnpm@9.15.9",
   "compilerOptions": {
     "noEmit": true
   },
+  "include": [
+    "backend/services/**/*",
+    "scripts/**/*",
+    "docs/**/*"
+  ],
   "exclude": ["node_modules", "**/dist"]
 }

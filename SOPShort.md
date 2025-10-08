@@ -95,6 +95,8 @@
 
 Addendum:
 
+- All code must work unaltered in other environments such as stage and production. Only env variables should need changing. No mention of dev in code -- ever.
+
 - Never add logic for backwards compatibility! We're greenfield. We do it right every time. If it requires a break, we break, then we fix. One code base, no convenience conditionals.
 
 - Track the things that you believe will be important in subseqent sessions. When our current session gets too slow to continue, I'll ask you to print out in a code block, your saved up memory which I'll in turn save, and provide to you at the beginning of the next.

@@ -1,12 +1,14 @@
 // backend/services/gateway/src/routes/proxy.ts
 /**
- * Gateway Proxy — svcconfig-resolved, streaming, no body parsing.
+ * Gateway Proxy — strict, svcconfig-resolved, and not a god-file.
  *
- * SOP:
- * - Versioned paths: /api/<slug>/v<major>/...
+ * SOP (reaffirmed):
+ * - Versioned paths only: /api/<slug>/v<major>/...
  * - Never proxy /api/gateway/... (handled locally).
- * - Resolve FULL upstream (protocol, host, port) from svcconfig at request time.
- * - Do not touch body; stream req -> upstream and upstream -> res.
+ * - Resolve FULL upstream strictly via SvcConfig (no env/dev fallbacks).
+ * - Compose outbound request URL using UrlHelper (single source of truth).
+ * - Do not alter payload; stream req → upstream and upstream → res.
+ * - If a body parser already ran, re-serialize and forward verbatim.
  * - Strip hop-by-hop headers both directions.
  * - Add minimal S2S headers: x-service-name, x-request-id, x-api-version.
  */
@@ -14,15 +16,18 @@
 import type { Request, Response, NextFunction } from "express";
 import http from "node:http";
 import https from "node:https";
-import { URL } from "node:url";
 import crypto from "node:crypto";
 import { UrlHelper } from "@nv/shared/http/UrlHelper";
 import type { SvcConfig } from "../services/svcconfig/SvcConfig";
 
+// ────────────────────────────────────────────────────────────────────────────
+// Constants (separate concerns: config/limits)
+// ────────────────────────────────────────────────────────────────────────────
+
 const SERVICE_NAME = (process.env.SVC_NAME || "gateway").trim() || "gateway";
 const UPSTREAM_TIMEOUT_MS = 8000;
 
-// Hop-by-hop headers that must never be forwarded
+// RFC 7230 hop-by-hop headers that must never be forwarded
 const HOP_BY_HOP = new Set([
   "connection",
   "keep-alive",
@@ -36,6 +41,10 @@ const HOP_BY_HOP = new Set([
   "content-length",
   "accept-encoding",
 ]);
+
+// ────────────────────────────────────────────────────────────────────────────
+/** Small helpers (kept tiny; anything larger belongs in shared/*) */
+// ────────────────────────────────────────────────────────────────────────────
 
 function pickSingle(v: unknown): string | undefined {
   if (v == null) return undefined;
@@ -63,39 +72,21 @@ function ensureRequestId(req: Request): string {
   );
 }
 
-function composeKey(slug: string, version: number): string {
-  return `${slug.toLowerCase()}@${version}`;
-}
-
-function resolveBaseUrl(
-  svccfg: SvcConfig,
-  slug: string,
-  version: number
-): string {
-  // Prefer a URL string if available; fall back to port if that’s all we have.
-  if (typeof (svccfg as any).getUrlFromSlug === "function") {
-    const url = (svccfg as any).getUrlFromSlug(slug, version);
-    if (typeof url === "string" && url.startsWith("http")) return url;
-  }
-  if (typeof (svccfg as any).get === "function") {
-    const rec = (svccfg as any).get(composeKey(slug, version));
-    if (rec?.baseUrl && typeof rec.baseUrl === "string") return rec.baseUrl;
-    if (typeof rec?.port === "number") return `http://127.0.0.1:${rec.port}`;
-  }
-  if ((svccfg as any).mirror && typeof (svccfg as any).mirror === "object") {
-    const rec = (svccfg as any).mirror[composeKey(slug, version)];
-    if (rec?.baseUrl && typeof rec.baseUrl === "string") return rec.baseUrl;
-    if (typeof rec?.port === "number") return `http://127.0.0.1:${rec.port}`;
-  }
-  if (typeof (svccfg as any).getPortFromSlug === "function") {
-    const p = (svccfg as any).getPortFromSlug(slug, version);
-    if (typeof p === "number") return `http://127.0.0.1:${p}`;
-    if (typeof p === "string" && p.startsWith("http")) return p;
-  }
-  throw new Error(
-    `[svcconfig] Unknown or unusable record for ${composeKey(slug, version)}`
+function hasParsedBody(req: Request): req is Request & { body: unknown } {
+  const anyReq = req as any;
+  return (
+    Object.prototype.hasOwnProperty.call(anyReq, "body") &&
+    anyReq.body != null &&
+    (typeof anyReq.body === "object" ||
+      typeof anyReq.body === "string" ||
+      typeof anyReq.body === "number" ||
+      Array.isArray(anyReq.body))
   );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Proxy factory
+// ────────────────────────────────────────────────────────────────────────────
 
 export function makeProxy(svccfg: SvcConfig) {
   return function proxy(req: Request, res: Response, next: NextFunction) {
@@ -104,46 +95,33 @@ export function makeProxy(svccfg: SvcConfig) {
     // Never proxy the gateway’s own endpoints
     if (/^\/api\/gateway(?:\/|$)/i.test(originalUrl)) return next();
 
-    // Parse canonical API path: /api/<slug>/v<major>/...
-    let slug = "";
-    let version: number | undefined;
+    // Extract slug/version using shared logic (version required per SOP).
+    let slug: string;
+    let version: number;
     try {
-      const addr = UrlHelper.parseApiPath(originalUrl);
-      slug = addr.slug;
-      version = addr.version;
+      ({ slug, version } = UrlHelper.getSlugAndVersion(originalUrl));
     } catch {
-      const m = originalUrl.match(/^\/api\/([^/]+)(?:\/|$)/i);
-      if (m && m[1] && m[1].toLowerCase() !== "gateway") {
-        return res.status(400).json({
-          ok: false,
-          service: SERVICE_NAME,
-          data: {
-            status: "invalid_request",
-            detail:
-              "Missing API version. Expected /api/<slug>/v<major>/... (health is versioned).",
-          },
-        });
-      }
-      return next();
-    }
-
-    if (!slug || slug.toLowerCase() === "gateway") return next();
-    if (version == null) {
       return res.status(400).json({
         ok: false,
         service: SERVICE_NAME,
         data: {
           status: "invalid_request",
           detail:
-            "Missing API version. Expected /api/<slug>/v<major>/... (health is versioned).",
+            "Invalid API path (version required). Expected /api/<slug>/v<major>/...",
         },
       });
     }
+    if (!slug || slug.toLowerCase() === "gateway") return next();
 
-    // Resolve FULL upstream base URL from svcconfig
-    let baseUrlStr: string;
+    // Resolve upstream base URL strictly from svcconfig
+    let baseUrl: string;
     try {
-      baseUrlStr = resolveBaseUrl(svccfg, slug, version);
+      baseUrl = svccfg.getUrlFromSlug(slug, version);
+      if (typeof baseUrl !== "string" || !/^https?:\/\//i.test(baseUrl)) {
+        throw new Error(
+          `[svcconfig] Invalid baseUrl for ${slug}@${version} (expected full URL)`
+        );
+      }
     } catch (e: any) {
       return res.status(502).json({
         ok: false,
@@ -152,23 +130,45 @@ export function makeProxy(svccfg: SvcConfig) {
       });
     }
 
-    const base = new URL(baseUrlStr);
-    if (base.hostname === "0.0.0.0" || base.hostname === "::") {
+    // Prefer explicit port from svcconfig (if available) for clarity; otherwise keep baseUrl’s port.
+    let targetPort: number;
+    try {
+      targetPort = svccfg.getPortFromSlug(slug, version);
+    } catch {
+      const u = new URL(baseUrl);
+      targetPort = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
+    }
+
+    // Build the full outbound request URL using UrlHelper (single composition point).
+    let outboundUrl: string;
+    try {
+      outboundUrl = UrlHelper.buildOutboundRequestUrl(
+        baseUrl,
+        targetPort,
+        originalUrl
+      );
+    } catch (e: any) {
       return res.status(502).json({
         ok: false,
         service: SERVICE_NAME,
         data: {
           status: "bad_gateway",
-          detail: "svcconfig: unroutable host (0.0.0.0/::). Fix advertisement.",
+          detail: `proxy url compose failed: ${String(e?.message || e)}`,
         },
       });
     }
 
-    // Build full upstream by replacing origin; keep path+query
-    const upstream = new URL(originalUrl, base);
-    upstream.protocol = base.protocol;
-    upstream.hostname = base.hostname;
-    upstream.port = base.port || (base.protocol === "https:" ? "443" : "80");
+    const out = new URL(outboundUrl);
+    if (out.hostname === "0.0.0.0" || out.hostname === "::") {
+      return res.status(502).json({
+        ok: false,
+        service: SERVICE_NAME,
+        data: {
+          status: "bad_gateway",
+          detail: "svcconfig: unroutable host (0.0.0.0/::)",
+        },
+      });
+    }
 
     // ---- Prepare upstream request
     const headers = cloneInboundHeaders(req);
@@ -176,20 +176,19 @@ export function makeProxy(svccfg: SvcConfig) {
     headers["x-api-version"] = String(version);
     headers["x-request-id"] = ensureRequestId(req);
 
-    const isTLS = upstream.protocol === "https:";
+    const isTLS = out.protocol === "https:";
     const client = isTLS ? https : http;
 
     const options: http.RequestOptions = {
-      protocol: upstream.protocol,
-      hostname: upstream.hostname,
-      port: upstream.port,
+      protocol: out.protocol,
+      hostname: out.hostname,
+      port: out.port || (isTLS ? "443" : "80"),
       method: req.method,
-      path: upstream.pathname + upstream.search,
+      path: out.pathname + out.search,
       headers,
     };
 
     const abortTimer = setTimeout(() => {
-      // Drop client if we stall talking to upstream
       try {
         req.socket.destroy();
       } catch {
@@ -252,8 +251,27 @@ export function makeProxy(svccfg: SvcConfig) {
       }
     });
 
-    // Stream client → upstream (no parsing)
-    if (req.readable && req.method !== "GET" && req.method !== "HEAD") {
+    // Stream client → upstream. If a body parser already consumed the stream,
+    // faithfully forward the parsed body as JSON (no shape changes).
+    const method = (req.method || "GET").toUpperCase();
+    const hasBodyMethod = method !== "GET" && method !== "HEAD";
+
+    if (hasBodyMethod && hasParsedBody(req)) {
+      const contentType =
+        req.headers["content-type"] && pickSingle(req.headers["content-type"])
+          ? String(pickSingle(req.headers["content-type"]))
+          : "application/json";
+
+      const raw =
+        typeof (req as any).body === "string"
+          ? Buffer.from((req as any).body as string)
+          : Buffer.from(JSON.stringify((req as any).body));
+
+      upstreamReq.setHeader("content-type", contentType);
+      upstreamReq.setHeader("content-length", String(raw.length));
+      upstreamReq.write(raw);
+      upstreamReq.end();
+    } else if (hasBodyMethod && req.readable) {
       req.pipe(upstreamReq);
     } else {
       upstreamReq.end();

@@ -10,21 +10,15 @@
  * Purpose:
  * - Common base for all Express routers across services.
  * - Standardizes:
- *    - async handler wrapping (no unhandled rejections)
- *    - structured entry/exit/error logs
- *    - JSON helpers (ok/problem)
- *    - versioned-path parsing guard
- *    - small HTTP utilities (headers/body/ports/host)
+ *   • async handler wrapping (no unhandled rejections)
+ *   • structured entry/exit/error logs
+ *   • JSON helpers (ok/problem)
+ *   • versioned-path parsing guard
+ *   • small HTTP utilities (headers/body/ports/host)
  *
- * Usage:
- *   export class MyRouter extends RouterBase {
- *     protected configure(): void {
- *       this.r.get("/things/:id", this.wrap(this.getThing));
- *     }
- *     private async getThing(req, res) {
- *       return this.jsonOk(res, { thing: "🧱" });
- *     }
- *   }
+ * Notes:
+ * - Do NOT call this.router() from configure(); use this.r inside configure().
+ * - router() is lazy and guarded against re-entrancy to avoid recursion.
  */
 
 import type {
@@ -46,6 +40,8 @@ type AnyHandler = (
 
 export abstract class RouterBase extends ServiceBase {
   protected readonly r: Router;
+  private _configured = false;
+  private _configuring = false; // re-entrancy guard
 
   constructor(opts?: { service?: string; context?: Record<string, unknown> }) {
     super({
@@ -53,14 +49,23 @@ export abstract class RouterBase extends ServiceBase {
       context: { component: "Router", ...(opts?.context ?? {}) },
     });
     this.r = express.Router();
-    this.configure();
+    // IMPORTANT: no configure() call here — subclasses may rely on field init first.
   }
 
   /** Subclasses implement this to register routes (use this.wrap for handlers). */
   protected abstract configure(): void;
 
-  /** Expose the underlying express.Router (read-only). */
+  /** Expose the underlying express.Router (lazy-configured, re-entrancy safe). */
   public router(): Router {
+    if (this._configured) return this.r;
+    if (this._configuring) return this.r; // if configure() calls router(), just return r
+    this._configuring = true;
+    try {
+      this.configure();
+      this._configured = true;
+    } finally {
+      this._configuring = false;
+    }
     return this.r;
   }
 
@@ -68,12 +73,6 @@ export abstract class RouterBase extends ServiceBase {
   // Async wrapper + logging
   // ──────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Wrap an async handler:
-   *  - routes rejections to Express error pipeline
-   *  - logs entry/exit and errors with route & method
-   *  - warns if handler returns without writing a response
-   */
   protected wrap<T extends AnyHandler>(fn: T): RequestHandler {
     const baseLog = this.bindLog({ kind: "http" });
     return (req, res, next) => {
@@ -112,12 +111,10 @@ export abstract class RouterBase extends ServiceBase {
   // JSON helpers (canonical envelopes)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /** 200 JSON `{ ok:true, service, data }` */
   protected jsonOk(res: Response, data: unknown, status = 200): Response {
     return res.status(status).json({ ok: true, service: this.service, data });
   }
 
-  /** Error JSON `{ ok:false, service, data:{status, detail} }` */
   protected jsonProblem(
     res: Response,
     statusCode: number,
@@ -133,15 +130,10 @@ export abstract class RouterBase extends ServiceBase {
   // API path guard (versioned convention)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Require canonical API path: `/api/<slug>/v<major>/...`.
-   * - Returns `{ slug, version }` or sends 400 and returns `undefined`.
-   * - Never forces gateway paths — caller can special-case before calling.
-   */
   protected requireVersionedApiPath(
     req: Request,
     res: Response,
-    allowSlug?: string // optional: allow only this slug
+    allowSlug?: string
   ): { slug: string; version: number } | undefined {
     try {
       const { slug, version } = UrlHelper.parseApiPath(req.originalUrl);
@@ -165,7 +157,6 @@ export abstract class RouterBase extends ServiceBase {
       }
       return { slug, version };
     } catch {
-      // If it looks like an API path but isn’t versioned, complain.
       const m = req.originalUrl.match(/^\/api\/([^/]+)(?:\/|$)/i);
       if (m && m[1]) {
         this.jsonProblem(
@@ -184,7 +175,6 @@ export abstract class RouterBase extends ServiceBase {
   // Small HTTP utilities (host/ports/headers/body)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /** Extract hostname from Host header, minus :port (IPv6 safe). */
   protected getInboundHost(req: Request): string {
     const host = (req.get("host") || "").trim();
     if (!host) return "127.0.0.1";
@@ -193,20 +183,17 @@ export abstract class RouterBase extends ServiceBase {
     return host;
   }
 
-  /** Compose absolute URL with swapped port, same scheme/host/path/query. */
   protected absoluteUrl(req: Request, hostname: string, port: number): string {
     const proto = (req.protocol || "http").toLowerCase();
     return `${proto}://${hostname}:${port}${req.originalUrl}`;
   }
 
-  /** Parse explicit/implicit port from a base URL. */
   protected portFromBaseUrl(baseUrl: string): number {
     const u = new URL(baseUrl);
     if (u.port) return Number(u.port);
     return u.protocol === "https:" ? 443 : 80;
   }
 
-  /** Build outbound headers: strip Host/Authorization; ensure Accept. */
   protected outboundHeaders(req: Request): Record<string, string> {
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
@@ -220,7 +207,6 @@ export abstract class RouterBase extends ServiceBase {
     return headers;
   }
 
-  /** Build outbound body for non-GET/HEAD, including JSON if applicable. */
   protected outboundBodyAndType(req: Request): {
     body?: BodyInit;
     contentType?: string;
@@ -241,7 +227,6 @@ export abstract class RouterBase extends ServiceBase {
     return {};
   }
 
-  /** Compose svc config key `slug@version` */
   protected svcKey(slug: string, version: number): string {
     return `${slug.toLowerCase()}@${version}`;
   }

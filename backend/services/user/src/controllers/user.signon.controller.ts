@@ -6,16 +6,15 @@
  *   - docs/adr/00xx-user-service-skeleton.md (TBD)
  *
  * Purpose:
- * - Handle POST /v1/signon
- * - S2S-only endpoint invoked by the Auth service.
+ * - Handle POST /v1/signon (S2S-only: Auth → User)
  *
  * Notes:
- * - Controller inheritance: BaseController <- UserControllerBase <- UserSignonController
- * - Uses UserControllerBase helpers to extract and validate the hashed-password envelope.
- * - Stub for now: responds 501 (not implemented). Repo lookup + hash verify to be added later.
+ * - Controller inheritance: ControllerBase <- UserControllerBase <- UserSignonController
+ * - Exposes a RequestHandler via .signon() (no legacy (req,res) signatures).
+ * - Stub for now: responds 501 (not implemented). Repo lookup + hash verify later.
  */
 
-import type { Request, Response } from "express";
+import type { RequestHandler } from "express";
 import {
   UserControllerBase,
   type AuthS2SEnvelope,
@@ -26,36 +25,29 @@ export class UserSignonController extends UserControllerBase {
     super();
   }
 
-  public async handle(req: Request, res: Response): Promise<void> {
-    return super.handle<{ body: AuthS2SEnvelope; requestId: string }>(
-      req,
-      res,
-      async ({ body, requestId }) => {
-        // Validate envelope and ensure hashedPassword uses our mock format
-        try {
-          // For signon, we at least need an identifying subset of "user" (e.g., email) and a hashedPassword.
-          // Base extracts and validates presence + mock hash format.
-          const { user, hashedPassword } = this.extractProvisionEnvelope(
-            body,
-            requestId
-          );
+  /** Express handler for POST /signon (mounted by S2S router). */
+  public signon(): RequestHandler {
+    return this.handle(async (ctx) => {
+      const requestId = ctx.requestId;
 
-          // TODO (implementation):
-          // 1) Load stored user by unique identifier (e.g., email) from repo.
-          // 2) Compare provided hash vs stored hash using this.compareHashed().
-          // 3) Return domain user (minus secrets) or failure.
-          // For now, just acknowledge the stub with explicit 501.
-          return this.fail(
-            501,
-            "not_implemented",
-            "signon stub — repository lookup and hash verification not implemented",
-            requestId
-          );
-        } catch (e) {
-          // extractProvisionEnvelope throws via this.fail(); just rethrow to keep the same envelope.
-          throw e;
-        }
-      }
-    );
+      // Bind expected payload shape explicitly
+      type UserPayload = Record<string, unknown>;
+      const { /* user */ _, hashedPassword } =
+        this.extractProvisionEnvelope<UserPayload>(
+          (ctx.body as Partial<AuthS2SEnvelope<UserPayload>>) ?? {},
+          requestId
+        );
+
+      // TODO:
+      // 1) Load stored user by identifier (e.g., email) from repo.
+      // 2) Compare provided hash vs stored hash using this.compareHashed().
+      // 3) Return domain user (sans secrets) or 401 invalid_credentials.
+      return this.fail(
+        501,
+        "not_implemented",
+        "signon stub — repository lookup and hash verification not implemented",
+        requestId
+      );
+    });
   }
 }

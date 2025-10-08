@@ -6,16 +6,13 @@
  *   - docs/adr/00xx-user-service-skeleton.md (TBD)
  *
  * Purpose:
- * - Handle GET /v1/users/:id
- * - Read a single user by id (stubbed for now).
+ * - Handle GET /v1/users/:id (read by id)
  *
  * Notes:
- * - Controller inheritance: BaseController <- UserControllerBase <- UserReadController
- * - No DB yet—returns 501 to indicate not implemented.
- * - Validates :id presence to keep error semantics clean.
+ * - Exposes .read() → RequestHandler
+ * - Stubbed: returns 501 until repo is wired.
  */
-
-import type { Request, Response } from "express";
+import type { RequestHandler } from "express";
 import { UserControllerBase } from "./user.base.controller";
 
 export class UserReadController extends UserControllerBase {
@@ -23,24 +20,22 @@ export class UserReadController extends UserControllerBase {
     super();
   }
 
-  public async handle(req: Request, res: Response): Promise<void> {
-    return super.handle<{ requestId: string }>(
-      req,
-      res,
-      async ({ requestId }) => {
-        const id = String(req.params?.id || "").trim();
-        if (!id) {
-          return this.fail(400, "invalid_request", "id is required", requestId);
-        }
-
-        // TODO: repo.getById(id) → return domain object (sans secrets)
-        return this.fail(
-          501,
-          "not_implemented",
-          "read stub — repository not implemented",
-          requestId
-        );
+  /** Express handler for GET /users/:id */
+  public read(): RequestHandler {
+    return this.handle(async (ctx) => {
+      const requestId = ctx.requestId;
+      const id = String(ctx.params?.id ?? "").trim();
+      if (!id) {
+        return this.fail(400, "invalid_request", "id is required", requestId);
       }
-    );
+
+      // TODO: repo.findById(id) → domain object (sans secrets)
+      return this.fail(
+        501,
+        "not_implemented",
+        "read not implemented",
+        requestId
+      );
+    });
   }
 }

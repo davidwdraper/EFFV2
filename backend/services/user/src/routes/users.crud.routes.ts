@@ -3,7 +3,7 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - docs/adr/00xx-user-service-skeleton.md (TBD)
+ *   - ADR-0019 (Class Routers via RouterBase)
  *
  * Purpose:
  * - Wire CRUD endpoints (read/update/delete) to dedicated controllers.
@@ -11,28 +11,36 @@
  *
  * Notes:
  * - CREATE is intentionally excluded (Auth-only via S2S).
+ * - Routes are one-liners: import handlers only (no inline logic).
  */
-
-import { Router } from "express";
+import { RouterBase } from "@nv/shared/base/RouterBase";
 import { UserReadController } from "../controllers/user.read.controller";
 import { UserUpdateController } from "../controllers/user.update.controller";
 import { UserDeleteController } from "../controllers/user.delete.controller";
 
-export function usersCrudRouter(): Router {
-  const r = Router();
+function getSvcName(): string {
+  const n = process.env.SVC_NAME?.trim();
+  if (!n) throw new Error("SVC_NAME is required but not set");
+  return n;
+}
 
-  const read = new UserReadController();
-  const update = new UserUpdateController();
-  const remove = new UserDeleteController();
+export class UsersCrudRouter extends RouterBase {
+  private readonly readCtrl = new UserReadController();
+  private readonly updateCtrl = new UserUpdateController();
+  private readonly deleteCtrl = new UserDeleteController();
 
-  // READ: GET /users/:id
-  r.get("/users/:id", (req, res) => void read.handle(req, res));
+  constructor() {
+    super({ service: getSvcName(), context: { router: "UsersCrudRouter" } });
+  }
 
-  // UPDATE: PATCH /users/:id
-  r.patch("/users/:id", (req, res) => void update.handle(req, res));
+  protected configure(): void {
+    // READ: GET /users/:id
+    this.r.get("/users/:id", this.readCtrl.read());
 
-  // DELETE: DELETE /users/:id
-  r.delete("/users/:id", (req, res) => void remove.handle(req, res));
+    // UPDATE: PATCH /users/:id
+    this.r.patch("/users/:id", this.updateCtrl.update());
 
-  return r;
+    // DELETE: DELETE /users/:id
+    this.r.delete("/users/:id", this.deleteCtrl.remove());
+  }
 }

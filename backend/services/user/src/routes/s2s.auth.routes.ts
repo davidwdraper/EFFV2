@@ -4,26 +4,21 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - docs/adr/00xx-user-service-skeleton.md (TBD)
+ *   - ADR-0019 (Class Routers via RouterBase)
  *
  * Purpose:
- * - S2S-only endpoints invoked by the Auth service (wired to controllers):
- *   - PUT   /create          (create user; ONLY via Auth)
- *   - POST  /signon          (stub controller)
- *   - POST  /changepassword  (stub controller)
+ * - S2S-only endpoints invoked by the Auth service:
+ *   - PUT  /create          (create user; ONLY via Auth)
+ *   - POST /signon          (stub)
+ *   - POST /changepassword  (stub)
  *
  * Notes:
- * - These paths are **relative** to the mount point in app.ts:
- *     app.use(`/api/${svc}/v1`, userAuthRouter())
- *   So DO NOT include /v1 here.
- * - Pre-JWT guard: verifyTrustedCaller() enforces x-service-name ∈ S2S_ALLOWED_CALLERS.
+ * - Mounted under /api/<svc>/v1 in app.ts (do not repeat /v1 here).
+ * - Pre-JWT guard: header-only verifyTrustedCaller() (no token yet).
  */
 
-import {
-  Router,
-  type Request,
-  type Response,
-  type NextFunction,
-} from "express";
+import type { RequestHandler } from "express";
+import { RouterBase } from "@nv/shared/base/RouterBase";
 import { UserCreateController } from "../controllers/user.create.controller";
 import { UserSignonController } from "../controllers/user.signon.controller";
 import { UserChangePasswordController } from "../controllers/user.changepassword.controller";
@@ -34,7 +29,8 @@ function getSvcName(): string {
   return n;
 }
 
-function verifyTrustedCaller(req: Request, res: Response, next: NextFunction) {
+/** Header-only S2S guard — MUST be a RequestHandler (void return). */
+const verifyTrustedCaller: RequestHandler = (req, res, next) => {
   const allowedCsv = process.env.S2S_ALLOWED_CALLERS || "";
   const allowed = new Set(
     allowedCsv
@@ -42,10 +38,9 @@ function verifyTrustedCaller(req: Request, res: Response, next: NextFunction) {
       .map((s) => s.trim())
       .filter(Boolean)
   );
-  const caller = (req.header("x-service-name") || "").trim();
-
+  const caller = String(req.header("x-service-name") || "").trim();
   if (!caller || !allowed.has(caller)) {
-    return res.status(403).json({
+    res.status(403).json({
       ok: false,
       service: getSvcName(),
       data: {
@@ -54,27 +49,42 @@ function verifyTrustedCaller(req: Request, res: Response, next: NextFunction) {
           "S2S caller not allowed. Set x-service-name and configure S2S_ALLOWED_CALLERS.",
       },
     });
+    return; // IMPORTANT: express RequestHandler returns void
   }
-  return next();
-}
+  next();
+};
 
-export function userAuthRouter(): Router {
-  const r = Router();
+export class UserS2SRouter extends RouterBase {
+  private readonly createCtrl = new UserCreateController();
+  private readonly signonCtrl = new UserSignonController();
+  private readonly changeCtrl = new UserChangePasswordController();
 
-  // Enforce S2S-only access
-  r.use(verifyTrustedCaller);
+  constructor() {
+    super({ service: getSvcName(), context: { router: "UserS2SRouter" } });
+  }
 
-  // Wire controllers (no god-controllers)
-  const create = new UserCreateController();
-  const signon = new UserSignonController();
-  const change = new UserChangePasswordController();
+  protected configure(): void {
+    // Guard first — does NOT consume body
+    this.r.use(verifyTrustedCaller);
 
-  // Create user (explicit path: /create)
-  r.put("/create", (req, res) => void create.handle(req, res));
+    // Create user (S2S-only)
+    this.r.put("/create", this.createCtrl.create());
 
-  // Auth-driven ops
-  r.post("/signon", (req, res) => void signon.handle(req, res));
-  r.post("/changepassword", (req, res) => void change.handle(req, res));
+    // Stubs (keep signatures as RequestHandlers via ControllerBase.handle)
+    this.r.post(
+      "/signon",
+      this.signonCtrl.handle(async () => ({
+        status: 501,
+        body: { ok: false, error: "not_implemented" },
+      }))
+    );
 
-  return r;
+    this.r.post(
+      "/changepassword",
+      this.changeCtrl.handle(async () => ({
+        status: 501,
+        body: { ok: false, error: "not_implemented" },
+      }))
+    );
+  }
 }

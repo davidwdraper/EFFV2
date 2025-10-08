@@ -8,26 +8,18 @@
  *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
  *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
  *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
- *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint vs ServiceBase → AppBase)
+ *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint → AppBase → ServiceBase)
  *   - ADR-0015 (Structured Logger with bind() Context)
  *   - ADR-0019 (Class Routers via RouterBase)
  *
  * Purpose:
- * - OO refactor: SvcFacilitatorApp extends AppBase → ServiceBase.
- * - Mount **versioned** health via shared helper at:
- *     /api/svcfacilitator/v1/health/{live,ready}
- * - Mount class-based routers (ResolveRouter, MirrorRouter) under versioned base.
- * - Keep versioned svcconfig read endpoint for gateway compatibility.
- *
- * Route order (SOP):
- * - Health first (versioned)
- * - Public API (resolve — versioned)
- * - Tooling (mirror — versioned)
- * - Versioned svcconfig read (compat)
- * - Global error handler (jq-safe)
+ * - SvcFacilitatorApp now inherits all `app.use(...)` ordering from AppBase.
+ * - Health (versioned) is mounted first; then standard pre/security/parsers from base;
+ *   then service routes; then base post-routing error funnel.
+ * - Keeps versioned svcconfig read endpoint for gateway compatibility.
  */
 
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 import { AppBase } from "@nv/shared/base/AppBase";
 import { ResolveRouter } from "./routes/resolve";
 import { MirrorRouter } from "./routes/mirror";
@@ -41,18 +33,20 @@ export class SvcFacilitatorApp extends AppBase {
     super({ service: SERVICE });
   }
 
-  /** Subclass hook from AppBase — mount routes/middleware here. */
-  protected configure(): void {
-    // 1) Versioned health per ADR-0013 — always mount first
-    this.mountVersionedHealth(V1_BASE);
+  /** Versioned health base path (required per SOP). */
+  protected healthBasePath(): string | null {
+    return V1_BASE;
+  }
 
-    // 2) Resolution API (versioned): /api/svcfacilitator/v1/resolve[/*]
+  /** Service routes — mounted after base pre/security/parsers. */
+  protected mountRoutes(): void {
+    // 1) Resolution API (versioned): /api/svcfacilitator/v1/resolve[/*]
     this.app.use(V1_BASE, new ResolveRouter({ service: SERVICE }).router());
 
-    // 3) Mirror tooling (versioned): /api/svcfacilitator/v1/mirror/load
+    // 2) Mirror tooling (versioned): /api/svcfacilitator/v1/mirror/load
     this.app.use(V1_BASE, new MirrorRouter({ service: SERVICE }).router());
 
-    // 4) Gateway compatibility: versioned svcconfig read
+    // 3) Gateway compatibility: versioned svcconfig read
     //    GET /api/svcfacilitator/v1/svcconfig  → { ok, mirror, services }
     this.app.get(`${V1_BASE}/svcconfig`, (_req: Request, res: Response) => {
       const mirror = mirrorStore.getMirror?.() ?? {};
@@ -62,18 +56,5 @@ export class SvcFacilitatorApp extends AppBase {
         services: Object.keys(mirror).length,
       });
     });
-
-    // 5) Final JSON error handler (jq-safe)
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    this.app.use(
-      (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-        // Loud until structured logger wired here per ADR-0015.
-        // eslint-disable-next-line no-console
-        console.error("[svcfacilitator:error]", err);
-        res
-          .status(500)
-          .json({ type: "about:blank", title: "Internal Server Error" });
-      }
-    );
   }
 }

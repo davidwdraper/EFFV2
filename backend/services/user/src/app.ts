@@ -10,55 +10,40 @@
  *
  * Purpose:
  * - User service on AppBase.
- * - **Versioned** health at /api/<SVC_NAME>/v1/health/{live,ready}.
+ * - Health/ordering/middleware sequencing inherited from AppBase.
  * - Versioned APIs mounted under /api/<SVC_NAME>/v1.
  */
-import express, {
-  type Request,
-  type Response,
-  type NextFunction,
-} from "express";
+
 import { AppBase } from "@nv/shared/base/AppBase";
-import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 import { unwrapEnvelope } from "@nv/shared/middleware/unwrapEnvelope";
-import { problem } from "@nv/shared/middleware/problem";
 import { UsersCrudRouter } from "./routes/users.crud.routes";
 import { UserS2SRouter } from "./routes/s2s.auth.routes";
 
 const SERVICE = "user";
+const V1_BASE = `/api/${SERVICE}/v1`;
 
 export class UserApp extends AppBase {
   constructor() {
     super({ service: SERVICE });
   }
 
-  protected configure(): void {
-    const baseV1 = `/api/${this.service}/v1`;
+  /** Versioned health base path (required per SOP). */
+  protected healthBasePath(): string | null {
+    return V1_BASE;
+  }
 
-    // 1) Versioned health — FIRST
-    this.mountVersionedHealth(baseV1);
+  /**
+   * Parsers: workers get JSON by default via AppBase; we also unwrap S2S envelopes here.
+   * Keep gateway-specific parsing out of here (gateway streams bodies).
+   */
+  protected mountParsers(): void {
+    super.mountParsers(); // express.json()
+    this.app.use(unwrapEnvelope()); // flatten S2S envelopes → DTOs
+  }
 
-    // 2) JSON body parser
-    this.app.use(express.json({ limit: "1mb" }));
-
-    // 3) Unwrap S2S envelopes to flat DTOs that controllers expect
-    this.app.use(unwrapEnvelope());
-
-    // 4) One-line completion/error logger
-    this.app.use(responseErrorLogger(this.service));
-
-    // 5) Versioned APIs
-    this.app.use(baseV1, new UserS2SRouter().router()); // S2S endpoints
-    this.app.use(baseV1, new UsersCrudRouter().router()); // CRUD (no create here)
-
-    // 6) Final problem handler (preserves 4xx from controllers)
-    this.app.use(
-      problem as unknown as (
-        err: unknown,
-        req: Request,
-        res: Response,
-        next: NextFunction
-      ) => void
-    );
+  /** Routes mounted after base pre/security/parsers. Keep routes one-liners. */
+  protected mountRoutes(): void {
+    this.app.use(V1_BASE, new UserS2SRouter().router()); // S2S endpoints
+    this.app.use(V1_BASE, new UsersCrudRouter().router()); // CRUD endpoints
   }
 }

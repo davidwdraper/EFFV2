@@ -6,16 +6,22 @@
  *   - ADR-0013 (Versioned Health Envelope & Routes)
  *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint → AppBase → ServiceBase)
  *   - ADR-0019 (Class Routers via RouterBase)
+ *   - adr0021-user-opaque-password-hash
  *
  * Purpose:
  * - User service on AppBase.
  * - **Versioned** health at /api/<SVC_NAME>/v1/health/{live,ready}.
  * - Versioned APIs mounted under /api/<SVC_NAME>/v1.
  */
-import express from "express";
-import type { Request, Response, NextFunction } from "express";
+import express, {
+  type Request,
+  type Response,
+  type NextFunction,
+} from "express";
 import { AppBase } from "@nv/shared/base/AppBase";
 import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
+import { unwrapEnvelope } from "@nv/shared/middleware/unwrapEnvelope";
+import { problem } from "@nv/shared/middleware/problem";
 import { UsersCrudRouter } from "./routes/users.crud.routes";
 import { UserS2SRouter } from "./routes/s2s.auth.routes";
 
@@ -29,29 +35,30 @@ export class UserApp extends AppBase {
   protected configure(): void {
     const baseV1 = `/api/${this.service}/v1`;
 
-    // 0) Body parser BEFORE routers (prevents hangs on JSON endpoints)
-    this.app.use(express.json({ limit: "1mb" }));
-
-    // 1) Versioned health
+    // 1) Versioned health — FIRST
     this.mountVersionedHealth(baseV1);
 
-    // 2) Response error logger (one line on failure)
+    // 2) JSON body parser
+    this.app.use(express.json({ limit: "1mb" }));
+
+    // 3) Unwrap S2S envelopes to flat DTOs that controllers expect
+    this.app.use(unwrapEnvelope());
+
+    // 4) One-line completion/error logger
     this.app.use(responseErrorLogger(this.service));
 
-    // 3) Versioned APIs
+    // 5) Versioned APIs
     this.app.use(baseV1, new UserS2SRouter().router()); // S2S endpoints
     this.app.use(baseV1, new UsersCrudRouter().router()); // CRUD (no create here)
 
-    // 4) Final JSON error handler (jq-safe)
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    // 6) Final problem handler (preserves 4xx from controllers)
     this.app.use(
-      (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-        // eslint-disable-next-line no-console
-        console.error("[user:error]", err);
-        res
-          .status(500)
-          .json({ type: "about:blank", title: "Internal Server Error" });
-      }
+      problem as unknown as (
+        err: unknown,
+        req: Request,
+        res: Response,
+        next: NextFunction
+      ) => void
     );
   }
 }

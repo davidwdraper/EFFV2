@@ -1,29 +1,22 @@
 // backend/services/user/src/controllers/user.changepassword.controller.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - SOP: Reduced, Clean
  * - ADRs:
- *   - docs/adr/00xx-user-service-skeleton.md (TBD)
+ *   - adr0021-user-opaque-password-hash
  *
  * Purpose:
  * - Handle POST /v1/changepassword (S2S-only: Auth → User)
- *
- * Notes:
- * - Controller inheritance: ControllerBase <- UserControllerBase <- UserChangePasswordController
- * - Exposes a RequestHandler via .changePassword()
- * - Stub: returns 501 until repo + persistence are wired.
+ * - Opaque hashes: ensure non-empty old/new, no format checks.
  */
 
 import type { RequestHandler } from "express";
-import {
-  UserControllerBase,
-  type AuthS2SEnvelope,
-} from "./user.base.controller";
+import { UserControllerBase } from "./user.base.controller";
 
-type ChangePasswordEnvelope<TUser = unknown> = {
+type ChangePasswordPayload<TUser = unknown> = {
   user?: TUser; // identifier subset (e.g., email)
-  oldHashedPassword?: string;
-  newHashedPassword?: string;
+  oldHashedPassword?: string; // opaque
+  newHashedPassword?: string; // opaque
 };
 
 export class UserChangePasswordController extends UserControllerBase {
@@ -35,13 +28,11 @@ export class UserChangePasswordController extends UserControllerBase {
   public changePassword(): RequestHandler {
     return this.handle(async (ctx) => {
       const requestId = ctx.requestId;
-
-      const env = (ctx.body || {}) as ChangePasswordEnvelope<
+      const body = (ctx.body || {}) as ChangePasswordPayload<
         Record<string, unknown>
       >;
 
-      // Require identifying user payload
-      if (env.user === undefined || env.user === null) {
+      if (body.user === undefined || body.user === null) {
         return this.fail(
           400,
           "invalid_request",
@@ -49,31 +40,20 @@ export class UserChangePasswordController extends UserControllerBase {
           requestId
         );
       }
-
-      // Validate hashed passwords using base helpers (mock format enforced)
       const oldHash = this.requireHashedPassword(
-        { hashedPassword: env.oldHashedPassword } as AuthS2SEnvelope,
+        { hashedPassword: body.oldHashedPassword },
         requestId
       );
       const newHash = this.requireHashedPassword(
-        { hashedPassword: env.newHashedPassword } as AuthS2SEnvelope,
+        { hashedPassword: body.newHashedPassword },
         requestId
       );
 
-      if (!this.isMockHash(oldHash) || !this.isMockHash(newHash)) {
-        return this.fail(
-          400,
-          "invalid_request",
-          "oldHashedPassword and newHashedPassword must be mock hashes",
-          requestId
-        );
-      }
-
       // TODO:
-      // 1) Load user by identifier (e.g., email) from repo.
-      // 2) Verify old hash with this.compareHashed().
+      // 1) Load user by identifier from repo.
+      // 2) Verify old hash vs stored hash with compareOpaqueHash().
       // 3) Persist new hash; return updated domain user (sans secrets).
-      // 4) If mismatch, return 401 invalid_credentials (no detail leakage).
+      // 4) If mismatch, return 401 invalid_credentials.
 
       return this.fail(
         501,

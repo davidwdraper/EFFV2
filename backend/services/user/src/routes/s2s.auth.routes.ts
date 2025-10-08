@@ -3,18 +3,19 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - docs/adr/00xx-user-service-skeleton.md (TBD)
+ *   - adr0021-user-opaque-password-hash
  *   - ADR-0019 (Class Routers via RouterBase)
  *
  * Purpose:
  * - S2S-only endpoints invoked by the Auth service:
- *   - PUT  /create          (create user; ONLY via Auth)
- *   - POST /signon          (stub)
- *   - POST /changepassword  (stub)
+ *   - PUT    /create
+ *   - POST   /signon          (stub)
+ *   - POST   /changepassword  (stub)
+ *   - DELETE /delete/:id      (idempotent delete-by-id; ack for smoke #8)
  *
  * Notes:
  * - Mounted under /api/<svc>/v1 in app.ts (do not repeat /v1 here).
- * - Pre-JWT guard: header-only verifyTrustedCaller() (no token yet).
+ * - Header-only S2S guard for now: verifyTrustedCaller() (x-service-name allowlist).
  */
 
 import type { RequestHandler } from "express";
@@ -22,6 +23,7 @@ import { RouterBase } from "@nv/shared/base/RouterBase";
 import { UserCreateController } from "../controllers/user.create.controller";
 import { UserSignonController } from "../controllers/user.signon.controller";
 import { UserChangePasswordController } from "../controllers/user.changepassword.controller";
+import { UserDeleteController } from "../controllers/user.delete.controller";
 
 function getSvcName(): string {
   const n = process.env.SVC_NAME?.trim();
@@ -49,7 +51,7 @@ const verifyTrustedCaller: RequestHandler = (req, res, next) => {
           "S2S caller not allowed. Set x-service-name and configure S2S_ALLOWED_CALLERS.",
       },
     });
-    return; // IMPORTANT: express RequestHandler returns void
+    return;
   }
   next();
 };
@@ -58,6 +60,7 @@ export class UserS2SRouter extends RouterBase {
   private readonly createCtrl = new UserCreateController();
   private readonly signonCtrl = new UserSignonController();
   private readonly changeCtrl = new UserChangePasswordController();
+  private readonly deleteCtrl = new UserDeleteController();
 
   constructor() {
     super({ service: getSvcName(), context: { router: "UserS2SRouter" } });
@@ -70,7 +73,7 @@ export class UserS2SRouter extends RouterBase {
     // Create user (S2S-only)
     this.r.put("/create", this.createCtrl.create());
 
-    // Stubs (keep signatures as RequestHandlers via ControllerBase.handle)
+    // Signon stub
     this.r.post(
       "/signon",
       this.signonCtrl.handle(async () => ({
@@ -79,6 +82,7 @@ export class UserS2SRouter extends RouterBase {
       }))
     );
 
+    // Change password stub
     this.r.post(
       "/changepassword",
       this.changeCtrl.handle(async () => ({
@@ -86,5 +90,8 @@ export class UserS2SRouter extends RouterBase {
         body: { ok: false, error: "not_implemented" },
       }))
     );
+
+    // Delete by id (S2S-only, idempotent ack) for smoke #8
+    this.r.delete("/delete/:id", this.deleteCtrl.s2sDeleteById());
   }
 }

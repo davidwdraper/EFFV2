@@ -1,3 +1,4 @@
+# scripts/run.sh
 #!/usr/bin/env bash
 # =============================================================================
 # NowVibin Dev Runner (prod-parity-ish)
@@ -7,6 +8,7 @@
 set -Eeuo pipefail
 export GOOGLE_APPLICATION_CREDENTIALS="${GOOGLE_APPLICATION_CREDENTIALS:-$HOME/.config/nowvibin/gateway-dev.json}"
 ENV_FILE=.env.dev
+NV_CONSOLE_LOG=1
 
 export TMPDIR="$HOME/.tmp"
 mkdir -p "$TMPDIR"
@@ -38,13 +40,11 @@ echo "   ENV_FILE=$ENV_FILE"
 [[ $SHARED_ONLY -eq 1 ]] && echo "   SHARED-ONLY: will build @nv/shared and exit"
 
 # ======= Service list (current reality) =====================================
-# Keep this tight; uncomment/add as services come online.
 SERVICES=(
   "svcfacilitator|backend/services/svcfacilitator|pnpm dev"
   "gateway|backend/services/gateway|pnpm dev"
   "auth|backend/services/auth|pnpm dev"
   "user|backend/services/user|pnpm dev"
-  # "audit|backend/services/audit|pnpm dev"
 )
 
 # ======= Helpers =============================================================
@@ -117,7 +117,7 @@ else
 fi
 echo "🔧 NODE_ENV=${NODE_ENV}  LOG_LEVEL=${LOG_LEVEL}"
 
-# ======= Build @nv/shared (per-package build, no root typescript needed) =====
+# ======= Build @nv/shared ====================================================
 SHARED_DIR="$ROOT/backend/services/shared"
 echo "🛠️  Building @nv/shared (package build)…"
 if [[ -d "$SHARED_DIR" ]]; then
@@ -138,7 +138,7 @@ if [[ $SHARED_ONLY -eq 1 ]]; then
   exit 0
 fi
 
-# ======= Optional: sync ports step (only if script exists) ===================
+# ======= Optional: sync ports step ==========================================
 if [[ -f "$ROOT/scripts/sync/sync_ports_from_svcconfig.cjs" ]]; then
   echo "🔧 Syncing service ports from svcconfig → .env.dev (PORT=…)…"
   node "$ROOT/scripts/sync/sync_ports_from_svcconfig.cjs" || echo "⚠️  port sync script failed or not applicable"
@@ -146,6 +146,45 @@ if [[ -f "$ROOT/scripts/sync/sync_ports_from_svcconfig.cjs" ]]; then
 else
   echo "ℹ️  No svcconfig port sync script found; skipping."
 fi
+
+# ======= Launch/Shutdown framework ==========================================
+mkdir -p "$ROOT/var/log"
+PIDS=()             # session leader PIDs
+TAIL_PIDS=()        # background tail -F PIDs
+USE_SETSID=0
+command -v setsid >/dev/null 2>&1 && USE_SETSID=1
+
+cleanup() {
+  echo "🧹 Cleaning up..."
+  # Stop tails first (quiet console)
+  if [[ -n "${TAIL_PIDS[*]:-}" ]]; then
+    kill "${TAIL_PIDS[@]}" 2>/dev/null || true
+  fi
+
+  # Kill services
+  if [[ -n "${PIDS[*]:-}" ]]; then
+    for pid in "${PIDS[@]}"; do
+      if [[ $USE_SETSID -eq 1 ]]; then
+        kill -TERM -- "-$pid" 2>/dev/null || true
+      else
+        kill -TERM "$pid" 2>/dev/null || true
+        pkill -TERM -P "$pid" 2>/dev/null || true
+      fi
+    done
+    sleep 1
+    for pid in "${PIDS[@]}"; do
+      if [[ $USE_SETSID -eq 1 ]]; then
+        kill -KILL -- "-$pid" 2>/dev/null || true
+      else
+        kill -KILL "$pid" 2>/dev/null || true
+        pkill -KILL -P "$pid" 2>/dev/null || true
+      fi
+    done
+  fi
+}
+trap 'echo "🛑 Caught signal"; cleanup; exit 0' INT TERM
+trap 'echo "💥 Error on line $LINENO"; cleanup; exit 1' ERR
+trap 'cleanup' EXIT
 
 # ======= Resolve service env files ==========================================
 SERVICE_NAMES=(); SERVICE_PATHS=(); SERVICE_CMDS=(); SERVICE_ENVFILES=()
@@ -161,15 +200,30 @@ for line in "${SERVICES[@]}"; do
   SERVICE_NAMES+=("$name"); SERVICE_PATHS+=("$path"); SERVICE_CMDS+=("$cmd"); SERVICE_ENVFILES+=("$svc_env")
 done
 
-# ----- Start everything (background) -----------------------------------------
 echo "🧭 Services list:"
 for i in "${!SERVICE_NAMES[@]}"; do
   echo "  • (enabled)  ${SERVICE_NAMES[$i]} → ${SERVICE_PATHS[$i]} :: ${SERVICE_CMDS[$i]}  [ENV_FILE=$(basename "${SERVICE_ENVFILES[$i]}")]"
 done
-
-mkdir -p "$ROOT/var/log"
-PIDS=()
 echo "🚀 Starting services..."
+
+# Prepare log files and optional console tailer up-front
+LOG_FILES=()
+for i in "${!SERVICE_NAMES[@]}"; do
+  name="${SERVICE_NAMES[$i]}"
+  LOG_FILES+=("$ROOT/var/log/${name}.dev.log")
+done
+# Ensure files exist so tail -F has concrete paths
+for lf in "${LOG_FILES[@]}"; do : >"$lf"; done
+
+# Start tails if requested
+if [[ "${NV_CONSOLE_LOG:-0}" != "0" ]]; then
+  echo "🪵 NV_CONSOLE_LOG=1 → tailing live logs to console"
+  for lf in "${LOG_FILES[@]}"; do
+    tail -n0 -F "$lf" &
+    TAIL_PIDS+=("$!")
+  done
+fi
+
 for i in "${!SERVICE_NAMES[@]}"; do
   name="${SERVICE_NAMES[$i]}"
   path="${SERVICE_PATHS[$i]}"
@@ -179,17 +233,15 @@ for i in "${!SERVICE_NAMES[@]}"; do
 
   LOG_FILE="$ROOT/var/log/${name}.dev.log"
 
-  bash -lc "
+  launcher="
     set -Eeuo pipefail
     cd \"$path\"
 
     # load env file
     unset PORT SERVICE_PORT
     set -a; [ -f \"$svc_env\" ] && . \"$svc_env\"; set +a
-
     if [ -n \"\${PORT:-}\" ]; then export ${SLUG_UPPER}_PORT=\"\$PORT\" SERVICE_PORT=\"\$PORT\"; fi
 
-    # baseline runtime envs
     export NODE_ENV=\"$NODE_ENV\"
     export ENV_FILE=\"$svc_env\"
     export GOOGLE_APPLICATION_CREDENTIALS=\"$GOOGLE_APPLICATION_CREDENTIALS\"
@@ -200,36 +252,40 @@ for i in "${!SERVICE_NAMES[@]}"; do
     echo \"ENV_FILE=\$ENV_FILE\"
     echo '────────────────────────────────────────────────────────────────────────────────────'
 
-    # Prefer package script; fall back to dev entry if present
     if node -e \"try{p=require('./package.json').scripts?.dev;process.exit(p?0:1)}catch(e){process.exit(1)}\"; then
-      echo '→ starting: pnpm dev'
-      pnpm dev
+      exec pnpm dev
     elif [ -f \"src/index.ts\" ]; then
-      echo '→ starting: tsx watch src/index.ts'
-      pnpm -s exec tsx watch src/index.ts
+      exec pnpm -s exec tsx watch src/index.ts
     else
-      echo '❌ $name: no dev script and no src/index.ts'
+      echo '❌ $name: no dev script and no src/index.ts' >&2
       exit 1
     fi
-  " 2>&1 | tee -a "$LOG_FILE" & PIDS+=($!)
+  "
 
-  # ---- Minimal race fix: if we just launched svcfacilitator, pause 5s -------
+  if [[ $USE_SETSID -eq 1 ]]; then
+    setsid bash -lc "$launcher" >>"$LOG_FILE" 2>&1 &
+  else
+    bash -lc "$launcher" >>"$LOG_FILE" 2>&1 &
+  fi
+
+  pid=$!          # session leader (or direct child)
+  PIDS+=("$pid")
+
   if [[ "$name" = "svcfacilitator" ]]; then
     echo "⏳ svcfacilitator started; waiting 5s to warm up…"
     sleep 5
   fi
 done
 
-echo "📜 PIDs: ${PIDS[*]}"
+echo "📜 PIDs (leaders): ${PIDS[*]}"
 echo "🟢 All services launched. Ctrl-C to stop."
 
-cleanup() {
-  echo "🧹 Cleaning up..."
-  if [[ -n "${PIDS[*]:-}" ]]; then
-    echo "🧯 Stopping services: ${PIDS[*]}"; kill "${PIDS[@]}" >/dev/null 2>&1 || true
+# ----- Block until all services exit (Bash 3.2: no wait -n) ------------------
+status=0
+for pid in "${PIDS[@]}"; do
+  if ! wait "$pid"; then
+    status=1
   fi
-}
-trap 'echo "🛑 Caught signal"; cleanup; exit 0' INT TERM
-trap 'echo "💥 Error on line $LINENO"; cleanup; exit 1' ERR
+done
 
-wait
+exit "$status"

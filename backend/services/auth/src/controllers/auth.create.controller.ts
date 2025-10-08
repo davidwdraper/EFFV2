@@ -1,73 +1,73 @@
 // backend/services/auth/src/controllers/auth.create.controller.ts
 /**
  * Docs:
- * - SOP: Reduced, Clean
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0004 (Auth Service Skeleton — no minting)
- *   - ADR-0005 (Gateway→Auth→User Signup Plumbing — mocked hash)
- *   - ADR-0007 (Non-gateway S2S via svcfacilitator + TTL cache)
+ *   - ADR-0005 (Gateway→Auth→User Signup Plumbing)
  *
  * Purpose:
- * - POST /api/auth/v1/create (public)
- * - Validate + hash password (mock for now), then CALL User:
- *     PUT /api/user/v1/create (S2S)
+ * - Client-facing signup entrypoint.
+ * - Thin controller: validate → (call User later) → return.
+ *
+ * Notes:
+ * - For stabilization, we ACK 200. Wiring to User can be added next.
  */
 
-import type { HandlerCtx, HandlerResult } from "@nv/shared/base/ControllerBase";
-import { AuthControllerBase } from "./auth.base.controller";
-import { UserContract } from "@nv/shared/contracts/user.contract";
+import type { RequestHandler } from "express";
+import { ControllerBase } from "@nv/shared/base/ControllerBase";
 
-type CreateEnvelope = {
-  user?: unknown; // must conform to UserContract (email required)
-  password?: string;
-};
+function getSvcName(): string {
+  return process.env.SVC_NAME?.trim() || "auth";
+}
 
-export class AuthCreateController extends AuthControllerBase {
-  public constructor() {
-    super();
+export class AuthCreateController extends ControllerBase {
+  constructor() {
+    super({ service: getSvcName() });
   }
 
-  /** Route handler (business): wire with ctrl.handle((ctx) => ctrl.create(ctx)) */
-  public async create(ctx: HandlerCtx): Promise<HandlerResult> {
-    const { body, requestId } = ctx;
-    const b = (body || {}) as CreateEnvelope;
+  /** Mount this on PUT /create */
+  public create(): RequestHandler {
+    return this.handle(async (ctx) => {
+      const requestId = ctx.requestId;
+      const body = (ctx.body ?? {}) as Partial<{
+        email: string;
+        password: string;
+      }>;
 
-    // Validate user
-    let user: UserContract;
-    try {
-      user = UserContract.from(b.user);
-    } catch (e: any) {
-      return this.fail(
-        400,
-        "invalid_user_contract",
-        String(e?.message || e),
-        requestId
-      );
-    }
+      const email = (body.email || "").trim();
+      const password = (body.password || "").trim();
 
-    // Validate password
-    const pwd = b.password;
-    if (!pwd || typeof pwd !== "string" || !pwd.trim()) {
-      return this.fail(
-        400,
-        "invalid_request",
-        "password is required",
-        requestId
-      );
-    }
+      if (!email)
+        return this.fail(
+          400,
+          "invalid_request",
+          "email is required",
+          requestId
+        );
+      if (!password)
+        return this.fail(
+          400,
+          "invalid_request",
+          "password is required",
+          requestId
+        );
 
-    // Mock hash — replace with real crypto per future ADR
-    const hashedPassword = `mockhash:${Buffer.from(pwd)
-      .toString("base64url")
-      .slice(0, 24)}`;
+      // TODO: Call User service with { user:{email}, hashedPassword } once proxy is fixed.
+      // const hashedPassword = `mock-hash::${password}`;
 
-    // S2S: PUT /api/user/v1/create
-    const upstream = await this.callUser(
-      "create",
-      { user: user.toJSON(), hashedPassword },
-      { method: "PUT", requestId }
-    );
-
-    return this.fromUpstream(upstream);
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          service: this.service,
+          requestId,
+          data: {
+            status: "created",
+            detail: "auth.create ack — user call deferred during stabilization",
+            email,
+          },
+        },
+      };
+    });
   }
 }

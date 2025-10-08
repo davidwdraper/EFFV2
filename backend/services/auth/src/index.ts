@@ -6,25 +6,28 @@
  *
  * Purpose:
  * - Bootstrap the Auth service using shared Bootstrap and start HTTP server.
+ * - On failure, log via standard logger (not console JSON).
  */
 
 import { Bootstrap } from "@nv/shared/bootstrap/Bootstrap";
+import { getLogger } from "@nv/shared/logger/Logger";
 import { AuthApp } from "./app";
 
+function serializeError(err: unknown) {
+  if (err instanceof Error) {
+    return { name: err.name, message: err.message, stack: err.stack };
+  }
+  return { message: String(err) };
+}
+
 async function main(): Promise<void> {
-  await new Bootstrap({
-    service: "auth",
-  }).run(() => new AuthApp().instance);
+  const boot = new Bootstrap({ service: "auth" });
+  await boot.run(() => new AuthApp().instance);
 }
 
 main().catch((err) => {
-  console.error(
-    JSON.stringify({
-      level: 50,
-      service: "auth",
-      msg: "boot_failed",
-      err: String(err),
-    })
-  );
+  // Use standard logger so failures look like the rest of the system
+  const log = getLogger().bind({ service: "auth" });
+  log.error({ err: serializeError(err) }, "boot_failed");
   process.exit(1);
 });

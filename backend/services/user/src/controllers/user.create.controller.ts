@@ -3,22 +3,22 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - docs/adr/00xx-user-service-skeleton.md (TBD)
+ *   - adr0021-user-opaque-password-hash
  *   - ADR-0014 (Base Hierarchy — ControllerBase extends ServiceBase)
  *
  * Purpose:
  * - Handle S2S user provisioning (Auth → User).
- * - Exposes an Express handler via ControllerBase.handle().
+ * - Controllers stay thin: unwrap → validate DTO (shared) → repo → return.
  *
  * Notes:
- * - Endpoint is wired at router as PUT /create (S2S-only).
- * - Persistence is stubbed for now; returns 202 Accepted.
+ * - Endpoint wired at router as PUT /create (S2S-only).
+ * - Persistence currently stubbed; returns 202 Accepted.
  */
 
 import type { RequestHandler } from "express";
 import {
   UserControllerBase,
-  type AuthS2SEnvelope,
+  type ProvisionPayload,
 } from "./user.base.controller";
 
 export class UserCreateController extends UserControllerBase {
@@ -31,16 +31,14 @@ export class UserCreateController extends UserControllerBase {
     return this.handle(async (ctx) => {
       const requestId = ctx.requestId;
 
-      // Bind TUser explicitly so TS knows what `.user` should look like.
       type UserPayload = Record<string, unknown>;
+      // IMPORTANT: include the generic in the cast to avoid variance error
+      const body = (ctx.body ?? {}) as ProvisionPayload<UserPayload>;
 
       const { user, hashedPassword } =
-        this.extractProvisionEnvelope<UserPayload>(
-          (ctx.body as Partial<AuthS2SEnvelope<UserPayload>>) ?? {},
-          requestId
-        );
+        this.extractProvisionPayload<UserPayload>(body, requestId);
 
-      // TODO: validate `user` against UserContract; persist; return domain with generated _id.
+      // TODO: validate `user` against shared UserContract; persist; return domain with generated _id.
       return {
         status: 202,
         body: {

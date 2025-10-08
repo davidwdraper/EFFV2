@@ -68,6 +68,16 @@ export class Bootstrap {
 
     // Bind a process-level logger once; caller can .bind() more context per phase.
     this.loggerHandle = getLogger().bind(this.baseCtx);
+
+    // Global last-ditch crash logs (never swallow)
+    process.on("uncaughtException", (err) => {
+      this.logger.error({ err: serializeError(err) }, "uncaught_exception");
+      process.exitCode = 1;
+    });
+    process.on("unhandledRejection", (reason) => {
+      this.logger.error({ err: serializeError(reason) }, "unhandled_rejection");
+      process.exitCode = 1;
+    });
   }
 
   /** Merge additional fields into the base logging context (rebinds logger). */
@@ -115,8 +125,21 @@ export class Bootstrap {
       await this.safe("preStart", this.opts.preStart);
     }
 
+    // === Build HTTP handler (loud failures) =================================
+    let handler: RequestListener;
+    try {
+      handler = buildHandler();
+      if (typeof handler !== "function") {
+        throw new TypeError(
+          `buildHandler must return a function (RequestListener); got ${typeof handler}`
+        );
+      }
+    } catch (err) {
+      this.logger.error({ err: serializeError(err) }, "build_handler_failed");
+      throw err;
+    }
+
     // === HTTP server bootstrap ==============================================
-    const handler = buildHandler();
     const server = http.createServer(handler);
 
     server.listen(port, this.opts.host, () => {
@@ -129,7 +152,7 @@ export class Bootstrap {
     });
 
     server.on("error", (err) => {
-      this.emit("error", "server_error", { err: String(err) });
+      this.emit("error", "server_error", { err: serializeError(err) });
       process.exitCode = 1;
     });
 
@@ -139,7 +162,7 @@ export class Bootstrap {
       try {
         await this.opts.onShutdown?.();
       } catch (err) {
-        this.emit("warn", "shutdown_hook_error", { err: String(err) });
+        this.emit("warn", "shutdown_hook_error", { err: serializeError(err) });
       } finally {
         server.close(() => {
           this.emit("debug", "closed");
@@ -157,7 +180,7 @@ export class Bootstrap {
     try {
       await fn();
     } catch (err) {
-      this.emit("error", `${name}_failed`, { err: String(err) });
+      this.emit("error", `${name}_failed`, { err: serializeError(err) });
       throw err;
     }
   }
@@ -170,10 +193,8 @@ export class Bootstrap {
     const log = this.logger;
     const call = (method: "debug" | "info" | "warn" | "error") => {
       if (extra && Object.keys(extra).length > 0) {
-        // structured overload
         log[method](extra, msg);
       } else {
-        // string-only overload
         log[method](msg);
       }
     };
@@ -193,4 +214,24 @@ export class Bootstrap {
         break;
     }
   }
+}
+
+function serializeError(err: unknown): {
+  name?: string;
+  message: string;
+  stack?: string;
+} {
+  if (err instanceof Error) {
+    return { name: err.name, message: err.message, stack: err.stack };
+  }
+  try {
+    // If it's a plain object with message/stack, keep it
+    const anyErr = err as any;
+    if (anyErr && (anyErr.message || anyErr.stack)) {
+      return { message: String(anyErr.message ?? err), stack: anyErr.stack };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { message: String(err) };
 }

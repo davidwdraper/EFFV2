@@ -4,7 +4,7 @@
 # Smoke: Auth.create → User.create (S2S) via Gateway
 # Requires: gateway :4000, auth :4010 (proxied), user :4020 (proxied)
 # Flow:
-#   1) POST /api/auth/v1/create  with { email, password }
+#   1) PUT /api/auth/v1/create  with { email, password }
 #   2) Expect ok=true, service=auth (and a user id/email in payload)
 #   3) Cleanup: DELETE /api/user/v1/users/:id  (best-effort)
 # macOS bash 3.2 compatible
@@ -29,10 +29,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "→ POST ${CREATE_URL}"
+echo "→ PUT ${CREATE_URL}"
 REQ_BODY="$(jq -n --arg email "$EMAIL" --arg pw "$PASSWORD" '{ email: $email, password: $pw }')"
 
-RESP="$(curl -sS -X POST \
+RESP="$(curl -sS -X PUT \
   -H 'Accept: application/json' \
   -H 'Content-Type: application/json' \
   --data "$REQ_BODY" \

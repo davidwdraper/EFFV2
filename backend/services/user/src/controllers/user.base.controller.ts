@@ -4,26 +4,25 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - docs/adr/00xx-user-service-skeleton.md (TBD)
+ *   - adr0021-user-opaque-password-hash
  *   - ADR-0014 (Base Hierarchy — ControllerBase extends ServiceBase)
  *
  * Purpose:
  * - Per-service base controller for the User service.
  * - Extends shared ControllerBase and standardizes env-driven service name.
- * - Centralizes S2S envelope helpers for hashed-password flows (create/signon/changePassword).
+ * - Centralizes tiny helpers (request id, envelope extraction).
  *
  * Notes:
- * - Fail-fast on missing SVC_NAME to avoid silent mislabeling in logs/headers.
- * - Hash handling is MOCK for now (prefix check + equality). Replace with real KDF later.
- * - Controllers should delegate envelope extraction and hash checks to this base.
+ * - User service treats password hashes as OPAQUE (ADR-0021).
+ * - No format checks, no mock-prefix checks here. Auth owns hashing policy.
  */
 
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
 
-/** Canonical S2S envelope shape expected from Auth → User. */
-export type AuthS2SEnvelope<TUser = unknown> = {
-  user?: TUser; // expected to conform to UserContract JSON (validated upstream or here later)
-  hashedPassword?: string; // must be a hash (Auth creates; User stores/compares)
+/** Flat shape controllers should receive AFTER unwrapEnvelope middleware. */
+export type ProvisionPayload<TUser = unknown> = {
+  user?: TUser; // expected to conform to shared UserContract DTO
+  hashedPassword?: string; // opaque non-empty string (ADR-0021)
 };
 
 function getSvcName(): string {
@@ -37,19 +36,16 @@ export abstract class UserControllerBase extends ControllerBase {
     super({ service: getSvcName() });
   }
 
-  // ===================== Hashed Password Helpers (MOCK for now) =====================
-
   /**
-   * Ensure the envelope contains a non-empty hashedPassword string.
-   * Returns the trimmed hash or throws a HandlerResult via this.fail(400).
+   * Ensure the payload contains a non-empty hashedPassword string.
+   * Returns the trimmed hash or throws a 400 HandlerResult.
    */
   protected requireHashedPassword(
-    env: AuthS2SEnvelope,
+    body: ProvisionPayload,
     requestId: string
   ): string {
-    const hp = env?.hashedPassword;
+    const hp = body?.hashedPassword;
     if (!hp || typeof hp !== "string" || !hp.trim()) {
-      // Throwing the HandlerResult is intentional; upstream controller can catch or let SvcReceiver handle.
       throw this.fail(
         400,
         "invalid_request",
@@ -61,37 +57,15 @@ export abstract class UserControllerBase extends ControllerBase {
   }
 
   /**
-   * Mock hash format guard. Today we accept "mockhash:<...>" only to prevent
-   * accidental acceptance of plaintext. Replace when real KDF lands.
-   */
-  protected isMockHash(h: string): boolean {
-    return typeof h === "string" && h.startsWith("mockhash:");
-  }
-
-  /**
-   * Mock compare: require both to be mock hashes and equal byte-for-byte.
-   * Replace with constant-time compare when real hashes are used.
-   */
-  protected compareHashed(candidateHash: string, storedHash: string): boolean {
-    return (
-      this.isMockHash(candidateHash) &&
-      this.isMockHash(storedHash) &&
-      candidateHash === storedHash
-    );
-  }
-
-  /**
-   * Convenience extractor for common “auth provision” envelope:
-   * - Validates presence of user & hashedPassword (mock format).
+   * Convenience extractor for common “auth provision” payload:
+   * - Validates presence of user & hashedPassword (opaque).
    * - Returns normalized { user, hashedPassword }.
-   * Controllers can call this right after handler context unwrap.
    */
-  protected extractProvisionEnvelope<TUser = unknown>(
-    body: Partial<AuthS2SEnvelope<TUser>>,
+  protected extractProvisionPayload<TUser = unknown>(
+    body: ProvisionPayload<TUser>,
     requestId: string
   ): { user: TUser; hashedPassword: string } {
-    const env = (body || {}) as AuthS2SEnvelope<TUser>;
-    const user = env.user as TUser | undefined;
+    const user = body?.user as TUser | undefined;
     if (user === undefined || user === null) {
       throw this.fail(
         400,
@@ -100,15 +74,15 @@ export abstract class UserControllerBase extends ControllerBase {
         requestId
       ) as unknown as never;
     }
-    const hashedPassword = this.requireHashedPassword(env, requestId);
-    if (!this.isMockHash(hashedPassword)) {
-      throw this.fail(
-        400,
-        "invalid_request",
-        "hashedPassword must be a mock hash",
-        requestId
-      ) as unknown as never;
-    }
+    const hashedPassword = this.requireHashedPassword(body, requestId);
     return { user, hashedPassword };
+  }
+
+  /**
+   * Opaque hash compare (placeholder).
+   * TODO(SEC): replace with constant-time compare once we store real hashes.
+   */
+  protected compareOpaqueHash(a: string, b: string): boolean {
+    return typeof a === "string" && typeof b === "string" && a === b;
   }
 }

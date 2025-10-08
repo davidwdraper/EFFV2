@@ -95,10 +95,20 @@
 
 Addendum:
 
-- All code must work unaltered in other environments such as stage and production. Only env variables should need changing. No mention of dev in code -- ever.
+### Environment Invariance (Critical)
+
+- The codebase must be **100% environment-agnostic.**
+- There shall be **no** literal references, assumptions, or defaults tied to any environment  
+  (e.g., `127.0.0.1`, `localhost`, `dev`, `staging`, etc.).
+- All such values **must** come exclusively from environment variables or configuration services  
+  (e.g., `SVCFACILITATOR_BASE_URL`, `NV_GATEWAY_PORT`, etc.).
+- **Dev == Prod** in all behaviors — only env values differ.
+- If a component requires an address or hostname, it must obtain it from its configuration layer, never hardcode or assume defaults.
+- Any new literal network or filesystem surface must pass a **“prod-readiness” check**:  
+  _Could this line deploy unchanged to prod?_ If not, it’s wrong.
 
 - Never add logic for backwards compatibility! We're greenfield. We do it right every time. If it requires a break, we break, then we fix. One code base, no convenience conditionals.
 
 - Track the things that you believe will be important in subseqent sessions. When our current session gets too slow to continue, I'll ask you to print out in a code block, your saved up memory which I'll in turn save, and provide to you at the beginning of the next.
 
-I will paste your notes from previous session, after you read this.
+Following this is your notes from the previous session:

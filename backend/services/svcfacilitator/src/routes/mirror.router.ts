@@ -1,4 +1,4 @@
-// backend/services/svcfacilitator/src/routes/mirror.ts
+// backend/services/svcfacilitator/src/routes/mirror.router.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -14,26 +14,25 @@
  * Invariants:
  * - Mounted under /api/svcfacilitator/v<major>
  * - All handlers require versioned API path and slug=svcfacilitator
+ * - No backward-compat paths (greenfield SOP)
  */
 
 import type { Request, Response } from "express";
 import { RouterBase } from "@nv/shared/base/RouterBase";
-// NOTE: case-sensitive import to match the actual filename
 import { MirrorController } from "../controllers/MirrorController";
 
 export class MirrorRouter extends RouterBase {
   private readonly ctrl = new MirrorController();
 
   protected configure(): void {
-    this.router().post("/mirror/load", this.wrap(this.loadMirror)); // keep explicit prefix
-    // Back-compat path if you already mounted at /load previously:
-    this.router().post("/load", this.wrap(this.loadMirror));
+    // Explicit canonical path only (no /load alias)
+    this.post("/mirror/load", this.loadMirror);
   }
 
   private async loadMirror(req: Request, res: Response): Promise<void> {
     if (!this.requireVersionedApiPath(req, res, "svcfacilitator")) return;
 
-    const data = await this.ctrl.mirrorLoad(req, res as any);
+    const data = await this.ctrl.mirrorLoad(req, res);
     if (!res.headersSent) {
       this.jsonOk(res, data ?? { status: "accepted" });
     }

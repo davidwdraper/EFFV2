@@ -8,17 +8,18 @@
  *   - ADR-0019 (Class Routers via RouterBase)
  *
  * Purpose:
- * - Common base for all Express routers across services.
- * - Standardizes:
+ * - Single, strict base for all Express routers.
+ * - Lifecycle: preRoute() → configure() → postRoute()
+ * - Standardized:
  *   • async handler wrapping (no unhandled rejections)
- *   • structured entry/exit/error logs
+ *   • consistent, path-aware structured logs
  *   • JSON helpers (ok/problem)
  *   • versioned-path parsing guard
  *   • small HTTP utilities (headers/body/ports/host)
  *
- * Notes:
- * - Do NOT call this.router() from configure(); use this.r inside configure().
- * - router() is lazy and guarded against re-entrancy to avoid recursion.
+ * Environment Invariance:
+ * - Absolutely no hardcoded addresses or environment assumptions.
+ * - All network surfaces resolved via env vars or config layers.
  */
 
 import type {
@@ -39,53 +40,57 @@ type AnyHandler = (
 ) => unknown | Promise<unknown>;
 
 export abstract class RouterBase extends ServiceBase {
-  protected readonly r: Router;
-  private _configured = false;
-  private _configuring = false; // re-entrancy guard
+  #r: Router;
+  #configured = false;
+  #configuring = false;
 
   constructor(opts?: { service?: string; context?: Record<string, unknown> }) {
     super({
       service: opts?.service,
       context: { component: "Router", ...(opts?.context ?? {}) },
     });
-    this.r = express.Router();
-    // IMPORTANT: no configure() call here — subclasses may rely on field init first.
+    this.#r = express.Router();
   }
 
-  /** Subclasses implement this to register routes (use this.wrap for handlers). */
-  protected abstract configure(): void;
+  // ──────────────────────────────────────────────────────────────────────────
+  // Lifecycle
+  // ──────────────────────────────────────────────────────────────────────────
 
-  /** Expose the underlying express.Router (lazy-configured, re-entrancy safe). */
+  protected preRoute(): void {}
+  protected abstract configure(): void;
+  protected postRoute(): void {}
+
   public router(): Router {
-    if (this._configured) return this.r;
-    if (this._configuring) return this.r; // if configure() calls router(), just return r
-    this._configuring = true;
+    if (this.#configured) return this.#r;
+    if (this.#configuring) return this.#r;
+    this.#configuring = true;
     try {
+      this.preRoute();
       this.configure();
-      this._configured = true;
+      this.postRoute();
+      this.#configured = true;
     } finally {
-      this._configuring = false;
+      this.#configuring = false;
     }
-    return this.r;
+    return this.#r;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Async wrapper + logging
   // ──────────────────────────────────────────────────────────────────────────
 
-  protected wrap<T extends AnyHandler>(fn: T): RequestHandler {
-    const baseLog = this.bindLog({ kind: "http" });
+  protected wrap<T extends AnyHandler>(path: string, fn: T): RequestHandler {
+    const baseLog = this.bindLog({ kind: "http", path });
     return (req, res, next) => {
-      const routePath = (req.route && req.route.path) || "unknown";
       baseLog.debug(
-        { method: req.method, url: req.originalUrl, route: routePath },
+        { method: req.method, url: req.originalUrl },
         "router_enter"
       );
       Promise.resolve(fn.call(this, req, res, next))
         .then(() => {
           if (!res.headersSent) {
             baseLog.warn(
-              { method: req.method, url: req.originalUrl, route: routePath },
+              { method: req.method, url: req.originalUrl },
               "handler_completed_without_response"
             );
           } else {
@@ -98,13 +103,37 @@ export abstract class RouterBase extends ServiceBase {
               err: String(err),
               method: req.method,
               url: req.originalUrl,
-              route: routePath,
             },
             "router_error"
           );
           next(err);
         });
     };
+  }
+
+  protected get(path: string, handler: AnyHandler): void {
+    this.#r.get(path, this.wrap(path, handler));
+  }
+  protected post(path: string, handler: AnyHandler): void {
+    this.#r.post(path, this.wrap(path, handler));
+  }
+  protected put(path: string, handler: AnyHandler): void {
+    this.#r.put(path, this.wrap(path, handler));
+  }
+  protected patch(path: string, handler: AnyHandler): void {
+    this.#r.patch(path, this.wrap(path, handler));
+  }
+  protected delete(path: string, handler: AnyHandler): void {
+    this.#r.delete(path, this.wrap(path, handler));
+  }
+  protected use(pathOrMw: string | RequestHandler, mw?: RequestHandler): void {
+    if (typeof pathOrMw === "string") {
+      const path = pathOrMw;
+      if (!mw) throw new Error("use(path, mw) requires a middleware function");
+      this.#r.use(path, this.wrap(path, mw));
+    } else {
+      this.#r.use(this.wrap("(anonymous)", pathOrMw));
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -172,15 +201,13 @@ export abstract class RouterBase extends ServiceBase {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Small HTTP utilities (host/ports/headers/body)
+  // Small HTTP utilities (no environment assumptions)
   // ──────────────────────────────────────────────────────────────────────────
 
   protected getInboundHost(req: Request): string {
+    // Return whatever Host header client provided; never assume local
     const host = (req.get("host") || "").trim();
-    if (!host) return "127.0.0.1";
-    const idx = host.lastIndexOf(":");
-    if (idx > 0 && !host.endsWith("]")) return host.slice(0, idx);
-    return host;
+    return host || process.env.NV_DEFAULT_HOST || "unknown-host";
   }
 
   protected absoluteUrl(req: Request, hostname: string, port: number): string {

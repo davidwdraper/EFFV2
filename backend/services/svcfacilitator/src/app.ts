@@ -21,8 +21,8 @@
 
 import type { Request, Response } from "express";
 import { AppBase } from "@nv/shared/base/AppBase";
-import { ResolveRouter } from "./routes/resolve";
-import { MirrorRouter } from "./routes/mirror";
+import { ResolveRouter } from "./routes/resolve.router";
+import { MirrorRouter } from "./routes/mirror.router";
 import { mirrorStore } from "./services/mirrorStore";
 
 const SERVICE = "svcfacilitator";

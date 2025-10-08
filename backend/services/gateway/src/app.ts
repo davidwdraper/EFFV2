@@ -11,15 +11,15 @@
  *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint → AppBase → ServiceBase)
  *
  * Purpose:
- * - GatewayApp now overrides AppBase hooks; all app.use() ordering lives in AppBase.
- * - Health is mounted first, then edge logs, then (no parsers), then proxy, then error funnel.
+ * - GatewayApp mounts versioned health first, then edge logs, then proxy, then error funnel.
+ * - Environment invariance: no host/port literals; all via env/config.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
 import { edgeHitLogger } from "./middleware/edge.hit.logger";
-import { makeProxy } from "./routes/proxy";
 import { getSvcConfig } from "./services/svcconfig/SvcConfig";
 import type { SvcConfig } from "./services/svcconfig/SvcConfig";
+import { ProxyRouter } from "./routes/proxy.router";
 
 const SERVICE = "gateway";
 
@@ -30,7 +30,6 @@ export class GatewayApp extends AppBase {
     super({ service: SERVICE });
   }
 
-  // 0) Warm the svcconfig mirror early (fire-and-forget).
   protected onBoot(): void {
     const sc = (this.svcConfig ??= getSvcConfig());
     void sc.ensureLoaded().catch((err: unknown) => {
@@ -39,12 +38,10 @@ export class GatewayApp extends AppBase {
     });
   }
 
-  // 1) Versioned health base path (required per SOP).
   protected healthBasePath(): string | null {
     return "/api/gateway/v1";
   }
 
-  // 1b) Readiness ties to svcconfig entry count.
   protected readyCheck(): () => boolean {
     return () => {
       try {
@@ -55,25 +52,18 @@ export class GatewayApp extends AppBase {
     };
   }
 
-  // 2) Pre-routing: add edge hit logger (and keep base response-error logger).
   protected mountPreRouting(): void {
     super.mountPreRouting();
     this.app.use(edgeHitLogger());
   }
 
-  // 3) Security: (reserved for verifyS2S later). No-op for now.
-  // protected mountSecurity(): void { super.mountSecurity(); }
-
-  // 4) Parsers: gateway does NOT parse bodies for /api/*; keep it empty.
   protected mountParsers(): void {
-    // intentionally blank — proxy streams bodies; see SOP
+    // Intentionally empty — proxy streams bodies unchanged.
   }
 
-  // 5) Routes: mount the proxy at /api (origin swap only; path/query unchanged).
   protected mountRoutes(): void {
     const sc = (this.svcConfig ??= getSvcConfig());
-    this.app.use("/api", makeProxy(sc));
+    // Mount the proxy router at /api; controller will reject /api/gateway/*
+    this.app.use("/api", new ProxyRouter(sc).router());
   }
-
-  // 6) Post-routing error funnel is inherited (JSON 500).
 }

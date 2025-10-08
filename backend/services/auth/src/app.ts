@@ -10,15 +10,14 @@
  * Purpose:
  * - Auth service app class expected by Bootstrap: `new AuthApp()`.
  * - Inherits all `app.use(...)` ordering from AppBase:
- *   health → preRouting (responseErrorLogger) → security → parsers (JSON) → routes → postRouting.
- * - Service override surface is kept tiny to prevent drift.
+ *   health → preRouting → security → parsers (JSON) → routes → postRouting.
+ * - Environment-invariant: no host/IP/dev literals; only env vars/config differ.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
-import authRouter from "./routes/auth.route";
+import { AuthRouter } from "./routes/auth.router";
 
-const SERVICE = process.env.SVC_NAME?.trim() || "auth";
-const V1_BASE = `/api/${SERVICE}/v1`;
+const SERVICE = "auth"; // slug is fixed by SOP (no env overrides)
 
 export class AuthApp extends AppBase {
   constructor() {
@@ -27,13 +26,12 @@ export class AuthApp extends AppBase {
 
   /** Versioned health base path (required per SOP). */
   protected healthBasePath(): string | null {
-    return V1_BASE;
+    return "/api/auth/v1";
   }
 
   /** Routes mounted after base pre/security/parsers. Keep routes one-liners. */
   protected mountRoutes(): void {
-    // Routes are RELATIVE inside the router (no /v1 prefix there).
-    this.app.use(V1_BASE, authRouter);
+    this.app.use("/api/auth/v1", new AuthRouter().router());
   }
 }
 

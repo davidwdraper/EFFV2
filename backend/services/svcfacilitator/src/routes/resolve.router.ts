@@ -1,4 +1,4 @@
-// backend/services/svcfacilitator/src/routes/resolve.ts
+// backend/services/svcfacilitator/src/routes/resolve.router.ts
 /**
  * Docs:
  * - SOP: svcfacilitator is the source of truth; gateway mirrors from it.
@@ -24,13 +24,10 @@ export class ResolveRouter extends RouterBase {
 
   protected configure(): void {
     // Accept ?key=<slug@version> (also leniently accept ?slug=)
-    this.router().get("/resolve", this.wrap(this.resolveByKey));
+    this.get("/resolve", this.resolveByKey);
 
     // Params variant: /resolve/:slug/v:version
-    this.router().get(
-      "/resolve/:slug/v:version",
-      this.wrap(this.resolveByParams)
-    );
+    this.get("/resolve/:slug/v:version", this.resolveByParams);
   }
 
   private async resolveByKey(req: Request, res: Response): Promise<void> {

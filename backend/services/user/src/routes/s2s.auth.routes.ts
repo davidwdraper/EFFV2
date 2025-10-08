@@ -14,8 +14,9 @@
  *   - DELETE /delete/:id      (idempotent delete-by-id; ack for smoke #8)
  *
  * Notes:
- * - Mounted under /api/<svc>/v1 in app.ts (do not repeat /v1 here).
+ * - Mounted under /api/user/v1 in app.ts (do not repeat /v1 here).
  * - Header-only S2S guard for now: verifyTrustedCaller() (x-service-name allowlist).
+ * - Environment-invariant: no host/IP literals; slug is fixed ("user").
  */
 
 import type { RequestHandler } from "express";
@@ -25,11 +26,7 @@ import { UserSignonController } from "../controllers/user.signon.controller";
 import { UserChangePasswordController } from "../controllers/user.changepassword.controller";
 import { UserDeleteController } from "../controllers/user.delete.controller";
 
-function getSvcName(): string {
-  const n = process.env.SVC_NAME?.trim();
-  if (!n) throw new Error("SVC_NAME is required but not set");
-  return n;
-}
+const SERVICE_SLUG = "user" as const;
 
 /** Header-only S2S guard — MUST be a RequestHandler (void return). */
 const verifyTrustedCaller: RequestHandler = (req, res, next) => {
@@ -44,7 +41,7 @@ const verifyTrustedCaller: RequestHandler = (req, res, next) => {
   if (!caller || !allowed.has(caller)) {
     res.status(403).json({
       ok: false,
-      service: getSvcName(),
+      service: SERVICE_SLUG,
       data: {
         status: "forbidden",
         detail:
@@ -63,18 +60,18 @@ export class UserS2SRouter extends RouterBase {
   private readonly deleteCtrl = new UserDeleteController();
 
   constructor() {
-    super({ service: getSvcName(), context: { router: "UserS2SRouter" } });
+    super({ service: SERVICE_SLUG, context: { router: "UserS2SRouter" } });
   }
 
   protected configure(): void {
     // Guard first — does NOT consume body
-    this.r.use(verifyTrustedCaller);
+    this.use(verifyTrustedCaller);
 
     // Create user (S2S-only)
-    this.r.put("/create", this.createCtrl.create());
+    this.put("/create", this.createCtrl.create());
 
     // Signon stub
-    this.r.post(
+    this.post(
       "/signon",
       this.signonCtrl.handle(async () => ({
         status: 501,
@@ -83,7 +80,7 @@ export class UserS2SRouter extends RouterBase {
     );
 
     // Change password stub
-    this.r.post(
+    this.post(
       "/changepassword",
       this.changeCtrl.handle(async () => ({
         status: 501,
@@ -92,6 +89,6 @@ export class UserS2SRouter extends RouterBase {
     );
 
     // Delete by id (S2S-only, idempotent ack) for smoke #8
-    this.r.delete("/delete/:id", this.deleteCtrl.s2sDeleteById());
+    this.delete("/delete/:id", this.deleteCtrl.s2sDeleteById());
   }
 }

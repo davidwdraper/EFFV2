@@ -45,6 +45,7 @@ SERVICES=(
   "gateway|backend/services/gateway|pnpm dev"
   "auth|backend/services/auth|pnpm dev"
   "user|backend/services/user|pnpm dev"
+  "user|backend/services/audit|pnpm dev"
 )
 
 # ======= Helpers =============================================================

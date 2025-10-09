@@ -29,6 +29,7 @@ import { auditLogger } from "./middleware/audit.logger";
 import { GatewayAuditService } from "./services/audit/GatewayAuditService";
 import { SvcClient } from "@nv/shared/svc/SvcClient";
 import { WalReplayer } from "@nv/shared/wal/WalReplayer";
+import { AuditEntryContract } from "@nv/shared/contracts/audit/audit.entry.contract";
 
 const SERVICE = "gateway";
 
@@ -100,14 +101,44 @@ export class GatewayApp extends AppBase {
       tickMs: intEnv("WAL_REPLAY_TICK_MS"),
       logger: rl,
       onBatch: async (lines: string[]) => {
-        const entries = lines.map((l) => JSON.parse(l));
-        await svc.call({
+        // Strictly parse each line as an AuditEntry; drop anything malformed.
+        const entries: any[] = [];
+        for (const l of lines) {
+          let obj: unknown;
+          try {
+            obj = JSON.parse(l);
+          } catch {
+            continue; // skip non-JSON
+          }
+          try {
+            const parsed = AuditEntryContract.parse(obj, "gateway.replay");
+            entries.push(parsed.toJSON());
+          } catch {
+            // Not an audit entry or invalid (e.g., bad ts). Skip it.
+            // This prevents poisoning the whole POST with a 400.
+            continue;
+          }
+        }
+        if (entries.length === 0) return;
+
+        const resp = await svc.call({
           slug: auditSlug, // must be "audit"
           version: 1, // version here, not in slug
           path: "/api/audit/v1/entries", // versioned route
           method: "POST",
           body: { entries },
         });
+
+        if (!resp.ok) {
+          const statusText = String(resp.error?.message ?? "upstream_error");
+          // NOTE: SvcResponse has no `url` property; keep the error concise and accurate.
+          throw Object.assign(
+            new Error(
+              `s2s_upstream_error ${resp.status} POST /api/audit/v1/entries (slug=${auditSlug}@v1): ${statusText}`
+            ),
+            { __wal_context: { count: entries.length } }
+          );
+        }
       },
     });
     this.replayer.start();

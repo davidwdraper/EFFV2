@@ -1,2 +1,0 @@
-{"kind":"audit","phase":"begin","service":"gateway","time":1759997959316,"requestId":"ed0eb0de-1fda-4b47-92fa-fe37292a4eda","method":"PUT","url":"/api/auth/v1/create","ip":"127.0.0.1","headers":{"host":"127.0.0.1:4000","user-agent":"curl/8.7.1","accept":"application/json","content-type":"application/json","content-length":"91","x-request-id":"ed0eb0de-1fda-4b47-92fa-fe37292a4eda"}}
-{"kind":"audit","phase":"end","service":"gateway","time":1759997959342,"requestId":"ed0eb0de-1fda-4b47-92fa-fe37292a4eda","method":"PUT","url":"/auth/v1/create","status":200}

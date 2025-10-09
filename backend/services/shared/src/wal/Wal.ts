@@ -2,7 +2,7 @@
 /**
  * Design/ADR:
  * - adr0022-shared-wal-and-db-base
- * - Environment invariance, prod-parity: FS journaling is MANDATORY.
+ * - adr0024-audit-wal-persistence-guarantee (fsync cadence; durability-first)
  *
  * Purpose:
  * - Shared Write-Ahead Log used by producers (gateway) and consumer (audit svc).
@@ -10,15 +10,17 @@
  *
  * Usage:
  *   const wal = Wal.fromEnv({ logger }); // logger: ILogger
- *   wal.append(entry);                // sync
+ *   wal.append(entry);                // sync (journals to disk)
  *   await wal.flush(persistFn);       // async drain to consumer callback
  *
  * Notes:
- * - No silent fallbacks. No on/off switch. If WAL_DIR is not set/writable, we fail.
+ * - No silent fallbacks. FS journaling is mandatory. If WAL_DIR missing/unwritable → fail-fast.
  * - This class does not “send to network.” Callers supply a persist() for flush().
+ * - ADR-0024: entries are considered accepted only after being written to the journal;
+ *   a short-cadence fsync consolidates disk flushes for performance while keeping crash loss bounded.
  */
 
-import * as fs from "node:fs/promises";
+import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ILogger } from "@nv/shared/logger/Logger";
@@ -40,6 +42,9 @@ export interface WalConfig {
 
   /** Optional time-based rotation (ms). */
   rotateMs?: number;
+
+  /** Fsync cadence in ms; groups write()s into periodic fsyncs (0 = fsync every write). */
+  fsyncMs: number;
 
   /** Shared logger (canonical contract). */
   logger?: ILogger;
@@ -64,9 +69,23 @@ export class Wal {
   private currentSize = 0;
   private fileCreatedAt = 0;
 
+  // Open handle for append + fsync discipline
+  private fh: fsp.FileHandle | null = null;
+  private fsyncTimer: NodeJS.Timeout | null = null;
+  private fsyncScheduled = false;
+  private stopped = false;
+
+  // Minimal metrics (good for smoke/debug)
+  private writes = 0;
+  private bytes = 0;
+  private lastFsyncAt = 0;
+
   constructor(cfg: WalConfig) {
     if (!cfg.fsDir || !cfg.fsDir.trim()) {
       throw new Error("Wal: WAL_DIR (fsDir) is required");
+    }
+    if (!(cfg.fsyncMs >= 0)) {
+      throw new Error("Wal: fsyncMs must be >= 0");
     }
     this.cfg = cfg;
     if (this.cfg.flushIntervalMs > 0) {
@@ -97,12 +116,17 @@ export class Wal {
       rotateBytes:
         intOrUndef(env.WAL_ROTATE_BYTES) ?? opts?.defaults?.rotateBytes,
       rotateMs: intOrUndef(env.WAL_ROTATE_MS) ?? opts?.defaults?.rotateMs,
+      fsyncMs: intOrDefault(
+        env.WAL_FSYNC_MS,
+        // ADR suggests 25–50ms as a sane dev default; use 50ms unless overridden.
+        opts?.defaults?.fsyncMs ?? 50
+      ),
       logger: opts?.logger,
     };
     return new Wal(cfg);
   }
 
-  /** Append a single entry (sync). Always journals to FS. */
+  /** Append a single entry (sync enqueue + async journal). Always journals to FS. */
   append(entry: WalEntry): void {
     this.q.push(entry);
     this.offset++;
@@ -120,6 +144,7 @@ export class Wal {
   /**
    * Flush current in-memory entries through the provided persist function.
    * Caller decides what "persist" means (HTTP to AuditSvc, DB repo, etc.).
+   * Does NOT affect the FS journal; that is already durable.
    */
   async flush(persist?: WalPersistFn): Promise<WalPersistResult> {
     if (this.q.length === 0) return { persisted: 0, lastOffset: this.offset };
@@ -148,33 +173,114 @@ export class Wal {
   /** Rotate the journal file (FS tier) on demand or by size/time thresholds. */
   async rotate(reason = "manual"): Promise<void> {
     await this.ensureDir();
+    // close current handle after forcing fsync
+    await this.forceFsync().catch(() => {});
+    await this.closeHandle().catch(() => {});
+
     const now = Date.now();
     this.currentFile = path.join(this.cfg.fsDir, `wal-${now}.ldjson`);
     this.currentSize = 0;
     this.fileCreatedAt = now;
+
+    this.fh = await fsp.open(this.currentFile, "a");
+    // sync the file creation quickly so subsequent writes have a stable inode persisted
+    await this.fh.sync().catch(() => {}); // best-effort
+
     this.cfg.logger?.info("[WAL] rotate", { file: this.currentFile, reason });
   }
 
-  /** Stop the background loop (if any). Call during graceful shutdown. */
+  /** Stop background loop & force final fsync/close. Call during graceful shutdown. */
   async stop(): Promise<void> {
+    this.stopped = true;
     this.cfg.flushIntervalMs = 0 as unknown as number; // stop loop on next tick
+    if (this.fsyncTimer) {
+      clearTimeout(this.fsyncTimer);
+      this.fsyncTimer = null;
+    }
+    await this.forceFsync().catch(() => {});
+    await this.closeHandle().catch(() => {});
     await this.loopHandle?.catch(() => {});
+  }
+
+  /** Minimal public metrics (optional for tests). */
+  public getMetrics(): {
+    writes: number;
+    bytes: number;
+    lastFsyncAt: number;
+    file?: string;
+    size: number;
+  } {
+    return {
+      writes: this.writes,
+      bytes: this.bytes,
+      lastFsyncAt: this.lastFsyncAt,
+      file: this.currentFile,
+      size: this.currentSize,
+    };
   }
 
   /* ------------------------------ Internals ------------------------------- */
 
   private async ensureDir(): Promise<void> {
-    await fs.mkdir(this.cfg.fsDir, { recursive: true });
+    await fsp.mkdir(this.cfg.fsDir, { recursive: true });
+  }
+
+  private async ensureOpenFile(): Promise<void> {
+    await this.ensureDir();
+    if (!this.currentFile || !this.fh) {
+      await this.rotate("init");
+    }
+  }
+
+  private scheduleFsync(): void {
+    // If fsyncMs == 0, fsync every write (safest; slowest)
+    if (this.cfg.fsyncMs === 0) {
+      // immediate fsync chain (fire and forget)
+      void this.forceFsync();
+      return;
+    }
+    if (this.fsyncScheduled) return;
+    this.fsyncScheduled = true;
+    this.fsyncTimer = setTimeout(async () => {
+      this.fsyncTimer = null;
+      this.fsyncScheduled = false;
+      await this.forceFsync().catch((err) => {
+        this.cfg.logger?.warn("[WAL] fsync_failed", { err: String(err) });
+      });
+    }, this.cfg.fsyncMs);
+  }
+
+  private async forceFsync(): Promise<void> {
+    if (!this.fh) return;
+    await this.fh.sync();
+    this.lastFsyncAt = Date.now();
+  }
+
+  private async closeHandle(): Promise<void> {
+    if (this.fh) {
+      try {
+        await this.fh.close();
+      } finally {
+        this.fh = null;
+      }
+    }
   }
 
   private async appendFs(entry: WalEntry): Promise<void> {
-    await this.ensureDir();
-    if (!this.currentFile) {
-      await this.rotate("init");
-    }
+    await this.ensureOpenFile();
+
     const line = JSON.stringify(entry) + "\n";
-    await fs.appendFile(this.currentFile!, line, { encoding: "utf8" });
-    this.currentSize += Buffer.byteLength(line);
+    const buf = Buffer.from(line, "utf8");
+
+    // Write append-only via open handle in "a" mode
+    // The OS guarantees append semantics; Node queues writes per-handle.
+    await this.fh!.write(buf, 0, buf.length);
+
+    this.writes += 1;
+    this.bytes += buf.length;
+    this.currentSize += buf.length;
+
+    // Rotation checks after write
     const needRotateBySize =
       this.cfg.rotateBytes && this.currentSize >= this.cfg.rotateBytes;
     const needRotateByTime =
@@ -182,18 +288,23 @@ export class Wal {
     if (needRotateBySize || needRotateByTime) {
       await this.rotate(needRotateBySize ? "size" : "time");
     }
+
+    // Schedule fsync per cadence
+    this.scheduleFsync();
   }
 
   /** Background flush loop using no-op persist (safe) until caller provides one. */
   private async startFlushLoop(): Promise<void> {
     const interval = this.cfg.flushIntervalMs;
-    while (this.cfg.flushIntervalMs > 0) {
+    while (this.cfg.flushIntervalMs > 0 && !this.stopped) {
       try {
         if (this.q.length > 0) {
           await this.flushNoopPersist();
         }
       } catch (err) {
-        this.cfg.logger?.warn("[WAL] background flush error", { err });
+        this.cfg.logger?.warn("[WAL] background flush error", {
+          err: String(err),
+        });
       }
       await sleep(interval);
     }

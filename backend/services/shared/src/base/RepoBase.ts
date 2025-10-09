@@ -1,4 +1,4 @@
-// backend/shared/src/repo/RepoBase.ts
+// backend/services/shared/src/repo/RepoBase.ts
 /**
  * Docs:
  * - SOP: Core SOP (Reduced, Clean)
@@ -8,10 +8,14 @@
  * Purpose:
  * - Thin shared base for Mongo-backed repos using DbClient & MongoDbFactory.
  * - Handles connect-once, ready checks, retries, and collection access.
+ *
+ * Notes:
+ * - Logger now uses the real shared logger type (IBoundLogger) narrowed to info/warn/error.
  */
 
 import type { DbClient } from "../db/DbClient";
 import type { Collection, Document, IndexDescription } from "mongodb";
+import type { IBoundLogger } from "../logger/Logger";
 
 type RetryCfg = { attempts: number; baseDelayMs: number; maxDelayMs: number };
 
@@ -20,12 +24,8 @@ export interface RepoBaseConfig<TDoc extends Document = Document> {
   collection: string;
   /** Optional db name override (else DbClient’s default). */
   dbName?: string;
-  /** Optional logger. */
-  logger?: {
-    info: (...a: unknown[]) => void;
-    warn: (...a: unknown[]) => void;
-    error: (...a: unknown[]) => void;
-  };
+  /** Shared logger (bound); narrowed to info/warn/error for repo use. */
+  logger?: Pick<IBoundLogger, "info" | "warn" | "error">;
   /** Retry policy for withRetry. (all optional on input) */
   retry?: Partial<RetryCfg>;
 }
@@ -34,11 +34,7 @@ export abstract class RepoBase<TDoc extends Document = Document> {
   protected readonly db: DbClient;
   protected readonly collection: string;
   protected readonly dbName?: string;
-  protected readonly logger?: {
-    info: (...a: unknown[]) => void;
-    warn: (...a: unknown[]) => void;
-    error: (...a: unknown[]) => void;
-  };
+  protected readonly logger?: Pick<IBoundLogger, "info" | "warn" | "error">;
   private readonly retry: RetryCfg;
 
   constructor(db: DbClient, cfg: RepoBaseConfig<TDoc>) {
@@ -72,10 +68,10 @@ export abstract class RepoBase<TDoc extends Document = Document> {
     if (!indexes || indexes.length === 0) return;
     const col = await this.coll();
     await col.createIndexes(indexes);
-    this.logger?.info?.("[RepoBase] indexes ensured", {
+    this.logger?.info("[RepoBase] indexes ensured", {
       collection: this.collection,
       count: indexes.length,
-    });
+    } as any);
   }
 
   /** Bounded retry wrapper with jitter. */
@@ -94,16 +90,16 @@ export abstract class RepoBase<TDoc extends Document = Document> {
           maxDelayMs,
           Math.floor(baseDelayMs * 2 ** i + Math.random() * baseDelayMs)
         );
-        this.logger?.warn?.(
+        this.logger?.warn(
           `[RepoBase] ${label} failed (attempt ${i + 1}/${attempts})`,
-          { err: String(err) }
+          { err: String(err) } as any
         );
         await sleep(delay);
       }
     }
-    this.logger?.error?.(
+    this.logger?.error(
       `[RepoBase] ${label} failed after ${attempts} attempts`,
-      { err: String(lastErr) }
+      { err: String(lastErr) } as any
     );
     throw lastErr;
   }

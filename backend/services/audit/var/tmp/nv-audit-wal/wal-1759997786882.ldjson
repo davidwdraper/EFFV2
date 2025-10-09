@@ -1,0 +1,3 @@
+{"requestId":"smoke-010-1759997786","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"end","ts":1759997786897,"status":"ok","http":{"code":200},"meta":{"smoke":10,"note":"end"}}
+{"requestId":"smoke-010-1759997847","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"begin","ts":1759997847183,"meta":{"smoke":10,"note":"begin"}}
+{"requestId":"smoke-010-1759997847","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"end","ts":1759997847306,"status":"ok","http":{"code":200},"meta":{"smoke":10,"note":"end"}}

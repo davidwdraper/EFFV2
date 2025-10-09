@@ -11,11 +11,13 @@
  *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint → AppBase → ServiceBase)
  *   - ADR-0022 (Shared WAL & DB Base; environment invariance)
  *   - ADR-0024 (SvcClient/SvcReceiver refactor for S2S)
+ *   - adr0023-wal-writer-reader-split
  *
  * Purpose:
  * - Health first, then edge logs, then audit logger, then proxy, then error funnel.
  * - No endpoint guessing: SvcClient resolves slug@version via SvcConfig.
  * - Audit batching is owned locally (GatewayAuditService) with mandatory FS WAL.
+ * - WalReplayer re-emits LDJSON WAL to Audit when it becomes reachable again.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
@@ -26,12 +28,32 @@ import { ProxyRouter } from "./routes/proxy.router";
 import { auditLogger } from "./middleware/audit.logger";
 import { GatewayAuditService } from "./services/audit/GatewayAuditService";
 import { SvcClient } from "@nv/shared/svc/SvcClient";
+import { WalReplayer } from "@nv/shared/wal/WalReplayer";
 
 const SERVICE = "gateway";
+
+/** Fail-fast env accessors (env invariance; no literals, no defaults). */
+function mustEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || v.trim() === "")
+    throw new Error(`[${SERVICE}] missing required env: ${name}`);
+  return v;
+}
+function intEnv(name: string): number {
+  const n = Number(mustEnv(name));
+  if (!Number.isFinite(n) || n <= 0)
+    throw new Error(`[${SERVICE}] env ${name} must be a positive number`);
+  return n;
+}
+/** Normalize slug env: strip any accidental "@<version>" suffix */
+function normalizeSlug(raw: string): string {
+  return raw.split("@")[0]?.trim();
+}
 
 export class GatewayApp extends AppBase {
   private svcConfig?: SvcConfig;
   private audit?: GatewayAuditService;
+  private replayer?: WalReplayer;
 
   constructor() {
     super({ service: SERVICE });
@@ -46,15 +68,17 @@ export class GatewayApp extends AppBase {
       console.error("[gateway] svcconfig warm-load failed:", String(err));
     });
 
-    // ---- Shared SvcClient using SvcConfig as UrlResolver (no URL literals) ----
+    // ---- Shared SvcClient using SvcConfig public API (no duck-typing) ----
     const svc = new SvcClient(async (slug, version) => {
-      const url = (sc as any).baseUrl?.(slug, version);
-      if (typeof url !== "string" || url.length === 0) {
-        throw new Error(
-          `[gateway] SvcConfig missing baseUrl for ${slug}@${version}`
-        );
+      if (version === undefined || version === null) {
+        throw new Error(`[gateway] missing version for slug="${slug}"`);
       }
-      return url;
+      try {
+        return sc.getUrlFromSlug(slug, version);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(`[gateway] ${msg}`);
+      }
     });
 
     // ---- Gateway-local audit batching (FS WAL mandatory; enforced in Wal.fromEnv) ----
@@ -64,6 +88,29 @@ export class GatewayApp extends AppBase {
       svc, // ← canonical S2S path (SvcClient → SvcReceiver)
     });
     this.audit.start();
+
+    // ---- WalReplayer: drain gateway WAL to Audit when reachable ----
+    const rl = this.bindLog({ component: "WalReplayer" });
+    const auditSlug = normalizeSlug(mustEnv("AUDIT_SLUG")); // ensure plain "audit"
+    this.replayer = new WalReplayer({
+      walDir: mustEnv("WAL_DIR"),
+      cursorPath: mustEnv("WAL_CURSOR_FILE"),
+      batchLines: intEnv("WAL_REPLAY_BATCH_LINES"),
+      batchBytes: intEnv("WAL_REPLAY_BATCH_BYTES"),
+      tickMs: intEnv("WAL_REPLAY_TICK_MS"),
+      logger: rl,
+      onBatch: async (lines: string[]) => {
+        const entries = lines.map((l) => JSON.parse(l));
+        await svc.call({
+          slug: auditSlug, // must be "audit"
+          version: 1, // version here, not in slug
+          path: "/api/audit/v1/entries", // versioned route
+          method: "POST",
+          body: { entries },
+        });
+      },
+    });
+    this.replayer.start();
   }
 
   protected healthBasePath(): string | null {
@@ -84,9 +131,7 @@ export class GatewayApp extends AppBase {
     super.mountPreRouting();
     // Required order: edge → audit → (future: s2s guards) → proxy
     this.app.use(edgeHitLogger());
-    if (!this.audit) {
-      throw new Error("[gateway] audit service not initialized");
-    }
+    if (!this.audit) throw new Error("[gateway] audit service not initialized");
     this.app.use(auditLogger(this.audit));
   }
 
@@ -96,7 +141,6 @@ export class GatewayApp extends AppBase {
 
   protected mountRoutes(): void {
     const sc = (this.svcConfig ??= getSvcConfig());
-    // Mount the proxy router at /api; controller will reject /api/gateway/*
     this.app.use("/api", new ProxyRouter(sc).router());
   }
 }

@@ -1,4 +1,0 @@
-{"requestId":"smoke-010-1759968285","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"begin","ts":1759968285934,"meta":{"smoke":10,"note":"begin"}}
-{"requestId":"smoke-010-1759968285","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"end","ts":1759968286057,"status":"ok","http":{"code":200},"meta":{"smoke":10,"note":"end"}}
-{"requestId":"smoke-010-1759968402","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"begin","ts":1759968402725,"meta":{"smoke":10,"note":"begin"}}
-{"requestId":"smoke-010-1759968402","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"end","ts":1759968402848,"status":"ok","http":{"code":200},"meta":{"smoke":10,"note":"end"}}

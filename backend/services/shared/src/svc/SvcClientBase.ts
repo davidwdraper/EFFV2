@@ -10,6 +10,10 @@
  * Purpose:
  * - Base class for S2S clients. Centralizes URL building, headers/body prep,
  *   logging, and envelope shaping. Swaps URL via injected resolver.
+ *
+ * Contract (greenfield, fail-fast):
+ * - Throws on any non-2xx or network/timeout error.
+ * - Returns SvcResponse<T> only for 2xx upstreams.
  */
 
 import { randomUUID } from "crypto";
@@ -36,7 +40,7 @@ export abstract class SvcClientBase extends ServiceBase {
     this.defaults = defaults;
   }
 
-  /** Main S2S call — uniform envelope, never throws for non-2xx. */
+  /** Main S2S call — FAIL-FAST: throws on non-2xx or network error. */
   public async call<T = unknown>(
     opts: SvcCallOptions
   ): Promise<SvcResponse<T>> {
@@ -80,14 +84,9 @@ export abstract class SvcClientBase extends ServiceBase {
       })) as unknown as Response;
     } catch (err) {
       clearTimeout(t);
-      log.error({ err: String(err) }, "s2s_exception");
-      return {
-        ok: false,
-        status: 0,
-        headers: {},
-        error: { code: "network_error", message: String(err) },
-        requestId,
-      };
+      const msg = String(err);
+      log.error({ err: msg }, "s2s_exception");
+      throw new Error(`s2s_exception: ${msg}`);
     } finally {
       clearTimeout(t);
     }
@@ -114,21 +113,22 @@ export abstract class SvcClientBase extends ServiceBase {
         data: payload as T,
         requestId: requestIdFromHeaders(resHeaders) ?? requestId,
       };
-    } else {
-      const message =
-        (payload &&
-          typeof payload === "object" &&
-          (payload.error?.message || payload.message)) ||
-        (typeof payload === "string" ? payload : "upstream_error");
-      log.warn({ upstreamStatus: res.status, message }, "s2s_upstream_error");
-      return {
-        ok: false,
-        status: res.status,
-        headers: resHeaders,
-        error: { code: "upstream_error", message },
-        requestId: requestIdFromHeaders(resHeaders) ?? requestId,
-      };
     }
+
+    // Non-2xx → log + throw (fail-fast)
+    const message =
+      (payload &&
+        typeof payload === "object" &&
+        ((payload as any).error?.message || (payload as any).message)) ||
+      (typeof payload === "string" ? payload : "upstream_error");
+    log.warn({ upstreamStatus: res.status, message }, "s2s_upstream_error");
+
+    const rid = requestIdFromHeaders(resHeaders) ?? requestId;
+    const errDetail =
+      `s2s_upstream_error ${res.status} for ${method} ${url} ` +
+      `(slug=${opts.slug}@v${version}, requestId=${rid}): ${message}`;
+
+    throw new Error(errDetail);
   }
 
   // ── Shared helpers ─────────────────────────────────────────────────────────

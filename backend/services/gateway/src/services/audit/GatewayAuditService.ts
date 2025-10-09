@@ -6,29 +6,35 @@
  *   - ADR-0006 (Gateway Edge Logging — pre-audit, toggleable)
  *   - ADR-0022 (Shared WAL & DB Base; environment invariance)
  *   - ADR-0024 (SvcClient/SvcReceiver refactor for S2S)
+ *   - adr0023-wal-writer-reader-split
  *
  * Purpose:
  * - Gateway-local audit client that buffers "begin" / "end" events in a shared WAL
  *   and periodically POSTs batches to the Audit service via SvcClient.
  *
- * Invariance:
- * - FS journaling is mandatory (WAL_DIR required; no off switch).
- * - Routing uses AUDIT_SLUG (e.g., "audit@1") resolved by SvcClient’s UrlResolver.
- * - No URL literals. Dev == Prod.
+ * Contract alignment:
+ * - Writes contract-compliant AuditEntryJson objects via AuditEntryContract helpers.
+ * - Fields: {requestId, service, target, phase, ts, status?, http?, meta?}
+ * - Ensures downstream AuditIngestController validates cleanly.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Wal, type WalEntry } from "@nv/shared/wal/Wal";
+import { Wal } from "@nv/shared/wal/Wal";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
 import type { SvcClient } from "@nv/shared/svc/SvcClient";
+import {
+  AuditEntryContract,
+  AuditPhase,
+} from "@nv/shared/contracts/audit/audit.entry.contract";
+import { AuditTargetContract } from "@nv/shared/contracts/audit/audit.target.contract";
 
 /* ------------------------------------------------------------------------- */
 
 export interface GatewayAuditServiceOptions {
-  logger: IBoundLogger; // pass this.bindLog({ component: "GatewayAuditService" }) or this.log
-  svc: SvcClient; // DI: shared S2S client already wired with UrlResolver
-  flushIntervalMs?: number; // optional; else GW_AUDIT_FLUSH_MS or 1000
-  wal?: Wal; // test seam
+  logger: IBoundLogger;
+  svc: SvcClient;
+  flushIntervalMs?: number;
+  wal?: Wal;
   enrich?: Record<string, unknown>;
 }
 
@@ -47,7 +53,6 @@ export class GatewayAuditService {
     this.log = opts.logger;
     this.svc = opts.svc;
 
-    // ---- Parse required AUDIT_SLUG (e.g., "audit@1") ----
     const rawSlug = process.env.AUDIT_SLUG;
     if (!rawSlug)
       throw new Error("[gateway.audit] AUDIT_SLUG required (e.g., audit@1)");
@@ -59,7 +64,6 @@ export class GatewayAuditService {
     this.slug = name;
     this.version = ver;
 
-    // ---- WAL (mandatory FS; Wal.fromEnv fails if WAL_DIR missing) ----
     this.wal =
       opts.wal ??
       Wal.fromEnv({
@@ -99,40 +103,55 @@ export class GatewayAuditService {
     this.log.info("[gateway.audit] stopped");
   }
 
+  /** Emit "begin" entry (always non-blocking). */
   public recordBegin(
     req: IncomingMessage & { headers: Record<string, any> }
   ): void {
-    const now = Date.now();
-    this.wal.append({
-      kind: "audit",
-      phase: "begin",
-      service: "gateway",
-      time: now,
-      requestId: this.reqId(req),
-      method: (req as any).method,
-      url: (req as any).url,
-      ip: this.ip(req),
-      headers: this.safeHeaders(req),
-      ...this.enrich,
-    });
+    try {
+      const entry = AuditEntryContract.makeBegin({
+        requestId: this.reqId(req),
+        service: "gateway",
+        target: new AuditTargetContract({
+          service: "gateway",
+          route: (req as any).url ?? "",
+          method: (req as any).method ?? "",
+        }).toJSON(),
+        ts: Date.now(),
+        meta: {
+          ip: this.ip(req),
+          headers: this.safeHeaders(req),
+          ...this.enrich,
+        },
+      });
+      this.wal.append(entry.toJSON());
+    } catch (err) {
+      this.log.warn("recordBegin_failed", { err: String(err) });
+    }
   }
 
+  /** Emit "end" entry (always non-blocking). */
   public recordEnd(
     req: IncomingMessage & { headers: Record<string, any> },
     res: ServerResponse & { statusCode?: number }
   ): void {
-    const now = Date.now();
-    this.wal.append({
-      kind: "audit",
-      phase: "end",
-      service: "gateway",
-      time: now,
-      requestId: this.reqId(req),
-      method: (req as any).method,
-      url: (req as any).url,
-      status: res.statusCode ?? 0,
-      ...this.enrich,
-    });
+    try {
+      const entry = AuditEntryContract.makeEnd({
+        requestId: this.reqId(req),
+        service: "gateway",
+        target: new AuditTargetContract({
+          service: "gateway",
+          route: (req as any).url ?? "",
+          method: (req as any).method ?? "",
+        }).toJSON(),
+        status: res.statusCode && res.statusCode >= 400 ? "error" : "ok",
+        httpCode: res.statusCode ?? 0,
+        ts: Date.now(),
+        meta: { ip: this.ip(req), ...this.enrich },
+      });
+      this.wal.append(entry.toJSON());
+    } catch (err) {
+      this.log.warn("recordEnd_failed", { err: String(err) });
+    }
   }
 
   /** Drain WAL via SvcClient to the Audit service. */
@@ -146,7 +165,6 @@ export class GatewayAuditService {
         path: `/api/${this.slug}/v${this.version}/entries`,
         method: "POST",
         body: { entries: batch },
-        // No client Authorization forwarding; SvcClient/SvcReceiver will handle S2S later.
       });
 
       if (!resp.ok) {
@@ -175,7 +193,7 @@ export class GatewayAuditService {
   ): string | undefined {
     const xf = (req.headers?.["x-forwarded-for"] as string) || "";
     if (xf) return xf.split(",")[0]?.trim();
-    return req.socket?.remoteAddress || req.connection?.remoteAddress;
+    return req.socket?.remoteAddress || (req as any).connection?.remoteAddress;
   }
 
   private safeHeaders(

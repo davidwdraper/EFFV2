@@ -11,9 +11,9 @@
  * - Normalize S2S request handling and JSON envelope responses.
  * - Framework-agnostic: works with any Express-like req/res.
  *
- * Notes:
- * - Inherits logger/env from ServiceBase.
- * - Emits a single edge() line on entry, and info/warn/error on completion.
+ * Invariance:
+ * - 2xx/3xx → { ok: true, data }
+ * - 4xx/5xx → { ok: false, error }  (no silent success on client-visible errors)
  */
 
 import { randomUUID } from "crypto";
@@ -67,12 +67,12 @@ export class SvcReceiver extends ServiceBase {
         method,
         path,
         headers,
-        params: req.params,
-        query: req.query,
-        body: req.body,
+        params: (req as any).params,
+        query: (req as any).query,
+        body: (req as any).body,
       });
 
-      // Apply headers first (including request id echo)
+      // Echo request id and any controller headers
       res.setHeader("x-request-id", requestId);
       if (result.headers) {
         for (const [k, v] of Object.entries(result.headers)) {
@@ -82,13 +82,37 @@ export class SvcReceiver extends ServiceBase {
 
       const status = result.status ?? 200;
 
-      // Completion log (info for 2xx/3xx, warn for 4xx)
-      if (status >= 400 && status < 500) {
+      // Log completion level
+      if (status >= 500) {
+        log.error({ status }, "svc receive completed (error)");
+      } else if (status >= 400) {
         log.warn({ status }, "svc receive completed (warn)");
       } else {
         log.info({ status }, "svc receive completed");
       }
 
+      // Build SOP-compliant envelope
+      if (status >= 400) {
+        const errBody =
+          (result.body as any)?.error ??
+          ({
+            code: status >= 500 ? "internal_error" : "request_failed",
+            message:
+              (typeof (result.body as any)?.message === "string" &&
+                (result.body as any).message) ||
+              "request_failed",
+          } as const);
+
+        res.status(status).json({
+          ok: false,
+          service: this.service,
+          requestId,
+          error: errBody,
+        });
+        return;
+      }
+
+      // Success path
       res.status(status).json({
         ok: true,
         service: this.service,

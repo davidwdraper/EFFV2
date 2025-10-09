@@ -111,4 +111,4 @@ Addendum:
 
 - Track the things that you believe will be important in subseqent sessions. When our current session gets too slow to continue, I'll ask you to print out in a code block, your saved up memory which I'll in turn save, and provide to you at the beginning of the next.
 
-Following this is your notes from the previous session:
+I've attached notes from prev session as an .md file

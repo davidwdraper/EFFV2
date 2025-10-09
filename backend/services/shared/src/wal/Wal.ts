@@ -2,54 +2,47 @@
 /**
  * Design/ADR:
  * - adr0022-shared-wal-and-db-base
- * - Environment invariance: no literals; callers pass config (or use fromEnv()).
+ * - Environment invariance, prod-parity: FS journaling is MANDATORY.
  *
  * Purpose:
  * - Shared Write-Ahead Log used by producers (gateway) and consumer (audit svc).
- * - Tier-0 in-memory durability + optional Tier-1 FS journal (append-only, LDJSON).
+ * - Tier-0 in-memory queue + Tier-1 FS journal (append-only, LDJSON) — always on.
  *
  * Usage:
- *   const wal = Wal.fromEnv({ logger }); // or new Wal({ ...explicit config... })
- *   wal.append(entry); // fast, sync
- *   await wal.flush(); // async drain to consumer callback
+ *   const wal = Wal.fromEnv({ logger }); // logger: ILogger
+ *   wal.append(entry);                // sync
+ *   await wal.flush(persistFn);       // async drain to consumer callback
  *
  * Notes:
- * - This class is storage-only. It does not “send to network” by itself.
- *   Callers provide a `persist` function (e.g., POST batch to AuditSvc, or DB repo persist).
- * - No silent fallbacks. If FS tier is enabled and fails, errors surface.
+ * - No silent fallbacks. No on/off switch. If WAL_DIR is not set/writable, we fail.
+ * - This class does not “send to network.” Callers supply a persist() for flush().
  */
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { ILogger } from "@nv/shared/logger/Logger";
 
 export type WalEntry = Record<string, unknown>;
 
 export interface WalConfig {
-  /** Max entries kept in memory before backpressure/auto-flush kicks in. */
+  /** Max entries kept in memory before eager flush kicks in. */
   maxInMemory: number;
 
   /** Flush interval in ms for the background flusher (0 disables auto-loop). */
   flushIntervalMs: number;
 
-  /** Enable append-only filesystem journal (line-delimited JSON). */
-  fsEnabled: boolean;
-
-  /** Directory for journal files (required if fsEnabled). */
-  fsDir?: string;
+  /** Directory for journal files (REQUIRED). */
+  fsDir: string;
 
   /** Max size (bytes) before a journal file rotates. */
   rotateBytes?: number;
 
-  /** Optional time-based rotation. */
+  /** Optional time-based rotation (ms). */
   rotateMs?: number;
 
-  /** Optional logger (info/warn/error). */
-  logger?: {
-    info: (...a: unknown[]) => void;
-    warn: (...a: unknown[]) => void;
-    error: (...a: unknown[]) => void;
-  };
+  /** Shared logger (canonical contract). */
+  logger?: ILogger;
 }
 
 export interface WalPersistResult {
@@ -72,24 +65,25 @@ export class Wal {
   private fileCreatedAt = 0;
 
   constructor(cfg: WalConfig) {
+    if (!cfg.fsDir || !cfg.fsDir.trim()) {
+      throw new Error("Wal: WAL_DIR (fsDir) is required");
+    }
     this.cfg = cfg;
-    if (this.cfg.fsEnabled && !this.cfg.fsDir) {
-      throw new Error("Wal: fsEnabled=true requires fsDir");
-    }
-    if (this.cfg.fsEnabled) {
-      // ensure dir exists lazily on first append
-    }
     if (this.cfg.flushIntervalMs > 0) {
       this.loopHandle = this.startFlushLoop();
     }
   }
 
-  /** Convenience: build from process.env (names only; values live in .env.*). */
+  /** Build from process.env (names only; values live in .env.*). */
   static fromEnv(opts?: {
-    logger?: WalConfig["logger"];
+    logger?: ILogger;
     defaults?: Partial<WalConfig>;
   }): Wal {
     const env = process.env;
+    const fsDir = (env.WAL_DIR ?? opts?.defaults?.fsDir)?.toString().trim();
+    if (!fsDir) {
+      throw new Error("Wal: WAL_DIR is required (no off switch)");
+    }
     const cfg: WalConfig = {
       maxInMemory: intOrDefault(
         env.WAL_MAX_INMEM,
@@ -99,11 +93,7 @@ export class Wal {
         env.WAL_FLUSH_MS,
         opts?.defaults?.flushIntervalMs ?? 1000
       ),
-      fsEnabled: boolOrDefault(
-        env.WAL_FS_ENABLED,
-        opts?.defaults?.fsEnabled ?? false
-      ),
-      fsDir: env.WAL_DIR ?? opts?.defaults?.fsDir,
+      fsDir,
       rotateBytes:
         intOrUndef(env.WAL_ROTATE_BYTES) ?? opts?.defaults?.rotateBytes,
       rotateMs: intOrUndef(env.WAL_ROTATE_MS) ?? opts?.defaults?.rotateMs,
@@ -112,20 +102,17 @@ export class Wal {
     return new Wal(cfg);
   }
 
-  /** Append a single entry to the WAL (sync, fast). */
+  /** Append a single entry (sync). Always journals to FS. */
   append(entry: WalEntry): void {
     this.q.push(entry);
     this.offset++;
-    if (this.cfg.fsEnabled) {
-      void this.appendFs(entry);
-    }
+    void this.appendFs(entry);
     if (this.q.length >= this.cfg.maxInMemory && !this.draining) {
-      // kick an eager flush; background loop may also run
       void this.flushNoopPersist();
     }
   }
 
-  /** Append a batch of entries (sync). */
+  /** Append a batch (sync). */
   appendMany(entries: WalEntry[]): void {
     for (const e of entries) this.append(e);
   }
@@ -135,13 +122,10 @@ export class Wal {
    * Caller decides what "persist" means (HTTP to AuditSvc, DB repo, etc.).
    */
   async flush(persist?: WalPersistFn): Promise<WalPersistResult> {
-    // fast path: nothing to do
     if (this.q.length === 0) return { persisted: 0, lastOffset: this.offset };
 
     if (this.draining) {
-      // one active drain at a time; yield briefly
       await sleep(5);
-      // try again (tail recursion is fine here due to await boundary)
       return this.flush(persist);
     }
 
@@ -149,8 +133,7 @@ export class Wal {
     try {
       const batch = this.q.splice(0, this.q.length);
       if (!persist) {
-        // No-op flush (for backpressure relief when caller didn't supply persist here)
-        this.cfg.logger?.info?.("[WAL] flush (noop) drained", {
+        this.cfg.logger?.info("[WAL] flush (noop) drained", {
           count: batch.length,
         });
         return { persisted: batch.length, lastOffset: this.offset };
@@ -164,14 +147,12 @@ export class Wal {
 
   /** Rotate the journal file (FS tier) on demand or by size/time thresholds. */
   async rotate(reason = "manual"): Promise<void> {
-    if (!this.cfg.fsEnabled) return;
     await this.ensureDir();
-    // create a new file with a timestamped suffix
     const now = Date.now();
-    this.currentFile = path.join(this.cfg.fsDir!, `wal-${now}.ldjson`);
+    this.currentFile = path.join(this.cfg.fsDir, `wal-${now}.ldjson`);
     this.currentSize = 0;
     this.fileCreatedAt = now;
-    this.cfg.logger?.info?.("[WAL] rotate", { file: this.currentFile, reason });
+    this.cfg.logger?.info("[WAL] rotate", { file: this.currentFile, reason });
   }
 
   /** Stop the background loop (if any). Call during graceful shutdown. */
@@ -183,7 +164,6 @@ export class Wal {
   /* ------------------------------ Internals ------------------------------- */
 
   private async ensureDir(): Promise<void> {
-    if (!this.cfg.fsDir) return;
     await fs.mkdir(this.cfg.fsDir, { recursive: true });
   }
 
@@ -213,7 +193,7 @@ export class Wal {
           await this.flushNoopPersist();
         }
       } catch (err) {
-        this.cfg.logger?.warn?.("[WAL] background flush error", { err });
+        this.cfg.logger?.warn("[WAL] background flush error", { err });
       }
       await sleep(interval);
     }
@@ -234,9 +214,4 @@ function intOrUndef(v: string | undefined): number | undefined {
   if (v == null) return undefined;
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) ? n : undefined;
-}
-function boolOrDefault(v: string | undefined, d: boolean): boolean {
-  if (v == null) return d;
-  const s = v.toLowerCase().trim();
-  return s === "1" || s === "true" || s === "yes";
 }

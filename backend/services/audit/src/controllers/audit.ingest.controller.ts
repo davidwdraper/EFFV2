@@ -1,48 +1,77 @@
-// backend/services/audit/src/controllers/audit.ingest.controller.ts
+// backend/services/audit/src/controllers/AuditIngestController.ts
 /**
  * Docs:
- * - SOP: Core SOP (Reduced, Clean)
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0014 (Base Hierarchy — AppBase/ControllerBase)
- *   - ADR-0019 (Class Routers via RouterBase)
- *   - adr0022-shared-wal-and-db-base (Shared WAL; ingest appends → flusher persists)
+ *   - ADR-0022 (Shared WAL & DB Base)
+ *   - ADR-0024 (SvcClient/SvcReceiver refactor for S2S)
  *
  * Purpose:
- * - Validate a batch of audit wire entries and append them to the shared WAL.
- * - Return canonical envelope via ControllerBase by returning { status, body }.
+ * - Validate incoming audit batches using OO contract (AuditBatchContract)
+ *   and append to the FS-backed WAL.
+ *
+ * Invariance:
+ * - No env literals; WAL is injected via composition.
+ * - Contracts are the single source of truth (OO contracts, not Zod).
  */
 
-import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { AuditBatchContract } from "@nv/shared/contracts/audit/audit.batch.contract";
-import { auditWal } from "../wal/audit.wal";
-import type { RequestHandler } from "express";
+import type { Wal } from "@nv/shared/wal/Wal";
 import type { WalEntry } from "@nv/shared/wal/Wal";
+import { AuditBatchContract } from "@nv/shared/contracts/audit/audit.batch.contract";
 
-const SERVICE = "audit" as const;
+type ReceiveCtx = {
+  requestId: string;
+  method: string;
+  path?: string;
+  headers: Record<string, string>;
+  params?: Record<string, unknown>;
+  query?: Record<string, unknown>;
+  body?: unknown;
+};
 
-export class AuditIngestController extends ControllerBase {
-  constructor() {
-    super({ service: SERVICE });
-  }
+export class AuditIngestController {
+  constructor(private readonly wal: Wal) {}
 
-  /** POST /api/audit/v1/entries */
-  public ingest(): RequestHandler {
-    return this.handle(async (ctx) => {
-      // Validate body against canonical contract
+  /**
+   * Handle POST /api/audit/v1/entries
+   * Body: { entries: AuditEntryJson[] }
+   */
+  public async entries(ctx: ReceiveCtx): Promise<{
+    status?: number;
+    body?: unknown;
+    headers?: Record<string, string>;
+  }> {
+    // Parse/validate using OO contract (throws on invalid)
+    let accepted = 0;
+    try {
       const batch = AuditBatchContract.parse(ctx.body, "AuditBatch");
+      const entries = batch.entries.map((e) =>
+        e.toJSON()
+      ) as unknown as WalEntry[];
 
-      // Append to WAL (fast, sync)
-      const walBatch: WalEntry[] = batch.entries.map(
-        (e) => e.toJSON() as unknown as WalEntry
-      );
-      auditWal.appendMany(walBatch);
-
-      // IMPORTANT: Return the shape ControllerBase expects.
-      // No direct writes to res; the base will envelope { ok:true, service, data }.
+      // Append-many into the FS-backed WAL (Tier-1 durability).
+      this.wal.appendMany(entries);
+      accepted = entries.length;
+    } catch (err) {
+      // Contract parsing failed -> 400 with message
+      const message = String(err instanceof Error ? err.message : err);
       return {
-        status: 200,
-        body: { accepted: walBatch.length },
+        status: 400,
+        body: {
+          error: {
+            code: "invalid_batch",
+            message,
+          },
+        },
+        headers: { "x-request-id": ctx.requestId },
       };
-    });
+    }
+
+    // Controller returns domain result; SvcReceiver envelopes it
+    return {
+      status: 202,
+      body: { accepted },
+      headers: { "x-request-id": ctx.requestId },
+    };
   }
 }

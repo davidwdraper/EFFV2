@@ -3,115 +3,65 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0006 (Gateway/Service Edge & Error Logging — one line per request)
- *   - ADR-0015 (Structured Logger with bind() Context)
+ *   - ADR-0015 (Logger with bind() Context)
+ *   - ADR-0018 (Debug Log Origin Capture)
  *
  * Purpose:
- * - App-level, per-request completion logger.
- * - Captures JSON bodies (envelopes) and logs a single WARN/ERROR line on failures.
+ * - Express error-funnel middleware that logs every uncaught error.
  *
- * Behavior:
- * - Wraps res.json to stash the response body in res.locals._nvBody.
- * - On 'finish', emits:
- *    • warn when statusCode in 400–499 or NV ok=false
- *    • error when statusCode >= 500
- * - Works for proxied/streamed responses too: if body isn’t JSON-captured, we still log by status code.
+ * Usage:
+ *   app.use(responseErrorLogger(log))     // preferred: pass IBoundLogger
+ *   app.use(responseErrorLogger("audit")) // legacy: pass service name
+ *
+ * Invariance:
+ * - No env literals beyond SVC_NAME (name only).
  */
 
 import type { Request, Response, NextFunction } from "express";
-import { UrlHelper } from "../http/UrlHelper";
-import { getLogger } from "../logger/Logger";
+import type { IBoundLogger } from "@nv/shared/logger/Logger";
+import { getLogger } from "@nv/shared/logger/Logger";
 
-type NvBody = {
-  ok?: boolean;
-  service?: string;
-  data?: { status?: string; detail?: string };
-  requestId?: string;
-};
+export function responseErrorLogger(arg: IBoundLogger | string) {
+  const isString = typeof arg === "string";
+  const serviceName = isString
+    ? (arg as string)
+    : process.env.SVC_NAME || "unknown";
 
-export function responseErrorLogger(serviceLabel: string) {
-  // Base handle for this middleware instance
-  const baseLog = getLogger().bind({
-    service: serviceLabel,
-    component: "responseErrorLogger",
-  });
+  const log: IBoundLogger = isString
+    ? getLogger().bind({
+        service: serviceName,
+        component: "responseErrorLogger",
+      })
+    : (arg as IBoundLogger).bind({ component: "responseErrorLogger" });
 
-  return function responseErrorLoggerMW(
+  return function errorLogger(
+    err: unknown,
     req: Request,
     res: Response,
-    next: NextFunction
+    _next: NextFunction
   ) {
-    // requestId best-effort
     const requestId =
-      req.header("x-request-id") ||
-      req.header("x-correlation-id") ||
-      req.header("request-id") ||
-      undefined;
+      (req.headers["x-request-id"] as string) ||
+      (req.headers["x-requestid"] as string) ||
+      (req.headers["x_request_id"] as string) ||
+      "unknown";
 
-    // slug/version from /api/*, else fall back to service label
-    let slug = serviceLabel;
-    let version = 1;
-    try {
-      const addr = UrlHelper.parseApiPath(req.originalUrl);
-      if (addr.slug) slug = addr.slug;
-      if (addr.version != null) version = addr.version;
-    } catch {
-      /* not an /api/* path — keep defaults */
-    }
+    const message =
+      err instanceof Error
+        ? err.message
+        : err != null
+        ? String(err)
+        : "Unknown error";
 
-    // Wrap res.json to capture JSON body
-    const origJson = res.json.bind(res);
-    (res as any).json = (body: unknown) => {
-      (res.locals as any)._nvBody = body as NvBody;
-      return origJson(body);
-    };
+    // Log once, structured
+    log.error({ requestId, err: message }, "unhandled error");
 
-    // Single completion log per request
-    res.on("finish", () => {
-      const status = res.statusCode;
-      const captured = ((res.locals as any)._nvBody || {}) as NvBody;
-
-      const isEnvelope = typeof captured === "object" && captured !== null;
-      const isOkFalse = isEnvelope && captured.ok === false;
-      const is4xx = status >= 400 && status < 500;
-      const is5xx = status >= 500;
-
-      if (!(isOkFalse || is4xx || is5xx)) return; // success → quiet
-
-      const bound = baseLog.bind({
-        slug,
-        version,
-        requestId,
-        method: req.method,
-        url: req.originalUrl,
-        status,
-        upstreamStatus: captured?.data?.status,
-      });
-
-      const detail = captured?.data?.detail;
-
-      if (is5xx) {
-        bound.error(
-          {
-            category: "response_error",
-            envelopeOk: captured?.ok,
-            detail: detail || "server_error",
-          },
-          "response error"
-        );
-      } else {
-        bound.warn(
-          {
-            category: "response_error",
-            envelopeOk: captured?.ok,
-            detail: detail || "request_failed",
-          },
-          "response error"
-        );
-      }
+    // Emit canonical problem envelope
+    res.status(500).json({
+      ok: false,
+      service: serviceName,
+      requestId,
+      error: { code: "internal_error", message },
     });
-
-    return next();
-    // Note: never throw from logging; finish hook must be best-effort.
   };
 }

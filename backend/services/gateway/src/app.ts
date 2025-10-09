@@ -9,10 +9,13 @@
  *   - ADR-0006 (Gateway Edge Logging — pre-audit, toggleable)
  *   - ADR-0013 (Versioned Health — local, never proxied)
  *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint → AppBase → ServiceBase)
+ *   - ADR-0022 (Shared WAL & DB Base; environment invariance)
+ *   - ADR-0024 (SvcClient/SvcReceiver refactor for S2S)
  *
  * Purpose:
- * - GatewayApp mounts versioned health first, then edge logs, then proxy, then error funnel.
- * - Environment invariance: no host/port literals; all via env/config.
+ * - Health first, then edge logs, then audit logger, then proxy, then error funnel.
+ * - No endpoint guessing: SvcClient resolves slug@version via SvcConfig.
+ * - Audit batching is owned locally (GatewayAuditService) with mandatory FS WAL.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
@@ -20,11 +23,15 @@ import { edgeHitLogger } from "./middleware/edge.hit.logger";
 import { getSvcConfig } from "./services/svcconfig/SvcConfig";
 import type { SvcConfig } from "./services/svcconfig/SvcConfig";
 import { ProxyRouter } from "./routes/proxy.router";
+import { auditLogger } from "./middleware/audit.logger";
+import { GatewayAuditService } from "./services/audit/GatewayAuditService";
+import { SvcClient } from "@nv/shared/svc/SvcClient";
 
 const SERVICE = "gateway";
 
 export class GatewayApp extends AppBase {
   private svcConfig?: SvcConfig;
+  private audit?: GatewayAuditService;
 
   constructor() {
     super({ service: SERVICE });
@@ -32,10 +39,31 @@ export class GatewayApp extends AppBase {
 
   protected onBoot(): void {
     const sc = (this.svcConfig ??= getSvcConfig());
+
+    // Warm SvcConfig (failures are logged, readiness gate will still protect /api)
     void sc.ensureLoaded().catch((err: unknown) => {
       // eslint-disable-next-line no-console
       console.error("[gateway] svcconfig warm-load failed:", String(err));
     });
+
+    // ---- Shared SvcClient using SvcConfig as UrlResolver (no URL literals) ----
+    const svc = new SvcClient(async (slug, version) => {
+      const url = (sc as any).baseUrl?.(slug, version);
+      if (typeof url !== "string" || url.length === 0) {
+        throw new Error(
+          `[gateway] SvcConfig missing baseUrl for ${slug}@${version}`
+        );
+      }
+      return url;
+    });
+
+    // ---- Gateway-local audit batching (FS WAL mandatory; enforced in Wal.fromEnv) ----
+    const gwLog = this.bindLog({ component: "GatewayAuditService" });
+    this.audit = new GatewayAuditService({
+      logger: gwLog,
+      svc, // ← canonical S2S path (SvcClient → SvcReceiver)
+    });
+    this.audit.start();
   }
 
   protected healthBasePath(): string | null {
@@ -54,7 +82,12 @@ export class GatewayApp extends AppBase {
 
   protected mountPreRouting(): void {
     super.mountPreRouting();
+    // Required order: edge → audit → (future: s2s guards) → proxy
     this.app.use(edgeHitLogger());
+    if (!this.audit) {
+      throw new Error("[gateway] audit service not initialized");
+    }
+    this.app.use(auditLogger(this.audit));
   }
 
   protected mountParsers(): void {

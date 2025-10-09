@@ -9,9 +9,12 @@
  *
  * Env:
  * - AUDIT_WAL_FLUSH_MS (optional); falls back to WAL_FLUSH_MS, else 1000ms.
+ *
+ * Notes:
+ * - DI only. No singletons. The WAL instance is provided by AuditApp.
  */
 
-import { auditWal } from "../wal/audit.wal";
+import type { Wal, WalEntry } from "@nv/shared/wal/Wal";
 import { AuditRepo } from "../repo/audit.repo";
 import { AuditEntryContract } from "@nv/shared/contracts/audit/audit.entry.contract";
 import {
@@ -25,18 +28,20 @@ type EndMap = Map<string, AuditEntryContract>;
 
 export class AuditWalFlusher {
   private readonly repo: AuditRepo;
+  private readonly wal: Wal;
   private readonly begins: BeginMap = new Map();
   private readonly ends: EndMap = new Map();
   private timer: NodeJS.Timeout | null = null;
   private readonly intervalMs: number;
 
-  constructor(repo = new AuditRepo()) {
+  constructor(wal: Wal, repo = new AuditRepo()) {
     const ms =
       parseInt(getEnv("AUDIT_WAL_FLUSH_MS") ?? "", 10) ||
       parseInt(getEnv("WAL_FLUSH_MS") ?? "", 10) ||
       1000;
     this.intervalMs = ms;
     this.repo = repo;
+    this.wal = wal;
   }
 
   public start(): void {
@@ -54,7 +59,7 @@ export class AuditWalFlusher {
 
   /** Single drain + persist cycle. */
   public async flushOnce(): Promise<void> {
-    await auditWal.flush(async (batch) => {
+    await this.wal.flush(async (batch: WalEntry[]) => {
       const records: AuditRecordJson[] = [];
 
       for (const raw of batch) {

@@ -9,47 +9,40 @@
  *
  * Purpose:
  * - Validate a batch of audit wire entries and append them to the shared WAL.
- * - Keep HTTP path thin: no DB writes here; background flusher handles persistence.
+ * - Return canonical envelope via ControllerBase by returning { status, body }.
  */
 
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import { AuditBatchContract } from "@nv/shared/contracts/audit/audit.batch.contract";
-import { Wal, type WalEntry } from "@nv/shared/wal/Wal";
+import { auditWal } from "../wal/audit.wal";
 import type { RequestHandler } from "express";
+import type { WalEntry } from "@nv/shared/wal/Wal";
 
 const SERVICE = "audit" as const;
-
-// Singleton WAL for this process (Tier-0 in-memory, optional FS tier via env).
-const wal = Wal.fromEnv({
-  // logger, // wire your shared logger if/when available
-});
 
 export class AuditIngestController extends ControllerBase {
   constructor() {
     super({ service: SERVICE });
   }
 
-  /**
-   * Express handler (wrapped via ControllerBase.handle()).
-   * POST /api/audit/v1/entries
-   */
+  /** POST /api/audit/v1/entries */
   public ingest(): RequestHandler {
     return this.handle(async (ctx) => {
-      // NOTE: HandlerCtx exposes `body` (not `req`). Use ctx.body per your base types.
+      // Validate body against canonical contract
       const batch = AuditBatchContract.parse(ctx.body, "AuditBatch");
 
-      // Serialize entries to plain objects and cast to WalEntry[]
+      // Append to WAL (fast, sync)
       const walBatch: WalEntry[] = batch.entries.map(
         (e) => e.toJSON() as unknown as WalEntry
       );
+      auditWal.appendMany(walBatch);
 
-      // Append to WAL (fast, sync). Flusher will persist later.
-      wal.appendMany(walBatch);
-
-      const accepted = walBatch.length;
-
-      // Canonical envelope via ControllerBase.ok()
-      return this.ok(ctx, { accepted });
+      // IMPORTANT: Return the shape ControllerBase expects.
+      // No direct writes to res; the base will envelope { ok:true, service, data }.
+      return {
+        status: 200,
+        body: { accepted: walBatch.length },
+      };
     });
   }
 }

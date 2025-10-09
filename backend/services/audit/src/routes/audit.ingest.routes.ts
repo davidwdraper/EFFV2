@@ -8,11 +8,7 @@
  *
  * Purpose:
  * - Wire the Audit ingest endpoint (batch append) to its controller.
- * - Paths here are relative to /api/audit/v1 mount in app.ts.
- *
- * Notes:
- * - Routes are one-liners: import handlers only. No inline logic.
- * - Environment-invariant: slug fixed ("audit"); values from env/config elsewhere.
+ * - Reachability ping during bring-up.
  */
 
 import { RouterBase } from "@nv/shared/base/RouterBase";
@@ -28,7 +24,12 @@ export class AuditIngestRouter extends RouterBase {
   }
 
   protected configure(): void {
-    // INGEST (batch): POST /entries
+    // Reachability ping
+    this.get("/entries/ping", (_req, res) =>
+      res.json({ ok: true, service: SERVICE_SLUG, data: { pong: true } })
+    );
+
+    // Ingest (batch)
     this.post("/entries", this.ingestCtrl.ingest());
   }
 }

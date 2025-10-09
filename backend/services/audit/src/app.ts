@@ -1,31 +1,31 @@
 // backend/services/audit/src/app.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - SOP: Core SOP (Reduced, Clean)
  * - ADRs:
  *   - ADR-0013 (Versioned Health Envelope & Routes)
  *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint → AppBase → ServiceBase)
  *   - ADR-0019 (Class Routers via RouterBase)
- *   - adr0022-shared-wal-and-db-base (Audit ingress via WAL, background flush)
+ *   - adr0022-shared-wal-and-db-base
  *
  * Purpose:
  * - Audit service on AppBase.
- * - Versioned APIs mounted under /api/audit/v1.
- * - Health first; parsers next; routes are one-liners.
+ * - Mounts versioned routes and starts the WAL flusher.
  *
- * Notes:
- * - We only need JSON body parsing here (no gateway unwrap/streaming).
- * - Gatekeeping/auth will sit in front (gateway). This service ingests batches.
+ * Behavior:
+ * - Will throw at boot if required DB env vars are missing (repo ctor uses requireEnv).
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
-// No unwrapEnvelope here; gateway uses envelopes, not this service.
 import { AuditIngestRouter } from "./routes/audit.ingest.routes";
+import { AuditWalFlusher } from "./workers/audit.flusher";
 
 const SERVICE = "audit" as const;
 const V1_BASE = `/api/${SERVICE}/v1`;
 
 export class AuditApp extends AppBase {
+  private flusher: AuditWalFlusher | null = null;
+
   constructor() {
     super({ service: SERVICE });
   }
@@ -44,5 +44,11 @@ export class AuditApp extends AppBase {
   protected mountRoutes(): void {
     // Ingest batches of audit entries
     this.app.use(V1_BASE, new AuditIngestRouter().router());
+
+    // Start WAL flusher last so health/parsers/routes are mounted first.
+    // NOTE: This will cause a loud failure at startup if DB env vars are missing,
+    // because AuditRepo (constructed by the flusher) requires them.
+    this.flusher = new AuditWalFlusher();
+    this.flusher.start();
   }
 }

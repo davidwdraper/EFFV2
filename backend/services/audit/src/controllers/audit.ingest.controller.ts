@@ -8,11 +8,14 @@
  *
  * Purpose (stub phase):
  * - Handle POST /api/audit/v1/entries as a dumb listener.
- * - No DB, no WAL, no S2S — just ACK with requestId for smoke tests.
+ * - Echo canonical envelope required by smoke 010.
  *
- * Notes:
- * - Health is mounted in AppBase (do not duplicate here).
- * - Future S2S will be handled via shared SvcReceiver; controller stays unchanged.
+ * Response (required by smoke 010):
+ *   {
+ *     "ok": true,
+ *     "service": "audit",
+ *     "data": { "accepted": <number-of-entries> }
+ *   }
  */
 
 import type { Request, Response } from "express";
@@ -25,15 +28,36 @@ export class AuditIngestController {
       (req.headers["x-request-id"] as string) ||
       (req.headers["x-correlation-id"] as string) ||
       (req.headers["request-id"] as string) ||
-      (randomUUID?.() ?? `${Date.now()}`);
+      (typeof randomUUID === "function" ? randomUUID() : `${Date.now()}`);
 
-    // Environment invariance: service label comes from env when provided.
     const service = process.env.SVC_NAME || "audit";
 
-    res.status(200).json({
-      ok: true,
-      service,
-      requestId,
-    });
+    try {
+      const body = (req.body ?? {}) as { entries?: unknown };
+      const entries = Array.isArray((body as any).entries)
+        ? ((body as any).entries as unknown[])
+        : [];
+
+      // Set request id for traceability (not required by the smoke, but helpful)
+      res.setHeader("x-request-id", requestId);
+
+      // Status code isn't asserted by the smoke; 200 is fine for the stub.
+      res.status(200).json({
+        ok: true,
+        service,
+        data: { accepted: entries.length }, // must be a NUMBER (jq -r compares to "2")
+      });
+    } catch (err) {
+      res.setHeader("x-request-id", requestId);
+      res.status(500).json({
+        ok: false,
+        service,
+        error: {
+          code: "internal_error",
+          message:
+            err instanceof Error ? err.message : "unexpected ingest failure",
+        },
+      });
+    }
   };
 }

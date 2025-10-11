@@ -11,7 +11,8 @@
  * Purpose:
  * - Single shared logging API for all services with contextual .bind().
  * - Overloaded methods allow:
- *     log.info("msg")  OR  log.info({ctx}, "msg")
+ *     log.info("msg")            OR  log.info({ctx}, "msg")
+ *     log.info("msg", {meta})    OR  log.info({meta}, "msg")
  * - debug() adds origin capture (file/method/line).
  *
  * Env Toggles:
@@ -65,6 +66,8 @@ export interface IBoundLogger {
 
   error(msg: string, ...rest: unknown[]): void;
   error(obj: Json, msg?: string, ...rest: unknown[]): void;
+
+  serializeError(err: unknown): void;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -93,7 +96,6 @@ function writer(tag: "EDGE" | "INFO" | "DEBUG" | "WARN" | "ERROR") {
       ? console.debug
       : console.log;
 
-  // Display tag per requirement
   const displayTag =
     tag === "ERROR" ? "***ERROR***" : tag === "WARN" ? "**WARN" : tag;
 
@@ -113,43 +115,98 @@ function normalizeRoot(logger: Partial<ILogger>): ILogger {
   const fbWarn = writer("WARN");
   const fbError = writer("ERROR");
 
-  // Helpers to convert overload calls into (obj,msg,rest)
-  const toPair = (
-    arg1: unknown,
-    arg2?: unknown
-  ): [Json, string | undefined, unknown[]] => {
-    if (typeof arg1 === "string") return [{}, arg1, []];
-    return [
-      (arg1 as Json) ?? {},
-      typeof arg2 === "string" ? arg2 : undefined,
-      [],
-    ];
+  /**
+   * Convert variadic overloads into a canonical (obj,msg,rest) triple.
+   * Supported call patterns:
+   *  - fn("msg")
+   *  - fn("msg", {meta}, ...more)
+   *  - fn({meta}, "msg", ...more)
+   *  - fn({meta})
+   *  - fn({meta1}, {meta2}, "msg")  // merged meta (rare, but we’ll be nice)
+   */
+  const toTriple = (args: unknown[]): [Json, string | undefined, unknown[]] => {
+    if (args.length === 0) return [{}, undefined, []];
+
+    const [a0, a1, ...rest] = args;
+
+    // Case A: first arg is string message
+    if (typeof a0 === "string") {
+      const msg = a0 as string;
+      // If second arg is a plain object, treat it as meta
+      if (a1 && typeof a1 === "object" && !Array.isArray(a1)) {
+        const meta = { ...(a1 as Json) };
+        // Merge any additional plain objects in rest into meta
+        const tail: unknown[] = [];
+        for (const r of rest) {
+          if (r && typeof r === "object" && !Array.isArray(r)) {
+            Object.assign(meta, r as Json);
+          } else {
+            tail.push(r);
+          }
+        }
+        return [meta, msg, tail];
+      }
+      // No meta object — pass through remaining args
+      return [{}, msg, [a1, ...rest].filter((x) => x !== undefined)];
+    }
+
+    // Case B: first arg is an object (meta first)
+    if (a0 && typeof a0 === "object" && !Array.isArray(a0)) {
+      const meta = { ...(a0 as Json) };
+      let msg: string | undefined = undefined;
+      const tail: unknown[] = [];
+      // If next arg is a string, that’s the message
+      if (typeof a1 === "string") {
+        msg = a1 as string;
+        // Merge any additional plain objects from rest into meta
+        for (const r of rest) {
+          if (r && typeof r === "object" && !Array.isArray(r)) {
+            Object.assign(meta, r as Json);
+          } else {
+            tail.push(r);
+          }
+        }
+      } else {
+        // No explicit message; merge all plain objects into meta
+        for (const r of [a1, ...rest]) {
+          if (r && typeof r === "object" && !Array.isArray(r)) {
+            Object.assign(meta, r as Json);
+          } else if (r !== undefined) {
+            tail.push(r);
+          }
+        }
+      }
+      return [meta, msg, tail];
+    }
+
+    // Fallback: unknown shapes
+    return [{ arg0: a0, arg1: a1 }, undefined, rest ?? []];
   };
 
-  const fallback = {
+  const fallback: ILogger = {
     edge: (...args: unknown[]) => {
-      const [obj, msg] = toPair(args[0], args[1]);
-      fbEdge(obj, msg, ...args.slice(2));
+      const [obj, msg, rest] = toTriple(args);
+      fbEdge(obj, msg, ...rest);
     },
     info: (...args: unknown[]) => {
-      const [obj, msg] = toPair(args[0], args[1]);
-      fbInfo(obj, msg, ...args.slice(2));
+      const [obj, msg, rest] = toTriple(args);
+      fbInfo(obj, msg, ...rest);
     },
     debug: (...args: unknown[]) => {
-      const [obj, msg] = toPair(args[0], args[1]);
-      fbDebug(obj, msg, ...args.slice(2));
+      const [obj, msg, rest] = toTriple(args);
+      fbDebug(obj, msg, ...rest);
     },
     warn: (...args: unknown[]) => {
-      const [obj, msg] = toPair(args[0], args[1]);
-      fbWarn(obj, msg, ...args.slice(2));
+      const [obj, msg, rest] = toTriple(args);
+      fbWarn(obj, msg, ...rest);
     },
     error: (...args: unknown[]) => {
-      const [obj, msg] = toPair(args[0], args[1]);
-      fbError(obj, msg, ...args.slice(2));
+      const [obj, msg, rest] = toTriple(args);
+      fbError(obj, msg, ...rest);
     },
-  } as ILogger;
+  };
 
-  // If a root is provided, use it as-is (it may be pino/etc. with its own formatting).
+  // If a root is provided, use it as-is; otherwise use fallback
   return {
     edge: logger.edge ?? fallback.edge,
     info: logger.info ?? fallback.info,
@@ -197,57 +254,98 @@ class BoundLogger implements IBoundLogger {
     const enabled =
       (process.env.LOG_EDGE_ENABLED ?? "true").toLowerCase() !== "false";
     if (!enabled) return;
-    const [obj, msg] =
-      typeof arg1 === "string"
-        ? [{}, arg1]
-        : [arg1 as Json, arg2 as string | undefined];
-    const payload = this.merge(this.ctx, obj);
-    if ((payload as any)["category"] == null)
-      (payload as any).category = "edge";
-    this.root().edge(payload, msg, ...rest);
+    const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
+    if ((obj as any)["category"] == null) (obj as any).category = "edge";
+    this.root().edge(obj, msg, ...tail);
   };
 
   // info
   public info = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
-    const [obj, msg] =
-      typeof arg1 === "string"
-        ? [{}, arg1]
-        : [arg1 as Json, arg2 as string | undefined];
-    this.root().info(this.merge(this.ctx, obj), msg, ...rest);
+    const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
+    this.root().info(obj, msg, ...tail);
   };
 
   // warn
   public warn = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
-    const [obj, msg] =
-      typeof arg1 === "string"
-        ? [{}, arg1]
-        : [arg1 as Json, arg2 as string | undefined];
-    this.root().warn(this.merge(this.ctx, obj), msg, ...rest);
+    const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
+    this.root().warn(obj, msg, ...tail);
   };
 
   // error
   public error = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
-    const [obj, msg] =
-      typeof arg1 === "string"
-        ? [{}, arg1]
-        : [arg1 as Json, arg2 as string | undefined];
-    this.root().error(this.merge(this.ctx, obj), msg, ...rest);
+    const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
+    this.root().error(obj, msg, ...tail);
   };
 
   // debug (adds origin)
   public debug = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     const includeOrigin =
       (process.env.LOG_DEBUG_ORIGIN ?? "true").toLowerCase() !== "false";
-    const [obj, msg] =
-      typeof arg1 === "string"
-        ? [{}, arg1]
-        : [arg1 as Json, arg2 as string | undefined];
-    const base = this.merge(this.ctx, obj);
-    const payload = includeOrigin
-      ? { ...base, origin: captureOrigin(2) }
-      : base;
-    this.root().debug(payload, msg, ...rest);
+    const [obj0, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
+    const obj = includeOrigin ? { ...obj0, origin: captureOrigin(2) } : obj0;
+    this.root().debug(obj, msg, ...tail);
   };
+
+  public serializeError(err: unknown) {
+    if (err instanceof Error) {
+      return { name: err.name, message: err.message, stack: err.stack };
+    }
+
+    return { message: String(err) };
+  }
+}
+
+/** Normalize args for BoundLogger while merging in bound context. */
+function normalizeForBound(
+  boundCtx: Json,
+  arg1: unknown,
+  arg2?: unknown,
+  rest: unknown[] = []
+): [Json, string | undefined, unknown[]] {
+  // Reuse the same logic as normalizeRoot’s toTriple, then merge ctx
+  const [obj, msg, tail] = (function toTriple(
+    args: unknown[]
+  ): [Json, string | undefined, unknown[]] {
+    if (args.length === 0) return [{}, undefined, []];
+    const [a0, a1, ...r] = args;
+    if (typeof a0 === "string") {
+      const msg = a0 as string;
+      if (a1 && typeof a1 === "object" && !Array.isArray(a1)) {
+        const meta = { ...(a1 as Json) };
+        const tail2: unknown[] = [];
+        for (const x of r) {
+          if (x && typeof x === "object" && !Array.isArray(x))
+            Object.assign(meta, x as Json);
+          else tail2.push(x);
+        }
+        return [meta, msg, tail2];
+      }
+      return [{}, msg, [a1, ...r].filter((x) => x !== undefined)];
+    }
+    if (a0 && typeof a0 === "object" && !Array.isArray(a0)) {
+      const meta = { ...(a0 as Json) };
+      let msg: string | undefined = undefined;
+      const tail2: unknown[] = [];
+      if (typeof a1 === "string") {
+        msg = a1 as string;
+        for (const x of r) {
+          if (x && typeof x === "object" && !Array.isArray(x))
+            Object.assign(meta, x as Json);
+          else tail2.push(x);
+        }
+      } else {
+        for (const x of [a1, ...r]) {
+          if (x && typeof x === "object" && !Array.isArray(x))
+            Object.assign(meta, x as Json);
+          else if (x !== undefined) tail2.push(x);
+        }
+      }
+      return [meta, msg, tail2];
+    }
+    return [{ arg0: a0, arg1: a1 }, undefined, r ?? []];
+  })([arg1, arg2, ...rest]);
+
+  return [{ ...boundCtx, ...obj }, msg, tail];
 }
 
 // ────────────────────────────────────────────────────────────────────────────

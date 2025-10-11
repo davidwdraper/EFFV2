@@ -16,6 +16,7 @@
 
 import { ServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
 import { GatewayApp } from "./app";
+import { getLogger } from "@nv/shared/logger/Logger";
 
 async function main(): Promise<void> {
   const app = new GatewayApp();
@@ -26,7 +27,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
+  // Use standard logger so failures look like the rest of the system
+  const log = getLogger().bind({ service: "auth" });
+  log.error({ err: log.serializeError(err) }, "boot_failed");
+
+  // In event logger didn't materialze, fallback to console.error
   console.error("fatal gateway startup", err);
   process.exit(1);
 });

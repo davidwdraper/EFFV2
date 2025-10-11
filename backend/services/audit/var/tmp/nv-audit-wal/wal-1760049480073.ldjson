@@ -1,0 +1,2 @@
+{"requestId":"smoke-010-1760049479","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"begin","ts":1760049479961,"meta":{"smoke":10,"note":"begin"}}
+{"requestId":"smoke-010-1760049479","service":"gateway","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"end","ts":1760049480084,"status":"ok","meta":{"smoke":10,"note":"end"}}

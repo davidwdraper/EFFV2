@@ -1,77 +1,39 @@
-// backend/services/audit/src/controllers/AuditIngestController.ts
+// backend/services/audit/src/controllers/audit.ingest.controller.ts
 /**
+ * NowVibin (NV)
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0022 (Shared WAL & DB Base)
- *   - ADR-0024 (SvcClient/SvcReceiver refactor for S2S)
+ *   - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
  *
- * Purpose:
- * - Validate incoming audit batches using OO contract (AuditBatchContract)
- *   and append to the FS-backed WAL.
+ * Purpose (stub phase):
+ * - Handle POST /api/audit/v1/entries as a dumb listener.
+ * - No DB, no WAL, no S2S — just ACK with requestId for smoke tests.
  *
- * Invariance:
- * - No env literals; WAL is injected via composition.
- * - Contracts are the single source of truth (OO contracts, not Zod).
+ * Notes:
+ * - Health is mounted in AppBase (do not duplicate here).
+ * - Future S2S will be handled via shared SvcReceiver; controller stays unchanged.
  */
 
-import type { Wal } from "@nv/shared/wal/Wal";
-import type { WalEntry } from "@nv/shared/wal/Wal";
-import { AuditBatchContract } from "@nv/shared/contracts/audit/audit.batch.contract";
-
-type ReceiveCtx = {
-  requestId: string;
-  method: string;
-  path?: string;
-  headers: Record<string, string>;
-  params?: Record<string, unknown>;
-  query?: Record<string, unknown>;
-  body?: unknown;
-};
+import type { Request, Response } from "express";
+import { randomUUID } from "node:crypto";
 
 export class AuditIngestController {
-  constructor(private readonly wal: Wal) {}
+  /** Express handler for POST /api/audit/v1/entries */
+  public handle = (req: Request, res: Response): void => {
+    const requestId =
+      (req.headers["x-request-id"] as string) ||
+      (req.headers["x-correlation-id"] as string) ||
+      (req.headers["request-id"] as string) ||
+      (randomUUID?.() ?? `${Date.now()}`);
 
-  /**
-   * Handle POST /api/audit/v1/entries
-   * Body: { entries: AuditEntryJson[] }
-   */
-  public async entries(ctx: ReceiveCtx): Promise<{
-    status?: number;
-    body?: unknown;
-    headers?: Record<string, string>;
-  }> {
-    // Parse/validate using OO contract (throws on invalid)
-    let accepted = 0;
-    try {
-      const batch = AuditBatchContract.parse(ctx.body, "AuditBatch");
-      const entries = batch.entries.map((e) =>
-        e.toJSON()
-      ) as unknown as WalEntry[];
+    // Environment invariance: service label comes from env when provided.
+    const service = process.env.SVC_NAME || "audit";
 
-      // Append-many into the FS-backed WAL (Tier-1 durability).
-      this.wal.appendMany(entries);
-      accepted = entries.length;
-    } catch (err) {
-      // Contract parsing failed -> 400 with message
-      const message = String(err instanceof Error ? err.message : err);
-      return {
-        status: 400,
-        body: {
-          error: {
-            code: "invalid_batch",
-            message,
-          },
-        },
-        headers: { "x-request-id": ctx.requestId },
-      };
-    }
-
-    // Controller returns domain result; SvcReceiver envelopes it
-    return {
-      status: 202,
-      body: { accepted },
-      headers: { "x-request-id": ctx.requestId },
-    };
-  }
+    res.status(200).json({
+      ok: true,
+      service,
+      requestId,
+    });
+  };
 }

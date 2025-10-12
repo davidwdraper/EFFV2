@@ -6,9 +6,9 @@
  * - ADRs:
  *   - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
  *
- * Purpose (stub phase):
- * - Minimal, version-friendly router for audit ingestion.
- * - Single endpoint: POST /entries → controller.handle
+ * Purpose:
+ * - Version-friendly router for audit ingestion.
+ * - Single endpoint: POST /entries → controller.ingest
  *
  * Notes:
  * - Health is mounted in AppBase (versioned).
@@ -24,8 +24,9 @@ export class AuditIngestRouter {
 
   constructor(private readonly controller: AuditIngestController) {
     this.r = Router();
-    // One-liner route; keeps controllers thin and testable.
-    this.r.post("/entries", this.controller.handle);
+    // One-liner route; controllers stay thin & testable.
+    // NOTE: controller exposes `.ingest` (arrow fn), not `.handle`.
+    this.r.post("/entries", this.controller.ingest);
   }
 
   /** Return the Express Router for mounting by the app. */

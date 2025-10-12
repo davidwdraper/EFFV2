@@ -13,8 +13,10 @@
  * Design:
  * - WAL never interprets semantics (START/END/etc.).
  * - Minimal required fields for traceability + ordering:
- *     - ts (epoch ms), requestId, producer, payload
- * - Optional context: phase/target/meta (opaque to WAL).
+ *     - ts (epoch ms), requestId, payload
+ * - Optional context: producer/phase/target/meta (opaque to WAL).
+ * - Rationale: producer is optional at ingest (gateway/controller may enrich),
+ *   but can be required downstream at persistence time by the writer.
  *
  * Notes:
  * - No environment literals. No DB schema here.
@@ -41,8 +43,12 @@ export const AuditBlobSchema = z.object({
   /** Correlation id propagated end-to-end. */
   requestId: z.string().min(1),
 
-  /** Producing service (e.g., "gateway", "audit"). */
-  producer: z.string().min(1),
+  /**
+   * Producing service (e.g., "gateway", "auth").
+   * Optional at WAL ingest to keep durability-first and tooling-friendly.
+   * Writers may enforce presence when persisting finalized records.
+   */
+  producer: z.string().min(1).optional(),
 
   /** Optional semantic hint; engine does not branch on this. */
   phase: z.string().min(1).optional(),
@@ -54,7 +60,7 @@ export const AuditBlobSchema = z.object({
   payload: z.unknown(),
 
   /** Free-form metadata (opaque). */
-  meta: z.record(z.unknown()).optional(),
+  meta: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type AuditBlob = z.infer<typeof AuditBlobSchema>;

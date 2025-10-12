@@ -9,12 +9,11 @@
  * - Minimal, durable file-backed WAL journal implementing `IWalJournal`.
  * - Synchronously appends single **lines** and fsyncs on a cadence.
  *
- * Design (lean + durable):
- * - Caller guarantees one-line payloads (engine already adds "\n"). We do not
- *   mutate or re-serialize; we just write bytes.
- * - `append()` writes to an open file descriptor and MAY fsync based on
- *   `fsyncIntervalMs`. If `fsyncIntervalMs` is 0, fsync on every append.
- * - `rotate()` closes the current fd and opens a new segment using `nameFn()`.
+ * Design:
+ * - `append()` does a sync write against either a long-lived handle's fd
+ *   or a one-shot temp fd (always closed). Long-lived handle is established
+ *   lazily with an async open, but that open is **gated** so only one runs.
+ * - `rotate()` and `close()` explicitly close the long-lived handle.
  *
  * Notes:
  * - No environment literals; all paths/policies are injected.
@@ -38,7 +37,7 @@ export type FileWalJournalOptions = {
 
   /**
    * Fsync cadence in milliseconds. `0` → fsync on every append.
-   * Default: 250ms (bounded loss window per ADR-0024).
+   * Default: 250ms.
    */
   fsyncIntervalMs?: number;
 };
@@ -48,9 +47,12 @@ export class FileWalJournal implements IWalJournal {
   private readonly nameFn: () => string;
   private readonly fsyncIntervalMs: number;
 
-  private handle?: fs.promises.FileHandle;
+  private handle?: fs.promises.FileHandle; // long-lived async handle
   private currentPath?: string;
   private lastFsyncAt = 0;
+
+  private opening = false; // gate to prevent concurrent async opens
+  private openPromise?: Promise<void>;
 
   private _bytesWritten = 0;
   private _linesWritten = 0;
@@ -66,89 +68,84 @@ export class FileWalJournal implements IWalJournal {
     this.fsyncIntervalMs = Math.max(0, opts.fsyncIntervalMs ?? 250);
   }
 
-  /** Lazily open the current segment if needed. */
-  private async ensureOpen(): Promise<void> {
-    if (this.handle) return;
-    const name = this.nameFn();
-    const p = path.resolve(this.dir, name);
+  /** Async open of the long-lived handle, gated so only one runs at a time. */
+  private ensureOpenGated(): void {
+    if (this.handle || this.opening) return;
 
-    // Ensure parent exists & is a directory (best-effort stat)
-    try {
-      const st = await fsp.stat(this.dir);
-      if (!st.isDirectory()) {
-        const e = new Error(`WAL dir is not a directory: ${this.dir}`);
-        (e as any).code = "WAL_JOURNAL_DIR_INVALID";
-        throw e;
-      }
-    } catch (err) {
-      const e = new Error(
-        `WAL dir not accessible: ${this.dir} — ${
-          (err as Error)?.message || String(err)
-        }`
-      );
-      (e as any).code = "WAL_JOURNAL_DIR_INACCESSIBLE";
-      throw e;
-    }
+    this.opening = true;
+    this.openPromise = (async () => {
+      const name = this.nameFn();
+      const p = path.resolve(this.dir, name);
 
-    try {
-      this.handle = await fsp.open(p, "a"); // append mode
-      this.currentPath = p;
-      this.lastFsyncAt = 0;
-    } catch (err) {
-      const e = new Error(
-        `WAL open failed: ${p} — ${(err as Error)?.message || String(err)}`
-      );
-      (e as any).code = "WAL_JOURNAL_OPEN_FAILED";
-      throw e;
-    }
-  }
-
-  public append(line: string): void {
-    // We want `append` to be sync from the caller POV (durability before return).
-    // Node's promises API is async; we block by running the async path and waiting via Atomics.
-    // To keep it lean (and avoid worker threads), we instead use a simple deasync-like pattern:
-    // perform a sync write using fs.writeFileSync on the file descriptor's path if available.
-    // But since we maintain an open fd, we'll use `fs.writeSync` for the fd for atomicity.
-
-    if (!this.handle) {
-      // Open synchronously if missing (rare path).
-      // We fallback to async open with a minimal busy-wait barrier to avoid pulling extra deps.
-      // For simplicity and reliability, we do a synchronous open via fs.openSync here.
-      const p = path.resolve(this.dir, this.nameFn());
+      // Validate dir
       try {
-        const fd = fs.openSync(p, "a");
-        // Bridge the sync fd into our promises handle for later rotate/close
-        // by reopening via promises; close the sync fd after duplication.
-        // Simpler: keep both; but we’ll unify via fs.promises.open after.
-        // To keep it truly consistent, re-open with promises immediately.
-        fs.closeSync(fd);
+        const st = await fsp.stat(this.dir);
+        if (!st.isDirectory()) {
+          const e = new Error(`WAL dir is not a directory: ${this.dir}`);
+          (e as any).code = "WAL_JOURNAL_DIR_INVALID";
+          throw e;
+        }
       } catch (err) {
         const e = new Error(
-          `WAL openSync failed: ${(err as Error)?.message || String(err)}`
+          `WAL dir not accessible: ${this.dir} — ${
+            (err as Error)?.message || String(err)
+          }`
         );
-        (e as any).code = "WAL_JOURNAL_OPEN_FAILED";
+        (e as any).code = "WAL_JOURNAL_DIR_INACCESSIBLE";
         throw e;
       }
-      // Now guarantee async handle exists (best-effort, should be fast since file exists)
-      // Note: using sync path above ensures the file exists quickly.
-      // We still must handle race conditions by calling ensureOpen() normally.
-      // eslint-disable-next-line @typescript-eslint/no-floating-promises
-      this.ensureOpen();
-    }
 
-    // If handle still isn't ready due to async open, we try a last-chance sync open on currentPath.
+      try {
+        // Open/attach long-lived handle
+        this.handle = await fsp.open(p, "a");
+        this.currentPath = p;
+        this.lastFsyncAt = 0;
+      } finally {
+        // Always clear opening flag, even on error (so callers can retry)
+        this.opening = false;
+        this.openPromise = undefined;
+      }
+    })();
+    // Intentionally not awaited by append(); it’s truly lazy.
+    // Callers who need to await can do `await this.openPromise` elsewhere.
+  }
+
+  /**
+   * Synchronous append for durability-before-return.
+   * If the long-lived handle isn't ready, write to a temp fd and **always close it**.
+   * We kick off (once) the gated async open for future appends.
+   */
+  public append(line: string): void {
     let fd: number | undefined;
+    let openedTempFd = false;
+
     try {
-      fd = (this.handle as any)?.fd ?? undefined;
-      if (typeof fd !== "number") {
-        // Last-chance: open a sync fd on currentPath (will exist from ensureOpen())
-        const p = this.currentPath || path.resolve(this.dir, this.nameFn());
-        fd = fs.openSync(p, "a");
-        // We won't keep this temp fd after the write; close it below.
+      const handleFd = (this.handle as any)?.fd;
+      if (typeof handleFd === "number") {
+        fd = handleFd as number;
+      } else {
+        // Long-lived handle not ready: use a temp sync fd for this write
+        const p = this.currentPath ?? path.resolve(this.dir, this.nameFn());
+        if (!this.currentPath) this.currentPath = p;
+
+        try {
+          fd = fs.openSync(p, "a");
+          openedTempFd = true;
+        } catch (err) {
+          const e = new Error(
+            `WAL openSync failed: ${(err as Error)?.message || String(err)}`
+          );
+          (e as any).code = "WAL_JOURNAL_OPEN_FAILED";
+          throw e;
+        }
+
+        // Start one (and only one) async open of the long-lived handle
+        this.ensureOpenGated();
       }
 
+      // Write
       const buf = Buffer.from(line, "utf8");
-      fs.writeSync(fd, buf, 0, buf.length);
+      fs.writeSync(fd!, buf, 0, buf.length);
       this._bytesWritten += buf.length;
       this._linesWritten += 1;
 
@@ -158,23 +155,8 @@ export class FileWalJournal implements IWalJournal {
         this.fsyncIntervalMs === 0 ||
         now - this.lastFsyncAt >= this.fsyncIntervalMs
       ) {
-        fs.fsyncSync(fd);
+        fs.fsyncSync(fd!);
         this.lastFsyncAt = now;
-      }
-
-      // Close temp fd if we opened one ad-hoc
-      if (this.handle && fd !== (this.handle as any).fd) {
-        try {
-          fs.closeSync(fd);
-        } catch {
-          /* ignore */
-        }
-      }
-
-      // If we didn’t have a promises handle before, try to establish it now (non-blocking).
-      if (!this.handle) {
-        // eslint-disable-next-line @typescript-eslint/no-floating-promises
-        this.ensureOpen();
       }
     } catch (err) {
       const e = new Error(
@@ -182,14 +164,23 @@ export class FileWalJournal implements IWalJournal {
       );
       (e as any).code = "WAL_JOURNAL_APPEND_FAILED";
       throw e;
+    } finally {
+      // Close any temp fd we opened
+      if (openedTempFd && typeof fd === "number") {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* ignore close error */
+        }
+      }
     }
   }
 
+  /** Close current segment and open a new one. */
   public async rotate(): Promise<void> {
-    // Close current and open a new segment
     if (this.handle) {
       try {
-        await this.handle.sync(); // ensure durability before rotate
+        await this.handle.sync();
         await this.handle.close();
       } catch (err) {
         const e = new Error(
@@ -202,7 +193,29 @@ export class FileWalJournal implements IWalJournal {
         this.currentPath = undefined;
       }
     }
-    await this.ensureOpen();
+    // After rotation, begin opening a new handle lazily.
+    this.ensureOpenGated();
+  }
+
+  /** Explicit shutdown hook to avoid GC-based fd closing. */
+  public async close(): Promise<void> {
+    // If an open is in flight, let it settle (success or error) to avoid losing a handle.
+    if (this.openPromise) {
+      try {
+        await this.openPromise;
+      } catch {
+        // ignore; we only care that it's no longer in-flight
+      }
+    }
+
+    if (!this.handle) return;
+    try {
+      await this.handle.sync();
+      await this.handle.close();
+    } finally {
+      this.handle = undefined;
+      this.currentPath = undefined;
+    }
   }
 
   public stats() {

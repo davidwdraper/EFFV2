@@ -1,2 +1,0 @@
-{"appendedAt":1760224726792,"blob":{"ts":1760224726698,"requestId":"smoke-010-1760224726","phase":"begin","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"meta":{"smoke":10,"note":"begin"}}}
-{"appendedAt":1760224726814,"blob":{"ts":1760224726821,"requestId":"smoke-010-1760224726","phase":"end","target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"meta":{"smoke":10,"note":"end"}}}

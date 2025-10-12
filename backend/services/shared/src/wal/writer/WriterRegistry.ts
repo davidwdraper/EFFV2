@@ -1,4 +1,4 @@
-// backend/services/shared/src/writer/WriterRegistry.ts
+// backend/services/shared/src/wal/writer/WriterRegistry.ts
 /**
  * NowVibin (NV)
  * Docs:

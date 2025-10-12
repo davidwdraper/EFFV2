@@ -3,14 +3,14 @@
 # Smoke 010: Audit direct ingest → WAL → flusher → Mongo
 #
 # Purpose:
-#   End-to-end validation that the Audit service can receive AuditEntryJson
-#   payloads, write to WAL, and have the flusher persist them to Mongo.
+#   End-to-end validation that the Audit service can receive AuditBlob payloads,
+#   write them to the WAL, and have the flusher persist them to MongoDB.
 #
 # Preconditions:
 #   - Audit service running (PORT=4050)
 #   - AUDIT_DB_* envs set (URI/NAME/COLLECTION)
-#   - WAL_DIR + WAL_CURSOR_FILE envs set and writable
-#   - Flusher active (AuditApp starts AuditWalFlusher)
+#   - WAL_DIR writable
+#   - Flusher active (AuditApp starts periodic WAL flush)
 #
 # Canonical path:
 #   POST /api/audit/v1/entries
@@ -20,10 +20,10 @@
 #   - ADRs:
 #     - adr0022-shared-wal-and-db-base
 #     - adr0024-audit-wal-persistence-guarantee
+#     - adr0026-dbauditwriter-and-fifo-schema
 # ============================================================================
-set -euo pipefail
 
-# Optional debug
+set -euo pipefail
 if [ "${DEBUG:-0}" = "1" ]; then set -x; fi
 
 PORT="${PORT:-4050}"
@@ -37,28 +37,38 @@ END_MS="$(node -e "process.stdout.write(String(${NOW_MS}+123))")"
 echo "→ POST ${URL}"
 
 # ----------------------------------------------------------------------------
-# Build JSON payload (AuditEntryJson objects)
+# Build canonical JSON payload (strict AuditBlob contract)
 # ----------------------------------------------------------------------------
 PAYLOAD=$(cat <<EOF
 {
   "entries": [
     {
-      "requestId": "${RID}",
-      "service": "gateway",
-      "target": { "slug": "act", "version": 1, "route": "/api/acts", "method": "PUT" },
-      "phase": "begin",
-      "ts": ${NOW_MS},
-      "meta": { "smoke": 10, "note": "begin" }
+      "meta": {
+        "requestId": "${RID}",
+        "service": "gateway",
+        "ts": ${NOW_MS}
+      },
+      "blob": {
+        "target": { "slug": "act", "version": 1, "route": "/api/acts", "method": "PUT" },
+        "phase": "begin",
+        "smoke": 10,
+        "note": "begin"
+      }
     },
     {
-      "requestId": "${RID}",
-      "service": "gateway",
-      "target": { "slug": "act", "version": 1, "route": "/api/acts", "method": "PUT" },
-      "phase": "end",
-      "ts": ${END_MS},
-      "status": "ok",
-      "httpCode": 200,
-      "meta": { "smoke": 10, "note": "end" }
+      "meta": {
+        "requestId": "${RID}",
+        "service": "gateway",
+        "ts": ${END_MS}
+      },
+      "blob": {
+        "target": { "slug": "act", "version": 1, "route": "/api/acts", "method": "PUT" },
+        "phase": "end",
+        "status": "ok",
+        "httpCode": 200,
+        "smoke": 10,
+        "note": "end"
+      }
     }
   ]
 }
@@ -71,13 +81,11 @@ EOF
 RESP="$(curl -sS -H 'Accept: application/json' -H 'Content-Type: application/json' \
   -X POST --data "${PAYLOAD}" "${URL}" || true)"
 
-# Bail if empty
 if [ -z "${RESP}" ]; then
   echo "❌ ERROR: Empty response from ${URL}"
   exit 1
 fi
 
-# Ensure JSON
 if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
   echo "❌ ERROR: Non-JSON response from ${URL}:"
   echo "$RESP"

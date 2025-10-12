@@ -8,17 +8,22 @@
  *
  * Purpose:
  * - Canonical **opaque** audit record for WAL ingestion and transport.
- * - Destination-agnostic (DB/HTTP/space-station — writer decides).
+ * - Destination-agnostic (DB/HTTP/etc. — writer decides).
  *
- * Design:
- * - WAL never interprets semantics (START/END/etc.).
- * - Minimal required fields for traceability + ordering:
- *     - ts (epoch ms), requestId, payload
- * - Optional context: producer/phase/target/meta (opaque to WAL).
- * - Rationale: producer is optional at ingest (gateway/controller may enrich),
- *   but can be required downstream at persistence time by the writer.
+ * Canonical Shape (STRICT):
+ * {
+ *   meta: {
+ *     service: string,         // producing service slug ("gateway", "audit", etc.)
+ *     ts: number,              // epoch ms WHEN PRODUCED (not when appended)
+ *     requestId: string        // end-to-end correlation id
+ *   },
+ *   blob: unknown,             // opaque payload (sanitized upstream)
+ *   phase?: string,            // optional semantic hint
+ *   target?: { slug, version, route, method } // optional observability context
+ * }
  *
  * Notes:
+ * - WAL and writers **must** rely on this shape; no alternative locations.
  * - No environment literals. No DB schema here.
  * - Keep tiny & stable; everything imports this (no duplicates).
  */
@@ -32,51 +37,41 @@ export const AuditTargetSchema = z.object({
   route: z.string().min(1), // e.g., "/api/acts"
   method: z.string().min(1), // e.g., "PUT" | "POST" | ...
 });
-
 export type AuditTarget = z.infer<typeof AuditTargetSchema>;
 
-// ── Canonical opaque blob ────────────────────────────────────────────────────
-export const AuditBlobSchema = z.object({
-  /** Epoch ms when produced (NOT when appended). */
+export const AuditMetaSchema = z.object({
+  service: z.string().min(1),
   ts: z.number().int().nonnegative(),
-
-  /** Correlation id propagated end-to-end. */
   requestId: z.string().min(1),
+});
+export type AuditMeta = z.infer<typeof AuditMetaSchema>;
 
-  /**
-   * Producing service (e.g., "gateway", "auth").
-   * Optional at WAL ingest to keep durability-first and tooling-friendly.
-   * Writers may enforce presence when persisting finalized records.
-   */
-  producer: z.string().min(1).optional(),
-
-  /** Optional semantic hint; engine does not branch on this. */
-  phase: z.string().min(1).optional(),
-
-  /** Optional target info for observability (opaque to WAL). */
-  target: AuditTargetSchema.optional(),
+// ── Canonical opaque blob (STRICT) ───────────────────────────────────────────
+export const AuditBlobSchema = z.object({
+  /** Required canonical metadata. */
+  meta: AuditMetaSchema,
 
   /** Redacted/structured data. No secrets — sanitize upstream. */
-  payload: z.unknown(),
+  blob: z.unknown(),
 
-  /** Free-form metadata (opaque). */
-  meta: z.record(z.string(), z.unknown()).optional(),
+  /** Optional semantic hint; engine/writer do not branch on this. */
+  phase: z.string().min(1).optional(),
+
+  /** Optional target info for observability (opaque to WAL/writer). */
+  target: AuditTargetSchema.optional(),
 });
-
 export type AuditBlob = z.infer<typeof AuditBlobSchema>;
 
 // ── Batch wrapper for transport (kept minimal) ───────────────────────────────
 export const AuditBatchSchema = z.object({
   entries: z.array(AuditBlobSchema).min(1),
 });
-
 export type AuditBatch = z.infer<typeof AuditBatchSchema>;
 
 // ── Helpers (narrow parsing with good error messages) ────────────────────────
 export function parseAuditBlob(input: unknown): AuditBlob {
   const res = AuditBlobSchema.safeParse(input);
   if (!res.success) {
-    // Small, useful error surface for logs
     const first = res.error.issues[0];
     const where = first?.path?.join(".") || "<root>";
     const msg = first?.message || "invalid audit blob";

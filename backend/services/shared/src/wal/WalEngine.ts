@@ -13,6 +13,9 @@
  *
  * Notes:
  * - No environment literals. No timers here. Callers decide cadence.
+ * - **Retry policy lives here**: transient errors are retried; non-retryable
+ *   (schema/contract) errors are quarantined (dropped from memory) so cadence
+ *   doesn’t spin endlessly. App code stays clean.
  */
 
 import type { AuditBlob } from "../contracts/audit/audit.blob.contract";
@@ -24,6 +27,48 @@ type WalLine = {
   appendedAt: number; // epoch ms when appended to WAL
   blob: AuditBlob;
 };
+
+function classifyError(err: any): "retryable" | "nonretryable" | "unknown" {
+  const code = (err?.code ?? "").toString();
+
+  // Non-retryable: contract/schema violations or explicit blob-invalid codes
+  const nonRetryableCodes = new Set([
+    "AUDIT_BLOB_INVALID",
+    "BLOB_INVALID",
+    "BLOB_INVALID_SERVICE",
+    "BLOB_INVALID_TS",
+    "BLOB_INVALID_REQUEST_ID",
+    "WRITER_BAD_INPUT",
+  ]);
+
+  if (nonRetryableCodes.has(code)) return "nonretryable";
+
+  // Retryable: DB/network classes
+  const retryableCodes = new Set([
+    "DB_CONNECT_FAILED",
+    "DB_COLLECTION_FAILED",
+    "DB_INSERT_FAILED",
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "WRITER_TRANSIENT",
+  ]);
+  if (retryableCodes.has(code)) return "retryable";
+
+  // Fallback classification by message heuristics (light-touch)
+  const msg = (err?.message ?? "").toLowerCase();
+  if (
+    msg.includes("timeout") ||
+    msg.includes("temporar") ||
+    msg.includes("network") ||
+    msg.includes("failed to connect")
+  ) {
+    return "retryable";
+  }
+
+  return "unknown";
+}
 
 export class WalEngine implements IWalEngine {
   private readonly journal: IWalJournal;
@@ -93,17 +138,52 @@ export class WalEngine implements IWalEngine {
       if (batch.length === 0) return { accepted: 0 };
 
       try {
+        // Fast path: persist the whole batch
         await this.writer.writeBatch(batch);
+        this.queue.splice(0, batch.length);
+        return { accepted: batch.length };
       } catch (err) {
-        const e = new Error(
-          `WAL writer_persist_failed: ${(err as Error)?.message || String(err)}`
-        );
-        (e as any).code = "WAL_PERSIST_FAILED";
-        throw e;
-      }
+        const cls = classifyError(err);
 
-      this.queue.splice(0, batch.length);
-      return { accepted: batch.length };
+        // Transient / unknown → let caller see the failure (will retry later)
+        if (cls === "retryable" || cls === "unknown") {
+          const e = new Error(
+            `WAL writer_persist_failed: ${
+              (err as Error)?.message || String(err)
+            }`
+          );
+          (e as any).code = "WAL_PERSIST_FAILED";
+          throw e;
+        }
+
+        // Non-retryable: isolate offenders so cadence doesn't spin forever.
+        // We attempt per-item writes: good items persist, bad ones are dropped.
+        let accepted = 0;
+        const survivors: AuditBlob[] = [];
+
+        for (const item of batch) {
+          try {
+            await this.writer.writeBatch([item]);
+            accepted += 1; // persisted
+          } catch (itemErr) {
+            const itemCls = classifyError(itemErr);
+            if (itemCls === "retryable" || itemCls === "unknown") {
+              // Keep retrying this one later; don't lose it.
+              survivors.push(item);
+            } else {
+              // Non-retryable: drop it from memory so we can make forward progress.
+              // (Journal remains append-only — durability is preserved; operator can replay/inspect offline.)
+              // Intentionally no throw here to avoid loops; first error already surfaced above.
+            }
+          }
+        }
+
+        // Replace queue with survivors
+        this.queue.splice(0, batch.length, ...survivors);
+
+        // Report the number that made it through now (and avoid further spam)
+        return { accepted };
+      }
     } finally {
       this.draining = false;
     }

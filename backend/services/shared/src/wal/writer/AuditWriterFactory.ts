@@ -1,4 +1,4 @@
-// backend/services/shared/src/writer/AuditWriterFactory.ts
+// backend/services/shared/src/wal/writer/AuditWriterFactory.ts
 /**
  * NowVibin (NV)
  * Docs:

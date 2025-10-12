@@ -1,4 +1,0 @@
-{"service":"audit","requestId":"46b77072-bbfd-40ad-aad9-9a12de765e7a","method":"POST","url":"/api/audit/v1/entries","time":"2025-10-09T23:32:05.625Z","phase":"begin"}
-{"service":"audit","requestId":"46b77072-bbfd-40ad-aad9-9a12de765e7a","method":"POST","url":"/api/audit/v1/entries","time":"2025-10-09T23:32:05.636Z","phase":"end","httpCode":404,"status":"error"}
-{"service":"audit","requestId":"7d5af361-8cb8-49b4-88aa-40940b64039f","method":"POST","url":"/api/audit/v1/entries","time":"2025-10-10T17:36:18.425Z","phase":"begin"}
-{"service":"audit","requestId":"7d5af361-8cb8-49b4-88aa-40940b64039f","method":"POST","url":"/api/audit/v1/entries","time":"2025-10-10T17:36:18.426Z","phase":"end","httpCode":404,"status":"error"}

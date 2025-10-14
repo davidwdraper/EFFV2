@@ -1,193 +1,115 @@
 // backend/services/audit/src/workers/audit.flusher.ts
 /**
+ * NowVibin (NV)
  * Docs:
- * - adr0022-shared-wal-and-db-base
- * - adr0024-audit-wal-persistence-guarantee (append-only)
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
+ * - ADR-0026 — DbAuditWriter & FIFO Schema (writer is a plugin; this class never touches DB/contracts)
  *
  * Purpose:
- * - Drain WAL entries, pair begin/end by requestId, finalize, and INSERT (append-only).
- * - Duplicates are silently ignored by the store (unique requestId).
+ * - Thin cadence wrapper around the shared WAL. It does not parse, pair, or persist.
+ * - Calls `wal.flush()` on a fixed interval; the configured writer handles persistence.
+ * - Keeps `app.ts` orchestration clean: app creates WAL & timer config; flusher just runs it.
  *
- * Env:
- * - AUDIT_WAL_FLUSH_MS (optional); falls back to WAL_FLUSH_MS, else 1000ms.
+ * Invariants:
+ * - No business logic here (no DTOs, repos, or contracts).
+ * - No environment fallbacks — callers pass validated interval (or use `fromEnv()` which fails fast).
+ * - Environment-agnostic (no host/port literals; no `.dist` imports).
  *
- * Notes:
- * - DI only. No singletons. The WAL instance is provided by AuditApp.
+ * Usage:
+ *   const flusher = AuditWalFlusher.fromEnv({ wal, log }); // throws if WAL_FLUSH_MS missing/invalid
+ *   flusher.start();
+ *   // on shutdown:
+ *   await flusher.stop();
  */
 
-import type { Wal, WalEntry } from "@nv/shared/wal/Wal";
-import { getEnv } from "@nv/shared/env";
-import { AuditEntryContract } from "@nv/shared/contracts/audit/audit.entry.contract";
-import {
-  AuditRecordContract,
-  type AuditRecordJson,
-} from "@nv/shared/contracts/audit/audit.record.contract";
-import { AuditRepo } from "../repo/audit.repo";
+import type { IWalEngine } from "@nv/shared/wal/IWalEngine";
 
-type BeginMap = Map<string, AuditEntryContract>;
-type EndMap = Map<string, AuditEntryContract>;
+type IBoundLogger = {
+  info: (obj: Record<string, unknown>, msg?: string) => void;
+  warn: (obj: Record<string, unknown>, msg?: string) => void;
+  error: (obj: Record<string, unknown>, msg?: string) => void;
+};
 
 export class AuditWalFlusher {
-  private readonly repo: AuditRepo;
-  private readonly wal: Wal;
-  private readonly begins: BeginMap = new Map();
-  private readonly ends: EndMap = new Map();
-  private timer: NodeJS.Timeout | null = null;
+  private readonly wal: IWalEngine;
+  private readonly log: IBoundLogger;
   private readonly intervalMs: number;
+  private timer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(wal: Wal, repo = new AuditRepo()) {
-    const ms =
-      parseInt(getEnv("AUDIT_WAL_FLUSH_MS") ?? "", 10) ||
-      parseInt(getEnv("WAL_FLUSH_MS") ?? "", 10) ||
-      1000;
-    this.intervalMs = ms;
-    this.repo = repo;
-    this.wal = wal;
+  constructor(opts: {
+    wal: IWalEngine;
+    log: IBoundLogger;
+    intervalMs: number;
+  }) {
+    this.wal = opts.wal;
+    this.log = opts.log;
+    this.intervalMs = opts.intervalMs;
+    if (!Number.isFinite(this.intervalMs) || this.intervalMs < 0) {
+      throw new Error(
+        `[audit.flusher] intervalMs must be a non-negative number, got "${opts.intervalMs}"`
+      );
+    }
   }
 
-  public start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => {
-      void this.flushOnce();
-    }, this.intervalMs);
-  }
-
-  public stop(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
-  }
-
-  /** Single drain + persist cycle (append-only insert). */
-  public async flushOnce(): Promise<void> {
-    await this.wal.flush(async (batch: WalEntry[]) => {
-      const finals: AuditRecordJson[] = [];
-
-      for (const raw of batch) {
-        // 1) If it's an END-ish raw object, normalize BEFORE parse
-        let candidate: any = raw as any;
-        if (candidate?.phase === "end") {
-          const normalized = normalizeEndRaw(candidate);
-          if (normalized === null) {
-            // cannot normalize legacy end → skip
-            continue;
-          }
-          candidate = normalized;
-        }
-
-        // 2) Parse entry; skip malformed
-        let entry: AuditEntryContract;
-        try {
-          entry = AuditEntryContract.parse(candidate, "audit.flusher");
-        } catch {
-          continue;
-        }
-
-        // 3) Pairing with extra normalization when using END from map
-        if (entry.phase === "begin") {
-          const cachedEnd = this.ends.get(entry.requestId);
-          if (cachedEnd) {
-            const endNorm = ensureEndNormalized(cachedEnd);
-            if (!endNorm) {
-              // bad legacy end, keep begin for a future valid end
-              this.ends.delete(entry.requestId);
-              this.begins.set(entry.requestId, entry);
-              continue;
-            }
-            try {
-              finals.push(
-                AuditRecordContract.fromEntries({
-                  begin: entry,
-                  end: endNorm,
-                }).toJSON()
-              );
-            } catch {
-              // contract rejection — skip silently
-            }
-            this.ends.delete(entry.requestId);
-          } else {
-            this.begins.set(entry.requestId, entry);
-          }
-        } else {
-          // entry.phase === "end" (already normalized pre-parse if legacy)
-          const cachedBegin = this.begins.get(entry.requestId);
-          if (cachedBegin) {
-            try {
-              finals.push(
-                AuditRecordContract.fromEntries({
-                  begin: cachedBegin,
-                  end: entry,
-                }).toJSON()
-              );
-            } catch {
-              // contract rejection — skip silently
-            }
-            this.begins.delete(entry.requestId);
-          } else {
-            this.ends.set(entry.requestId, entry);
-          }
-        }
-      }
-
-      // INSERT ONLY (append-only). Duplicates silently ignored by store.
-      if (finals.length > 0) {
-        await this.repo.insertFinalMany(finals);
-      }
+  /** Convenience: derive interval from env (fail-fast, no defaults). */
+  static fromEnv(opts: {
+    wal: IWalEngine;
+    log: IBoundLogger;
+  }): AuditWalFlusher {
+    const raw = process.env.WAL_FLUSH_MS;
+    if (raw === undefined) {
+      throw new Error(
+        "[audit.flusher] WAL_FLUSH_MS env is required (milliseconds; 0 disables cadence)"
+      );
+    }
+    const ms = Number(raw);
+    if (!Number.isFinite(ms) || ms < 0) {
+      throw new Error(
+        `[audit.flusher] WAL_FLUSH_MS must be a non-negative number, got "${raw}"`
+      );
+    }
+    return new AuditWalFlusher({
+      wal: opts.wal,
+      log: opts.log,
+      intervalMs: ms,
     });
   }
-}
 
-/* ----------------------------- helpers ----------------------------- */
-/**
- * Normalize a raw END entry (unparsed):
- * - If status missing, infer from http.code/httpCode.
- * - If httpCode missing but http.code present, copy it up.
- * - Remove legacy nested http after normalization.
- * - Returns normalized POJO or null if we can’t normalize.
- */
-function normalizeEndRaw(obj: any): any | null {
-  if (!obj || obj.phase !== "end") return obj;
-
-  const j: any = { ...obj }; // shallow clone
-  const hasStatus = typeof j.status === "string" && j.status.length > 0;
-
-  const code = Number.isFinite(j.httpCode)
-    ? Number(j.httpCode)
-    : Number.isFinite(j?.http?.code)
-    ? Number(j.http.code)
-    : undefined;
-
-  if (!hasStatus) {
-    if (!Number.isFinite(code)) return null; // cannot infer → skip
-    j.status = (code as number) >= 400 ? "error" : "ok";
+  /** Start periodic flushes. NOP if already running. */
+  start(): void {
+    if (this.timer || this.intervalMs === 0) return;
+    this.timer = setInterval(() => {
+      // Fire-and-forget; errors handled internally
+      void this.flushOnce();
+    }, this.intervalMs);
+    (this.timer as any)?.unref?.();
+    this.log.info({ intervalMs: this.intervalMs }, "audit_wal_flusher_started");
   }
 
-  if (!Number.isFinite(j.httpCode) && Number.isFinite(code)) {
-    j.httpCode = code;
+  /** Stop periodic flushes (idempotent). */
+  async stop(): Promise<void> {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+      this.log.info({}, "audit_wal_flusher_stopped");
+    }
   }
 
-  if (j.http && Number.isFinite(code)) {
-    delete j.http; // drop legacy nested field
+  /** One immediate flush. Writer performs persistence/backoff/quarantine. */
+  async flushOnce(): Promise<void> {
+    try {
+      const { accepted } = await this.wal.flush();
+      if (accepted > 0) {
+        this.log.info({ accepted }, "wal_flush");
+      }
+    } catch (err: any) {
+      this.log.error({ err }, "***ERROR*** wal_flush_failed");
+    }
   }
 
-  return j;
-}
-
-/**
- * Ensure an already-parsed END entry is normalized:
- * - entry.toJSON() → normalizeEndRaw → parse again.
- * - Returns normalized entry or null if cannot normalize.
- */
-function ensureEndNormalized(
-  entry: AuditEntryContract
-): AuditEntryContract | null {
-  if (entry.phase !== "end") return entry;
-  const raw = entry.toJSON() as any;
-  const norm = normalizeEndRaw(raw);
-  if (norm === null) return null;
-  try {
-    return AuditEntryContract.parse(norm, "audit.flusher.ensureEndNormalized");
-  } catch {
-    return null;
+  /** True if cadence is active. */
+  isRunning(): boolean {
+    return this.timer !== null;
   }
 }

@@ -111,4 +111,61 @@ Addendum:
 
 - Track the things that you believe will be important in subseqent sessions. When our current session gets too slow to continue, I'll ask you to print out in a code block, your saved up memory which I'll in turn save, and provide to you at the beginning of the next.
 
+### Addendum: `app.ts` as Orchestration Only
+
+**Purpose:**  
+Clarify that each service’s `app.ts` file serves strictly as an **orchestration layer**, not a logic host.
+
+#### Principles
+
+- `app.ts` defines **what happens and in what order**, never **how** it happens.
+- It wires **base classes**, **middleware**, and **routes**, but contains no business logic or helper code.
+- Every function or class referenced by `app.ts` must live in its own purpose-built file
+  (e.g., `middleware/`, `routes/`, `workers/`, or `services/`).
+- `app.ts` is the **service’s table of contents** — anyone reading it should immediately understand the runtime sequence:
+
+### Addendum: Single-Concern Class Principle
+
+**Purpose:**  
+Reaffirm that every class in the NowVibin backend exists to do **one thing only** — and do it completely.  
+No class should ever mix responsibilities, even if it feels convenient.
+
+#### Core Rule
+
+> A class must have exactly **one reason to change**.
+
+If a class handles multiple concerns — such as validation _and_ persistence, or routing _and_ domain mapping —  
+it becomes brittle, harder to test, and impossible to evolve safely.
+
+#### Guidelines
+
+- A class should represent **one conceptual role** in the system (e.g., `UserRepo`, `AuditWalWriter`, `HealthRouter`).
+- If a class constructor takes more than 3–4 unrelated dependencies, it’s likely doing too much.
+- **Never** combine vertical layers inside a single class:
+  - Controller ↔ Repo ↔ Model ↔ Mapper ↔ DTO ↔ Contract
+  - Each of those belongs in its own file and class.
+- If a class has methods that _feel like separate subsystems_, extract them:
+  - `UserService.create()` vs `UserService.notifyFollowers()` → separate classes.
+- Cross-cutting utilities (logging, validation, config) belong in **shared base classes** or **dedicated helpers**,  
+  never bundled into “manager” or “facade” god-classes.
+
+#### Enforcement
+
+- Any class exceeding ~200 lines or handling multiple layers of logic must be split before merge.
+- Every reviewer must ask:  
+  “**Can I summarize this class in one sentence?**”  
+  If not, it violates the single-concern rule.
+- Shared base classes (e.g., `AppBase`, `RouterBase`, `RepoBase`) are allowed only when the concern is truly cross-service.
+
+#### Rationale
+
+This rule guarantees:
+
+- Predictable composition across services (`App → Router → Controller → Repo`).
+- Easy unit testing (each class mockable in isolation).
+- Minimal refactor friction: replacing one concern never breaks another.
+
+In short: **no god-classes, no mixed responsibilities, no ‘misc’ folders.**  
+Every class must do one job — cleanly, completely, and nothing else.
+
 Your previous session notes below:

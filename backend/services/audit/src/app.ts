@@ -30,6 +30,7 @@ import { AuditIngestRouter } from "./routes/audit.ingest.routes";
 import type { IWalEngine } from "@nv/shared/wal/IWalEngine";
 import { buildWal } from "@nv/shared/wal/WalBuilder";
 import { AuditWriterFactory } from "@nv/shared/wal/writer/AuditWriterFactory";
+import { listRegisteredWriters } from "@nv/shared/wal/writer/WriterRegistry";
 
 const SERVICE_SLUG = "audit";
 const API_BASE = `/api/${SERVICE_SLUG}/v1`;
@@ -54,7 +55,10 @@ export class AuditApp extends AppBase {
    * Boot:
    * - Validate required envs.
    * - Dynamically import writer register module (side-effect) from env.
-   * - Build WAL with factory by name (drop-in writer design).
+   * - Resolve writer **without** AUDIT_WRITER env:
+   *    • If exactly one writer is registered → use it.
+   *    • If zero or multiple → fail-fast with guidance to fix the registrar.
+   * - Build WAL with that writer.
    * - (Optional) Replay-on-boot if AUDIT_REPLAY_ON_BOOT=true.
    * - Publish WAL to app.locals for controllers to resolve at call time.
    * - Start (or disable) flush cadence per explicit WAL_FLUSH_MS.
@@ -73,14 +77,6 @@ export class AuditApp extends AppBase {
         "[audit] AUDIT_WRITER_REGISTER env is required (module path to writer registration)"
       );
     }
-
-    const writerName = process.env.AUDIT_WRITER?.trim();
-    if (!writerName) {
-      throw new Error(
-        "[audit] AUDIT_WRITER env is required (registry key for the writer registered by AUDIT_WRITER_REGISTER)"
-      );
-    }
-    this.writerName = writerName;
 
     const msRaw = process.env.WAL_FLUSH_MS;
     if (msRaw === undefined) {
@@ -108,6 +104,24 @@ export class AuditApp extends AppBase {
         `[audit] Failed to load AUDIT_WRITER_REGISTER module "${registerMod}": ${msg}`
       );
     }
+
+    // Resolve writer name strictly from what the registrar registered.
+    const registered = listRegisteredWriters();
+    if (registered.length === 0) {
+      throw new Error(
+        `[audit] No writers are registered after importing "${registerMod}". ` +
+          `Ensure that module calls registerWriter("name", factory).`
+      );
+    }
+    if (registered.length > 1) {
+      throw new Error(
+        `[audit] Multiple writers are registered (${registered.join(
+          ", "
+        )}) after importing "${registerMod}". ` +
+          `Greenfield rule: use a single registrar that registers exactly one writer.`
+      );
+    }
+    this.writerName = registered[0];
 
     // Build WAL (FS journal + registry-resolved writer). No env reads inside.
     this.wal = await buildWal({

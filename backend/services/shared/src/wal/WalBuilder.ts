@@ -3,96 +3,45 @@
  * NowVibin (NV)
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
+ * - ADR-0022 — Shared WAL & DB Base (generic, shippable)
+ * - ADR-0024 — WAL Durability (FS journal, fsync cadence)
+ * - ADR-0025 — Writer Injection (DI-first; no registries at runtime)
  *
  * Purpose:
- * - One-stop builder for a fully wired WAL engine:
- *   File-backed journal + registry-driven writer → `WalEngine`.
+ * - Construct a WAL engine with a File-backed journal and a caller-provided writer.
  *
- * Design:
- * - **No environment reads**; caller supplies all config.
- * - Lean, composable, and destination-agnostic.
- * - Throws with contextual errors (no silent fallbacks).
+ * Notes:
+ * - No environment reads here. Callers pass absolute dir and writer instance.
+ * - Greenfield: DI-only — no { name, options } legacy path.
  */
 
-import { WalEngine } from "./WalEngine";
-import {
-  FileWalJournal,
-  type FileWalJournalOptions,
-} from "./fs/FileWalJournal";
-import {
-  AuditWriterFactory,
-  type AuditWriterConfig,
-} from "./writer/AuditWriterFactory";
-import type { IWalEngine } from "./IWalEngine";
+import * as path from "node:path";
 import type { IAuditWriter } from "./writer/IAuditWriter";
+import type { IWalEngine } from "./IWalEngine";
+import { WalEngine } from "./WalEngine";
+import { FileWalJournal } from "./fs/FileWalJournal";
 
-export type WalJournalConfig = FileWalJournalOptions;
+export interface WalBuilderOpts {
+  journal: { dir: string };
+  writer: { instance: IAuditWriter };
+}
 
-export type WalBuildOptions<TWriterOpts = unknown> = {
-  /** File journal configuration (dir required). */
-  journal: WalJournalConfig;
-
-  /** Writer selection (registered name or module) + options. */
-  writer: AuditWriterConfig<TWriterOpts>;
-};
-
-/**
- * Build a `WalEngine` with a file-backed journal and a factory-created writer.
- * Caller is responsible for importing/registering desired writers beforehand.
- */
-export async function buildWal<T = unknown>(
-  opts: WalBuildOptions<T>
-): Promise<IWalEngine> {
-  if (!opts?.journal?.dir) {
-    const e = new Error("buildWal: journal.dir is required");
-    (e as any).code = "WAL_BUILD_BAD_CONFIG";
-    throw e;
+export async function buildWal(opts: WalBuilderOpts): Promise<IWalEngine> {
+  const dir = opts?.journal?.dir;
+  if (!dir || typeof dir !== "string") {
+    throw new Error("buildWal: journal.dir is required");
+  }
+  if (!path.isAbsolute(dir)) {
+    throw new Error(`buildWal: journal.dir must be absolute, got "${dir}"`);
   }
 
-  // Create journal (fail-fast with context)
-  let journal: FileWalJournal;
-  try {
-    journal = new FileWalJournal({
-      dir: opts.journal.dir,
-      nameFn: opts.journal.nameFn,
-      fsyncIntervalMs: opts.journal.fsyncIntervalMs,
-    });
-  } catch (err) {
-    const e = new Error(
-      `buildWal: journal init failed — ${
-        (err as Error)?.message || String(err)
-      }`
-    );
-    (e as any).code = "WAL_BUILD_JOURNAL_FAILED";
-    (e as any).cause = err;
-    throw e;
+  const writer = opts?.writer?.instance;
+  if (!writer || typeof (writer as any).writeBatch !== "function") {
+    throw new Error("buildWal: writer.instance must implement IAuditWriter");
   }
 
-  // Create writer via registry-driven factory
-  let writer: IAuditWriter;
-  try {
-    writer = await AuditWriterFactory.create<T>(opts.writer);
-  } catch (err) {
-    const e = new Error(
-      `buildWal: writer init failed — ${(err as Error)?.message || String(err)}`
-    );
-    (e as any).code = "WAL_BUILD_WRITER_FAILED";
-    (e as any).cause = err;
-    throw e;
-  }
+  const journal = new FileWalJournal({ dir });
 
-  // Wire engine
-  try {
-    return new WalEngine(journal, writer);
-  } catch (err) {
-    const e = new Error(
-      `buildWal: engine construction failed — ${
-        (err as Error)?.message || String(err)
-      }`
-    );
-    (e as any).code = "WAL_BUILD_ENGINE_FAILED";
-    (e as any).cause = err;
-    throw e;
-  }
+  // WalEngine expects positional args: (journal, writer)
+  return new WalEngine(journal, writer);
 }

@@ -4,6 +4,7 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
+ * - ADR-0027 — SvcClient/SvcReceiver S2S Contract (baseline, pre-auth)
  *
  * Purpose:
  * - HTTP-based audit writer that ships WAL batches to the Audit service via shared SvcClient.
@@ -12,67 +13,25 @@
  * Contract:
  * - Implements IAuditWriter.writeBatch(batch) → Promise<void>.
  * - Throws on failure; WAL retains entries for replay. Safe for duplicate sends.
- *
- * Notes:
- * - Caller injects a SvcClient-like object (duck-typed) so we avoid guessing import paths.
- * - Route defaults to "/entries" under /api/<slug>/v<version>.
- * - Retries on transient errors with fixed backoff.
  */
 
 import type { AuditBlob } from "../../contracts/audit/audit.blob.contract";
-import type { IAuditWriter } from "./IAuditWriter";
+import type { IAuditWriter } from "./IAuditWriter"; // adjust if your IAuditWriter lives elsewhere
+import type { SvcCallOptions, SvcResponse } from "../../svc/types";
 
-type HttpMethod = "POST";
-
+// Duck-typed SvcClient dependency — matches your posted SvcClient.call(opts).
 type SvcClientLike = {
-  /**
-   * Call another service by slug/version.
-   * Must mint S2S JWT internally; caller (this writer) never forwards client auth.
-   *
-   * Example impl signature (duck-typed):
-   *   callBySlug<TReq, TRes>(
-   *     slug: string,
-   *     version: number,
-   *     route: string,
-   *     method: HttpMethod,
-   *     message: TReq,
-   *     options?: { timeoutMs?: number }
-   *   ): Promise<TRes>;
-   */
-  callBySlug: <TReq, TRes>(
-    slug: string,
-    version: number,
-    route: string,
-    method: HttpMethod,
-    message: TReq,
-    options?: { timeoutMs?: number }
-  ) => Promise<TRes>;
+  call<T = unknown>(opts: SvcCallOptions): Promise<SvcResponse<T>>;
 };
 
 export interface HttpAuditWriterOptions {
-  /** Injected SvcClient (or compatible) instance for S2S calls. */
   svcClient: SvcClientLike;
-
-  /** Target Audit service slug, e.g., "audit". */
-  auditSlug: string;
-
-  /** Target Audit service major version, e.g., 1. */
-  auditVersion: number;
-
-  /**
-   * Ingest route (mounted under /api/<slug>/v<version>).
-   * Defaults to "/entries" → POST /api/audit/v1/entries
-   */
-  route?: string;
-
-  /** Per-call timeout in ms (default: 5000). */
-  timeoutMs?: number;
-
-  /** Retry attempts on transient failures (default: 3). */
-  retries?: number;
-
-  /** Fixed backoff between retries in ms (default: 250). */
-  backoffMs?: number;
+  auditSlug: string; // e.g., "audit"
+  auditVersion: number; // e.g., 1
+  route?: string; // service-local path, defaults to "/entries"
+  timeoutMs?: number; // default 5000
+  retries?: number; // default 3
+  backoffMs?: number; // default 250
 }
 
 export class HttpAuditWriter implements IAuditWriter {
@@ -95,44 +54,35 @@ export class HttpAuditWriter implements IAuditWriter {
     this.svcClient = opts.svcClient;
     this.slug = opts.auditSlug;
     this.ver = opts.auditVersion;
-    this.route = opts.route ?? "/entries";
+    this.route = opts.route ?? "/entries"; // service-local path (resolver provides /api/<slug>/v<ver>)
     this.timeoutMs = opts.timeoutMs ?? 5000;
     this.retries = Math.max(0, opts.retries ?? 3);
     this.backoffMs = Math.max(0, opts.backoffMs ?? 250);
   }
 
   public async writeBatch(batch: ReadonlyArray<AuditBlob>): Promise<void> {
-    // Defensive: avoid accidental mutation by callers after invocation
     const payload: ReadonlyArray<AuditBlob> = Array.isArray(batch)
       ? batch.slice()
       : [];
-
-    if (payload.length === 0) {
-      // No-op: nothing to send, and not an error.
-      return;
-    }
+    if (payload.length === 0) return;
 
     let attempt = 0;
-    // lastError captured for context if we exhaust retries
     let lastError: unknown;
 
     while (attempt <= this.retries) {
       try {
-        await this.svcClient.callBySlug<ReadonlyArray<AuditBlob>, unknown>(
-          this.slug,
-          this.ver,
-          this.route,
-          "POST",
-          payload,
-          { timeoutMs: this.timeoutMs }
-        );
-        // Success
-        return;
+        await this.svcClient.call({
+          slug: this.slug,
+          version: this.ver,
+          path: this.route, // service-local
+          method: "POST",
+          body: payload,
+          timeoutMs: this.timeoutMs,
+        });
+        return; // success
       } catch (err: any) {
         lastError = err;
-        // Decide if retryable: network/5xx/timeouts are typical retry cases.
         if (!this.isRetryable(err) || attempt === this.retries) {
-          // Give up
           const detail = this.describeError(err);
           throw new Error(
             `HttpAuditWriter: failed to post batch after ${
@@ -140,7 +90,6 @@ export class HttpAuditWriter implements IAuditWriter {
             } attempt(s): ${detail}`
           );
         }
-        // Backoff then retry
         await this.sleep(this.backoffMs);
         attempt++;
       }
@@ -148,25 +97,24 @@ export class HttpAuditWriter implements IAuditWriter {
   }
 
   private isRetryable(err: any): boolean {
-    // Heuristic: treat typical transient conditions as retryable.
-    const code = err?.code ?? err?.cause?.code;
     const status = err?.status ?? err?.response?.status;
+    if (typeof status === "number" && status >= 500) return true;
 
-    if (typeof status === "number" && status >= 500) return true; // 5xx
-    if (code && typeof code === "string") {
-      const c = code.toUpperCase();
-      if (
-        c === "ECONNRESET" ||
-        c === "ETIMEDOUT" ||
-        c === "EAI_AGAIN" ||
-        c === "ECONNREFUSED" ||
-        c === "ENETUNREACH" ||
-        c === "EHOSTUNREACH"
-      ) {
-        return true;
-      }
+    const code = (err?.code ?? err?.cause?.code)?.toString().toUpperCase?.();
+    if (
+      code &&
+      [
+        "ECONNRESET",
+        "ETIMEDOUT",
+        "EAI_AGAIN",
+        "ECONNREFUSED",
+        "ENETUNREACH",
+        "EHOSTUNREACH",
+      ].includes(code)
+    ) {
+      return true;
     }
-    // Timeouts often surface differently; conservatively retry if message hints at timeout.
+
     const msg: string | undefined = err?.message ?? err?.toString?.();
     if (msg && /timeout/i.test(msg)) return true;
 

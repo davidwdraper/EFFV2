@@ -3,22 +3,20 @@
  * NowVibin (NV)
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0013 — Versioned Health Envelope & Routes
- *   - ADR-0014 — Base Hierarchy (Entrypoint → AppBase → ServiceBase)
- *   - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
- *   - ADR-0026 — DbAuditWriter & FIFO Schema (writer is plugin, not referenced here)
+ * - ADR-0013 — Versioned Health Envelope & Routes
+ * - ADR-0014 — Base Hierarchy (Entrypoint → AppBase → ServiceBase)
+ * - ADR-0022 — Shared WAL & DB Base
+ * - ADR-0024 — WAL Durability
+ * - ADR-0025 — Writer Injection (DI-first)
+ * - ADR-0026 — DbAuditWriter & FIFO Schema
  *
  * Purpose:
- * - Audit service wired to shared WAL: FS-backed journal + registry-based writer.
- * - Versioned health via AppBase. Ingestion route appends to WAL and ACKs.
- * - Optional **replay-on-boot** seam (env-gated) to drain existing WAL before traffic.
+ * - Audit service with FS-backed WAL + DI-injected DB writer.
+ * - Versioned health; ingest route appends to WAL and ACKs.
+ * - Optional replay-on-boot using the same writer instance.
  *
  * Notes:
- * - Environment-invariant: no host/port literals anywhere.
- * - Strict envs: no defaults, no fallbacks — fail-fast if anything is missing/invalid.
- * - Writer registration via side-effect module path from env (drop-in friendly).
- * - Cadence is simple: call wal.flush() on a fixed interval; WAL owns retry/backoff/quarantine.
+ * - No writer registry. No AUDIT_WRITER*. The app **constructs** its writer and injects it.
  */
 
 import express from "express";
@@ -29,8 +27,8 @@ import { AuditIngestRouter } from "./routes/audit.ingest.routes";
 
 import type { IWalEngine } from "@nv/shared/wal/IWalEngine";
 import { buildWal } from "@nv/shared/wal/WalBuilder";
-import { AuditWriterFactory } from "@nv/shared/wal/writer/AuditWriterFactory";
-import { listRegisteredWriters } from "@nv/shared/wal/writer/WriterRegistry";
+// Reuse existing DB writer for now (we can move it under services/audit later in Phase 2)
+import { DbAuditWriter } from "@nv/shared/wal/writer/DbAuditWriter";
 
 const SERVICE_SLUG = "audit";
 const API_BASE = `/api/${SERVICE_SLUG}/v1`;
@@ -39,42 +37,22 @@ export class AuditApp extends AppBase {
   private wal!: IWalEngine;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
 
-  // Keep the writer selection we booted with, so replay can instantiate the same writer
-  private writerName!: string;
+  // Keep the writer instance we booted with so replay uses the same sink
+  private writer!: DbAuditWriter;
 
   constructor() {
     super({ service: SERVICE_SLUG });
   }
 
-  /** Versioned health base under which AppBase mounts /health/{live,ready}. */
   protected healthBasePath(): string | null {
     return API_BASE;
   }
 
-  /**
-   * Boot:
-   * - Validate required envs.
-   * - Dynamically import writer register module (side-effect) from env.
-   * - Resolve writer **without** AUDIT_WRITER env:
-   *    • If exactly one writer is registered → use it.
-   *    • If zero or multiple → fail-fast with guidance to fix the registrar.
-   * - Build WAL with that writer.
-   * - (Optional) Replay-on-boot if AUDIT_REPLAY_ON_BOOT=true.
-   * - Publish WAL to app.locals for controllers to resolve at call time.
-   * - Start (or disable) flush cadence per explicit WAL_FLUSH_MS.
-   */
   protected async onBoot(): Promise<void> {
     const dir = process.env.WAL_DIR?.trim();
     if (!dir) {
       throw new Error(
         "[audit] WAL_DIR env is required and must be an absolute, writable directory"
-      );
-    }
-
-    const registerMod = process.env.AUDIT_WRITER_REGISTER?.trim();
-    if (!registerMod) {
-      throw new Error(
-        "[audit] AUDIT_WRITER_REGISTER env is required (module path to writer registration)"
       );
     }
 
@@ -95,44 +73,17 @@ export class AuditApp extends AppBase {
       String(process.env.AUDIT_REPLAY_ON_BOOT || "false").toLowerCase() ===
       "true";
 
-    // Load writer registration module (side-effect). No fallbacks.
-    try {
-      await import(registerMod);
-    } catch (err: any) {
-      const msg = err?.message || String(err);
-      throw new Error(
-        `[audit] Failed to load AUDIT_WRITER_REGISTER module "${registerMod}": ${msg}`
-      );
-    }
+    // Construct the DB writer directly (DI). No env reads here; pass options explicitly if/when needed.
+    this.writer = new DbAuditWriter();
 
-    // Resolve writer name strictly from what the registrar registered.
-    const registered = listRegisteredWriters();
-    if (registered.length === 0) {
-      throw new Error(
-        `[audit] No writers are registered after importing "${registerMod}". ` +
-          `Ensure that module calls registerWriter("name", factory).`
-      );
-    }
-    if (registered.length > 1) {
-      throw new Error(
-        `[audit] Multiple writers are registered (${registered.join(
-          ", "
-        )}) after importing "${registerMod}". ` +
-          `Greenfield rule: use a single registrar that registers exactly one writer.`
-      );
-    }
-    this.writerName = registered[0];
-
-    // Build WAL (FS journal + registry-resolved writer). No env reads inside.
+    // Build WAL with injected writer instance
     this.wal = await buildWal({
       journal: { dir },
-      writer: { name: this.writerName, options: {} },
+      writer: { instance: this.writer },
     });
 
-    // Optional: drain existing WAL before taking traffic, using the same writer type.
     if (replayOnBoot) {
       await this.tryReplayOnBoot({ dir });
-      // One immediate flush in case replay enqueued in-memory items
       try {
         const { accepted } = await this.wal.flush();
         if (accepted > 0) this.log.info({ accepted }, "wal_flush_after_replay");
@@ -141,17 +92,14 @@ export class AuditApp extends AppBase {
       }
     }
 
-    // Expose WAL to controllers (so route mounting order isn’t a race).
     this.app.locals.wal = this.wal;
 
-    // Simple background cadence. WAL owns retry/backoff/quarantine; app stays thin.
     if (cadenceMs > 0) {
       this.flushTimer = setInterval(async () => {
         try {
           const { accepted } = await this.wal.flush();
           if (accepted > 0) this.log.info({ accepted }, "wal_flush");
         } catch (err) {
-          // Single-line error; WAL already classifies and quarantines as needed.
           this.log.error({ err }, "***ERROR*** wal_flush_failed");
         }
       }, cadenceMs);
@@ -159,24 +107,19 @@ export class AuditApp extends AppBase {
     }
   }
 
-  /** Report ready only after WAL is constructed and published. */
   protected readyCheck(): () => boolean {
     return () => !!this.wal && !!this.app.locals?.wal;
   }
 
-  /** Minimal pre-routing; health handled by AppBase. */
   protected mountPreRouting(): void {
     super.mountPreRouting();
   }
 
-  /** Parsers — conservative defaults. */
   protected mountParsers(): void {
     this.app.use(express.json({ limit: "1mb" }));
   }
 
-  /** Mount routes and error logger. */
   protected mountRoutes(): void {
-    // Controller resolves WAL from app.locals at call time; keeps tests simple.
     const ctrl = new AuditIngestController();
     const router = new AuditIngestRouter(ctrl).router();
 
@@ -184,7 +127,6 @@ export class AuditApp extends AppBase {
     this.app.use(responseErrorLogger(this.log));
   }
 
-  /** Graceful shutdown: clear optional flush timer if present. */
   protected async onShutdown(): Promise<void> {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
@@ -192,14 +134,8 @@ export class AuditApp extends AppBase {
     }
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // Optional replay-on-boot seam
-  // Uses shared CursorlessWalReplayer ({dir}) and a fresh writer instance
-  // of the same type configured for this process.
-  // ───────────────────────────────────────────────────────────────────────────
   private async tryReplayOnBoot(opts: { dir: string }): Promise<void> {
-    // This matches your provided path:
-    // backend/services/shared/src/wal/replay/CursorlessWalReplayer.ts
+    // unchanged from your current version except using this.writer instead of factory-by-name
     const candidates = [
       "@nv/shared/wal/replay/CursorlessWalReplayer",
       "@nv/shared/wal/CursorlessWalReplayer",
@@ -236,14 +172,8 @@ export class AuditApp extends AppBase {
         return;
       }
 
-      // Create a fresh writer instance of the same configured type.
-      const writer = await AuditWriterFactory.create({
-        name: this.writerName,
-        options: {}, // keep options opaque/empty unless you later add some
-      });
-
       const replayer = new Replayer({ dir: opts.dir });
-      const stats = await replayer.replay(writer); // { filesScanned, linesScanned, batchesEmitted, blobsReplayed }
+      const stats = await replayer.replay(this.writer);
 
       this.log.info(
         { ...stats, module: loadedFrom },

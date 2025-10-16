@@ -168,4 +168,60 @@ This rule guarantees:
 In short: **no god-classes, no mixed responsibilities, no ‘misc’ folders.**  
 Every class must do one job — cleanly, completely, and nothing else.
 
+Addendum: Best-in-Class Over Minimal Diffs
+
+Principle: We optimize for correctness, clarity, and long-term stability, not smallest change-set. Minimal edits are fine only if they produce the right system. If a bigger change creates a simpler, cleaner, invariant-driven design, we take it.
+
+Design Rules (non-negotiable)
+
+Contract First: Shared contracts (envelope + body) are the source of truth. Producer and consumer import the same schema. No local variants. No guessing.
+
+Single Envelope, Forever: One RouterBase envelope for every S2S response. Requests are flat bodies. No exceptions.
+
+Opaque Plumbing: Transport never peeks inside payloads. All interpretation happens in logic layers.
+
+DI Everywhere: Dependencies are constructed and injected by the owning service. No factories that hide wiring; no env-driven shape changes in plumbing.
+
+Environment Invariance: No literals, no fallbacks. If a required env/config is missing, fail fast.
+
+Single-Concern Classes: One reason to change. If a class crosses layers (controller ↔ repo, etc.), split it.
+
+No Compatibility Branches: Greenfield only. If a break is required to stay correct, we break and fix.
+
+Frozen Plumbing: Once an invariant holds (envelope, resolver, client/receiver, WAL core), it’s locked. Bugs are fixed at edges (producer/consumer), not by bending plumbing.
+
+Definition of Done (plumbing)
+
+✅ Shared envelope and body schemas validate on both ends.
+
+✅ SvcClient sends flat body, unwraps+validates response envelope via shared schema.
+
+✅ SvcReceiver validates flat request body and wraps response with the standard envelope.
+
+✅ Resolver composes URLs exactly once; callers pass service-local paths only.
+
+✅ Logs show composed base and edge hits that match contract.
+
+✅ WAL replayer drains cleanly (durable FS journal, retries on outage), no schema peeking.
+
+Refactor Policy
+
+If correctness conflicts with “small change,” choose correctness.
+
+Delete cleverness; prefer boring, explicit code.
+
+Any refactor must reduce surface area or increase invariants. If it adds knobs, it’s suspect.
+
+Review Checklist (fast gate)
+
+Does this change strengthen an invariant or introduce one?
+
+Are client and receiver importing the same shared schema?
+
+Any literals or hidden defaults? (If yes, reject.)
+
+Any class doing two jobs? (If yes, split.)
+
+Could this ship to prod unchanged with different env values? If not, fix it.
+
 Your previous session notes below:

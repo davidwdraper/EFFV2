@@ -1,27 +1,34 @@
 // backend/shared/src/svc/SvcReceiver.ts
 /**
+ * NowVibin (NV)
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
- *   - ADR-0015 (Structured Logger with bind() Context)
- *   - ADR-0006 (Edge Logging — ingress-only)
+ *   - ADR-0014 — Base Hierarchy: ServiceEntrypoint vs ServiceBase
+ *   - ADR-0015 — Structured Logger with bind() Context
+ *   - ADR-0006 — Edge Logging (ingress-only)
+ *   - ADR-0028 — HttpAuditWriter over SvcClient (S2S envelope locked)
+ *   - ADR-0029 — Contract-ID + BodyHandler pipeline
+ *   - ADR-0030 — ContractBase & idempotent contract identification
  *
  * Purpose:
- * - Normalize S2S request handling and JSON envelope responses.
+ * - Normalize S2S request handling and **canonical JSON envelope** responses.
  * - Framework-agnostic: works with any Express-like req/res.
  *
- * Invariance:
- * - 2xx/3xx → { ok: true, data }
- * - 4xx/5xx → { ok: false, error }
+ * Invariants:
+ * - SUCCESS → RouterBase envelope:
+ *      { ok: true, service, data: { status, body } }
+ * - ERROR   → RFC7807 JSON (NOT enveloped)
+ * - `x-request-id` is always echoed as a **response header** (not in body).
  *
  * EDGE policy:
- * - Log **ingress** only. Outbound/egress logging is owned by SvcClient.
+ * - Log **ingress** only. Egress logging is owned by SvcClient.
  */
 
 import { randomUUID } from "crypto";
 import type { HttpLikeRequest, HttpLikeResponse } from "./types";
 import { ServiceBase } from "../base/ServiceBase";
+import { EnvelopeContract } from "../contracts/envelope.contract";
 
 export class SvcReceiver extends ServiceBase {
   constructor(serviceName: string) {
@@ -71,7 +78,7 @@ export class SvcReceiver extends ServiceBase {
         body: (req as any).body,
       });
 
-      // Echo request id and any controller headers
+      // Always echo request id + any controller headers
       res.setHeader("x-request-id", requestId);
       if (result.headers) {
         for (const [k, v] of Object.entries(result.headers)) {
@@ -91,34 +98,27 @@ export class SvcReceiver extends ServiceBase {
         log.info({ status }, "svc receive completed");
       }
 
-      // SOP-compliant envelope
       if (status >= 400) {
-        const errBody =
-          (result.body as any)?.error ??
-          ({
-            code: status >= 500 ? "internal_error" : "request_failed",
-            message:
-              (typeof (result.body as any)?.message === "string" &&
-                (result.body as any).message) ||
-              "request_failed",
-          } as const);
+        // RFC7807 (no envelope for errors)
+        const detail =
+          (typeof (result.body as any)?.message === "string" &&
+            (result.body as any).message) ||
+          "request_failed";
+        const title = status >= 500 ? "Internal Server Error" : "Bad Request";
 
         res.status(status).json({
-          ok: false,
-          service: this.service,
-          requestId,
-          error: errBody,
+          type: "about:blank",
+          title,
+          status,
+          detail,
         });
         return;
       }
 
-      // Success path
-      res.status(status).json({
-        ok: true,
-        service: this.service,
-        requestId,
-        data: result.body ?? null,
-      });
+      // Success path — canonical RouterBase envelope
+      const body = result.body ?? null;
+      const envelope = EnvelopeContract.makeOk(this.service, status, body);
+      res.status(status).json(envelope);
     } catch (err) {
       const message = String(err instanceof Error ? err.message : err);
 
@@ -127,10 +127,10 @@ export class SvcReceiver extends ServiceBase {
 
       res.setHeader("x-request-id", requestId);
       res.status(500).json({
-        ok: false,
-        service: this.service,
-        requestId,
-        error: { code: "internal_error", message },
+        type: "about:blank",
+        title: "Internal Server Error",
+        status: 500,
+        detail: message,
       });
     }
   }

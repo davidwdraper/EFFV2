@@ -5,34 +5,35 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0028 — HttpAuditWriter over SvcClient (S2S envelope locked)
+ *   - ADR-0029 — Contract-ID + BodyHandler pipeline
+ *   - ADR-0030 — ContractBase & idempotent contract identification
  * - Related:
- *   - contracts/envelope.contract.ts (canonical envelope)
+ *   - contracts/envelope.contract.ts (canonical success envelope)
  *
  * Purpose:
- * - One tiny place that enforces the **shared** S2S contract for both ends:
+ * - Centralized helpers that enforce the shared S2S contract on both ends:
  *   (A) Client-side: validate RESPONSE envelope and unwrap the opaque body.
- *   (B) Receiver-side: validate REQUEST body and build RESPONSE envelope.
+ *   (B) Receiver-side: validate REQUEST body (flat) and build RESPONSE envelope.
  *
  * Invariants:
  * - Requests are **flat bodies** validated by endpoint body schema.
  * - Responses are **RouterBase envelopes** with `data.body` validated by the same schema.
- * - No local variants; both sides import the same shared schema.
+ * - Errors follow RFC7807 (NOT enveloped).
+ * - No local variants; both sides import the same shared schema/class.
  */
 
 import { z } from "zod";
-import {
-  Envelope,
-  envelopeSchema,
-  makeOkEnvelope,
-} from "../../contracts/envelope.contract";
+import { Envelope, EnvelopeContract } from "../../contracts/envelope.contract";
 
 /** Client-side: validate a RESPONSE envelope and return typed body. */
 export function parseResponseEnvelope<TBody>(
   payload: unknown,
   bodySchema: z.ZodType<TBody>
 ): { envelope: Envelope<TBody>; body: TBody } {
-  const schema = envelopeSchema(bodySchema);
-  const envelope = schema.parse(payload) as Envelope<TBody>;
+  const envelope = EnvelopeContract.parse(
+    payload,
+    bodySchema
+  ) as Envelope<TBody>;
   return { envelope, body: envelope.data.body };
 }
 
@@ -50,5 +51,5 @@ export function okEnvelope<TBody>(
   status: number,
   body: TBody
 ): Envelope<TBody> {
-  return makeOkEnvelope(serviceSlug, status, body);
+  return EnvelopeContract.makeOk<TBody>(serviceSlug, status, body);
 }

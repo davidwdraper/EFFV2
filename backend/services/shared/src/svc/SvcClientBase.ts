@@ -1,19 +1,27 @@
 // backend/services/shared/src/svc/SvcClientBase.ts
 /**
+ * NowVibin (NV)
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0014 (Entrypoint vs ServiceBase)
  *   - ADR-0015 (Logger with bind() Context)
  *   - ADR-0006 (Edge Logging — first-class edge())
+ *   - ADR-0028 — HttpAuditWriter over SvcClient (S2S envelope locked)
+ *   - ADR-0030 — ContractBase & idempotent contract identification
  *
  * Purpose:
  * - Base class for S2S clients. Centralizes URL building, headers/body prep,
- *   logging, and envelope shaping. Swaps URL via injected resolver.
+ *   logging, timeout, and **error discipline** (RFC7807 on non-2xx).
+ * - URL is swapped via injected resolver returning a **composed base**.
  *
  * Contract (greenfield, fail-fast):
  * - Throws on any non-2xx or network/timeout error.
- * - Returns SvcResponse<T> only for 2xx upstreams.
+ * - Returns SvcResponse<T> only for 2xx upstreams (T = parsed JSON/text).
+ *
+ * Alignment with SvcReceiver:
+ * - Success responses are the canonical RouterBase envelope (validated by the caller).
+ * - Errors are RFC7807 JSON: { type, title, status, detail } (no envelope).
  */
 
 import { randomUUID } from "crypto";
@@ -52,14 +60,12 @@ export abstract class SvcClientBase extends ServiceBase {
     const base = await this.resolveUrl(opts.slug, version);
 
     // Guardrail: the composed base **must** include "/<slug>/v<version>"
-    // This catches any legacy resolver that returns only a bare baseUrl.
     const requiredSeg = `/${opts.slug}/v${version}`;
     if (!base.includes(requiredSeg)) {
       const msg =
         `resolver_misconfigured: resolved base "${base}" missing "${requiredSeg}" ` +
         `(slug=${opts.slug}, version=${version}). ` +
         `Resolver must return "<baseUrl><prefix>/${opts.slug}/v${version}".`;
-      // Log and throw fail-fast (prevents bad 404s like POST http://host:port/entries)
       const log = this.bindLog({
         slug: opts.slug,
         version,
@@ -131,23 +137,35 @@ export abstract class SvcClientBase extends ServiceBase {
         ok: true,
         status: res.status,
         headers: resHeaders,
-        data: payload as T,
+        data: payload as T, // typically the canonical envelope; caller validates/unwraps
         requestId: requestIdFromHeaders(resHeaders) ?? requestId,
       };
     }
 
-    // Non-2xx → log + throw (fail-fast)
-    const message =
-      (payload &&
-        typeof payload === "object" &&
-        ((payload as any).error?.message || (payload as any).message)) ||
-      (typeof payload === "string" ? payload : "upstream_error");
-    log.warn({ upstreamStatus: res.status, message }, "s2s_upstream_error");
-
+    // Non-2xx → RFC7807 expected. Extract best-effort details.
     const rid = requestIdFromHeaders(resHeaders) ?? requestId;
+
+    let msg = "upstream_error";
+    if (payload && typeof payload === "object") {
+      const p = payload as any;
+      // Prefer RFC7807 fields
+      if (typeof p.detail === "string" && p.detail.length) {
+        msg = p.detail;
+      } else if (typeof p.message === "string" && p.message.length) {
+        msg = p.message;
+      }
+    } else if (typeof payload === "string" && payload.length) {
+      msg = payload;
+    }
+
+    log.warn(
+      { upstreamStatus: res.status, message: msg },
+      "s2s_upstream_error"
+    );
+
     const errDetail =
       `s2s_upstream_error ${res.status} for ${method} ${url} ` +
-      `(slug=${opts.slug}@v${version}, requestId=${rid}): ${message}`;
+      `(slug=${opts.slug}@v${version}, requestId=${rid}): ${msg}`;
 
     throw new Error(errDetail);
   }

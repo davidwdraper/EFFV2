@@ -76,38 +76,77 @@ export abstract class RouterBase extends ServiceBase {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Async wrapper + logging
+  // Async wrapper + logging (response-lifecycle based)
   // ──────────────────────────────────────────────────────────────────────────
-
+  //
+  // Rationale:
+  // - Handlers may stream/pipe and return before headers are sent.
+  // - The only reliable truth is the HTTP response lifecycle (`finish`/`close`).
+  // - We attach listeners BEFORE invoking the handler and log on settle.
+  //
   protected wrap<T extends AnyHandler>(path: string, fn: T): RequestHandler {
     const baseLog = this.bindLog({ kind: "http", path });
+
     return (req, res, next) => {
-      baseLog.debug(
-        { method: req.method, url: req.originalUrl },
-        "router_enter"
+      const start = Date.now();
+      let settled = false;
+
+      const meta = {
+        method: req.method,
+        url: req.originalUrl,
+      };
+
+      const settle = (kind: "finish" | "close" | "error", err?: unknown) => {
+        if (settled) return;
+        settled = true;
+
+        // Clear watchdog timer if armed
+        if (timer) clearTimeout(timer);
+
+        if (kind === "error") {
+          baseLog.error({ ...meta, err: String(err) }, "router_error");
+          return next(err as any);
+        }
+
+        baseLog.debug(
+          {
+            ...meta,
+            tookMs: Date.now() - start,
+            statusCode: res.statusCode,
+            headersSent: res.headersSent,
+            kind,
+          },
+          "router_exit"
+        );
+      };
+
+      // Enter log fires immediately
+      baseLog.debug(meta, "router_enter");
+
+      // Attach lifecycle listeners BEFORE executing handler
+      res.once("finish", () => settle("finish"));
+      res.once("close", () => settle("close"));
+      res.once("error", (e) => settle("error", e));
+
+      // Optional watchdog: warn if neither finish/close occurs within N ms
+      // (defaults to 30000ms if ROUTER_FINISH_WARN_MS not provided)
+      const warnMs = Number(process.env.ROUTER_FINISH_WARN_MS ?? 30000);
+      const timer =
+        Number.isFinite(warnMs) && warnMs > 0
+          ? setTimeout(() => {
+              if (!settled) {
+                baseLog.warn(
+                  { ...meta, tookMs: Date.now() - start, warnMs },
+                  "response_may_be_stuck"
+                );
+              }
+            }, warnMs)
+          : undefined;
+
+      // Execute handler (sync/async)
+      Promise.resolve(fn.call(this, req, res, next)).catch((err) =>
+        settle("error", err)
       );
-      Promise.resolve(fn.call(this, req, res, next))
-        .then(() => {
-          if (!res.headersSent) {
-            baseLog.warn(
-              { method: req.method, url: req.originalUrl },
-              "handler_completed_without_response"
-            );
-          } else {
-            baseLog.debug({ status: res.statusCode }, "router_exit");
-          }
-        })
-        .catch((err) => {
-          baseLog.error(
-            {
-              err: String(err),
-              method: req.method,
-              url: req.originalUrl,
-            },
-            "router_error"
-          );
-          next(err);
-        });
     };
   }
 

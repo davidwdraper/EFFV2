@@ -16,10 +16,11 @@
  */
 
 import type { AuditBlob } from "../../contracts/audit/audit.blob.contract";
-import type { IAuditWriter } from "./IAuditWriter"; // adjust if your IAuditWriter lives elsewhere
+import { AuditEntriesV1Contract } from "../../contracts/audit/audit.entries.v1.contract";
+import type { IAuditWriter } from "./IAuditWriter";
 import type { SvcCallOptions, SvcResponse } from "../../svc/types";
 
-// Duck-typed SvcClient dependency — matches your posted SvcClient.call(opts).
+// Duck-typed SvcClient dependency — matches SvcClient.call(opts).
 type SvcClientLike = {
   call<T = unknown>(opts: SvcCallOptions): Promise<SvcResponse<T>>;
 };
@@ -54,7 +55,7 @@ export class HttpAuditWriter implements IAuditWriter {
     this.svcClient = opts.svcClient;
     this.slug = opts.auditSlug;
     this.ver = opts.auditVersion;
-    this.route = opts.route ?? "/entries"; // service-local path (resolver provides /api/<slug>/v<ver>)
+    this.route = opts.route ?? "/entries"; // service-local path (resolver composes /api/<slug>/v<ver>)
     this.timeoutMs = opts.timeoutMs ?? 5000;
     this.retries = Math.max(0, opts.retries ?? 3);
     this.backoffMs = Math.max(0, opts.backoffMs ?? 250);
@@ -66,6 +67,8 @@ export class HttpAuditWriter implements IAuditWriter {
       : [];
     if (payload.length === 0) return;
 
+    const contractId = AuditEntriesV1Contract.getContractId(); // "audit/entries@v1"
+
     let attempt = 0;
     let lastError: unknown;
 
@@ -76,8 +79,12 @@ export class HttpAuditWriter implements IAuditWriter {
           version: this.ver,
           path: this.route, // service-local
           method: "POST",
-          body: payload,
+          body: { entries: payload }, // 🔧 canonical request body shape
           timeoutMs: this.timeoutMs,
+          headers: {
+            // 🔧 required contract header
+            "X-NV-Contract": contractId,
+          },
         });
         return; // success
       } catch (err: any) {
@@ -94,6 +101,9 @@ export class HttpAuditWriter implements IAuditWriter {
         attempt++;
       }
     }
+
+    // If we ever exit the loop without returning/throwing (shouldn't happen), throw last error.
+    if (lastError) throw lastError;
   }
 
   private isRetryable(err: any): boolean {

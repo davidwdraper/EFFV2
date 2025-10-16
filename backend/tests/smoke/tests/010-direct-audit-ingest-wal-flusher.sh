@@ -78,7 +78,10 @@ EOF
 # ----------------------------------------------------------------------------
 # Fire request
 # ----------------------------------------------------------------------------
-RESP="$(curl -sS -H 'Accept: application/json' -H 'Content-Type: application/json' \
+RESP="$(curl -sS \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H 'X-NV-Contract: audit/entries@v1' \
   -X POST --data "${PAYLOAD}" "${URL}" || true)"
 
 if [ -z "${RESP}" ]; then
@@ -97,9 +100,10 @@ fi
 # ----------------------------------------------------------------------------
 OK="$(echo "$RESP" | jq -r '.ok')"
 SERVICE="$(echo "$RESP" | jq -r '.service')"
-ACCEPTED="$(echo "$RESP" | jq -r '.data.accepted')"
+STATUS="$(echo "$RESP" | jq -r '.data.status')"
+ACCEPTED="$(echo "$RESP" | jq -r '.data.body.accepted')"
 
-if [ "$OK" != "true" ] || [ "$SERVICE" != "audit" ] || [ "$ACCEPTED" != "2" ]; then
+if [ "$OK" != "true" ] || [ "$SERVICE" != "audit" ] || [ "$STATUS" != "200" ] || [ "$ACCEPTED" != "2" ]; then
   echo "❌ ERROR: Unexpected payload:"
   echo "$RESP" | jq .
   exit 1

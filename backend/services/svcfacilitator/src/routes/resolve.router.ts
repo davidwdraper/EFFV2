@@ -1,85 +1,76 @@
 // backend/services/svcfacilitator/src/routes/resolve.router.ts
 /**
- * Docs:
- * - SOP: svcfacilitator is the source of truth; gateway mirrors from it.
- * - ADRs:
- *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
- *   - ADR-0015 (Structured Logger with bind() Context)
- *   - ADR-0019 (Class Routers via RouterBase)
+ * Routes:
+ *   GET /api/svcfacilitator/v1/resolve?slug=<slug>&version=<ver>
+ *   GET /api/svcfacilitator/v1/resolve?key=<slug@ver>
+ *   GET /api/svcfacilitator/v1/resolve/:slug/v:version
  *
- * Purpose:
- * - Route layer for (slug, version) → baseUrl resolution, class-based.
- *
- * Contract:
- *   GET /api/svcfacilitator/v<major>/resolve?key=<slug@version>
- *   GET /api/svcfacilitator/v<major>/resolve/:slug/v:version
+ * Returns (via RouterBase.jsonOk):
+ *   { ok: true, data: { slug, version, baseUrl, outboundApiPrefix, etag } }
  */
 
 import type { Request, Response } from "express";
 import { RouterBase } from "@nv/shared/base/RouterBase";
+// IMPORTANT: match the actual filename you just created
 import { ResolveController } from "../controllers/ResolveController";
 
 export class ResolveRouter extends RouterBase {
   private readonly ctrl = new ResolveController();
 
   protected configure(): void {
-    // Accept ?key=<slug@version> (also leniently accept ?slug=)
-    this.get("/resolve", this.resolveByKey);
-
-    // Params variant: /resolve/:slug/v:version
-    this.get("/resolve/:slug/v:version", this.resolveByParams);
+    this.get("/resolve", this.resolveQuery);
+    this.get("/resolve/:slug/v:version", this.resolveParams);
   }
 
-  private async resolveByKey(req: Request, res: Response): Promise<void> {
+  private resolveQuery = async (req: Request, res: Response) => {
     if (!this.requireVersionedApiPath(req, res, "svcfacilitator")) return;
 
-    const key =
-      (req.query?.key as string | undefined)?.trim() ||
-      (req.query?.slug as string | undefined)?.trim();
+    const slug = (req.query.slug as string | undefined)?.trim();
+    const version = (req.query.version as string | undefined)?.trim();
+    const key = (req.query.key as string | undefined)?.trim();
 
-    if (!key) {
+    try {
+      const payload =
+        key != null && key !== ""
+          ? await this.ctrl.resolveByKey({ body: undefined, key })
+          : await this.ctrl.resolveByParams({
+              body: undefined,
+              slug: slug ?? "",
+              version: version ?? "",
+            });
+
+      // payload already is { slug, version, baseUrl, outboundApiPrefix, etag }
+      this.jsonOk(res, payload);
+    } catch (err: any) {
+      const status = Number(err?.status) || 500;
       this.jsonProblem(
         res,
-        400,
-        "invalid_request",
-        "Missing ?key (or ?slug) query param"
+        status,
+        err?.code || "error",
+        err?.message || "error"
       );
-      return;
     }
+  };
 
-    const requestId = (req.get("x-request-id") || "").trim();
-    const data = await this.ctrl.resolveByKey({
-      requestId,
-      key,
-      body: undefined,
-    });
-
-    this.jsonOk(res, data);
-  }
-
-  private async resolveByParams(req: Request, res: Response): Promise<void> {
+  private resolveParams = async (req: Request, res: Response) => {
     if (!this.requireVersionedApiPath(req, res, "svcfacilitator")) return;
 
-    const slug = (req.params?.slug || "").trim();
-    const version = (req.params?.version || "").trim();
-    if (!slug || !version) {
+    try {
+      const payload = await this.ctrl.resolveByParams({
+        body: undefined,
+        slug: (req.params.slug || "").trim(),
+        version: (req.params.version || "").trim(),
+      });
+
+      this.jsonOk(res, payload);
+    } catch (err: any) {
+      const status = Number(err?.status) || 500;
       this.jsonProblem(
         res,
-        400,
-        "invalid_request",
-        "Missing :slug or :version path params"
+        status,
+        err?.code || "error",
+        err?.message || "error"
       );
-      return;
     }
-
-    const requestId = (req.get("x-request-id") || "").trim();
-    const data = await this.ctrl.resolveByParams({
-      requestId,
-      slug,
-      version,
-      body: undefined,
-    });
-
-    this.jsonOk(res, data);
-  }
+  };
 }

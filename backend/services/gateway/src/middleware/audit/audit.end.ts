@@ -1,23 +1,13 @@
 // backend/services/gateway/src/middleware/audit/audit.end.ts
 /**
- * NowVibin (NV)
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
- *
  * Purpose:
- * - On response finish, append END audit blob and trigger a non-blocking flush.
- * - Health remains unaudited by mounting order (health before audit.* middlewares).
+ * - On response finish, append END audit blob and trigger a flush.
+ * - Health requests are skipped.
  *
- * Notes:
- * - Contract requires `blob`; we place end-specific details inside `blob`.
- * - `target` follows the versioned path convention when present.
- */
-
-// backend/services/gateway/src/middleware/audit/audit.end.ts
-/**
- * Purpose:
- * - On response finish, append END + gentle flush for non-health requests.
+ * Logging:
+ * - INFO  wal_flush { accepted:N } when some were persisted
+ * - DEBUG wal_flush_noop when queue was empty
+ * - WARN  wal_flush_failed { err } on failures (non-crashing; response already sent)
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -48,10 +38,26 @@ export function auditEnd() {
         };
 
         await wal.append(endBlob);
+
         try {
-          await wal.flush(); // non-blocking-ish; errors are handled/logged internally
-        } catch {
-          /* ignore */
+          const { accepted } = await wal.flush();
+          if (accepted > 0) {
+            (req as any).log?.info?.({ accepted, requestId }, "wal_flush");
+          } else {
+            (req as any).log?.debug?.(
+              { accepted, requestId },
+              "wal_flush_noop"
+            );
+          }
+        } catch (err) {
+          const msg =
+            err instanceof Error
+              ? err.message
+              : typeof err === "string"
+              ? err
+              : "unknown";
+          (req as any).log?.warn?.({ err: msg, requestId }, "wal_flush_failed");
+          // do not rethrow; response is already finished
         }
       } catch {
         /* response already finished */

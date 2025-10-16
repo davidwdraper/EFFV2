@@ -50,6 +50,27 @@ export abstract class SvcClientBase extends ServiceBase {
 
     // Resolve base + build final URL first so logging shows the exact target.
     const base = await this.resolveUrl(opts.slug, version);
+
+    // Guardrail: the composed base **must** include "/<slug>/v<version>"
+    // This catches any legacy resolver that returns only a bare baseUrl.
+    const requiredSeg = `/${opts.slug}/v${version}`;
+    if (!base.includes(requiredSeg)) {
+      const msg =
+        `resolver_misconfigured: resolved base "${base}" missing "${requiredSeg}" ` +
+        `(slug=${opts.slug}, version=${version}). ` +
+        `Resolver must return "<baseUrl><prefix>/${opts.slug}/v${version}".`;
+      // Log and throw fail-fast (prevents bad 404s like POST http://host:port/entries)
+      const log = this.bindLog({
+        slug: opts.slug,
+        version,
+        url: base,
+        method,
+        component: "SvcClient",
+      });
+      log.warn({ requiredSeg }, "resolver_misconfigured");
+      throw new Error(msg);
+    }
+
     const url = this.buildUrl(base, opts.path, opts.query);
 
     const headers: Record<string, string> = {

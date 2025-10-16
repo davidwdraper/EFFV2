@@ -10,17 +10,21 @@
  *
  * Purpose:
  * - Resolve "<slug>@<version>" against the in-memory mirror with operator-friendly
- *   messaging. We do NOT rely on the loader to pre-filter; we validate/decide at
- *   runtime so callers get clear reasons:
+ *   messaging. We validate at runtime so callers get clear reasons:
  *     - invalid_record (422)
  *     - service_disabled (403)
  *     - proxying_disabled (403)
- *     - not_found (404)  — key not present in mirror at all
+ *     - not_found (404)
  *
- * Notes:
- * - This assumes the boot hydrate loads the FULL svcconfig collection (no filters).
- *   If it doesn’t, disabled/proxy-disabled/invalid entries won’t be present and will
- *   appear as not_found. We’ll fix that in the loader next.
+ * Response shape (authoritative; required by shared FacilitatorResolver):
+ *   200 OK:
+ *     {
+ *       "slug": "<slug>",
+ *       "version": <number>,
+ *       "baseUrl": "http(s)://host:port",
+ *       "outboundApiPrefix": "/api",
+ *       "etag": "<opaque>"
+ *     }
  */
 
 import {
@@ -30,6 +34,7 @@ import {
 import {
   ServiceConfigRecord,
   svcKey,
+  type ServiceConfigRecordJSON,
 } from "@nv/shared/contracts/svcconfig.contract";
 import { mirrorStore } from "../services/mirrorStore";
 
@@ -38,13 +43,25 @@ function getFromMirror(key: string): unknown | undefined {
   return (m as Record<string, unknown>)[key];
 }
 
-function classifyRecord(
-  raw: any
-): { ok: true; json: any } | { ok: false; code: string; msg: string } {
-  // Validate shape first; if it fails, we want 422 with a clear label.
+type OkPayload = {
+  slug: string;
+  version: number;
+  baseUrl: string;
+  outboundApiPrefix: string;
+  etag: string;
+};
+
+function classifyRecord(raw: unknown):
+  | { ok: true; json: ServiceConfigRecordJSON }
+  | {
+      ok: false;
+      code: "invalid_record" | "service_disabled" | "proxying_disabled";
+      msg: string;
+    } {
+  // Validate & normalize via contract; contract enforces shapes and invariants.
   try {
     const parsed = ServiceConfigRecord.parse(raw).toJSON();
-    // Runtime flag checks for explicit operator-facing reasons
+
     if (parsed.enabled !== true) {
       return {
         ok: false,
@@ -59,10 +76,22 @@ function classifyRecord(
         msg: "proxying is disabled for this service",
       };
     }
+
     return { ok: true, json: parsed };
   } catch (e) {
     return { ok: false, code: "invalid_record", msg: String(e) };
   }
+}
+
+function toOkPayload(rec: ServiceConfigRecordJSON): OkPayload {
+  // No defaults; outboundApiPrefix must be present and validated by contract.
+  return {
+    slug: rec.slug,
+    version: rec.version,
+    baseUrl: rec.baseUrl,
+    outboundApiPrefix: rec.outboundApiPrefix,
+    etag: rec.etag,
+  };
 }
 
 export class ResolveController extends ControllerBase {
@@ -73,49 +102,39 @@ export class ResolveController extends ControllerBase {
   /** GET /resolve?key=<slug@version> */
   public async resolveByKey(ctx: {
     body: unknown;
-    requestId: string;
     key?: string;
   }): Promise<HandlerResult> {
-    const { requestId } = ctx;
     const keyQ = String((ctx as any)?.key ?? "").trim();
     if (!keyQ) {
       return this.fail(
         400,
         "missing_key",
-        "expected query ?key=<slug@version>",
-        requestId
+        "expected query ?key=<slug@version>"
       );
     }
 
     const raw = getFromMirror(keyQ);
     if (!raw) {
-      return this.fail(
-        404,
-        "not_found",
-        `no record for key=${keyQ}`,
-        requestId
-      );
+      return this.fail(404, "not_found", `no record for key=${keyQ}`);
     }
 
     const cls = classifyRecord(raw);
     if (!cls.ok) {
       // invalid_record -> 422, everything else -> 403
       const status = cls.code === "invalid_record" ? 422 : 403;
-      return this.fail(status, cls.code, cls.msg, requestId);
+      return this.fail(status, cls.code, cls.msg);
     }
 
-    const rec = cls.json;
-    return this.ok(200, { key: keyQ, record: rec, etag: rec.etag }, requestId);
+    const payload = toOkPayload(cls.json);
+    return this.ok(200, payload);
   }
 
   /** GET /resolve/:slug/v:version */
   public async resolveByParams(ctx: {
     body: unknown;
-    requestId: string;
     slug: string;
     version: string;
   }): Promise<HandlerResult> {
-    const { requestId } = ctx;
     const slug = String(ctx.slug ?? "")
       .trim()
       .toLowerCase();
@@ -126,24 +145,23 @@ export class ResolveController extends ControllerBase {
       return this.fail(
         400,
         "bad_params",
-        "expected /resolve/:slug/v:version with version >= 1",
-        requestId
+        "expected /resolve/:slug/v:version with version >= 1"
       );
     }
 
     const key = svcKey(slug, version);
     const raw = getFromMirror(key);
     if (!raw) {
-      return this.fail(404, "not_found", `no record for key=${key}`, requestId);
+      return this.fail(404, "not_found", `no record for key=${key}`);
     }
 
     const cls = classifyRecord(raw);
     if (!cls.ok) {
       const status = cls.code === "invalid_record" ? 422 : 403;
-      return this.fail(status, cls.code, cls.msg, requestId);
+      return this.fail(status, cls.code, cls.msg);
     }
 
-    const rec = cls.json;
-    return this.ok(200, { key, record: rec, etag: rec.etag }, requestId);
+    const payload = toOkPayload(cls.json);
+    return this.ok(200, payload);
   }
 }

@@ -10,7 +10,7 @@
  *
  * Notes:
  * - Health paths are always skipped.
- * - Uses AuditBase.ensureWal(req) to obtain the IWalEngine (DI only).
+ * - Uses AuditBase.getWal(req) and AuditBase.getWalDir(req).
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -29,12 +29,12 @@ export function auditBegin() {
     try {
       if (isHealthPath(req)) return next(); // never audit health
 
-      const wal = await AuditBase.ensureWal(req);
+      const wal = AuditBase.getWal(req);
       const requestId = AuditBase.getOrCreateRequestId(req);
+      const walDir = AuditBase.getWalDir(req);
       const target = parseTarget(req);
 
-      // ── Snapshot WAL usage (before) ────────────────────────────────────────
-      const walDir = getWalDirOrThrow();
+      // Snapshot before
       const before = await dirUsage(walDir);
 
       const beginBlob = {
@@ -46,16 +46,14 @@ export function auditBegin() {
 
       await wal.append(beginBlob);
 
-      // ── Snapshot WAL usage (after) ─────────────────────────────────────────
+      // Snapshot after
       const after = await dirUsage(walDir);
 
-      // Require growth in either bytes or file count
       const grew =
         after.totalBytes > before.totalBytes ||
         after.fileCount > before.fileCount;
 
       if (!grew) {
-        // Loud, explicit failure — Ops needs to see this before disks fill.
         const detail = {
           requestId,
           walDir,
@@ -72,7 +70,14 @@ export function auditBegin() {
 
       // Breadcrumb for correlation
       (req as any).log?.edge?.(
-        { requestId, walDir, bytes: after.totalBytes, files: after.fileCount },
+        {
+          requestId,
+          walDir,
+          bytesBefore: before.totalBytes,
+          bytesAfter: after.totalBytes,
+          filesBefore: before.fileCount,
+          filesAfter: after.fileCount,
+        },
         "audit_begin_persisted"
       );
 
@@ -98,17 +103,6 @@ function parseTarget(req: Request): Target | undefined {
 function isHealthPath(req: Request): boolean {
   const p = req.path || "";
   return /^\/api\/[^/]+\/v\d+\/health(?:\/|$)/.test(p);
-}
-
-function getWalDirOrThrow(): string {
-  const walDir = (process.env.NV_GATEWAY_WAL_DIR ?? "").trim();
-  if (!walDir) throw new Error("[gateway] NV_GATEWAY_WAL_DIR is required");
-  if (!path.isAbsolute(walDir)) {
-    throw new Error(
-      `[gateway] NV_GATEWAY_WAL_DIR must be absolute, got "${walDir}"`
-    );
-  }
-  return walDir;
 }
 
 async function dirUsage(

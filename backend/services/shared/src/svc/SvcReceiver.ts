@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
  *   - ADR-0015 (Structured Logger with bind() Context)
- *   - ADR-0006 (Edge Logging — first-class edge() channel)
+ *   - ADR-0006 (Edge Logging — ingress-only)
  *
  * Purpose:
  * - Normalize S2S request handling and JSON envelope responses.
@@ -13,7 +13,10 @@
  *
  * Invariance:
  * - 2xx/3xx → { ok: true, data }
- * - 4xx/5xx → { ok: false, error }  (no silent success on client-visible errors)
+ * - 4xx/5xx → { ok: false, error }
+ *
+ * EDGE policy:
+ * - Log **ingress** only. Outbound/egress logging is owned by SvcClient.
  */
 
 import { randomUUID } from "crypto";
@@ -25,10 +28,6 @@ export class SvcReceiver extends ServiceBase {
     super({ service: serviceName, context: { component: "SvcReceiver" } });
   }
 
-  /**
-   * Receive an HTTP-like request and respond with a uniform envelope.
-   * `handler` should return { status?, body?, headers? }.
-   */
   public async receive(
     req: HttpLikeRequest,
     res: HttpLikeResponse,
@@ -58,8 +57,8 @@ export class SvcReceiver extends ServiceBase {
       component: "SvcReceiver.receive",
     });
 
-    // Edge hit on ingress
-    log.edge({ phase: "ingress" }, "svc receive");
+    // EDGE: ingress only
+    log.edge({ phase: "ingress" }, "svc_edge");
 
     try {
       const result = await handler({
@@ -76,13 +75,14 @@ export class SvcReceiver extends ServiceBase {
       res.setHeader("x-request-id", requestId);
       if (result.headers) {
         for (const [k, v] of Object.entries(result.headers)) {
+          if (v == null) continue;
           res.setHeader(k, v);
         }
       }
 
       const status = result.status ?? 200;
 
-      // Log completion level
+      // Completion logs (not EDGE)
       if (status >= 500) {
         log.error({ status }, "svc receive completed (error)");
       } else if (status >= 400) {
@@ -91,7 +91,7 @@ export class SvcReceiver extends ServiceBase {
         log.info({ status }, "svc receive completed");
       }
 
-      // Build SOP-compliant envelope
+      // SOP-compliant envelope
       if (status >= 400) {
         const errBody =
           (result.body as any)?.error ??
@@ -122,7 +122,7 @@ export class SvcReceiver extends ServiceBase {
     } catch (err) {
       const message = String(err instanceof Error ? err.message : err);
 
-      // Error completion log
+      // Error completion log (not EDGE)
       log.error({ err: message }, "svc receive exception");
 
       res.setHeader("x-request-id", requestId);

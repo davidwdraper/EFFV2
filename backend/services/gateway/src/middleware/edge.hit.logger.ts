@@ -6,23 +6,22 @@
  *   - ADR-0006 (Gateway Edge Logging — pre-audit, toggleable)
  *
  * Purpose:
- * - Emit exactly one "EDGE YYYY-MM-DD HH:MM:SS <slug> v<version> <url>" line
- *   for every inbound /api/* request at the gateway,
+ * - Emit exactly one "EDGE ..." line for every inbound /api/* gateway request,
  *   AFTER DoS/DDoS guards and BEFORE routing/auth.
  *
- * Note on toggles:
- * - Logging enable is controlled centrally by the shared logger via
- *   LOG_EDGE_ENABLED=true|false (default true). We don't double-toggle here.
+ * Invariants:
+ * - Always produces a concrete requestId (propagated or minted).
+ * - Never throws; logging must not break request flow.
  */
 
 import type { Request, Response, NextFunction } from "express";
 import { getLogger } from "@nv/shared/logger/Logger";
+import { randomUUID } from "crypto";
 
 /**
  * Resilient parser:
- *  - Tries to extract "<slug>" and "v<major>" from /api/<slug>/v<major>/...
+ *  - Extracts "<slug>" and "v<major>" from /api/<slug>/v<major>/...
  *  - Falls back to { slug: "gateway", version: 1 } if not matched.
- *  - Never throws; logging should never break the request flow.
  */
 function deriveSlugAndVersion(path: string): { slug: string; version: number } {
   const m = path.match(/^\/api\/([a-z][a-z0-9-]*)\/v(\d+)\b/i);
@@ -31,8 +30,22 @@ function deriveSlugAndVersion(path: string): { slug: string; version: number } {
     const version = Number(m[2]) || 1;
     return { slug, version };
   }
-  // Health or non-versioned paths still log as gateway edge activity
   return { slug: "gateway", version: 1 };
+}
+
+/** Header-insensitive request id pick with mint fallback. */
+function pickOrMintRequestId(h: Record<string, unknown>): string {
+  const lower: Record<string, string> = {};
+  for (const [k, v] of Object.entries(h || {})) {
+    if (v == null) continue;
+    lower[k.toLowerCase()] = Array.isArray(v) ? String(v[0]) : String(v);
+  }
+  return (
+    lower["x-request-id"] ||
+    lower["x-correlation-id"] ||
+    lower["request-id"] ||
+    randomUUID()
+  );
 }
 
 export function edgeHitLogger() {
@@ -44,11 +57,10 @@ export function edgeHitLogger() {
     // Only edge-log API traffic.
     if (!req.originalUrl.startsWith("/api/")) return next();
 
-    const requestId =
-      req.header("x-request-id") ||
-      req.header("x-correlation-id") ||
-      req.header("request-id") ||
-      undefined;
+    // Guarantee a requestId for downstream (proxy/audit) and logging.
+    const requestId = pickOrMintRequestId(req.headers);
+    // Stash for later middleware; proxy will forward this upstream.
+    (req as any).__edgeRequestId = requestId;
 
     const host = req.get("host");
     const fullUrl = host
@@ -57,12 +69,12 @@ export function edgeHitLogger() {
 
     const { slug, version } = deriveSlugAndVersion(req.originalUrl);
 
-    // Structured, single edge line (message required by logger.edge overload).
+    // Structured, single edge line.
     getLogger()
       .bind({
         slug,
         version,
-        requestId,
+        requestId, // ← always defined
         url: fullUrl,
         method: req.method,
         component: "edge.hit.logger",

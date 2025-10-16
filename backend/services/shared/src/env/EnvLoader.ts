@@ -5,6 +5,7 @@
  *
  * Purpose:
  * - Deterministic env loading for the monorepo.
+ * - Strict, typed accessors (presence + coercion + clear operator errors).
  *
  * Policy (updated):
  * - Load order & precedence:
@@ -12,7 +13,7 @@
  *   2) SERVICE-LOCAL: .env, .env.<mode>     (OVERRIDES root)
  *   3) ENV_FILE (if provided)               (OVERRIDES root & service)
  *
- * - No silent defaults. Use requireEnv()/requireNumber() for hard requirements.
+ * - No silent defaults. Dev == Prod: fail-fast on missing/invalid values.
  * - Debug summary lists files, applied keys, and how many were overrides.
  */
 
@@ -57,6 +58,91 @@ function applyEnvFromFile(file: string, override: boolean): ApplyStats {
     }
   }
   return { file, newKeys, overrides, totalKeys: Object.keys(kv).length };
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Strict, typed accessors
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+function raw(name: string): string {
+  const v = process.env[name];
+  if (v == null || String(v).trim() === "") {
+    throw new Error(`ENV: ${name} is required but was not provided.`);
+  }
+  return String(v).trim();
+}
+
+function toAbsPath(name: string, v: string): string {
+  if (!path.isAbsolute(v)) {
+    throw new Error(`ENV: ${name} must be an absolute path (got: "${v}").`);
+  }
+  return v;
+}
+
+function toInt(
+  name: string,
+  v: string,
+  opts?: { min?: number; max?: number }
+): number {
+  const n = Number(v);
+  if (!Number.isInteger(n)) {
+    throw new Error(`ENV: ${name} must be an integer (got: "${v}").`);
+  }
+  if (opts?.min != null && n < opts.min) {
+    throw new Error(`ENV: ${name} must be >= ${opts.min} (got: ${n}).`);
+  }
+  if (opts?.max != null && n > opts.max) {
+    throw new Error(`ENV: ${name} must be <= ${opts.max} (got: ${n}).`);
+  }
+  return n;
+}
+
+function toNumber(
+  name: string,
+  v: string,
+  opts?: { min?: number; max?: number; allowNaN?: boolean }
+): number {
+  const n = Number(v);
+  if (!opts?.allowNaN && Number.isNaN(n)) {
+    throw new Error(`ENV: ${name} must be a number (got: "${v}").`);
+  }
+  if (opts?.min != null && n < opts.min) {
+    throw new Error(`ENV: ${name} must be >= ${opts.min} (got: ${n}).`);
+  }
+  if (opts?.max != null && n > opts.max) {
+    throw new Error(`ENV: ${name} must be <= ${opts.max} (got: ${n}).`);
+  }
+  return n;
+}
+
+function toBool(name: string, v: string): boolean {
+  const s = v.toLowerCase();
+  if (["1", "true", "on", "yes"].includes(s)) return true;
+  if (["0", "false", "off", "no"].includes(s)) return false;
+  throw new Error(
+    `ENV: ${name} must be boolean-like (true/false/on/off/1/0) (got: "${v}").`
+  );
+}
+
+function toServiceIdent(
+  name: string,
+  v: string
+): { slug: string; version: number } {
+  // e.g., "audit@1", "user@2"; slug allows lowercase letters, digits, dashes.
+  const m = /^([a-z][a-z0-9-]*)@(\d+)$/.exec(v);
+  if (!m) {
+    throw new Error(
+      `ENV: ${name} must be in the form "<slug>@<version>", e.g. "audit@1" (got: "${v}").`
+    );
+  }
+  const slug = m[1];
+  const version = Number(m[2]);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error(
+      `ENV: ${name} version must be an integer >= 1 (got: "${m[2]}").`
+    );
+  }
+  return { slug, version };
 }
 
 export class EnvLoader {
@@ -169,23 +255,93 @@ export class EnvLoader {
     }
   }
 
-  /** Fail-fast accessor for required env variables. */
+  // Back-compat (kept)
   static requireEnv(name: string): string {
-    const v = process.env[name];
-    if (!v || !String(v).trim()) {
-      throw new Error(`${name} is required but not set`);
+    return raw(name);
+  }
+  static requireNumber(name: string): number {
+    return toNumber(name, raw(name));
+  }
+
+  // Preferred strict accessors
+  static reqString(
+    name: string,
+    opts?: { allowed?: string[]; pattern?: RegExp }
+  ): string {
+    const v = raw(name);
+    if (opts?.allowed && !opts.allowed.includes(v)) {
+      throw new Error(
+        `ENV: ${name} must be one of [${opts.allowed.join(
+          ", "
+        )}] (got: "${v}").`
+      );
+    }
+    if (opts?.pattern && !opts.pattern.test(v)) {
+      throw new Error(
+        `ENV: ${name} does not match required pattern ${opts.pattern} (got: "${v}").`
+      );
     }
     return v;
   }
 
-  /** Convenience for numeric envs with error messages that name the key. */
-  static requireNumber(name: string): number {
-    const raw = this.requireEnv(name);
-    const n = Number(raw);
-    if (!Number.isFinite(n)) {
-      throw new Error(`${name} must be a finite number`);
-    }
-    return n;
+  static reqInt(name: string, opts?: { min?: number; max?: number }): number {
+    return toInt(name, raw(name), opts);
+  }
+
+  static reqNumber(
+    name: string,
+    opts?: { min?: number; max?: number; allowNaN?: boolean }
+  ): number {
+    return toNumber(name, raw(name), opts);
+  }
+
+  static reqBool(name: string): boolean {
+    return toBool(name, raw(name));
+  }
+
+  static reqAbsPath(name: string): string {
+    return toAbsPath(name, raw(name));
+  }
+
+  /** NEW: parse "<slug>@<version>" into typed parts, e.g., "audit@1" → { slug:"audit", version:1 } */
+  static reqServiceIdent(name: string): { slug: string; version: number } {
+    return toServiceIdent(name, raw(name));
+  }
+
+  // Optionals (validate if present)
+  static optString(
+    name: string,
+    opts?: { allowed?: string[]; pattern?: RegExp }
+  ): string | undefined {
+    const v = process.env[name];
+    if (v == null || String(v).trim() === "") return undefined;
+    return this.reqString(name, opts);
+  }
+  static optInt(
+    name: string,
+    opts?: { min?: number; max?: number }
+  ): number | undefined {
+    const v = process.env[name];
+    if (v == null || String(v).trim() === "") return undefined;
+    return this.reqInt(name, opts);
+  }
+  static optNumber(
+    name: string,
+    opts?: { min?: number; max?: number; allowNaN?: boolean }
+  ): number | undefined {
+    const v = process.env[name];
+    if (v == null || String(v).trim() === "") return undefined;
+    return this.reqNumber(name, opts);
+  }
+  static optBool(name: string): boolean | undefined {
+    const v = process.env[name];
+    if (v == null || String(v).trim() === "") return undefined;
+    return this.reqBool(name);
+  }
+  static optAbsPath(name: string): string | undefined {
+    const v = process.env[name];
+    if (v == null || String(v).trim() === "") return undefined;
+    return this.reqAbsPath(name);
   }
 }
 

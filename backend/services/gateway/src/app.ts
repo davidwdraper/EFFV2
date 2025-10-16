@@ -2,16 +2,20 @@
 /**
  * NowVibin (NV)
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - SOP: Reduced, Clean
  * - Addendum: `app.ts` as Orchestration Only
- * - ADRs:
- *   - ADR-0001, ADR-0003, ADR-0006, ADR-0013, ADR-0014, ADR-0026, ADR-0027
+ * - ADRs: 0001, 0003, 0006, 0013, 0014, 0026, 0027
  *
  * Purpose:
- * - Orchestration only. Health routes (gateway-local) mounted by base first.
- * - Audit strictly around the proxy (never touches health).
+ * - Orchestration only. Defines order; no business logic.
  *   Sequence:
- *     health (base) → svcClientProvider → edge logs → auditBegin → healthProxyTrace → /api proxy → auditEnd → error sink
+ *     health(base) → svcClientProvider → edge logs → audit bootstrap → auditBegin → healthProxyTrace → /api proxy → auditEnd → error sink
+ *
+ * Design notes:
+ * - The shared SvcClient **must** come from @nv/shared/svc/client so it uses the
+ *   FacilitatorResolver that returns a **composed base**:
+ *     <baseUrl><outboundApiPrefix>/<slug>/v<version>
+ *   This avoids the legacy plain-base URL returned by svcconfig directly.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
@@ -20,15 +24,18 @@ import type { SvcConfig } from "./services/svcconfig/SvcConfig";
 import { getSvcConfig } from "./services/svcconfig/SvcConfig";
 import { ProxyRouter } from "./routes/proxy.router";
 import { edgeHitLogger } from "./middleware/edge.hit.logger";
+// import { verifyS2S } from "@nv/shared/middleware/verify.s2s"; // later
 
 import { auditBegin } from "./middleware/audit/audit.begin";
 import { auditEnd } from "./middleware/audit/audit.end";
 import { healthProxyTrace } from "./middleware/health.proxy.trace";
-// import { verifyS2S } from "@nv/shared/middleware/verify.s2s"; // when ready
 
-// Publish a single slug-aware client into app.locals.svcClient
 import { svcClientProvider } from "./middleware/svc/SvcClientProvider";
-import { SvcClient } from "@nv/shared/svc/SvcClient";
+// ❗ Use the shared singleton accessor that’s wired to the FacilitatorResolver:
+import { getSvcClient } from "@nv/shared/svc/client";
+
+import EnvLoader from "@nv/shared/env/EnvLoader";
+import { GatewayAuditBootstrap } from "./bootstrap/GatewayAuditBootstrap";
 
 const SERVICE = "gateway";
 
@@ -54,6 +61,12 @@ export class GatewayApp extends AppBase {
   }
 
   protected onBoot(): void {
+    EnvLoader.loadAll({
+      cwd: process.cwd(),
+      debugLogger: (msg) =>
+        this.log.debug({ service: SERVICE, component: "EnvLoader" }, msg),
+    });
+
     const sc = (this.svcConfig ??= getSvcConfig());
     void sc.ensureLoaded().catch((err) => {
       this.log.error(
@@ -63,46 +76,42 @@ export class GatewayApp extends AppBase {
     });
   }
 
-  /** Pre-routing: base mounts versioned health; then publish svcClient; then edge logs. */
-  protected mountPreRouting(): void {
+  /** Pre-routing: base health → publish SvcClient → edge logs → audit bootstrap */
+  protected async mountPreRouting(): Promise<void> {
     super.mountPreRouting(); // mounts /api/gateway/v1/health/*
 
-    // Publish the ONE slug-aware client for the whole app (proxy + audit share this)
-    const sc = (this.svcConfig ??= getSvcConfig());
-    this.app.use(
-      svcClientProvider(() => {
-        // SvcConfig canonical resolver: returns a VERSIONED base URL
-        const resolveUrl = (slug: string, version = 1) =>
-          sc.getUrlFromSlug(slug, version);
-        return new SvcClient(resolveUrl, { timeoutMs: 5000 });
-      })
-    );
+    // ── Shared, resolver-backed client (composed bases) ──────────────────────
+    const sharedSvcClient = getSvcClient(); // ← uses FacilitatorResolver (versioned /resolve)
 
+    // Publish shared client to req.app.locals for downstream consumers
+    this.app.use(svcClientProvider(() => sharedSvcClient));
+
+    // Edge ingress logs
     this.app.use(edgeHitLogger());
-    // this.app.use(verifyS2S()); // when enabled (after health, before proxy)
+    // this.app.use(verifyS2S()); // when enabled
+
+    // DI: WAL + HttpAuditWriter + (optional) replay-on-boot — encapsulated
+    await GatewayAuditBootstrap.init({
+      app: this.app,
+      log: this.log,
+      svcClient: sharedSvcClient,
+    });
   }
 
   protected mountParsers(): void {
     /* proxy streams bodies intact */
   }
 
-  /** Routes: audit strictly around the proxy; health is proxied but auto-skipped by audit.* */
+  /** Routes: audit ring strictly around the proxy */
   protected mountRoutes(): void {
     const sc = (this.svcConfig ??= getSvcConfig());
 
-    // BEGIN audit (auto-skip /health via internal check)
     this.app.use(auditBegin());
-
-    // Trace only for proxied /health calls to workers (auth, user, etc.)
     this.app.use(healthProxyTrace({ logger: this.log }));
-
-    // Proxy **all** /api/* to services (includes /api/<svc>/v1/health/*), but /health is NOT audited
     this.app.use("/api", new ProxyRouter(sc).router());
-
-    // END audit (+ gentle flush) — also auto-skips /health
     this.app.use(auditEnd());
 
-    // 🔴 Critical: global error sink MUST be last
+    // MUST be last
     this.app.use(responseErrorLogger(this.log));
   }
 }

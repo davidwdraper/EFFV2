@@ -1,34 +1,18 @@
+# scripts/smoke/smoke-010-audit-direct-ingest-wal-to-mongo.sh
 #!/usr/bin/env bash
-# ============================================================================
+# repo-path: scripts/smoke/smoke-010-audit-direct-ingest-wal-to-mongo.sh
+# -----------------------------------------------------------------------------
 # Smoke 010: Audit direct ingest → WAL → flusher → Mongo
-#
-# Purpose:
-#   End-to-end validation that the Audit service can receive AuditBlob payloads,
-#   write them to the WAL, and have the flusher persist them to MongoDB.
-#
-# Preconditions:
-#   - Audit service running (PORT=4050)
-#   - AUDIT_DB_* envs set (URI/NAME/COLLECTION)
-#   - WAL_DIR writable
-#   - Flusher active (AuditApp starts periodic WAL flush)
-#
-# Canonical path:
-#   POST /api/audit/v1/entries
-#
-# Docs:
-#   - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
-#   - ADRs:
-#     - adr0022-shared-wal-and-db-base
-#     - adr0024-audit-wal-persistence-guarantee
-#     - adr0026-dbauditwriter-and-fifo-schema
-# ============================================================================
-
+# Docs: SOP; ADRs: adr0022, adr0024, adr0026
+# -----------------------------------------------------------------------------
 set -euo pipefail
-if [ "${DEBUG:-0}" = "1" ]; then set -x; fi
+[ "${DEBUG:-0}" = "1" ] && set -x
 
-PORT="${PORT:-4050}"
-BASE="http://127.0.0.1:${PORT}/api/audit/v1"
-URL="${BASE}/entries"
+# Defaults (override via env)
+AUDIT_BASE_URL="${AUDIT_BASE_URL:-http://127.0.0.1:4050}"
+WAL_FLUSH_MS_DEFAULT="${AUDIT_WAL_FLUSH_MS:-${WAL_FLUSH_MS:-1000}}"
+
+URL="${AUDIT_BASE_URL}/api/audit/v1/entries"
 
 RID="smoke-010-$(date +%s)"
 NOW_MS="$(node -e 'process.stdout.write(String(Date.now()))')"
@@ -36,38 +20,24 @@ END_MS="$(node -e "process.stdout.write(String(${NOW_MS}+123))")"
 
 echo "→ POST ${URL}"
 
-# ----------------------------------------------------------------------------
-# Build canonical JSON payload (strict AuditBlob contract)
-# ----------------------------------------------------------------------------
+# Contract-legal payload: no extra keys under blob
 PAYLOAD=$(cat <<EOF
 {
   "entries": [
     {
-      "meta": {
-        "requestId": "${RID}",
-        "service": "gateway",
-        "ts": ${NOW_MS}
-      },
+      "meta": { "requestId": "${RID}", "service": "gateway", "ts": ${NOW_MS} },
       "blob": {
         "target": { "slug": "act", "version": 1, "route": "/api/acts", "method": "PUT" },
-        "phase": "begin",
-        "smoke": 10,
-        "note": "begin"
+        "phase": "begin"
       }
     },
     {
-      "meta": {
-        "requestId": "${RID}",
-        "service": "gateway",
-        "ts": ${END_MS}
-      },
+      "meta": { "requestId": "${RID}", "service": "gateway", "ts": ${END_MS} },
       "blob": {
         "target": { "slug": "act", "version": 1, "route": "/api/acts", "method": "PUT" },
         "phase": "end",
         "status": "ok",
-        "httpCode": 200,
-        "smoke": 10,
-        "note": "end"
+        "httpCode": 200
       }
     }
   ]
@@ -75,44 +45,23 @@ PAYLOAD=$(cat <<EOF
 EOF
 )
 
-# ----------------------------------------------------------------------------
-# Fire request
-# ----------------------------------------------------------------------------
 RESP="$(curl -sS \
   -H 'Accept: application/json' \
   -H 'Content-Type: application/json' \
   -H 'X-NV-Contract: audit/entries@v1' \
   -X POST --data "${PAYLOAD}" "${URL}" || true)"
 
-if [ -z "${RESP}" ]; then
-  echo "❌ ERROR: Empty response from ${URL}"
-  exit 1
-fi
+[ -n "${RESP}" ] || { echo "❌ Empty response from ${URL}"; exit 1; }
+echo "$RESP" | jq -e . >/dev/null 2>&1 || { echo "❌ Non-JSON:"; echo "$RESP"; exit 1; }
 
-if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
-  echo "❌ ERROR: Non-JSON response from ${URL}:"
-  echo "$RESP"
-  exit 1
-fi
-
-# ----------------------------------------------------------------------------
-# Assert canonical envelope
-# ----------------------------------------------------------------------------
 OK="$(echo "$RESP" | jq -r '.ok')"
 SERVICE="$(echo "$RESP" | jq -r '.service')"
 STATUS="$(echo "$RESP" | jq -r '.data.status')"
 ACCEPTED="$(echo "$RESP" | jq -r '.data.body.accepted')"
 
 if [ "$OK" != "true" ] || [ "$SERVICE" != "audit" ] || [ "$STATUS" != "200" ] || [ "$ACCEPTED" != "2" ]; then
-  echo "❌ ERROR: Unexpected payload:"
-  echo "$RESP" | jq .
-  exit 1
+  echo "❌ Unexpected payload:"; echo "$RESP" | jq .; exit 1
 fi
 
 echo "✅ OK: $SERVICE accepted=$ACCEPTED requestId=${RID}"
-
-# ----------------------------------------------------------------------------
-# Optional: give the flusher a beat to persist
-# ----------------------------------------------------------------------------
-SLEEP_MS="${AUDIT_WAL_FLUSH_MS:-${WAL_FLUSH_MS:-1000}}"
-node -e "setTimeout(()=>{}, ${SLEEP_MS})"
+node -e "setTimeout(()=>{}, ${WAL_FLUSH_MS_DEFAULT})"

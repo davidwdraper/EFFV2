@@ -1,19 +1,20 @@
 // backend/services/gateway/src/middleware/audit/audit.end.ts
 /**
  * Purpose:
- * - On response finish, append END audit blob and trigger a flush.
- * - Health requests are skipped.
+ * - On response finish, append END audit entry and trigger a flush. Health is skipped.
  *
- * Logging:
- * - INFO  wal_flush { accepted:N } when some were persisted
- * - DEBUG wal_flush_noop when queue was empty
- * - WARN  wal_flush_failed { err } on failures (non-crashing; response already sent)
+ * Docs/ADRs:
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
+ * - ADR-0030 — ContractBase & idempotent contract identification
  */
 
 import type { Request, Response, NextFunction } from "express";
 import { AuditBase } from "./AuditBase";
+import { AuditEntryBuilder } from "@nv/shared/audit/AuditEntryBuilder";
 
 type Target = { slug: string; version: number; route: string; method: string };
+const REQ_TARGET_KEY = "__auditTarget";
 
 export function auditEnd() {
   return function auditEndMw(req: Request, res: Response, next: NextFunction) {
@@ -21,23 +22,35 @@ export function auditEnd() {
     (res as any).__auditEndHooked = true;
 
     res.on("finish", async () => {
+      const requestId =
+        AuditBase.peekRequestId(req) ?? AuditBase.getOrCreateRequestId(req);
+
       try {
         if (isHealthPath(req)) return; // never audit health
 
         const wal = AuditBase.getWal(req);
-        const requestId =
-          AuditBase.peekRequestId(req) ?? AuditBase.getOrCreateRequestId(req);
         const httpCode = res.statusCode;
-        const target = parseTarget(req);
 
-        const endBlob = {
-          meta: { service: "gateway", ts: Date.now(), requestId },
-          blob: { httpCode, status: httpCode >= 400 ? "error" : "ok" },
-          phase: "end",
-          ...(target ? { target } : {}),
-        };
+        // Reuse the BEGIN-computed target; fallback to originalUrl parse if missing
+        const target: Target | undefined =
+          (req as any)[REQ_TARGET_KEY] ?? parseTargetFromOriginal(req);
 
-        await wal.append(endBlob);
+        if (!target) {
+          (req as any).log?.error?.(
+            { requestId, url: getOriginalPath(req) },
+            "audit_end_no_target"
+          );
+          return;
+        }
+
+        const endEntry = AuditEntryBuilder.end({
+          service: "gateway",
+          requestId,
+          target,
+          httpCode,
+        });
+
+        await wal.append(endEntry);
 
         try {
           const { accepted } = await wal.flush();
@@ -59,8 +72,15 @@ export function auditEnd() {
           (req as any).log?.warn?.({ err: msg, requestId }, "wal_flush_failed");
           // do not rethrow; response is already finished
         }
-      } catch {
-        /* response already finished */
+      } catch (err) {
+        (req as any).log?.error?.(
+          {
+            requestId,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "audit_end_failed"
+        );
+        // swallow: response lifecycle is over
       }
     });
 
@@ -68,9 +88,15 @@ export function auditEnd() {
   };
 }
 
-function parseTarget(req: Request): Target | undefined {
-  const p = req.path || "";
-  const m = p.match(/^\/api\/([^/]+)\/v(\d+)(\/.*)?$/);
+function getOriginalPath(req: Request): string {
+  return (
+    ((req as any).originalUrl as string) || req.url || (req as any).path || ""
+  );
+}
+
+function parseTargetFromOriginal(req: Request): Target | undefined {
+  const p = getOriginalPath(req);
+  const m = p.match(/^\/api\/([^/]+)\/v(\d+)(?:\/(.*))?$/);
   if (!m) return undefined;
   const version = Number(m[2]);
   if (!Number.isFinite(version)) return undefined;
@@ -79,6 +105,6 @@ function parseTarget(req: Request): Target | undefined {
 }
 
 function isHealthPath(req: Request): boolean {
-  const p = req.path || "";
+  const p = getOriginalPath(req);
   return /^\/api\/[^/]+\/v\d+\/health(?:\/|$)/.test(p);
 }

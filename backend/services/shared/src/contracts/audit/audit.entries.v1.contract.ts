@@ -1,40 +1,90 @@
 // backend/services/shared/src/contracts/audit/audit.entries.v1.contract.ts
-/**
- * NowVibin (NV)
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0029 — Contract-ID + BodyHandler pipeline
- *   - ADR-0030 — ContractBase & idempotent contract identification
- *
- * Purpose:
- * - Canonical shared contract for Audit ingest (entries) v1.
- * - Used by both Gateway (client) and Audit (receiver) — same class, same ID.
- *
- * ContractId:
- * - Static, idempotent, compile-time constant: "audit/entries@v1"
- * - Sent by client in `X-NV-Contract`; verified by receiver before parsing.
- */
-
 import { z } from "zod";
-import { ContractBase } from "../base/ContractBase";
+import { EnvelopeContract } from "../envelope.contract";
 
-export class AuditEntriesV1Contract extends ContractBase<
-  { entries: unknown[] },
-  { accepted: number }
-> {
-  /** Idempotent, literal Contract ID */
-  protected static readonly CONTRACT_ID = "audit/entries@v1" as const;
+// ── Request schemas ─────────────────────────────────────────────────────────
+const Target = z
+  .object({
+    slug: z.string().min(1),
+    version: z.number().int().nonnegative(),
+    route: z.string().min(1),
+    method: z.string().min(1),
+  })
+  .strict();
 
-  /** Request schema: opaque list of WAL entries (transport does not peek). */
-  public readonly request = z.object({
-    entries: z
-      .array(z.unknown())
-      .min(1, "entries must contain at least one item"),
-  });
+const Meta = z
+  .object({
+    requestId: z.string().min(1),
+    service: z.string().min(1),
+    ts: z.number().int().nonnegative(),
+  })
+  .strict();
 
-  /** Response schema: boring and testable — count only. */
-  public readonly response = z.object({
-    accepted: z.number().int().min(0),
-  });
+const BeginBlob = z
+  .object({
+    target: Target,
+    phase: z.literal("begin"),
+    note: z.string().optional(),
+  })
+  .strict();
+
+const EndBlob = z
+  .object({
+    target: Target,
+    phase: z.literal("end"),
+    status: z.enum(["ok", "error"]),
+    httpCode: z.number().int(),
+    note: z.string().optional(),
+  })
+  .strict();
+
+const Blob = z.discriminatedUnion("phase", [BeginBlob, EndBlob]);
+
+export const AuditEntry = z
+  .object({
+    meta: Meta,
+    blob: Blob,
+  })
+  .strict();
+
+export const AuditEntriesRequest = z
+  .object({
+    entries: z.array(AuditEntry).min(1),
+  })
+  .strict();
+
+// ── Response schema (for envelope .data.body) ───────────────────────────────
+export const AuditEntriesResponse = z
+  .object({
+    accepted: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type TAuditEntriesRequest = z.infer<typeof AuditEntriesRequest>;
+export type TAuditEntriesResponse = z.infer<typeof AuditEntriesResponse>;
+
+// ── Contract class (adds static CONTRACT_ID & verify) ───────────────────────
+export class AuditEntriesV1Contract extends EnvelopeContract<TAuditEntriesResponse> {
+  /** Static ID required by existing handler/type constraints */
+  public static readonly CONTRACT_ID = "audit/entries@v1";
+
+  static getContractId(): string {
+    return this.CONTRACT_ID;
+  }
+
+  /** Static verifier required by handler’s generic constraint */
+  static verify(received: string): void {
+    const got = (received ?? "").trim();
+    if (got !== this.CONTRACT_ID) {
+      const err = new Error("contract_id_mismatch");
+      // optional diagnostic fields some code paths may log
+      (err as any).expected = this.CONTRACT_ID;
+      (err as any).received = got;
+      throw err;
+    }
+  }
+
+  // Keep schemas discoverable on the instance
+  public readonly request = AuditEntriesRequest;
+  public readonly response = AuditEntriesResponse;
 }

@@ -1,4 +1,4 @@
-// backend/services/shared/src/contracts/_base/ContractBase.ts
+// backend/services/shared/src/contracts/base/ContractBase.ts
 /**
  * NowVibin (NV)
  * Docs:
@@ -28,7 +28,7 @@ import { assertContractId } from "../../svc/s2s/headers";
 /** Abstract base class for all shared contracts. */
 export abstract class ContractBase<TReq, TRes> {
   /** Immutable contract ID — subclasses must override with a literal constant. */
-  protected static readonly CONTRACT_ID: string;
+  public static readonly CONTRACT_ID: string; // ← was protected; must be public for static-side typing
 
   /** Zod schemas for request and response bodies. */
   public abstract readonly request: z.ZodType<TReq>;
@@ -39,7 +39,8 @@ export abstract class ContractBase<TReq, TRes> {
    * Validates syntax and presence before returning.
    */
   public static getContractId(): string {
-    const self = this as typeof ContractBase;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const self = this as typeof ContractBase & { CONTRACT_ID: string };
     if (!self.CONTRACT_ID) {
       throw new Error("ContractBase: subclass missing CONTRACT_ID");
     }
@@ -53,10 +54,13 @@ export abstract class ContractBase<TReq, TRes> {
    */
   public static verify(received: string): void {
     const expected = this.getContractId();
-    if (received !== expected) {
-      throw new Error(
-        `Contract ID mismatch: expected "${expected}", got "${received}"`
-      );
+    const got = (received ?? "").trim();
+    if (got !== expected) {
+      const err = new Error("contract_id_mismatch");
+      // optional diagnostics for upstream loggers
+      (err as any).expected = expected;
+      (err as any).received = got;
+      throw err;
     }
   }
 }

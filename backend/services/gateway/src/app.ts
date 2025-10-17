@@ -9,7 +9,7 @@
  * Purpose:
  * - Orchestration only. Defines order; no business logic.
  *   Sequence:
- *     health(base) → svcClientProvider → edge logs → audit bootstrap → auditBegin → healthProxyTrace → /api proxy → auditEnd → error sink
+ *     health(base) → svcClientProvider → edge logs → audit bootstrap → auditBegin → auditEnd(hook) → healthProxyTrace → /api proxy → error sink
  *
  * Design notes:
  * - The shared SvcClient **must** come from @nv/shared/svc/client so it uses the
@@ -86,7 +86,7 @@ export class GatewayApp extends AppBase {
     // Publish shared client to req.app.locals for downstream consumers
     this.app.use(svcClientProvider(() => sharedSvcClient));
 
-    // Edge ingress logs
+    // Edge ingress logs must never throw
     this.app.use(edgeHitLogger());
     // this.app.use(verifyS2S()); // when enabled
 
@@ -106,10 +106,12 @@ export class GatewayApp extends AppBase {
   protected mountRoutes(): void {
     const sc = (this.svcConfig ??= getSvcConfig());
 
+    // BEGIN first, then immediately attach END hook so errors later don't skip it
     this.app.use(auditBegin());
+    this.app.use(auditEnd()); // ← moved here (before healthProxyTrace/proxy)
+
     this.app.use(healthProxyTrace({ logger: this.log }));
     this.app.use("/api", new ProxyRouter(sc).router());
-    this.app.use(auditEnd());
 
     // MUST be last
     this.app.use(responseErrorLogger(this.log));

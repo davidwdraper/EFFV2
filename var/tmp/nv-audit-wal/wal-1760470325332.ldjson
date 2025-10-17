@@ -1,2 +1,0 @@
-{"appendedAt":1760470325332,"blob":{"meta":{"service":"gateway","ts":1760470325236,"requestId":"smoke-010-1760470325"},"blob":{"target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"begin","smoke":10,"note":"begin"}}}
-{"appendedAt":1760470325352,"blob":{"meta":{"service":"gateway","ts":1760470325359,"requestId":"smoke-010-1760470325"},"blob":{"target":{"slug":"act","version":1,"route":"/api/acts","method":"PUT"},"phase":"end","status":"ok","httpCode":200,"smoke":10,"note":"end"}}}

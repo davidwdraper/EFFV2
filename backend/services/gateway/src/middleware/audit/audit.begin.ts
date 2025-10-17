@@ -1,24 +1,24 @@
 // backend/services/gateway/src/middleware/audit/audit.begin.ts
 /**
  * Purpose:
- * - Append a BEGIN audit blob for non-health requests. HARD-STOP if WAL does not grow.
- * - Guarantees: no inbound API proceeds without a persisted BEGIN entry.
+ * - Append a BEGIN audit entry for non-health requests. HARD-STOP if WAL does not grow.
  *
- * Behavior:
- * - Measure WAL directory usage before and after append (bytes + file count).
- * - If neither bytes nor fileCount increases, throw to error sink (fail-fast).
- *
- * Notes:
- * - Health paths are always skipped.
- * - Uses AuditBase.getWal(req) and AuditBase.getWalDir(req).
+ * Docs/ADRs:
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADR-0025 — Audit WAL with Opaque Payloads & Writer Injection
+ * - ADR-0030 — ContractBase & idempotent contract identification
  */
 
 import type { Request, Response, NextFunction } from "express";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { AuditBase } from "./AuditBase";
+import { AuditEntryBuilder } from "@nv/shared/audit/AuditEntryBuilder";
 
 type Target = { slug: string; version: number; route: string; method: string };
+
+// single place to stash the computed target for END to reuse
+const REQ_TARGET_KEY = "__auditTarget";
 
 export function auditBegin() {
   return async function auditBeginMw(
@@ -32,23 +32,33 @@ export function auditBegin() {
       const wal = AuditBase.getWal(req);
       const requestId = AuditBase.getOrCreateRequestId(req);
       const walDir = AuditBase.getWalDir(req);
-      const target = parseTarget(req);
+
+      // Compute target from the ORIGINAL url (proxy may mutate req.path later)
+      const target = parseTargetFromOriginal(req);
+      if (!target) {
+        (req as any).log?.error?.(
+          { requestId, url: getOriginalPath(req) },
+          "audit_begin_no_target"
+        );
+        return next(); // do not append without a valid target
+      }
+
+      // Stash target for audit.end
+      (req as any)[REQ_TARGET_KEY] = target;
 
       // Snapshot before
       const before = await dirUsage(walDir);
 
-      const beginBlob = {
-        meta: { service: "gateway", ts: Date.now(), requestId },
-        blob: {}, // contract-required; minimal at BEGIN
-        phase: "begin",
-        ...(target ? { target } : {}),
-      };
+      const beginEntry = AuditEntryBuilder.begin({
+        service: "gateway",
+        requestId,
+        target,
+      });
 
-      await wal.append(beginBlob);
+      await wal.append(beginEntry);
 
       // Snapshot after
       const after = await dirUsage(walDir);
-
       const grew =
         after.totalBytes > before.totalBytes ||
         after.fileCount > before.fileCount;
@@ -68,7 +78,6 @@ export function auditBegin() {
         );
       }
 
-      // Breadcrumb for correlation
       (req as any).log?.edge?.(
         {
           requestId,
@@ -83,6 +92,13 @@ export function auditBegin() {
 
       next();
     } catch (err) {
+      (req as any).log?.error?.(
+        {
+          requestId: AuditBase.peekRequestId(req),
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "audit_begin_failed"
+      );
       next(err);
     }
   };
@@ -90,9 +106,16 @@ export function auditBegin() {
 
 // ───────────────────────── helpers ─────────────────────────
 
-function parseTarget(req: Request): Target | undefined {
-  const p = req.path || "";
-  const m = p.match(/^\/api\/([^/]+)\/v(\d+)(\/.*)?$/);
+function getOriginalPath(req: Request): string {
+  // prefer originalUrl, fallback to url, then path
+  return (
+    ((req as any).originalUrl as string) || req.url || (req as any).path || ""
+  );
+}
+
+function parseTargetFromOriginal(req: Request): Target | undefined {
+  const p = getOriginalPath(req);
+  const m = p.match(/^\/api\/([^/]+)\/v(\d+)(?:\/(.*))?$/);
   if (!m) return undefined;
   const version = Number(m[2]);
   if (!Number.isFinite(version)) return undefined;
@@ -101,7 +124,7 @@ function parseTarget(req: Request): Target | undefined {
 }
 
 function isHealthPath(req: Request): boolean {
-  const p = req.path || "";
+  const p = getOriginalPath(req);
   return /^\/api\/[^/]+\/v\d+\/health(?:\/|$)/.test(p);
 }
 

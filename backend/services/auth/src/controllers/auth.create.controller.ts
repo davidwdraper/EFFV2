@@ -1,31 +1,33 @@
 // backend/services/auth/src/controllers/auth.create.controller.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0005 (Gateway→Auth→User Signup Plumbing)
+ * - SOP: Reduced, Clean
+ * - ADR-0005 Gateway→Auth→User Signup Plumbing
+ * - ADR-0027 S2S Contract: flat request + header; canonical envelope response
  *
  * Purpose:
- * - Client-facing signup entrypoint.
- * - Thin controller: validate → (call User later) → return.
- *
- * Notes:
- * - For stabilization, we ACK 200. Wiring to User can be added next.
+ * - Client-facing signup. Thin: validate → mock-hash → S2S user.create → envelope out.
  */
 
 import type { RequestHandler } from "express";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
+import { getSvcClient } from "@nv/shared/svc/client";
 
-function getSvcName(): string {
+function svcName(): string {
   return process.env.SVC_NAME?.trim() || "auth";
 }
 
+// Swap to shared contract when you promote it:
+//   import { UserCreateV1Contract } from "@nv/shared/contracts/user/user.create.v1.contract";
+//   const USER_CREATE_CONTRACT = UserCreateV1Contract.getContractId();
+const USER_CREATE_CONTRACT = "user/create@v1";
+
 export class AuthCreateController extends ControllerBase {
   constructor() {
-    super({ service: getSvcName() });
+    super({ service: svcName() });
   }
 
-  /** Mount this on PUT /create */
+  /** Mount on PUT /create */
   public create(): RequestHandler {
     return this.handle(async (ctx) => {
       const requestId = ctx.requestId;
@@ -37,23 +39,47 @@ export class AuthCreateController extends ControllerBase {
       const email = (body.email || "").trim();
       const password = (body.password || "").trim();
 
-      if (!email)
-        return this.fail(
-          400,
-          "invalid_request",
-          "email is required",
-          requestId
-        );
+      if (!email) return this.fail(400, "invalid_request", "email is required");
       if (!password)
-        return this.fail(
-          400,
-          "invalid_request",
-          "password is required",
-          requestId
-        );
+        return this.fail(400, "invalid_request", "password is required");
 
-      // TODO: Call User service with { user:{email}, hashedPassword } once proxy is fixed.
-      // const hashedPassword = `mock-hash::${password}`;
+      // Mock hash for now (greenfield note: replace with real KMS/hasher later)
+      const hashedPassword = `mock-hash::${password}`;
+
+      // S2S → User.create (flat body + contract header). Expect canonical envelope back.
+      const svcClient = getSvcClient();
+      const userResp = await svcClient.call<{
+        ok: boolean;
+        service: string;
+        data: { status: number; body?: any } | any;
+      }>({
+        slug: "user",
+        version: 1,
+        path: "/create",
+        method: "PUT",
+        headers: {
+          "X-NV-Contract": USER_CREATE_CONTRACT,
+          // S2S allowlist: your User S2S guard checks x-service-name
+          "x-service-name": this.service,
+        },
+        body: {
+          user: { email }, // minimal user DTO; shared contract will own shape later
+          hashedPassword, // opaque to transport
+        },
+      });
+
+      // Normalize downstream envelope variance while User is still stabilizing
+      const statusCode =
+        (userResp?.data as any)?.status ??
+        (typeof (userResp as any)?.status === "number"
+          ? (userResp as any).status
+          : 202);
+
+      const userBody = (userResp?.data as any)?.body ??
+        (userResp?.data as any) ?? {
+          accepted: 1,
+          note: "user service ack (stub)",
+        };
 
       return {
         status: 200,
@@ -62,9 +88,11 @@ export class AuthCreateController extends ControllerBase {
           service: this.service,
           requestId,
           data: {
-            status: "created",
-            detail: "auth.create ack — user call deferred during stabilization",
-            email,
+            status: statusCode,
+            body: {
+              user: userBody?.user ?? { email }, // echo minimal user
+              userService: "user",
+            },
           },
         },
       };

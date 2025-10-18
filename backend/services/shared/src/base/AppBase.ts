@@ -6,14 +6,20 @@
  *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
  *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
  *   - ADR-0015 (Structured Logger with bind() Context)
+ *   - ADR-0030 (ContractBase & idempotent contract identification)  // lifecycle/order invariant
  *
  * Purpose:
  * - Canonical Express composition for all services.
  * - Centralizes middleware ordering via overridable hooks:
  *   onBoot → health → preRouting → security → parsers → routes → postRouting
  *
+ * Invariant (env-invariant, prod-ready):
+ * - Routes MUST NOT mount until onBoot() completes. (Fixes async race seen in AuditApp.)
+ *
+ * Breaking change:
+ * - Services must call `await app.boot()` before exposing `app.instance` to a server `listen()`.
+ *
  * Notes:
- * - Services should be tiny subclasses overriding only what they must.
  * - No environment-specific branches. Dev == Prod behavior (URLs/ports aside).
  */
 
@@ -25,12 +31,13 @@ import { responseErrorLogger } from "../middleware/response.error.logger";
 
 export abstract class AppBase extends ServiceBase {
   protected readonly app: Express;
+  private _booted = false;
 
   constructor(opts?: { service?: string; context?: Record<string, unknown> }) {
     super(opts);
     this.app = express();
     this.initApp();
-    this.configureBase(); // runs the standardized mounting sequence
+    // NOTE: Lifecycle is now explicit/async via boot(); constructor does NOT mount.
   }
 
   /** Disable noisy headers; keep this minimal. */
@@ -38,10 +45,15 @@ export abstract class AppBase extends ServiceBase {
     this.app.disable("x-powered-by");
   }
 
-  /** Fixed sequence — do not override; customize via the protected hooks below. */
-  private configureBase(): void {
-    // 0) Synchronous boot hook (warm caches, set fields, etc.)
-    this.onBoot();
+  /**
+   * Public async lifecycle entry.
+   * MUST be awaited by service entrypoints before listen().
+   */
+  public async boot(): Promise<void> {
+    if (this._booted) return;
+
+    // 0) Awaitable boot hook (warm caches, start durable infra, DI wiring, etc.)
+    await this.onBoot();
 
     // 1) Versioned health (mounted first)
     const healthBase = this.healthBasePath();
@@ -63,13 +75,17 @@ export abstract class AppBase extends ServiceBase {
 
     // 6) Post-routing (problem handler, sinks, last-ditch error JSON)
     this.mountPostRouting();
+
+    this._booted = true;
+    this.log.info({ service: this.service }, "app booted");
   }
 
   // ───────────────────────────── Hooks (override as needed) ─────────────────────────────
 
-  /** One-time, synchronous boot (e.g., kick off warm loads). */
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
-  protected onBoot(): void {}
+  /** One-time, awaitable boot (e.g., start WAL, warm mirrors). Default: no-op. */
+  protected async onBoot(): Promise<void> {
+    // Intentionally empty; subclasses may override with async work.
+  }
 
   /** Return the versioned health base path like "/api/<slug>/v1"; return null to skip. */
   protected healthBasePath(): string | null {
@@ -139,8 +155,14 @@ export abstract class AppBase extends ServiceBase {
     );
   }
 
-  /** Expose the Express instance to the entrypoint. */
+  /** Expose the Express instance to the entrypoint (after boot). */
   public get instance(): Express {
+    if (!this._booted) {
+      // Fail-fast to prevent race conditions like the Audit WAL case.
+      throw new Error(
+        `[${this.service}] App not booted. Call and await app.boot() before using instance.`
+      );
+    }
     return this.app;
   }
 }

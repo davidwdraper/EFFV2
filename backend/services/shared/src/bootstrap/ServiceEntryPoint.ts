@@ -1,40 +1,44 @@
 // backend/services/shared/src/bootstrap/ServiceEntrypoint.ts
 /**
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
- *   - ADR-0015 (Structured Logger with bind() Context)
+ * NowVibin (NV)
+ * File: backend/services/shared/src/bootstrap/ServiceEntrypoint.ts
  *
- * Purpose:
- * - Composition root for all NowVibin backend services.
- * - Owns the boot sequence and lifecycle (start, ready, shutdown).
- * - Delegates actual service logic to an app builder function.
+ * Contract (compat):
+ * - Preferred: buildApp() => BootableApp { boot(): Promise<void>; instance: Express }
+ * - Legacy:    buildApp() => Express (RequestListener)
  *
- * Key difference from old ServiceBase:
- * - No inheritance. This is a self-contained runner.
- * - No root logger mutation with a bound logger (avoids recursion).
+ * Invariant:
+ * - Never touch `.instance` until AFTER `boot()` resolves.
  */
 
 import type { Express } from "express";
+import type { RequestListener } from "http";
 import { Bootstrap, type BootstrapOptions } from "./Bootstrap";
-// ❌ remove: import { setRootLogger } from "../logger/Logger";
 
 export type ServiceEntrypointOptions = Omit<
   BootstrapOptions,
   "service" | "preStart" | "onReady" | "onShutdown"
 > & {
-  /** Service slug (e.g. gateway, auth, user) */
   service: string;
-
-  /** Optional version number for structured log context */
   logVersion?: number;
-
-  /** Optional hooks */
   preStart?: () => Promise<void> | void;
   onReady?: () => Promise<void> | void;
   onShutdown?: () => Promise<void> | void;
 };
+
+type BootableApp = {
+  boot: () => Promise<void>;
+  readonly instance: Express;
+};
+
+function isRequestListener(x: unknown): x is RequestListener {
+  return typeof x === "function";
+}
+
+// IMPORTANT: Do NOT read `.instance` here — it may throw if not booted.
+function isBootableApp(x: unknown): x is BootableApp {
+  return !!x && typeof (x as any).boot === "function";
+}
 
 export class ServiceEntrypoint {
   private readonly service: string;
@@ -45,11 +49,7 @@ export class ServiceEntrypoint {
     this.opts = opts;
   }
 
-  /**
-   * Start the service using the provided app factory.
-   * The app factory must return an initialized Express instance.
-   */
-  public async run(buildApp: () => Express): Promise<void> {
+  public async run(buildApp: () => BootableApp | Express): Promise<void> {
     const boot = new Bootstrap({
       service: this.service,
       portEnvName: this.opts.portEnvName,
@@ -57,7 +57,6 @@ export class ServiceEntrypoint {
       loadEnvFiles: this.opts.loadEnvFiles,
       logContext: this.opts.logContext,
       preStart: async () => {
-        // ❌ do not setRootLogger(boot.logger) — boot.logger is an IBoundLogger
         const log = boot.logger.bind({
           slug: this.service,
           version: this.opts.logVersion ?? 1,
@@ -87,9 +86,26 @@ export class ServiceEntrypoint {
       },
     });
 
-    // ❌ remove second root set (caused recursion with BoundLogger)
-    // setRootLogger(boot.logger);
+    const built = buildApp();
 
-    await boot.run(buildApp);
+    // Preferred path: BootableApp → await boot() → then use .instance
+    if (isBootableApp(built)) {
+      await (built as BootableApp).boot();
+      return await boot.run(() => (built as BootableApp).instance);
+    }
+
+    // Legacy path: plain Express RequestListener
+    if (isRequestListener(built)) {
+      return await boot.run(() => built);
+    }
+
+    // If someone returned an Express app object (rare), accept it as a handler
+    if (typeof built === "function") {
+      return await boot.run(() => built as unknown as RequestListener);
+    }
+
+    throw new TypeError(
+      `[${this.service}] buildApp() must return a BootableApp (with .boot() and .instance) or an Express RequestListener`
+    );
   }
 }

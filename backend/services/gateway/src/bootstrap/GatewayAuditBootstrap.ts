@@ -28,6 +28,7 @@ import { CursorlessWalReplayer } from "@nv/shared/wal/replay/CursorlessWalReplay
 import type { IAuditWriter } from "@nv/shared/wal/writer/IAuditWriter";
 import type { SvcCallOptions, SvcResponse } from "@nv/shared/svc/types";
 import { GatewayAuditEnv } from "./GatewayAuditEnv";
+import { setTimeout as delay } from "node:timers/promises";
 
 type SvcClientCompatible = {
   call<T = unknown>(opts: SvcCallOptions): Promise<SvcResponse<T>>;
@@ -46,13 +47,18 @@ export class GatewayAuditBootstrap {
       GatewayAuditEnv.read();
 
     // ── 2. Construct the HttpAuditWriter (uses shared SvcClient) ─────────────
+    // Keep these values aligned with the replay wrapper below.
+    const TIMEOUT_MS = 5000;
+    const RETRIES = 3;
+    const BACKOFF_BASE_MS = 250;
+
     const writer = new HttpAuditWriter({
       svcClient,
       auditSlug: AUDIT_SLUG,
       auditVersion: AUDIT_SLUG_VERSION,
-      timeoutMs: 5000,
-      retries: 3,
-      backoffMs: 250,
+      timeoutMs: TIMEOUT_MS,
+      retries: RETRIES,
+      backoffMs: BACKOFF_BASE_MS,
     });
 
     // ── 3. Build the WAL engine and attach to app.locals ─────────────────────
@@ -64,19 +70,49 @@ export class GatewayAuditBootstrap {
     (app.locals as any).wal = wal;
     (app.locals as any).WAL_DIR = WAL_DIR;
 
-    // ── 4. Optional: replay persisted WAL entries on boot ─────────────────────
+    // ── 4. Optional: replay persisted WAL entries on boot ────────────────────
     if (REPLAY_ON_BOOT) {
       try {
-        const replayer = new CursorlessWalReplayer({
-          dir: WAL_DIR,
-          // logger intentionally omitted to avoid drift; replayer logs internally
-        });
+        const replayer = new CursorlessWalReplayer({ dir: WAL_DIR });
 
         // Adapter ensures type compatibility with IAuditWriter
         type BatchArg = Parameters<IAuditWriter["writeBatch"]>[0];
+
+        // Outer retry wrapper specifically for boot replay to survive ECONNREFUSED / DNS races.
         const replayerWriter: IAuditWriter = {
           writeBatch: async (batch: BatchArg): Promise<void> => {
-            await writer.writeBatch(batch);
+            let attempt = 0;
+            // Use the same attempt count semantics the writer uses internally:
+            // first try + (RETRIES - 1) retries == RETRIES total attempts.
+            const maxAttempts = RETRIES;
+            while (true) {
+              attempt++;
+              try {
+                await writer.writeBatch(batch);
+                return; // success
+              } catch (err: any) {
+                // If we’ve exhausted attempts, rethrow.
+                if (attempt >= maxAttempts) {
+                  throw err;
+                }
+                // Jittered exponential backoff (aligned with BACKOFF_BASE_MS).
+                const backoff =
+                  BACKOFF_BASE_MS * Math.pow(2, attempt - 1) +
+                  Math.floor(Math.random() * 25);
+                log.warn(
+                  {
+                    service: "gateway",
+                    component: "GatewayAuditBootstrap",
+                    attempt,
+                    maxAttempts,
+                    backoffMs: backoff,
+                    err: err?.message || String(err),
+                  },
+                  "gateway_wal_replay_retry"
+                );
+                await delay(backoff);
+              }
+            }
           },
         };
 

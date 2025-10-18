@@ -1,37 +1,42 @@
 // backend/services/auth/src/index.ts
 /**
+ * NowVibin (NV)
+ * File: backend/services/auth/src/index.ts
+ *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs: ADR-0004 (Auth Service Skeleton — no minting)
+ * - ADRs:
+ *   - ADR-0004 — Auth Service Skeleton (no minting)
+ *   - ADR-0014 — Base Hierarchy (ServiceEntrypoint vs ServiceBase)
  *
  * Purpose:
- * - Bootstrap the Auth service using shared Bootstrap and start HTTP server.
- * - On failure, log via standard logger (not console JSON).
+ * - Start the Auth service using the shared async lifecycle.
+ * - `ServiceEntrypoint` awaits `app.boot()` BEFORE exposing the HTTP handler.
+ *
+ * Invariants:
+ * - Orchestration-only; no business logic here.
+ * - No literals or env fallbacks; Bootstrap resolves PORT/envs.
  */
 
-import { Bootstrap } from "@nv/shared/bootstrap/Bootstrap";
+import { ServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
 import { getLogger } from "@nv/shared/logger/Logger";
 import { AuthApp } from "./app";
 
 async function main(): Promise<void> {
-  const boot = new Bootstrap({ service: "auth" });
-  await boot.run(() => new AuthApp().instance);
+  const entry = new ServiceEntrypoint({ service: "auth" });
+  // Return the BootableApp; entrypoint will await app.boot() internally.
+  await entry.run(() => new AuthApp());
 }
 
 main().catch((err) => {
-  // Structured logger; matches the rest of the system
   const log = getLogger().bind({ service: "auth", component: "bootstrap" });
   try {
-    // Prefer structured error payload if available
-    const errObj =
-      typeof (log as any).serializeError === "function"
-        ? (log as any).serializeError(err)
-        : { message: String(err), stack: (err as any)?.stack };
-
-    log.error({ err: errObj }, "auth boot_failed");
+    const e =
+      err instanceof Error
+        ? { name: err.name, message: err.message, stack: err.stack }
+        : { message: String(err) };
+    log.error({ err: e }, "auth boot_failed");
   } catch {
-    // Last-resort fallback only if logger cannot materialize
-    // (kept intentionally terse to avoid console noise in normal operation)
     // eslint-disable-next-line no-console
     console.error("fatal auth startup", err);
   }

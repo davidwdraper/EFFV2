@@ -5,26 +5,23 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs: ADR-0025 (Audit WAL with Opaque Payloads & Writer Injection)
  *
- * Purpose (stub phase):
- * - Bootstrap the Audit service using shared Bootstrap and start HTTP server.
- * - No WAL/DB/S2S yet — just a dumb listener for smoke tests.
- *
- * Notes:
- * - Health is mounted by AppBase under /api/audit/v1/health/*.
- * - Future S2S will be handled in shared SvcReceiver; this file will not change.
+ * Purpose:
+ * - Bootstrap the Audit service using shared ServiceEntrypoint (async lifecycle).
+ * - Ensures durable deps (WAL) are ready BEFORE exposing the HTTP handler.
  */
 
-import { Bootstrap } from "@nv/shared/bootstrap/Bootstrap";
+import { ServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
 import { getLogger } from "@nv/shared/logger/Logger";
 import { AuditApp } from "./app";
 
 async function main(): Promise<void> {
-  const boot = new Bootstrap({ service: "audit" });
-  await boot.run(() => new AuditApp().instance);
+  const entry = new ServiceEntrypoint({ service: "audit" });
+
+  // Preferred contract: return a BootableApp (AuditApp), not a bare handler.
+  await entry.run(() => new AuditApp());
 }
 
 main().catch((err) => {
-  // Structured logger; matches system-wide format
   const log = getLogger().bind({ service: "audit", component: "bootstrap" });
   try {
     const errObj =
@@ -34,7 +31,6 @@ main().catch((err) => {
 
     log.error({ err: errObj }, "audit boot_failed");
   } catch {
-    // Failsafe: only if logger cannot materialize
     // eslint-disable-next-line no-console
     console.error("fatal audit startup", err);
   }

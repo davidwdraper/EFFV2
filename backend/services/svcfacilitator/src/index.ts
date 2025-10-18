@@ -1,20 +1,26 @@
 // backend/services/svcfacilitator/src/index.ts
 /**
+ * NowVibin (NV)
+ * File: backend/services/svcfacilitator/src/index.ts
+ *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - docs/adr/adr0002-svcfacilitator-minimal.md
- *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
- *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
- *   - ADR-0013 (Versioned Health Envelope & Routes)
- *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint vs ServiceBase)
- *   - ADR-0020 (SvcConfig Mirror & Push Design)
+ *   - ADR-0007 — SvcConfig Contract (fixed shapes & keys, OO form)
+ *   - ADR-0008 — SvcFacilitator LKG (boot resilience when DB is down)
+ *   - ADR-0013 — Versioned Health Envelope & Routes
+ *   - ADR-0014 — Base Hierarchy (ServiceEntrypoint vs ServiceBase)
+ *   - ADR-0020 — SvcConfig Mirror & Push Design
  *
  * Purpose:
- * - Composition-root entrypoint using shared ServiceEntrypoint (no inheritance).
+ * - Composition-root entrypoint using shared ServiceEntrypoint (async lifecycle).
  * - Pre-start hydrates the svcconfig mirror (DB → LKG fallback).
- * - Immediately after hydration, run a LOUD audit comparing DB vs mirror counts
- *   and reasons (disabled, proxying disabled, invalid schema).
+ * - After hydration, emit a LOUD audit comparing DB vs mirror counts and reasons.
+ *
+ * Invariants:
+ * - No env literals; Bootstrap resolves PORT/envs.
+ * - Orchestration-only; no business logic here.
  */
 
 import path from "path";
@@ -29,7 +35,7 @@ import { auditMirrorVsDb } from "./services/mirror.audit";
 const SERVICE = "svcfacilitator";
 const VERSION = 1;
 
-async function main() {
+async function main(): Promise<void> {
   const entry = new ServiceEntrypoint({
     service: SERVICE,
     logVersion: VERSION,
@@ -40,15 +46,25 @@ async function main() {
     },
   });
 
-  await entry.run(() => new SvcFacilitatorApp().instance);
+  // Return the BootableApp; entrypoint awaits app.boot() before listen.
+  await entry.run(() => new SvcFacilitatorApp());
 }
 
 main().catch((err) => {
   const log = getLogger().bind({
-    slug: SERVICE,
+    service: SERVICE,
+    component: "bootstrap",
     version: VERSION,
-    url: "/main",
   });
-  log.error({ err: String(err) }, "boot_failed");
+  try {
+    const e =
+      err instanceof Error
+        ? { name: err.name, message: err.message, stack: err.stack }
+        : { message: String(err) };
+    log.error({ err: e }, "svcfacilitator boot_failed");
+  } catch {
+    // eslint-disable-next-line no-console
+    console.error("fatal svcfacilitator startup", err);
+  }
   process.exit(1);
 });

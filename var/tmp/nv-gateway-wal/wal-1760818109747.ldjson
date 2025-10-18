@@ -1,0 +1,2 @@
+{"appendedAt":1760818109747,"blob":{"meta":{"service":"gateway","requestId":"6865ed4f-e8a4-4dc5-8208-25c57cd6fb58","ts":1760818109747},"blob":{"phase":"begin","target":{"slug":"auth","version":1,"route":"no-policy-here","method":"GET"}}}}
+{"appendedAt":1760818109787,"blob":{"meta":{"service":"gateway","requestId":"6865ed4f-e8a4-4dc5-8208-25c57cd6fb58","ts":1760818109787},"blob":{"phase":"end","target":{"slug":"auth","version":1,"route":"no-policy-here","method":"GET"},"status":"error","httpCode":404}}}

@@ -29,8 +29,8 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { IBoundLogger } from "@nv/shared/logger/Logger"; // canonical logger type
 
 export interface ISvcconfigResolver {
-  /** Returns the parent svcconfig ObjectId (24-hex string) for a given slug, or null if unknown. */
-  getSvcconfigId(slug: string): string | null;
+  /** Returns the parent svcconfig ObjectId (24-hex string) for a given slug@version, or null if unknown. */
+  getSvcconfigId(slug: string, version: number): string | null;
 }
 
 type HttpMethod = "PUT" | "POST" | "PATCH" | "GET" | "DELETE";
@@ -41,24 +41,21 @@ type CacheEntry =
 
 type BindLog = (ctx: Record<string, unknown>) => IBoundLogger;
 
-// Augment Request for downstream gate
 declare global {
   namespace Express {
     interface Request {
-      /** Route-level minimum access required for this endpoint; 0 if public or no policy. */
       routePolicyMinAccessLevel?: number;
-      /** Whether a route policy existed for this endpoint (version-agnostic). */
       routePolicyFound?: boolean;
     }
   }
 }
 
 export type RoutePolicyGateOpts = {
-  bindLog: BindLog; // ServiceBase.bindLog → contextual logger
-  facilitatorBaseUrl: string; // e.g., https://facilitator.domain or http://127.0.0.1:4015
-  ttlMs: number; // required; no fallbacks
-  resolver: ISvcconfigResolver; // slug → svcconfigId
-  fetchTimeoutMs?: number; // default 5000
+  bindLog: BindLog;
+  facilitatorBaseUrl: string;
+  ttlMs: number;
+  resolver: ISvcconfigResolver;
+  fetchTimeoutMs?: number;
 };
 
 export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
@@ -88,14 +85,20 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
       );
 
       const { slug, version, method, path } = parseApiRequest(req);
-      const svcconfigId = resolver.getSvcconfigId(slug);
 
-      // Unknown service: treat as no policy; block anon; allow if token present
+      // Resolve svcconfigId using slug@version (mirror is versioned)
+      const svcconfigId = resolver.getSvcconfigId(slug, version);
       if (!svcconfigId) {
         attachPolicy(req, { found: false, min: 0 });
         if (!hasBearer(req)) {
           log.info(
-            { slug, method, path, reason: "service_unknown_and_no_token" },
+            {
+              slug,
+              version,
+              method,
+              path,
+              reason: "service_unknown_and_no_token",
+            },
             "route_policy_denied"
           );
           return respond(
@@ -106,7 +109,13 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
           );
         }
         log.debug(
-          { slug, method, path, reason: "service_unknown_but_token_present" },
+          {
+            slug,
+            version,
+            method,
+            path,
+            reason: "service_unknown_but_token_present",
+          },
           "route_policy_allow_with_token_service_unknown"
         );
         return next();
@@ -136,7 +145,6 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
 
       const bearer = hasBearer(req);
 
-      // 3) No JWT & no routePolicy → BLOCK
       if (!bearer && !entry.found) {
         log.info(
           { method, path, svcconfigId, reason: "private_by_default_no_policy" },
@@ -150,7 +158,6 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
         );
       }
 
-      // 4) No JWT & routePolicy → BLOCK unless public (minAccessLevel == 0)
       if (!bearer && entry.found && entry.minAccessLevel > 0) {
         log.info(
           {
@@ -165,7 +172,6 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
         return respond(res, 401, "unauthorized", "policy_requires_token");
       }
 
-      // 5 & 6) JWT present → pass to token gate for enforcement
       log.debug(
         {
           method,
@@ -179,7 +185,6 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
       );
       return next();
     } catch (err) {
-      // Unexpected failures remain ERROR; serialize locally (don't rely on serializeError return)
       log.error(
         {
           error:
@@ -265,7 +270,7 @@ async function fetchPolicy(
     method: HttpMethod;
     path: string;
     timeoutMs: number;
-    log: IBoundLogger; // real logger type
+    log: IBoundLogger;
   }
 ): Promise<CacheEntry> {
   const { svcconfigId, version, method, path, timeoutMs, log } = args;
@@ -326,7 +331,6 @@ function ttlFrom(_json: any, defaultTtl: number): number {
   return defaultTtl;
 }
 
-/** Minimal problem+json responder to avoid runtime dependency drift. */
 function respond(
   res: Response,
   status: number,
@@ -334,10 +338,5 @@ function respond(
   detailCode: string
 ): Response {
   res.status(status);
-  return res.json({
-    type: "about:blank",
-    title,
-    status,
-    detail: detailCode,
-  });
+  return res.json({ type: "about:blank", title, status, detail: detailCode });
 }

@@ -7,7 +7,7 @@
  *
  * Purpose:
  * - Canonical OO contract for service-config (svcconfig) records and mirrors.
- * - Mirrors the stored Mongo document shape you provided (no `port` field).
+ * - Mirrors the stored Mongo document shape (now explicitly preserves `_id`).
  *
  * Behavioral notes:
  * - Mirror/caches keyed by "<slug>@<version>" (lowercase slug).
@@ -19,6 +19,9 @@
 import { BaseContract } from "./base.contract";
 
 export type ServiceConfigRecordJSON = {
+  /** DB identifier; may be string, { $oid }, etc. Preserved verbatim by contract. */
+  _id?: unknown;
+
   slug: string; // lowercase, [a-z][a-z0-9-]*
   version: number; // int >= 1
   enabled: boolean;
@@ -93,6 +96,9 @@ function isProduction(): boolean {
 }
 
 export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
+  /** Preserved DB id (verbatim); consumer decides how to unwrap. */
+  public readonly _id?: unknown;
+
   public readonly slug: string;
   public readonly version: number;
   public readonly enabled: boolean;
@@ -112,6 +118,9 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
   constructor(input: unknown) {
     super();
     const obj = ServiceConfigRecord.ensurePlainObject(input, "svcconfig");
+
+    // preserve _id verbatim (optional per contract)
+    this._id = obj["_id"];
 
     // slug
     const slug = ServiceConfigRecord.takeString(obj, "slug", {
@@ -234,6 +243,8 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
   /** JSON-ready representation (stable order). */
   public toJSON(): ServiceConfigRecordJSON {
     const out: ServiceConfigRecordJSON = {
+      // Preserve _id verbatim if present
+      ...(this._id !== undefined ? { _id: this._id } : {}),
       slug: this.slug,
       version: this.version,
       enabled: this.enabled,

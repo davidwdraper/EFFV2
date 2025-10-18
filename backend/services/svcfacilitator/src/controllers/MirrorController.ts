@@ -23,6 +23,9 @@
 
 import type { Request, Response } from "express";
 import os from "os";
+import path from "path";
+import { promises as fs } from "fs";
+import { randomUUID } from "crypto";
 
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import { SvcReceiver } from "@nv/shared/svc/SvcReceiver";
@@ -96,7 +99,7 @@ export class MirrorController extends ControllerBase {
         // 2) Swap in-memory copy
         mirrorStore.setMirror(normalized);
 
-        // 3) Persist LKG atomically (moved shared bits to ControllerBase)
+        // 3) Persist LKG atomically
         try {
           const lkgPath = EnvLoader.requireEnv("SVCCONFIG_LKG_PATH");
           const resolvedPath = this.resolveRepoPath(lkgPath);
@@ -111,11 +114,15 @@ export class MirrorController extends ControllerBase {
             2
           );
 
-          this.writeFileAtomic(resolvedPath, payload, ".svcfacilitator-mirror");
+          await this.writeFileAtomic(
+            resolvedPath,
+            payload,
+            ".svcfacilitator-mirror"
+          );
         } catch (e) {
-          // Failure to persist LKG should not block live operation, but report it.
+          // Persistence should not block live operation; report it.
           return {
-            status: 200, // accept the mirror to keep system live
+            status: 200,
             body: {
               ok: true,
               requestId,
@@ -123,6 +130,7 @@ export class MirrorController extends ControllerBase {
               services: Object.keys(normalized).length,
               lkgSaved: false,
               lkgError: String(e),
+              host: os.hostname(),
             },
           };
         }
@@ -141,5 +149,36 @@ export class MirrorController extends ControllerBase {
         };
       }
     );
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Local helpers (ControllerBase didn’t provide these)
+  // ────────────────────────────────────────────────────────────────────────
+
+  /** Resolve absolute path; if relative, resolve from current working directory. */
+  private resolveRepoPath(p: string): string {
+    if (!p || typeof p !== "string") {
+      throw new Error("resolveRepoPath: expected non-empty string path");
+    }
+    return path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
+  }
+
+  /**
+   * Atomic-ish file write:
+   * - ensure dir exists
+   * - write to a temp file in the same dir
+   * - rename into place
+   */
+  private async writeFileAtomic(
+    destPath: string,
+    contents: string | Uint8Array,
+    tmpTag = ".tmp"
+  ): Promise<void> {
+    const dir = path.dirname(destPath);
+    await fs.mkdir(dir, { recursive: true });
+
+    const tmpPath = `${destPath}.${tmpTag}.${randomUUID()}`;
+    await fs.writeFile(tmpPath, contents, { encoding: "utf8" });
+    await fs.rename(tmpPath, destPath);
   }
 }

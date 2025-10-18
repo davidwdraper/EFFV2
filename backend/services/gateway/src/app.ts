@@ -42,39 +42,76 @@ import { getSvcClient } from "@nv/shared/svc/client";
 import { GatewayAuditBootstrap } from "./bootstrap/GatewayAuditBootstrap";
 import { routePolicyGate } from "./middleware/routePolicyGate";
 import type { ISvcconfigResolver } from "./middleware/routePolicyGate";
+import type { IBoundLogger } from "@nv/shared/logger/Logger";
 
 const SERVICE = "gateway";
 
-/** Thin adapter: make SvcConfig look like ISvcconfigResolver without changing SvcConfig. */
-function svcconfigResolverAdapter(sc: SvcConfig): ISvcconfigResolver {
+/**
+ * Minimal adapter: SvcConfig → ISvcconfigResolver
+ * - Single concern: call sc.getRecord(slug) and return its id
+ * - If missing, log a loud **WARN** (ops/config issue) and return null (gate will block)
+ * - No probing, no guessing, no extra surface area
+ */
+// strict, contract-first adapter: no fallbacks, no guessing
+// backend/services/gateway/src/app.ts (adapter only)
+
+// Strict, contract-first adapter: use ServiceConfigRecord._id per shared/contracts/ServiceConfig.ts
+function svcconfigResolverAdapter(
+  sc: SvcConfig,
+  log: IBoundLogger
+): ISvcconfigResolver {
   return {
-    getSvcconfigId(slug: string): string | null {
-      const anySc = sc as unknown as Record<string, any>;
-      // Try a few common shapes without coupling types:
-      // 1) Direct method
-      if (typeof anySc.getSvcconfigId === "function") {
-        const v = anySc.getSvcconfigId(slug);
-        return typeof v === "string" ? v : null;
+    getSvcconfigId(slug: string, version: number): string | null {
+      const s = (slug ?? "").toLowerCase();
+
+      if (!Number.isFinite(version) || version <= 0) {
+        log.error(
+          { component: "SvcconfigResolver", slug: s, version },
+          "***ERROR*** invalid version"
+        );
+        return null;
       }
-      if (typeof anySc.getId === "function") {
-        const v = anySc.getId(slug);
-        return typeof v === "string" ? v : null;
+
+      const rec = (sc as any).getRecord?.(s, version);
+      if (!rec) {
+        log.warn(
+          { component: "SvcconfigResolver", slug: s, version },
+          "***WARN*** missing svcconfig record for slug@version"
+        );
+        return null;
       }
-      // 2) Lookup record → pull id field
-      const rec =
-        (typeof anySc.get === "function" && anySc.get(slug)) ||
-        (typeof anySc.findBySlug === "function" && anySc.findBySlug(slug)) ||
-        null;
-      const id =
-        rec?.svcconfigId ??
-        rec?._id ??
-        rec?.id ??
-        (typeof anySc.id === "function" ? anySc.id(slug) : null);
-      return typeof id === "string" ? id : null;
+
+      const id = unwrapId((rec as any)?._id); // ← use contract _id
+      if (!id) {
+        log.error(
+          {
+            component: "SvcconfigResolver",
+            slug: s,
+            version,
+            haveKeys: Object.keys(rec || {}),
+            idType: typeof (rec as any)?._id,
+          },
+          "***ERROR*** ServiceConfigRecord missing usable _id (contract breach)"
+        );
+        return null;
+      }
+
+      return id;
     },
   };
 }
 
+function unwrapId(idLike: unknown): string | null {
+  if (!idLike) return null;
+  if (typeof idLike === "string") return idLike;
+  if (typeof idLike === "object") {
+    const o = idLike as any;
+    if (typeof o.$oid === "string") return o.$oid; // Mongo-ish shapes
+    if (typeof o._id === "string") return o._id;
+    if (typeof o.id === "string") return o.id;
+  }
+  return null;
+}
 export class GatewayApp extends AppBase {
   private svcConfig?: SvcConfig;
 
@@ -179,8 +216,11 @@ export class GatewayApp extends AppBase {
       "route_policy_gate_mount"
     );
 
-    // Adapter makes SvcConfig satisfy the resolver interface
-    const resolver = svcconfigResolverAdapter(sc);
+    // Minimal, single-concern resolver (no drift)
+    const resolver = svcconfigResolverAdapter(
+      sc,
+      this.log.bind({ component: "SvcResolver" })
+    );
 
     this.app.use(
       routePolicyGate({

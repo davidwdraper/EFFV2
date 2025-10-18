@@ -1,11 +1,12 @@
 {
-  "savedAt": "2025-10-18T23:28:58.274Z",
+  "savedAt": "2025-10-18T23:39:27.938Z",
   "meta": {
     "host": "US_C02C96F9MD6T",
     "source": "facilitator"
   },
   "mirror": {
     "audit@1": {
+      "_id": "68ce2847208846c04ae8d7d6",
       "slug": "audit",
       "version": 1,
       "enabled": true,
@@ -20,6 +21,7 @@
       "notes": "Audit service"
     },
     "log@1": {
+      "_id": "68ce2847208846c04ae8d7d7",
       "slug": "log",
       "version": 1,
       "enabled": true,
@@ -34,6 +36,7 @@
       "notes": "Log service (required by gateway telemetry)"
     },
     "gateway@1": {
+      "_id": "68d71758d4004738868cf48f",
       "slug": "gateway",
       "version": 1,
       "enabled": true,
@@ -48,6 +51,7 @@
       "notes": "Gateway service config"
     },
     "auth@1": {
+      "_id": "68d71758d4004738868cf494",
       "slug": "auth",
       "version": 1,
       "enabled": true,
@@ -62,6 +66,7 @@
       "notes": "Auth service"
     },
     "user@1": {
+      "_id": "68d71758d4004738868cf497",
       "slug": "user",
       "version": 1,
       "enabled": true,
@@ -76,6 +81,7 @@
       "notes": "User service"
     },
     "act@1": {
+      "_id": "68d71758d4004738868cf49a",
       "slug": "act",
       "version": 1,
       "enabled": true,
@@ -90,6 +96,7 @@
       "notes": "Act service"
     },
     "geo@1": {
+      "_id": "68d71758d4004738868cf49d",
       "slug": "geo",
       "version": 1,
       "enabled": true,
@@ -104,6 +111,7 @@
       "notes": "Geo service"
     },
     "svcfacilitator@1": {
+      "_id": "68e587f60702699ccb9588fe",
       "slug": "svcfacilitator",
       "version": 1,
       "enabled": true,

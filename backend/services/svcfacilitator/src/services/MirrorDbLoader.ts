@@ -18,9 +18,10 @@
  * Invariants:
  * - No console.* — structured logs only.
  * - No special-casing svcfacilitator — it’s treated like any other service.
+ * - _id is preserved as a plain string in the mirror payload for downstream lookups (ADR-0032).
  */
 
-import { MongoClient, type Document } from "mongodb";
+import { MongoClient, type Document, ObjectId } from "mongodb";
 import { getLogger } from "@nv/shared/logger/Logger";
 import {
   ServiceConfigRecord,
@@ -93,7 +94,8 @@ export class MirrorDbLoader {
       );
 
       const coll = client.db(this.dbName).collection<Document>(this.collName);
-      const docs = await coll.find({}).project({ _id: 0, __v: 0 }).toArray();
+      // Preserve _id for downstream routePolicyGate (ADR-0032)
+      const docs = await coll.find({}).project({ __v: 0 }).toArray();
 
       const rawCount = docs?.length ?? 0;
       if (!docs || rawCount === 0) {
@@ -107,7 +109,6 @@ export class MirrorDbLoader {
       const errors: Array<{ key: string; error: string }> = [];
 
       for (const d of docs) {
-        // Attempt to form a key early for better error logs; may be "<bad-key>".
         const slug = String((d as any)?.slug || "")
           .trim()
           .toLowerCase();
@@ -116,8 +117,23 @@ export class MirrorDbLoader {
           slug && Number.isFinite(v) && v >= 1 ? svcKey(slug, v) : "<bad-key>";
 
         try {
-          const rec = ServiceConfigRecord.parse(d).toJSON();
-          mirror[svcKey(rec.slug, rec.version)] = rec;
+          // Normalize _id → string form if ObjectId or {$oid}
+          const rawId = (d as any)?._id;
+          let id: string | undefined;
+          if (rawId instanceof ObjectId) {
+            id = rawId.toHexString();
+          } else if (rawId && typeof rawId === "object" && "$oid" in rawId) {
+            id = String((rawId as any).$oid);
+          } else if (typeof rawId === "string") {
+            id = rawId;
+          }
+
+          const parsed = ServiceConfigRecord.parse({
+            ...d,
+            ...(id ? { _id: id } : {}),
+          }).toJSON();
+
+          mirror[svcKey(parsed.slug, parsed.version)] = parsed;
         } catch (e) {
           const err = String(e);
           errors.push({ key, error: err });

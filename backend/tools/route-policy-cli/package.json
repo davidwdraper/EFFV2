@@ -1,0 +1,19 @@
+{
+  "name": "route-policy-cli",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "NowVibin CLI to manage routePolicy records via facilitator",
+  "bin": {
+    "route-policy-cli": "./dist/route-policy-cli.js"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "start": "ts-node route-policy-cli.ts",
+    "run": "node dist/route-policy-cli.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@types/node": "^22.8.0"
+  }
+}

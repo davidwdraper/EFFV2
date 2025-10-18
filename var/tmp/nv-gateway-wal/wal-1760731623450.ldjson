@@ -1,0 +1,2 @@
+{"appendedAt":1760731623450,"blob":{"meta":{"service":"gateway","requestId":"smoke-014-1760731623","ts":1760731623450},"blob":{"phase":"begin","target":{"slug":"auth","version":1,"route":"create","method":"PUT"}}}}
+{"appendedAt":1760731623560,"blob":{"meta":{"service":"gateway","requestId":"smoke-014-1760731623","ts":1760731623560},"blob":{"phase":"end","target":{"slug":"auth","version":1,"route":"create","method":"PUT"},"status":"ok","httpCode":200}}}

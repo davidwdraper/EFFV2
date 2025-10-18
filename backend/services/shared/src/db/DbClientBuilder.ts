@@ -46,3 +46,6 @@ export function createDbClientFromEnv(opts?: { prefix?: string }): DbClient {
 
   return new DbClient(factory, { uri, dbName });
 }
+
+// Re-export core types so builders can be used as single import source
+export { DbClient } from "./DbClient";

@@ -4,6 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
+ *   - ADR-0033 (Internal-Only Services & S2S Verification Defaults)
  *
  * Purpose:
  * - Canonical OO contract for service-config (svcconfig) records and mirrors.
@@ -11,6 +12,7 @@
  *
  * Behavioral notes:
  * - Mirror/caches keyed by "<slug>@<version>" (lowercase slug).
+ * - `internalOnly === true` services MUST be excluded from the gateway mirror (never proxyable).
  * - If `exposeHealth === false`, gateway SHOULD 405 health endpoints before proxy.
  * - `etag` is an opaque correlation token; gateway injects/forwards it end-to-end.
  * - Outside production, baseUrl MUST include an explicit port to avoid drift (fail-fast).
@@ -26,6 +28,7 @@ export type ServiceConfigRecordJSON = {
   version: number; // int >= 1
   enabled: boolean;
   allowProxy: boolean;
+  internalOnly: boolean; // ← ADR-0033: true => exclude from gateway mirror
   baseUrl: string; // e.g., "http://127.0.0.1:4010"
   outboundApiPrefix: string; // e.g., "/api"
   configRevision: number; // int >= 1
@@ -103,6 +106,7 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
   public readonly version: number;
   public readonly enabled: boolean;
   public readonly allowProxy: boolean;
+  public readonly internalOnly: boolean; // ← ADR-0033
   public readonly baseUrl: string;
   public readonly outboundApiPrefix: string;
   public readonly configRevision: number;
@@ -142,9 +146,14 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
     }
     const version = versionRaw as number;
 
-    // enabled / allowProxy / exposeHealth
-    for (const f of ["enabled", "allowProxy", "exposeHealth"] as const) {
-      if (typeof obj[f] !== "boolean")
+    // enabled / allowProxy / internalOnly / exposeHealth
+    for (const f of [
+      "enabled",
+      "allowProxy",
+      "internalOnly",
+      "exposeHealth",
+    ] as const) {
+      if (typeof (obj as any)[f] !== "boolean")
         throw new Error(`${f}: expected boolean`);
     }
 
@@ -201,6 +210,7 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
     this.version = version;
     this.enabled = obj["enabled"] as boolean;
     this.allowProxy = obj["allowProxy"] as boolean;
+    this.internalOnly = obj["internalOnly"] as boolean; // ← required boolean
     this.baseUrl = baseUrl;
     this.outboundApiPrefix = outboundApiPrefix;
     this.configRevision = configRevision as number;
@@ -249,6 +259,7 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
       version: this.version,
       enabled: this.enabled,
       allowProxy: this.allowProxy,
+      internalOnly: this.internalOnly, // ← persist in JSON
       baseUrl: this.baseUrl,
       outboundApiPrefix: this.outboundApiPrefix,
       configRevision: this.configRevision,

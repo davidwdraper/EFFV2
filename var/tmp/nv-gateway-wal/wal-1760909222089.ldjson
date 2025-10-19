@@ -1,0 +1,3 @@
+{"appendedAt":1760909222184,"blob":{"meta":{"service":"gateway","requestId":"853fc5a1-311d-469b-9829-fd1a3fe4c9c6","ts":1760909222184},"blob":{"phase":"end","target":{"slug":"auth","version":1,"route":"create","method":"PUT"},"status":"ok","httpCode":200}}}
+{"appendedAt":1760909224149,"blob":{"meta":{"service":"gateway","requestId":"smoke-014-1760909224","ts":1760909224149},"blob":{"phase":"begin","target":{"slug":"auth","version":1,"route":"create","method":"PUT"}}}}
+{"appendedAt":1760909224216,"blob":{"meta":{"service":"gateway","requestId":"smoke-014-1760909224","ts":1760909224216},"blob":{"phase":"end","target":{"slug":"auth","version":1,"route":"create","method":"PUT"},"status":"ok","httpCode":200}}}

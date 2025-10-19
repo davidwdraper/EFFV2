@@ -3,9 +3,12 @@
  * Docs:
  * - SOP: Gateway keeps a Last-Known-Good (LKG) svcconfig mirror to survive facilitator outages.
  * - ADR-0012: Gateway SvcConfig (contract + LKG fallback)
+ * - ADR-0033: Internal-Only Services — gateway LKG stores the gateway-filtered mirror (no internalOnly entries).
  *
  * Purpose:
  * - Gateway-specific LKG store with explicit env resolution, path logging, and safe R/W.
+ * - NOTE: This file does NOT apply additional filtering; the caller (SvcConfig) must persist the
+ *   already gateway-filtered mirror so LKG never contains `internalOnly:true` entries.
  *
  * Env precedence (service-local overrides root; final override is ENV_FILE-based loader):
  * - 1) GATEWAY_SVCCONFIG_LKG_PATH
@@ -16,7 +19,7 @@
  *   "savedAt": "<ISO>",
  *   "meta": { ... optional },
  *   "mirror": {
- *     "<slug>@<version>": { ...ServiceConfigRecordJSON }
+ *     "<slug>@<version>": { ...ServiceConfigRecordJSON } // gateway-filtered
  *   }
  * }
  */
@@ -50,7 +53,7 @@ function normalizeMirror(input: unknown): Mirror {
   }
   const out: Mirror = {};
   for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
-    const rec = new ServiceConfigRecord(v).toJSON();
+    const rec = new ServiceConfigRecord(v).toJSON(); // enforce presence of internalOnly, etc. (ADR-0033)
     const key = svcKey(rec.slug, rec.version);
     if (k !== key) {
       throw new Error(
@@ -66,6 +69,12 @@ function validateMirror(m: Mirror): void {
   for (const [k, rec] of Object.entries(m)) {
     if (!/^https?:\/\//.test(rec.baseUrl)) {
       throw new Error(`mirror invalid baseUrl for ${k}`);
+    }
+    // LKG for gateway must already be filtered; enforce that here defensively.
+    if (rec.internalOnly === true) {
+      throw new Error(
+        `mirror contains internalOnly entry in gateway LKG: ${k} (invalid snapshot)`
+      );
     }
   }
 }

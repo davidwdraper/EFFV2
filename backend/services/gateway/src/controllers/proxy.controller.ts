@@ -7,6 +7,7 @@
  *   - ADR-0003 (Gateway pulls svc map from svcfacilitator)
  *   - ADR-0006 (Gateway Edge Logging — pre-audit, toggleable)
  *   - ADR-0013 (Versioned Health — local, never proxied)
+ *   - ADR-0033 (Internal-Only Services & health resolve fallback)
  *
  * Purpose:
  * - Thin controller for gateway proxying. Validates path, resolves upstream via SvcConfig,
@@ -23,6 +24,7 @@ import https from "node:https";
 import crypto from "node:crypto";
 import { UrlHelper } from "@nv/shared/http/UrlHelper";
 import type { SvcConfig } from "../services/svcconfig/SvcConfig";
+import { healthResolveTarget } from "../proxy/health/healthResolveTarget";
 
 const SERVICE_NAME = (process.env.SVC_NAME || "gateway").trim() || "gateway";
 const UPSTREAM_TIMEOUT_MS = 8000;
@@ -80,11 +82,16 @@ function hasParsedBody(req: Request): req is Request & { body: unknown } {
   );
 }
 
+function isHealthSubpath(subpath: string): boolean {
+  const norm = subpath.replace(/\/+$/, "");
+  return /^\/health(?:\/[A-Za-z0-9_-]+)?$/.test(norm);
+}
+
 export class ProxyController {
   constructor(private readonly svccfg: SvcConfig) {}
 
   /** Handles ANY /api/:slug/v:version/* request except /api/gateway/... */
-  public handle = (req: Request, res: Response, _next: NextFunction) => {
+  public handle = async (req: Request, res: Response, _next: NextFunction) => {
     const originalUrl = req.originalUrl || req.url || "";
 
     // Never proxy Gateway’s own endpoints
@@ -120,8 +127,12 @@ export class ProxyController {
       });
     }
 
-    // Resolve upstream
-    let baseUrl: string;
+    // ───────────────────────────────────────────────────────────────────────
+    // Resolve upstream baseUrl via mirror; if missing, gate strictly to health-only fallback.
+    // ───────────────────────────────────────────────────────────────────────
+    let baseUrl: string | null = null;
+    let overridePort: number | null = null;
+
     try {
       baseUrl = this.svccfg.getUrlFromSlug(slug, version);
       if (typeof baseUrl !== "string" || !/^https?:\/\//i.test(baseUrl)) {
@@ -130,32 +141,58 @@ export class ProxyController {
         );
       }
     } catch (e: any) {
-      return res.status(502).json({
-        ok: false,
-        service: SERVICE_NAME,
-        data: { status: "bad_gateway", detail: String(e?.message || e) },
-      });
+      // Mirror miss (e.g., internalOnly). ONLY allow /health or /health/<token> fallback.
+      let isHealth = false;
+      try {
+        const addr = UrlHelper.parseApiPath(originalUrl);
+        isHealth = isHealthSubpath(addr.subpath || "/");
+      } catch {
+        isHealth = false;
+      }
+
+      if (!isHealth) {
+        // Do NOT attempt fallback for non-health paths. Hard-gate the exposure.
+        return res.status(404).json({
+          ok: false,
+          service: SERVICE_NAME,
+          data: {
+            status: "not_found",
+            detail:
+              "target not in gateway mirror (internal-only or unknown) and not a health check",
+          },
+        });
+      }
+
+      // Health-only facilitator resolve — returns { baseUrl, port }
+      const fallback = await healthResolveTarget(originalUrl, req.method);
+      if (!fallback) {
+        return res.status(502).json({
+          ok: false,
+          service: SERVICE_NAME,
+          data: { status: "bad_gateway", detail: String(e?.message || e) },
+        });
+      }
+      baseUrl = fallback.baseUrl;
+      overridePort = fallback.port;
     }
 
     // Compose outbound URL
     let outboundUrl: string;
     try {
+      // Prefer overridePort (health fallback); otherwise svcconfig-derived port or scheme default.
       const targetPort =
+        overridePort ??
         (() => {
           try {
             return this.svccfg.getPortFromSlug(slug, version);
           } catch {
-            const u = new URL(baseUrl);
+            const u = new URL(baseUrl!);
             return u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
           }
-        })() ??
-        (() => {
-          const u = new URL(baseUrl);
-          return u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
         })();
 
       outboundUrl = UrlHelper.buildOutboundRequestUrl(
-        baseUrl,
+        baseUrl!,
         targetPort,
         originalUrl
       );

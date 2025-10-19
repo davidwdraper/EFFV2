@@ -1,31 +1,18 @@
 {
-  "savedAt": "2025-10-19T00:25:33.178Z",
+  "savedAt": "2025-10-19T23:05:24.763Z",
   "meta": {
     "host": "US_C02C96F9MD6T",
-    "source": "facilitator"
+    "source": "facilitator",
+    "excludedInternalOnlyCount": 2
   },
   "mirror": {
-    "audit@1": {
-      "_id": "68ce2847208846c04ae8d7d6",
-      "slug": "audit",
-      "version": 1,
-      "enabled": true,
-      "allowProxy": true,
-      "baseUrl": "http://127.0.0.1:4050",
-      "outboundApiPrefix": "/api",
-      "configRevision": 1,
-      "etag": "ofFSp6bDDkKF5d27e72SOxpS_-K1EJkGcRoP29wYRIg",
-      "exposeHealth": true,
-      "updatedAt": "2025-09-27T07:21:05.206Z",
-      "updatedBy": "seed-script",
-      "notes": "Audit service"
-    },
     "log@1": {
       "_id": "68ce2847208846c04ae8d7d7",
       "slug": "log",
       "version": 1,
       "enabled": true,
       "allowProxy": true,
+      "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4006",
       "outboundApiPrefix": "/api",
       "configRevision": 1,
@@ -41,6 +28,7 @@
       "version": 1,
       "enabled": true,
       "allowProxy": true,
+      "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4000",
       "outboundApiPrefix": "/api",
       "configRevision": 1,
@@ -56,6 +44,7 @@
       "version": 1,
       "enabled": true,
       "allowProxy": true,
+      "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4010",
       "outboundApiPrefix": "/api",
       "configRevision": 1,
@@ -71,6 +60,7 @@
       "version": 1,
       "enabled": true,
       "allowProxy": true,
+      "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4020",
       "outboundApiPrefix": "/api",
       "configRevision": 1,
@@ -86,6 +76,7 @@
       "version": 1,
       "enabled": true,
       "allowProxy": true,
+      "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4030",
       "outboundApiPrefix": "/api",
       "configRevision": 1,
@@ -101,6 +92,7 @@
       "version": 1,
       "enabled": true,
       "allowProxy": true,
+      "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4040",
       "outboundApiPrefix": "/api",
       "configRevision": 1,
@@ -109,21 +101,6 @@
       "updatedAt": "2025-09-27T07:21:05.204Z",
       "updatedBy": "seed-script",
       "notes": "Geo service"
-    },
-    "svcfacilitator@1": {
-      "_id": "68e587f60702699ccb9588fe",
-      "slug": "svcfacilitator",
-      "version": 1,
-      "enabled": true,
-      "allowProxy": true,
-      "baseUrl": "http://127.0.0.1:4015",
-      "outboundApiPrefix": "/api",
-      "configRevision": 1,
-      "etag": "manual-seed-2025-10-07",
-      "exposeHealth": true,
-      "updatedAt": "2025-10-07T00:00:00.000Z",
-      "updatedBy": "manual-seed",
-      "notes": "SvcFacilitator (dev)"
     }
   }
 }

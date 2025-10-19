@@ -5,16 +5,18 @@
  * - ADR0001: Gateway-Embedded SvcConfig (mirror)
  * - ADR0003: Gateway <-> SvcFacilitator (mirror publish/consume)
  * - ADR-0012: Gateway SvcConfig (contract + LKG fallback via LkgStore)
+ * - ADR-0033: Internal-Only Services — gateway must EXCLUDE internalOnly entries
  *
  * Purpose
  * - Maintain a contract-validated in-memory mirror keyed by <slug>@<version>.
  * - Load from svcfacilitator when available; otherwise fall back to LKG JSON.
  * - Provide strict lookups for URL/port/record; no silent v1 fallback.
+ * - Guarantee: Gateway mirror NEVER contains `internalOnly:true` services.
  *
  * Env (read)
  * - SVCFACILITATOR_BASE_URL        e.g., http://127.0.0.1:4001
  * - SVCFACILITATOR_CONFIG_PATH     default: /api/svcfacilitator/v1/svcconfig
- * - GATEWAY_SVCCONFIG_LKG_PATH     optional JSON path for LKG snapshot
+ * - GATEWAY_SVCCONFIG_LKG_PATH     optional JSON path for LKG snapshot (gateway-filtered)
  */
 
 import assert from "assert";
@@ -48,7 +50,7 @@ export class SvcConfig {
    * Load/refresh the mirror from svcfacilitator.
    * - Tries facilitator with bounded retry.
    * - On failure, tries LKG JSON (if present).
-   * - Persists a fresh LKG snapshot when facilitator succeeds.
+   * - Persists a fresh LKG snapshot (already gateway-filtered) when facilitator succeeds.
    */
   public async load(): Promise<void> {
     this.entries.clear();
@@ -62,7 +64,7 @@ export class SvcConfig {
     // If facilitator base is missing, attempt LKG fallback (no hard exit here).
     if (!base) {
       this.log.warn("SVCFACILITATOR_BASE_URL missing; attempting LKG fallback");
-      this.loadFromLkgOrThrow();
+      this.loadFromLkgOrThrow(); // LKG must already be gateway-filtered
       return;
     }
 
@@ -108,11 +110,24 @@ export class SvcConfig {
           throw new Error("Unexpected facilitator payload type");
         }
 
-        this.ingest(normalized);
+        // Apply gateway filter: drop internalOnly services (ADR-0033)
+        const { filtered, excluded } = this.filterForGateway(normalized);
+        if (excluded.length > 0) {
+          this.log.warn(
+            `mirror_gateway_filter_excluded internalOnly=${
+              excluded.length
+            } examples=${excluded.slice(0, 8).join(",")}`
+          );
+        }
+
+        this.ingest(filtered);
         this.validateAll();
 
-        // Best-effort LKG save
-        this.lkg.saveMirror(normalized, { source: "facilitator" });
+        // Best-effort LKG save (gateway-filtered snapshot)
+        this.lkg.saveMirror(filtered, {
+          source: "facilitator",
+          excludedInternalOnlyCount: excluded.length,
+        });
 
         this.log.info(
           `facilitator_load_success - entries=${this.entries.size}`
@@ -138,7 +153,7 @@ export class SvcConfig {
         lastErr
       )}`
     );
-    this.loadFromLkgOrThrow();
+    this.loadFromLkgOrThrow(); // LKG should already be filtered; we still validate
   }
 
   /** Ensure svcconfig is loaded; loads from facilitator if empty. */
@@ -203,6 +218,12 @@ export class SvcConfig {
       if (k !== svcKey(rec.slug, rec.version)) {
         throw new Error(`mirror key mismatch for '${k}'`);
       }
+      // Safety: gateway mirror must not contain internalOnly entries (should have been filtered already)
+      if (rec.internalOnly === true) {
+        throw new Error(
+          `gateway ingest received internalOnly entry '${k}' (filter failure)`
+        );
+      }
       this.entries.set(k, rec);
     }
   }
@@ -229,6 +250,23 @@ export class SvcConfig {
     return out;
   }
 
+  /** Apply gateway policy: drop internalOnly entries; return filtered copy + list of excluded keys. */
+  private filterForGateway(m: Mirror): {
+    filtered: Mirror;
+    excluded: string[];
+  } {
+    const filtered: Mirror = {};
+    const excluded: string[] = [];
+    for (const [k, rec] of Object.entries(m)) {
+      if (rec.internalOnly === true) {
+        excluded.push(k);
+        continue;
+      }
+      filtered[k] = rec;
+    }
+    return { filtered, excluded };
+  }
+
   private validateAll(): void {
     if (this.entries.size === 0) {
       throw new Error("mirror is empty after facilitator/LKG load");
@@ -246,6 +284,12 @@ export class SvcConfig {
       if (!(e.enabled === true || e.enabled === false)) {
         throw new Error(`[svcconfig] enabled not boolean: ${key}`);
       }
+      if (e.internalOnly === true) {
+        // Should be impossible post-filter; keep the invariant explicit.
+        throw new Error(
+          `[svcconfig] gateway mirror contains internalOnly entry: ${key}`
+        );
+      }
     }
   }
 
@@ -261,14 +305,23 @@ export class SvcConfig {
       this.log.error("no_facilitator_no_lkg - cannot bootstrap svcconfig");
       throw new Error("svcconfig bootstrap failed (no facilitator and no LKG)");
     }
-    this.ingest(snap);
+    // Defensive: LKG SHOULD already be filtered. Re-apply filter and assert invariant.
+    const { filtered, excluded } = this.filterForGateway(snap);
+    if (excluded.length > 0) {
+      this.log.warn(
+        `lkg_contains_internal_only - filtered_out=${
+          excluded.length
+        } examples=${excluded.slice(0, 8).join(",")}`
+      );
+    }
+    this.ingest(filtered);
     this.validateAll();
     this.log.info(`lkg_load_success - entries=${this.entries.size}`);
   }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Singleton (exported here to keep imports simple & avoid extra barrels)
+/** Singleton (exported here to keep imports simple & avoid extra barrels) */
 // ────────────────────────────────────────────────────────────────────────────
 
 let _instance: SvcConfig | null = null;

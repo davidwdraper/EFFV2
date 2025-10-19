@@ -10,7 +10,7 @@ export { createDbClientFromEnv } from "./db/DbClientBuilder";
 export * from "./env";
 
 // Contracts
-export * from "./contracts/ServiceConfig";
+export * from "./contracts/svcconfig.contract";
 
 // Health
 export type {

@@ -1,0 +1,4 @@
+{"appendedAt":1760915156431,"blob":{"meta":{"service":"gateway","requestId":"16f3e193-d525-4acd-bbff-3b7e2ce8555c","ts":1760915156431},"blob":{"phase":"begin","target":{"slug":"auth","version":1,"route":"create","method":"PUT"}}}}
+{"appendedAt":1760915156523,"blob":{"meta":{"service":"gateway","requestId":"16f3e193-d525-4acd-bbff-3b7e2ce8555c","ts":1760915156523},"blob":{"phase":"end","target":{"slug":"auth","version":1,"route":"create","method":"PUT"},"status":"ok","httpCode":200}}}
+{"appendedAt":1760915158450,"blob":{"meta":{"service":"gateway","requestId":"smoke-014-1760915158","ts":1760915158450},"blob":{"phase":"begin","target":{"slug":"auth","version":1,"route":"create","method":"PUT"}}}}
+{"appendedAt":1760915158484,"blob":{"meta":{"service":"gateway","requestId":"smoke-014-1760915158","ts":1760915158484},"blob":{"phase":"end","target":{"slug":"auth","version":1,"route":"create","method":"PUT"},"status":"ok","httpCode":200}}}

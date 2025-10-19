@@ -1,4 +1,4 @@
-// backend/services/gateway/src/middleware/routePolicyGate.ts
+// backend/services/shared/src/middleware/policy/routePolicyGate.ts
 /**
  * NowVibin (NV)
  * Docs:
@@ -8,8 +8,8 @@
  * - ADR-0029 — Contract-ID + BodyHandler pipeline
  *
  * Purpose:
- * - Gateway edge middleware that enforces route-level access defaults
- *   and provides minAccessLevel to the token validation gate.
+ * - Shared middleware that enforces route-level access defaults
+ *   and provides minAccessLevel metadata to downstream token validation gates.
  *
  * Rules:
  *  1) TTL cache on (svcconfigId, method, path); negative-cache too.
@@ -20,13 +20,14 @@
  *  6) JWT & policy → allow; next gate enforces userType ≥ minAccessLevel.
  *
  * Invariants:
- * - Environment invariance: no literals; all URLs/TTL are DI’d via opts.
+ * - Environment invariance: all URLs/TTLs injected via opts.
  * - Single concern: discovery + basic gate only.
  * - Cache key is version-agnostic; facilitator GET may require version.
+ * - Health routes automatically bypass enforcement.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import type { IBoundLogger } from "@nv/shared/logger/Logger"; // canonical logger type
+import type { IBoundLogger } from "@nv/shared/logger/Logger";
 
 export interface ISvcconfigResolver {
   /** Returns the parent svcconfig ObjectId (24-hex string) for a given slug@version, or null if unknown. */
@@ -39,8 +40,6 @@ type CacheEntry =
   | { found: true; minAccessLevel: number; exp: number }
   | { found: false; exp: number };
 
-type BindLog = (ctx: Record<string, unknown>) => IBoundLogger;
-
 declare global {
   namespace Express {
     interface Request {
@@ -50,35 +49,49 @@ declare global {
   }
 }
 
-export type RoutePolicyGateOpts = {
-  bindLog: BindLog;
+/** Options injected from AppBase / service bootstrap. */
+export interface RoutePolicyGateOpts {
+  /** Bound structured logger (ADR-0031). */
+  logger: IBoundLogger;
+  /** Facilitator base URL (e.g., from SVCFACILITATOR_BASE_URL). */
   facilitatorBaseUrl: string;
+  /** Route-policy cache TTL in ms (default ≈5000). */
   ttlMs: number;
+  /** Resolver used to map slug@version → svcconfigId. */
   resolver: ISvcconfigResolver;
+  /** Optional fetch timeout (ms, default 5000). */
   fetchTimeoutMs?: number;
-};
+  /** Optional service name for log context. */
+  serviceName?: string;
+}
 
 export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
   const {
-    bindLog,
+    logger,
     facilitatorBaseUrl,
     ttlMs,
     resolver,
     fetchTimeoutMs = 5000,
+    serviceName = "unknown",
   } = opts;
 
-  if (typeof bindLog !== "function")
-    throw new Error("[routePolicyGate] bindLog required");
+  if (!logger) throw new Error("[routePolicyGate] logger required");
   if (!facilitatorBaseUrl?.trim())
     throw new Error("[routePolicyGate] facilitatorBaseUrl required");
   if (!Number.isFinite(ttlMs) || ttlMs <= 0)
     throw new Error("[routePolicyGate] ttlMs must be > 0");
 
-  const log = bindLog({ service: "gateway", component: "RoutePolicyGate" });
+  const log = logger.bind({
+    service: serviceName,
+    component: "RoutePolicyGate",
+  });
   const cache = new Map<string, CacheEntry>();
 
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
+      // Always bypass health endpoints
+      if (req.path.includes("/health")) return next();
+
       log.debug(
         { url: req.originalUrl, method: req.method },
         "route_policy_enter"
@@ -86,7 +99,7 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
 
       const { slug, version, method, path } = parseApiRequest(req);
 
-      // Resolve svcconfigId using slug@version (mirror is versioned)
+      // Resolve svcconfigId using slug@version
       const svcconfigId = resolver.getSvcconfigId(slug, version);
       if (!svcconfigId) {
         attachPolicy(req, { found: false, min: 0 });
@@ -123,7 +136,6 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
 
       const key = cacheKey(svcconfigId, method, path);
       let entry = cache.get(key);
-
       if (!entry || isExpired(entry)) {
         entry = await fetchPolicy(facilitatorBaseUrl, {
           svcconfigId,
@@ -199,9 +211,7 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
   };
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Internals
-// ────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────── Internals ────────────────────────────────
 
 function cacheKey(
   svcconfigId: string,

@@ -1,17 +1,21 @@
 // backend/services/user/src/app.ts
 /**
+ * NowVibin (NV)
+ * File: backend/services/user/src/app.ts
+ *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0013 (Versioned Health Envelope & Routes)
- *   - ADR-0014 (Base Hierarchy — ServiceEntrypoint → AppBase → ServiceBase)
- *   - ADR-0019 (Class Routers via RouterBase)
- *   - adr0021-user-opaque-password-hash
+ *   - ADR-0013 — Versioned Health Envelope & Routes
+ *   - ADR-0014 — Base Hierarchy (Entrypoint → AppBase → ServiceBase)
+ *   - ADR-0019 — Class Routers via RouterBase
+ *   - ADR-0021 — User Opaque Password Hash
  *
  * Purpose:
- * - User service on AppBase.
- * - Health/ordering/middleware sequencing inherited from AppBase.
- * - Versioned APIs mounted under /api/<SVC_NAME>/v1.
+ * - Orchestrates the User service runtime.
+ * - Inherits full lifecycle and middleware sequencing from AppBase:
+ *     onBoot → health → preRouting → security → parsers → routes → postRouting
+ * - Adds S2S envelope unwrapping between JSON parser and route mounting.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
@@ -27,23 +31,24 @@ export class UserApp extends AppBase {
     super({ service: SERVICE });
   }
 
-  /** Versioned health base path (required per SOP). */
+  /** Versioned health base path (mounted automatically by AppBase). */
   protected healthBasePath(): string | null {
     return V1_BASE;
   }
 
   /**
-   * Parsers: workers get JSON by default via AppBase; we also unwrap S2S envelopes here.
-   * Keep gateway-specific parsing out of here (gateway streams bodies).
+   * Parser chain:
+   * - JSON body parsing (from AppBase)
+   * - S2S envelope unwrapping → DTO-ready bodies for handlers
    */
   protected mountParsers(): void {
     super.mountParsers(); // express.json()
-    this.app.use(unwrapEnvelope()); // flatten S2S envelopes → DTOs
+    this.app.use(unwrapEnvelope());
   }
 
-  /** Routes mounted after base pre/security/parsers. Keep routes one-liners. */
+  /** Versioned routes — keep one-liners for clarity. */
   protected mountRoutes(): void {
-    this.app.use(V1_BASE, new UserS2SRouter().router()); // S2S endpoints
-    this.app.use(V1_BASE, new UsersCrudRouter().router()); // CRUD endpoints
+    this.app.use(V1_BASE, new UserS2SRouter().router()); // internal S2S routes
+    this.app.use(V1_BASE, new UsersCrudRouter().router()); // CRUD routes
   }
 }

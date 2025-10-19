@@ -1,37 +1,39 @@
 // backend/services/auth/src/app.ts
 /**
  * NowVibin (NV)
+ * File: backend/services/auth/src/app.ts
+ *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0013 (Versioned Health Envelope & Routes)
- *   - ADR-0014 (ServiceEntrypoint → AppBase → ServiceBase)
+ *   - ADR-0013 — Versioned Health Envelope & Routes
+ *   - ADR-0014 — Base Hierarchy (Entrypoint → AppBase → ServiceBase)
  *
  * Purpose:
- * - Auth service app class expected by Bootstrap: `new AuthApp()`.
- * - Inherits all `app.use(...)` ordering from AppBase:
- *   health → preRouting → security → parsers (JSON) → routes → postRouting.
- * - Environment-invariant: no host/IP/dev literals; only env vars/config differ.
+ * - Orchestrates the Auth service runtime sequence.
+ * - Inherits lifecycle and middleware order from AppBase:
+ *     onBoot → health → preRouting → security → parsers → routes → postRouting
+ * - Environment-invariant: no literals; all config via env vars.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
 import { AuthRouter } from "./routes/auth.router";
 
-const SERVICE = "auth"; // slug is fixed by SOP (no env overrides)
+const SERVICE_SLUG = "auth";
 
 export class AuthApp extends AppBase {
   constructor() {
-    super({ service: SERVICE });
+    super({ service: SERVICE_SLUG });
   }
 
   /** Versioned health base path (required per SOP). */
   protected healthBasePath(): string | null {
-    return "/api/auth/v1";
+    return `/api/${SERVICE_SLUG}/v1`;
   }
 
-  /** Routes mounted after base pre/security/parsers. Keep routes one-liners. */
+  /** Wire routes; all other middleware order inherited from AppBase. */
   protected mountRoutes(): void {
-    this.app.use("/api/auth/v1", new AuthRouter().router());
+    this.app.use(`/api/${SERVICE_SLUG}/v1`, new AuthRouter().router());
   }
 }
 

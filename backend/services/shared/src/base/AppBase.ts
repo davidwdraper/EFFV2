@@ -6,21 +6,18 @@
  *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
  *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
  *   - ADR-0015 (Structured Logger with bind() Context)
- *   - ADR-0030 (ContractBase & idempotent contract identification)  // lifecycle/order invariant
+ *   - ADR-0030 (ContractBase & idempotent contract identification)
+ *   - ADR-0032 (RoutePolicyGate — version-agnostic enforcement; health bypass)
  *
  * Purpose:
  * - Canonical Express composition for all services.
  * - Centralizes middleware ordering via overridable hooks:
- *   onBoot → health → preRouting → security → parsers → routes → postRouting
+ *   onBoot → health → preRouting → routePolicy → security → parsers → routes → postRouting
  *
- * Invariant (env-invariant, prod-ready):
- * - Routes MUST NOT mount until onBoot() completes. (Fixes async race seen in AuditApp.)
- *
- * Breaking change:
- * - Services must call `await app.boot()` before exposing `app.instance` to a server `listen()`.
- *
- * Notes:
- * - No environment-specific branches. Dev == Prod behavior (URLs/ports aside).
+ * Invariants:
+ * - Health routes mount FIRST — before routePolicyGate or verifyS2S.
+ * - Routes MUST NOT mount until onBoot() completes.
+ * - Environment invariant: Dev == Prod behavior (URLs/ports aside).
  */
 
 import type { Express, Router, Request, Response, NextFunction } from "express";
@@ -28,6 +25,10 @@ import express = require("express");
 import { ServiceBase } from "./ServiceBase";
 import { mountServiceHealth } from "../health/mount";
 import { responseErrorLogger } from "../middleware/response.error.logger";
+import {
+  routePolicyGate,
+  type ISvcconfigResolver,
+} from "../middleware/policy/routePolicyGate";
 
 export abstract class AppBase extends ServiceBase {
   protected readonly app: Express;
@@ -37,7 +38,7 @@ export abstract class AppBase extends ServiceBase {
     super(opts);
     this.app = express();
     this.initApp();
-    // NOTE: Lifecycle is now explicit/async via boot(); constructor does NOT mount.
+    // NOTE: Lifecycle is explicit/async via boot(); constructor does NOT mount.
   }
 
   /** Disable noisy headers; keep this minimal. */
@@ -52,28 +53,31 @@ export abstract class AppBase extends ServiceBase {
   public async boot(): Promise<void> {
     if (this._booted) return;
 
-    // 0) Awaitable boot hook (warm caches, start durable infra, DI wiring, etc.)
+    // 0️⃣ Awaitable boot hook (warm caches, DI wiring, etc.)
     await this.onBoot();
 
-    // 1) Versioned health (mounted first)
+    // 1️⃣ Health — always first (never gated)
     const healthBase = this.healthBasePath();
     if (healthBase) {
       this.mountVersionedHealth(healthBase, { readyCheck: this.readyCheck() });
     }
 
-    // 2) Pre-routing (edge logs, response error logger, etc.)
+    // 2️⃣ Pre-routing (edge logs, response error logger, etc.)
     this.mountPreRouting();
 
-    // 3) Security (verifyS2S, rate limits, etc.)
+    // 3️⃣ RoutePolicyGate (shared, skips health paths)
+    this.mountRoutePolicyGate();
+
+    // 4️⃣ Security (verifyS2S, rate limits, etc.)
     this.mountSecurity();
 
-    // 4) Parsers (workers usually want JSON; gateway may override to none)
+    // 5️⃣ Parsers (workers usually want JSON; gateway may override to none)
     this.mountParsers();
 
-    // 5) Routes (service-specific routes or proxy)
+    // 6️⃣ Routes (service-specific routes or proxy)
     this.mountRoutes();
 
-    // 6) Post-routing (problem handler, sinks, last-ditch error JSON)
+    // 7️⃣ Post-routing (problem handler, sinks, last-ditch error JSON)
     this.mountPostRouting();
 
     this._booted = true;
@@ -84,7 +88,7 @@ export abstract class AppBase extends ServiceBase {
 
   /** One-time, awaitable boot (e.g., start WAL, warm mirrors). Default: no-op. */
   protected async onBoot(): Promise<void> {
-    // Intentionally empty; subclasses may override with async work.
+    // Intentionally empty; subclasses may override.
   }
 
   /** Return the versioned health base path like "/api/<slug>/v1"; return null to skip. */
@@ -100,15 +104,49 @@ export abstract class AppBase extends ServiceBase {
 
   /** Pre-routing middleware (edge logging, response error logger, etc.). */
   protected mountPreRouting(): void {
-    // Shared one-line error logger by default; services may add more (e.g., edge logs).
     this.app.use(responseErrorLogger(this.service));
+  }
+
+  /**
+   * Route-policy gate (shared, skips health paths).
+   * Derived classes may override getSvcconfigResolver() to enable.
+   */
+  protected mountRoutePolicyGate(): void {
+    const resolver = this.getSvcconfigResolver();
+    if (!resolver) {
+      this.log.debug("routePolicyGate skipped (no resolver provided)");
+      return;
+    }
+
+    const facilitatorBaseUrl = process.env.SVCFACILITATOR_BASE_URL;
+    if (!facilitatorBaseUrl) {
+      this.log.warn(
+        "routePolicyGate skipped — SVCFACILITATOR_BASE_URL missing"
+      );
+      return;
+    }
+
+    this.app.use(
+      routePolicyGate({
+        logger: this.log,
+        serviceName: this.service,
+        ttlMs: Number(process.env.ROUTE_POLICY_TTL_MS ?? 5000),
+        facilitatorBaseUrl,
+        resolver,
+      })
+    );
+  }
+
+  /** Optional svcconfig resolver hook (slug@version → _id). Override in services that need routePolicyGate. */
+  protected getSvcconfigResolver(): ISvcconfigResolver | null {
+    return null;
   }
 
   /** Security layer (verifyS2S, CORS, etc.). Default: no-op. */
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   protected mountSecurity(): void {}
 
-  /** Body parsers. Default: JSON for workers. Gateway should override to do nothing. */
+  /** Body parsers. Default: JSON for workers. Gateway may override. */
   protected mountParsers(): void {
     this.app.use(express.json());
   }
@@ -118,11 +156,8 @@ export abstract class AppBase extends ServiceBase {
 
   /** Post-routing error funnel and final JSON handler. Safe for jq/CLI. */
   protected mountPostRouting(): void {
-    // Final JSON error handler (keeps responses structured)
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     this.app.use(
       (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-        // Do not leak error details; upstream should already be logged.
         res
           .status(500)
           .json({ type: "about:blank", title: "Internal Server Error" });
@@ -158,7 +193,6 @@ export abstract class AppBase extends ServiceBase {
   /** Expose the Express instance to the entrypoint (after boot). */
   public get instance(): Express {
     if (!this._booted) {
-      // Fail-fast to prevent race conditions like the Audit WAL case.
       throw new Error(
         `[${this.service}] App not booted. Call and await app.boot() before using instance.`
       );

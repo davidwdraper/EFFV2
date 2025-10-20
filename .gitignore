@@ -163,3 +163,6 @@ appendonly.aof
 # Misc build artifacts
 **/*.map
 *.zip
+
+# WAL files .etc
+*.ldjson

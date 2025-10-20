@@ -1,0 +1,2 @@
+{"appendedAt":1760929621203,"blob":{"meta":{"service":"gateway","requestId":"smoke-021-1760929621","ts":1760929621202},"blob":{"phase":"begin","target":{"slug":"jwks","version":1,"route":"keys","method":"GET"}}}}
+{"appendedAt":1760929621242,"blob":{"meta":{"service":"gateway","requestId":"smoke-021-1760929621","ts":1760929621242},"blob":{"phase":"end","target":{"slug":"jwks","version":1,"route":"keys","method":"GET"},"status":"ok","httpCode":200}}}

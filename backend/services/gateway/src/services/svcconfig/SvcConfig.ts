@@ -113,7 +113,7 @@ export class SvcConfig {
         // Apply gateway filter: drop internalOnly services (ADR-0033)
         const { filtered, excluded } = this.filterForGateway(normalized);
         if (excluded.length > 0) {
-          this.log.warn(
+          this.log.info(
             `mirror_gateway_filter_excluded internalOnly=${
               excluded.length
             } examples=${excluded.slice(0, 8).join(",")}`

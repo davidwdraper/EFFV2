@@ -1,8 +1,8 @@
 {
-  "savedAt": "2025-10-19T23:05:19.556Z",
-  "requestId": "1acdd764-edbf-4c24-adb1-0fc10317d515",
-  "rawCount": 8,
-  "activeCount": 8,
+  "savedAt": "2025-10-20T03:06:40.611Z",
+  "requestId": "91457009-0fcc-4501-a8a6-3dabca9a1e40",
+  "rawCount": 9,
+  "activeCount": 9,
   "invalidCount": 0,
   "mirror": {
     "audit@1": {
@@ -11,7 +11,7 @@
       "version": 1,
       "enabled": true,
       "allowProxy": true,
-      "internalOnly": true,
+      "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4050",
       "outboundApiPrefix": "/api",
       "configRevision": 1,
@@ -132,6 +132,22 @@
       "updatedAt": "2025-10-07T00:00:00.000Z",
       "updatedBy": "manual-seed",
       "notes": "SvcFacilitator (dev)"
+    },
+    "jwks@1": {
+      "_id": "68d71758d4004738868cf48e",
+      "slug": "jwks",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "internalOnly": false,
+      "baseUrl": "http://127.0.0.1:4060",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "_ESjxtjMXpuakX3p7jUEj7822pMPYWOStl6VsHQfe6x",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.204Z",
+      "updatedBy": "David",
+      "notes": "Jwks service"
     }
   }
 }

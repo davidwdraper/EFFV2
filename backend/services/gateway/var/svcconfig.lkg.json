@@ -1,11 +1,27 @@
 {
-  "savedAt": "2025-10-19T23:05:24.763Z",
+  "savedAt": "2025-10-20T03:06:45.894Z",
   "meta": {
     "host": "US_C02C96F9MD6T",
     "source": "facilitator",
-    "excludedInternalOnlyCount": 2
+    "excludedInternalOnlyCount": 1
   },
   "mirror": {
+    "audit@1": {
+      "_id": "68ce2847208846c04ae8d7d6",
+      "slug": "audit",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "internalOnly": false,
+      "baseUrl": "http://127.0.0.1:4050",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "ofFSp6bDDkKF5d27e72SOxpS_-K1EJkGcRoP29wYRIg",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.206Z",
+      "updatedBy": "seed-script",
+      "notes": "Audit service"
+    },
     "log@1": {
       "_id": "68ce2847208846c04ae8d7d7",
       "slug": "log",
@@ -101,6 +117,22 @@
       "updatedAt": "2025-09-27T07:21:05.204Z",
       "updatedBy": "seed-script",
       "notes": "Geo service"
+    },
+    "jwks@1": {
+      "_id": "68d71758d4004738868cf48e",
+      "slug": "jwks",
+      "version": 1,
+      "enabled": true,
+      "allowProxy": true,
+      "internalOnly": false,
+      "baseUrl": "http://127.0.0.1:4060",
+      "outboundApiPrefix": "/api",
+      "configRevision": 1,
+      "etag": "_ESjxtjMXpuakX3p7jUEj7822pMPYWOStl6VsHQfe6x",
+      "exposeHealth": true,
+      "updatedAt": "2025-09-27T07:21:05.204Z",
+      "updatedBy": "David",
+      "notes": "Jwks service"
     }
   }
 }

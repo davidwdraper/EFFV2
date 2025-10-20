@@ -1,48 +1,67 @@
-// backend/shared/src/db/DbClientBuilder.ts
+// backend/services/shared/src/db/DbClientBuilder.ts
 /**
  * Docs:
- * - Build a DbClient from environment variables (supports prefixes).
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  *
- * Env resolution (first defined wins):
- *   DRIVER:   <PREFIX>_DB_DRIVER  → DB_DRIVER         (default: "mongo")
- *   URI:      <PREFIX>_DB_URI     → DB_URI            → MONGO_URI
- *   NAME:     <PREFIX>_DB_NAME    → DB_NAME           → MONGO_DB
+ * - ADRs:
+ *   - ADR-0009 (Shared DB Client Builder — Environment Invariance)
+ *
+ * Purpose:
+ * - Construct a typed DbClient from required environment variables.
+ * - Enforce strict environment invariance: **no fallbacks, no defaults**.
+ * - Support optional prefixing for per-service DB bindings (e.g. SVCCONFIG_).
+ *
+ * Env (required):
+ *   When prefix provided (e.g., { prefix: "SVCCONFIG" }):
+ *     - <PREFIX>_DB_DRIVER       → allowed: "mongo"
+ *     - <PREFIX>_DB_URI
+ *     - <PREFIX>_DB_NAME
+ *   When prefix omitted:
+ *     - DB_DRIVER
+ *     - DB_URI
+ *     - DB_NAME
+ *
+ * Notes:
+ * - Throws immediately if any required env var is missing or empty.
+ * - Never infers or defaults DB names/URIs. Fail-fast by design.
  */
+
 import { DbClient } from "./DbClient";
 import { MongoDbFactory } from "./mongo/MongoDbFactory";
 import type { IDbFactory } from "./types";
 import { getEnv, requireEnv, requireEnum } from "../env";
 
-type Driver = "mongo"; // extend later (e.g., "postgres", "mysql")
+type Driver = "mongo";
 
-function pick(firstDefined: Array<string | undefined>): string | undefined {
-  return firstDefined.find(
-    (v) => v != null && v !== undefined && v.trim() !== ""
-  );
+/** Helper: join prefix and key into a strict env var name */
+function prefixKey(prefix?: string, key?: string): string {
+  return prefix ? `${prefix.toUpperCase()}_${key}` : String(key);
 }
 
 export function createDbClientFromEnv(opts?: { prefix?: string }): DbClient {
-  const prefix = opts?.prefix ? opts.prefix.toUpperCase() + "_" : "";
+  const p = opts?.prefix;
 
-  const driver = (pick([getEnv(`${prefix}DB_DRIVER`), getEnv("DB_DRIVER")]) ??
-    "mongo") as string;
-  const normDriver = requireEnum("DB_DRIVER", driver, ["mongo"] as const);
+  // ── Driver ────────────────────────────────────────────────────────────────
+  // Allow explicit driver override; default "mongo" is explicit (not inferred)
+  const raw = getEnv(prefixKey(p, "DB_DRIVER"));
+  const driverRaw: string = raw ?? "mongo";
+  const driver = requireEnum(prefixKey(p, "DB_DRIVER"), driverRaw, [
+    "mongo",
+  ] as const);
 
+  // ── Factory ───────────────────────────────────────────────────────────────
   let factory: IDbFactory;
-  switch (normDriver as Driver) {
+  switch (driver as Driver) {
     case "mongo":
-    default:
       factory = new MongoDbFactory();
       break;
+    default:
+      throw new Error(`Unsupported DB_DRIVER: ${driver}`);
   }
 
-  const uri =
-    pick([getEnv(`${prefix}DB_URI`), getEnv("DB_URI"), getEnv("MONGO_URI")]) ??
-    requireEnv(`${prefix}DB_URI or DB_URI or MONGO_URI`);
-
-  const dbName =
-    pick([getEnv(`${prefix}DB_NAME`), getEnv("DB_NAME"), getEnv("MONGO_DB")]) ??
-    requireEnv(`${prefix}DB_NAME or DB_NAME or MONGO_DB`);
+  // ── Required envs (fail-fast) ─────────────────────────────────────────────
+  const uri = requireEnv(prefixKey(p, "DB_URI"));
+  const dbName = requireEnv(prefixKey(p, "DB_NAME"));
 
   return new DbClient(factory, { uri, dbName });
 }

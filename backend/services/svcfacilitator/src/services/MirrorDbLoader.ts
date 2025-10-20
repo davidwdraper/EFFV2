@@ -17,10 +17,12 @@
  * - **Include only** records with enabled===true AND internalOnly===false.
  * - Return counts and per-record validation errors for observability.
  *
- * Invariants:
- * - No console.* — structured logs only.
- * - No special-casing svcfacilitator — it’s treated like any other service.
- * - _id is preserved as a plain string in the mirror payload for downstream lookups (ADR-0032).
+ * Environment Invariance:
+ * - No literals, no defaults. Fail-fast if any required ENV is missing.
+ *   Required:
+ *     - SVCCONFIG_MONGO_URI
+ *     - SVCCONFIG_MONGO_DB
+ *     - SVCCONFIG_MONGO_COLLECTION
  */
 
 import { MongoClient, type Document, ObjectId } from "mongodb";
@@ -38,6 +40,14 @@ export type MirrorLoadResult = {
   errors: Array<{ key: string; error: string }>;
 };
 
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (typeof v !== "string" || v.trim() === "") {
+    throw new Error(`ENV ${name} is required but not set`);
+  }
+  return v.trim();
+}
+
 export class MirrorDbLoader {
   private readonly log = getLogger().bind({
     slug: "svcfacilitator",
@@ -45,37 +55,31 @@ export class MirrorDbLoader {
     url: "/services/MirrorDbLoader",
   });
 
-  constructor(
-    private readonly uri = process.env.SVCCONFIG_MONGO_URI ||
-      process.env.SVCCONFIG_DB_URI ||
-      "",
-    private readonly dbName = process.env.SVCCONFIG_MONGO_DB || "nowvibin",
-    private readonly collName = process.env.SVCCONFIG_MONGO_COLLECTION ||
-      "svcconfig"
-  ) {}
+  private readonly uri: string;
+  private readonly dbName: string;
+  private readonly collName: string;
 
-  /** Returns null if URI is missing or the load fails entirely. */
+  constructor() {
+    // Fail-fast: no defaults, no fallbacks
+    this.uri = requireEnv("SVCCONFIG_MONGO_URI");
+    this.dbName = requireEnv("SVCCONFIG_MONGO_DB");
+    this.collName = requireEnv("SVCCONFIG_MONGO_COLLECTION");
+  }
+
+  /** Returns null only if no valid records exist after parsing; throws on env/connect errors. */
   async loadFullMirror(): Promise<MirrorLoadResult | null> {
-    if (!this.uri) {
-      this.log.debug(
-        `SVF200 db_connect_start ${JSON.stringify({ uriHost: "missing" })}`
-      );
-      return null;
-    }
-
     let uriHost = "unknown";
     try {
       uriHost = new URL(this.uri).host || "unknown";
     } catch {
-      /* noop */
+      // If URL parsing fails here, MongoClient will throw below; we still log intent.
     }
-    this.log.debug(
-      `SVF200 db_connect_start ${JSON.stringify({
-        uriHost,
-        db: this.dbName,
-        coll: this.collName,
-      })}`
-    );
+
+    this.log.debug("SVF200 db_connect_start", {
+      uriHost,
+      db: this.dbName,
+      coll: this.collName,
+    });
 
     const started = Date.now();
     const client = new MongoClient(this.uri, { ignoreUndefined: true });
@@ -83,26 +87,20 @@ export class MirrorDbLoader {
     try {
       await client.connect();
       const latency = Date.now() - started;
-      this.log.debug(
-        `SVF210 db_connect_ok ${JSON.stringify({ latencyMs: latency })}`
-      );
+      this.log.debug("SVF210 db_connect_ok", { latencyMs: latency });
 
       // ENTIRE collection, no pre-filtering (per ADR-0020)
-      this.log.debug(
-        `SVF300 load_from_db_start ${JSON.stringify({
-          collection: this.collName,
-          filter: "none (find({}))",
-        })}`
-      );
+      this.log.debug("SVF300 load_from_db_start", {
+        collection: this.collName,
+        filter: "none (find({}))",
+      });
 
       const coll = client.db(this.dbName).collection<Document>(this.collName);
       const docs = await coll.find({}).project({ __v: 0 }).toArray();
 
       const rawCount = docs?.length ?? 0;
       if (!docs || rawCount === 0) {
-        this.log.debug(
-          `SVF320 load_from_db_empty ${JSON.stringify({ reason: "no_docs" })}`
-        );
+        this.log.debug("SVF320 load_from_db_empty", { reason: "no_docs" });
         return null;
       }
 
@@ -134,49 +132,38 @@ export class MirrorDbLoader {
             ...(id ? { _id: id } : {}),
           }).toJSON();
 
-          // New inclusion rule: enabled && !internalOnly
+          // Inclusion policy: enabled && !internalOnly
           if (parsed.enabled === true && parsed.internalOnly !== true) {
             mirror[svcKey(parsed.slug, parsed.version)] = parsed;
           }
         } catch (e) {
           const err = String(e);
           errors.push({ key, error: err });
-          this.log.warn(
-            `SVF420 validate_configs_fail ${JSON.stringify({
-              key,
-              error: `record_parse_failed: ${err}`,
-            })}`
-          );
+          this.log.warn("SVF420 validate_configs_fail", {
+            key,
+            error: `record_parse_failed: ${err}`,
+          });
         }
       }
 
       const activeCount = Object.keys(mirror).length;
       if (activeCount === 0) {
-        this.log.debug(
-          `SVF320 load_from_db_empty ${JSON.stringify({
-            reason: "no_valid_included_records",
-          })}`
-        );
+        this.log.debug("SVF320 load_from_db_empty", {
+          reason: "no_valid_included_records",
+        });
         return null;
       }
 
       // Final sanity check on the assembled mirror
       const checked = ServiceConfigRecord.parseMirror(mirror);
 
-      this.log.debug(
-        `SVF310 load_from_db_ok ${JSON.stringify({
-          rawCount,
-          activeCount,
-          invalidCount: errors.length,
-        })}`
-      );
+      this.log.debug("SVF310 load_from_db_ok", {
+        rawCount,
+        activeCount,
+        invalidCount: errors.length,
+      });
 
       return { mirror: checked, rawCount, activeCount, errors };
-    } catch (e) {
-      this.log.warn(
-        `SVF330 load_from_db_fail ${JSON.stringify({ error: String(e) })}`
-      );
-      return null;
     } finally {
       try {
         await client.close();

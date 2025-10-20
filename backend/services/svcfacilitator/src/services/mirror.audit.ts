@@ -5,27 +5,24 @@
  * - ADRs:
  *   - ADR-0020 (SvcConfig Mirror & Push Design)
  *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
+ *   - ADR-0033 (Internal-Only Services & S2S Verification Defaults)
  *
  * Purpose:
- * - Loud, operator-friendly audit that compares:
- *     A) Count of records in MongoDB `svcconfig`
- *     B) Count of entries included in the in-memory mirror
- * - We DO NOT pre-filter via query. We fetch ALL docs, then decide inclusion
- *   at runtime so we can log precise reasons (disabled, proxying disabled,
- *   invalid schema).
+ * - Operator-friendly audit comparing DB-included svcconfigs with the in-memory mirror.
+ * - Inclusion policy (canonical): enabled === true && internalOnly === false.
  *
  * Behavior:
- * - On mismatch (A != B), emit a WARN with a structured breakdown.
- * - Always logs a one-line INFO summary even when counts match.
- * - Never throws; this is diagnostics-only.
+ * - On mismatch, emit a WARN with structured breakdown.
+ * - Always logs a one-line INFO summary.
+ * - Diagnostics-only: never throws. (But uses no env defaults/fallbacks.)
  *
- * Env:
- * - SVCCONFIG_DB_URI     (e.g., mongodb://127.0.0.1:27017/nowvibin_dev)
- * - SVCCONFIG_DB_NAME    (optional; if omitted, taken from URI path)
- * - SVCCONFIG_COLL       (optional; default: "svcconfig")
+ * Env (no defaults, no fallbacks):
+ * - SVCCONFIG_MONGO_URI
+ * - SVCCONFIG_MONGO_DB
+ * - SVCCONFIG_MONGO_COLLECTION
  */
 
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId, type Document } from "mongodb";
 import { getLogger } from "@nv/shared/logger/Logger";
 import { mirrorStore } from "./mirrorStore";
 import {
@@ -34,29 +31,14 @@ import {
 } from "@nv/shared/contracts/svcconfig.contract";
 
 type RawDoc = Record<string, unknown>;
-type Bucket = "included" | "disabled" | "proxy_disabled" | "invalid";
+type Bucket = "included" | "disabled" | "internal_only" | "invalid";
 
-const COLL_DEFAULT = "svcconfig";
+const log = getLogger().bind({ component: "mirror.audit" });
 
-function getDbPieces() {
-  const uri = (process.env.SVCCONFIG_DB_URI || "").trim();
-  const explicitDb = (process.env.SVCCONFIG_DB_NAME || "").trim();
-  const coll =
-    (process.env.SVCCONFIG_COLL || COLL_DEFAULT).trim() || COLL_DEFAULT;
-
-  if (!uri) return { uri: "", dbName: "", coll };
-  // Try to infer dbName from URI path if not provided
-  let dbName = explicitDb;
-  if (!dbName) {
-    try {
-      const u = new URL(uri);
-      const path = (u.pathname || "").replace(/^\//, "");
-      if (path) dbName = path;
-    } catch {
-      // leave empty; caller will handle
-    }
-  }
-  return { uri, dbName, coll };
+function requireEnv(name: string): string | null {
+  const v = process.env[name];
+  if (typeof v !== "string" || v.trim() === "") return null;
+  return v.trim();
 }
 
 function keyOf(doc: RawDoc): string | null {
@@ -68,63 +50,85 @@ function keyOf(doc: RawDoc): string | null {
   return svcKey(slug, v);
 }
 
-function categorize(doc: RawDoc): Bucket {
-  // Validate flags first for messaging
-  const enabled = Boolean((doc as any)?.enabled);
-  const allowProxy = Boolean((doc as any)?.allowProxy);
-
-  if (!enabled) return "disabled";
-  if (!allowProxy) return "proxy_disabled";
-
-  // Only then test schema validity (so we can distinguish invalid vs disabled)
-  try {
-    // We accept docs “as-is”; parse will throw if shape is bad
-    ServiceConfigRecord.parse(doc);
-    return "included";
-  } catch {
-    return "invalid";
+function normalizeId(d: RawDoc): RawDoc {
+  const rawId = (d as any)?._id;
+  if (rawId instanceof ObjectId) return { ...d, _id: rawId.toHexString() };
+  if (rawId && typeof rawId === "object" && "$oid" in (rawId as any)) {
+    return { ...d, _id: String((rawId as any).$oid) };
   }
+  return d;
 }
 
 export async function auditMirrorVsDb(): Promise<void> {
-  const log = getLogger().bind({ component: "mirror.audit" });
-  const { uri, dbName, coll } = getDbPieces();
+  const uri = requireEnv("SVCCONFIG_MONGO_URI");
+  const dbName = requireEnv("SVCCONFIG_MONGO_DB");
+  const collName = requireEnv("SVCCONFIG_MONGO_COLLECTION");
 
-  // If we can’t connect, don’t crash — just log and exit.
-  if (!uri || !dbName) {
+  // No defaults. If missing envs, skip audit (diagnostics-only) and be explicit.
+  if (!uri || !dbName || !collName) {
     log.warn(
-      { haveUri: Boolean(uri), haveDbName: Boolean(dbName) },
-      "svcconfig_audit_skipped_missing_db_env"
+      {
+        haveUri: Boolean(uri),
+        haveDbName: Boolean(dbName),
+        haveColl: Boolean(collName),
+      },
+      "svcconfig_audit_skipped_missing_env"
     );
     return;
   }
 
+  // Breadcrumb: where are we auditing
+  log.debug("AUD100 audit_start", {
+    uriHost: (() => {
+      try {
+        return new URL(uri).host;
+      } catch {
+        return "bad-uri";
+      }
+    })(),
+    db: dbName,
+    coll: collName,
+  });
+
   const client = new MongoClient(uri, { ignoreUndefined: true });
+
   try {
     await client.connect();
-    const db = client.db(dbName);
-    const col = db.collection<RawDoc>(coll);
 
-    const docs = await col.find({}).toArray();
-    const dbCount = docs.length;
+    const coll = client.db(dbName).collection<Document>(collName);
+    const docs = await coll.find({}).project({ __v: 0 }).toArray();
 
+    // Buckets by inclusion policy (no allowProxy anywhere).
     const breakdown: Record<Bucket, string[]> = {
       included: [],
       disabled: [],
-      proxy_disabled: [],
+      internal_only: [],
       invalid: [],
     };
 
-    for (const d of docs) {
+    for (const d0 of docs) {
+      const d = normalizeId(d0 as RawDoc);
       const k = keyOf(d) || "<bad-key>";
-      const bucket = categorize(d);
-      breakdown[bucket].push(k);
+      try {
+        const rec = ServiceConfigRecord.parse(d);
+        if (!rec.enabled) {
+          breakdown.disabled.push(k);
+        } else if (rec.internalOnly) {
+          breakdown.internal_only.push(k);
+        } else {
+          breakdown.included.push(k);
+        }
+      } catch (e) {
+        breakdown.invalid.push(k === "<bad-key>" ? String(e) : `${k}`);
+      }
     }
 
     const includedSet = new Set(breakdown.included);
     const mirror = mirrorStore.getMirror();
     const mirrorKeys = Object.keys(mirror);
-    const mirrorCount = mirrorKeys.length;
+
+    const dbCount = includedSet.size; // apples-to-apples
+    const mirrorCount = mirrorKeys.length; // included in memory
 
     // INFO summary (always)
     log.info(
@@ -133,18 +137,14 @@ export async function auditMirrorVsDb(): Promise<void> {
         mirrorCount,
         included: breakdown.included.length,
         disabled: breakdown.disabled.length,
-        proxy_disabled: breakdown.proxy_disabled.length,
+        internal_only: breakdown.internal_only.length,
         invalid: breakdown.invalid.length,
       },
       "svcconfig_audit_summary"
     );
 
-    // If counts differ, WARN loudly with specifics.
     if (dbCount !== mirrorCount) {
-      // Which included keys are missing from mirror (should be none)
       const includedButMissing = breakdown.included.filter((k) => !mirror[k]);
-
-      // Which mirror keys didn’t come from “included” (also should be none)
       const mirrorButNotIncluded = mirrorKeys.filter(
         (k) => !includedSet.has(k)
       );
@@ -155,7 +155,7 @@ export async function auditMirrorVsDb(): Promise<void> {
           mirrorCount,
           reasons: {
             disabled: breakdown.disabled.slice(0, 10),
-            proxy_disabled: breakdown.proxy_disabled.slice(0, 10),
+            internal_only: breakdown.internal_only.slice(0, 10),
             invalid: breakdown.invalid.slice(0, 10),
           },
           includedButMissing: includedButMissing.slice(0, 10),
@@ -168,6 +168,10 @@ export async function auditMirrorVsDb(): Promise<void> {
   } catch (e) {
     log.warn({ err: String(e) }, "svcconfig_audit_failed");
   } finally {
-    await client.close().catch(() => undefined);
+    try {
+      await client.close();
+    } catch {
+      /* noop */
+    }
   }
 }

@@ -11,11 +11,10 @@
  * - Orchestrate boot-time hydration using:
  *     1) MirrorDbLoader (reads entire collection; strict-parse; per-record errs)
  *     2) MirrorLkgStore  (atomic LKG save/load)
- * - No pre-filtering; controllers decide runtime behavior/messages.
  *
- * Notes:
+ * Invariance:
+ * - No env fallbacks. Fail-fast elsewhere; here we only snapshot presence.
  * - No console.* — structured logger only.
- * - No special-casing svcfacilitator; it’s treated like any other service.
  */
 
 import os from "os";
@@ -42,23 +41,17 @@ export class MirrorHydrator {
     const bootId = randomUUID();
     const bootStart = Date.now();
 
-    this.log.debug(
-      `SVF100 boot_start ${JSON.stringify({ pid: process.pid, bootId })}`
-    );
-
-    this.log.debug(
-      `SVF110 env_validated ${JSON.stringify(this.envSnapshot())}`
-    );
+    this.log.debug("SVF100 boot_start", { pid: process.pid, bootId });
+    this.log.debug("SVF110 env_validated", this.envSnapshot());
 
     // 1) Try DB (entire collection, no pre-filter)
     const res = await this.loader.loadFullMirror();
     if (res && res.activeCount > 0) {
       const { mirror, rawCount, activeCount, errors } = res;
 
-      // Set in-memory mirror
       mirrorStore.setMirror(mirror);
 
-      // Persist LKG (best-effort)
+      // best-effort persist
       this.lkg.save(mirror, {
         requestId: bootId,
         rawCount,
@@ -66,29 +59,23 @@ export class MirrorHydrator {
         invalidCount: errors.length,
       });
 
-      // Loudly summarize any invalid records (do not fail boot)
       if (errors.length > 0) {
-        this.log.warn(
-          `SVF415 mirror_partial ${JSON.stringify({
-            rawCount,
-            activeCount,
-            invalidCount: errors.length,
-            // Show up to 5 invalid keys to keep logs concise
-            examples: errors.slice(0, 5),
-          })}`
-        );
+        this.log.warn("SVF415 mirror_partial", {
+          rawCount,
+          activeCount,
+          invalidCount: errors.length,
+          examples: errors.slice(0, 5),
+        });
       }
 
       const duration = Date.now() - bootStart;
-      this.log.info(
-        `SVF700 ready ${JSON.stringify({
-          count: activeCount,
-          source: "db",
-          warmed: true,
-          durationMs: duration,
-          host: os.hostname(),
-        })}`
-      );
+      this.log.info("SVF700 ready", {
+        count: activeCount,
+        source: "db",
+        warmed: true,
+        durationMs: duration,
+        host: os.hostname(),
+      });
       return;
     }
 
@@ -98,49 +85,48 @@ export class MirrorHydrator {
       mirrorStore.setMirror(lkgMirror);
 
       const duration = Date.now() - bootStart;
-      this.log.info(
-        `SVF700 ready ${JSON.stringify({
-          count: Object.keys(lkgMirror).length,
-          source: "lkg",
-          warmed: true,
-          durationMs: duration,
-          host: os.hostname(),
-        })}`
-      );
+      this.log.info("SVF700 ready", {
+        count: Object.keys(lkgMirror).length,
+        source: "lkg",
+        warmed: true,
+        durationMs: duration,
+        host: os.hostname(),
+      });
       return;
     }
 
     // 3) Nothing usable → fail-fast per SOP
     const duration = Date.now() - bootStart;
-    this.log.error(
-      `SVF710 not_ready ${JSON.stringify({
-        reason: "no_db_no_lkg",
-        durationMs: duration,
-      })}`
-    );
+    this.log.error("SVF710 not_ready", {
+      reason: "no_db_no_lkg",
+      durationMs: duration,
+    });
     throw new Error("SvcFacilitator boot failed: no DB configs and empty LKG");
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
 
   private envSnapshot() {
-    const uri =
-      process.env.SVCCONFIG_MONGO_URI || process.env.SVCCONFIG_DB_URI || "";
+    // Presence-only snapshot (no implied defaults or fallbacks)
     const mongoHost = (() => {
       try {
-        return uri ? new URL(uri).host : null;
+        const u = process.env.SVCCONFIG_MONGO_URI?.trim();
+        return u ? new URL(u).host : null;
       } catch {
         return null;
       }
     })();
 
     return {
-      required: ["SVCCONFIG_LKG_PATH"],
-      missing: ["SVCCONFIG_LKG_PATH"].filter((k) => !process.env[k]),
+      required: [
+        "SVCCONFIG_LKG_PATH",
+        "SVCCONFIG_MONGO_URI",
+        "SVCCONFIG_MONGO_DB",
+        "SVCCONFIG_MONGO_COLLECTION",
+      ],
       present: {
         SVCCONFIG_LKG_PATH: Boolean(process.env.SVCCONFIG_LKG_PATH),
         SVCCONFIG_MONGO_URI: Boolean(process.env.SVCCONFIG_MONGO_URI),
-        SVCCONFIG_DB_URI: Boolean(process.env.SVCCONFIG_DB_URI),
         SVCCONFIG_MONGO_DB: Boolean(process.env.SVCCONFIG_MONGO_DB),
         SVCCONFIG_MONGO_COLLECTION: Boolean(
           process.env.SVCCONFIG_MONGO_COLLECTION

@@ -38,7 +38,6 @@ export abstract class AppBase extends ServiceBase {
     super(opts);
     this.app = express();
     this.initApp();
-    // NOTE: Lifecycle is explicit/async via boot(); constructor does NOT mount.
   }
 
   /** Disable noisy headers; keep this minimal. */
@@ -53,7 +52,6 @@ export abstract class AppBase extends ServiceBase {
   public async boot(): Promise<void> {
     if (this._booted) return;
 
-    // 0️⃣ Awaitable boot hook (warm caches, DI wiring, etc.)
     await this.onBoot();
 
     // 1️⃣ Health — always first (never gated)
@@ -71,7 +69,7 @@ export abstract class AppBase extends ServiceBase {
     // 4️⃣ Security (verifyS2S, rate limits, etc.)
     this.mountSecurity();
 
-    // 5️⃣ Parsers (workers usually want JSON; gateway may override to none)
+    // 5️⃣ Parsers (workers usually want JSON; gateway may override)
     this.mountParsers();
 
     // 6️⃣ Routes (service-specific routes or proxy)
@@ -87,17 +85,19 @@ export abstract class AppBase extends ServiceBase {
   // ───────────────────────────── Hooks (override as needed) ─────────────────────────────
 
   /** One-time, awaitable boot (e.g., start WAL, warm mirrors). Default: no-op. */
-  protected async onBoot(): Promise<void> {
-    // Intentionally empty; subclasses may override.
-  }
+  protected async onBoot(): Promise<void> {}
 
-  /** Return the versioned health base path like "/api/<slug>/v1"; return null to skip. */
+  /**
+   * Default versioned health base path like `/api/<slug>/v1`.
+   * Override if the service uses a nonstandard prefix or multiple versions.
+   */
   protected healthBasePath(): string | null {
-    return null;
+    const slug = this.service?.toLowerCase();
+    if (!slug) return null;
+    return `/api/${slug}/v1`;
   }
 
   /** Optional readiness function for health. */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected readyCheck(): (() => boolean | Promise<boolean>) | undefined {
     return undefined;
   }
@@ -137,13 +137,12 @@ export abstract class AppBase extends ServiceBase {
     );
   }
 
-  /** Optional svcconfig resolver hook (slug@version → _id). Override in services that need routePolicyGate. */
+  /** Optional svcconfig resolver hook (slug@version → _id). Override if needed. */
   protected getSvcconfigResolver(): ISvcconfigResolver | null {
     return null;
   }
 
   /** Security layer (verifyS2S, CORS, etc.). Default: no-op. */
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
   protected mountSecurity(): void {}
 
   /** Body parsers. Default: JSON for workers. Gateway may override. */
@@ -167,13 +166,6 @@ export abstract class AppBase extends ServiceBase {
 
   // ───────────────────────────── Utilities ─────────────────────────────
 
-  /**
-   * Mount versioned health routes at a base like:
-   *   base = `/api/<slug>/v1`
-   * Resulting routes:
-   *   GET <base>/health/live
-   *   GET <base>/health/ready`
-   */
   protected mountVersionedHealth(
     base: string,
     opts?: { readyCheck?: () => Promise<boolean> | boolean }

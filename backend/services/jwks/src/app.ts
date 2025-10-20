@@ -8,7 +8,8 @@
  * - ADRs:
  *   - ADR-0013 — Versioned Health Envelope & Routes
  *   - ADR-0014 — Base Hierarchy (Entrypoint → AppBase → ServiceBase)
- *   - ADR-0034 — JWKS Service via GCP KMS, discovered by SvcFacilitator (internalOnly=true)
+ *   - ADR-0017 — JWKS Service carve-out (policy/public route)
+ *   - ADR-0035 — JWKS via GCP KMS with TTL Cache
  *
  * Purpose (orchestration only):
  * - Inherit lifecycle and middleware order from AppBase:
@@ -17,27 +18,20 @@
  *
  * Invariants:
  * - Environment-invariant: no literals beyond the service slug; config is provided via env.
- * - No business logic here; controllers/providers/receivers live in their own files.
+ * - No business logic here; providers/cache/controller are composed in JwksModule.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
-import { JwksRouter } from "./routes/jwks.router";
-
-const SERVICE_SLUG = "jwks";
+import { buildJwksRouter } from "./composition/JwksModule";
 
 export class JwksApp extends AppBase {
   constructor() {
-    super({ service: SERVICE_SLUG });
-  }
-
-  /** Versioned health base path (required per SOP). */
-  protected healthBasePath(): string | null {
-    return `/api/${SERVICE_SLUG}/v1`;
+    super({ service: "jwks" });
   }
 
   /** Wire routes; all other middleware order inherited from AppBase. */
   protected mountRoutes(): void {
-    // Mount JWKS v1 routes under the versioned base.
-    this.app.use(`/api/${SERVICE_SLUG}/v1`, new JwksRouter().router());
+    // Mount JWKS v1 routes under the versioned base (auto from AppBase.healthBasePath()).
+    this.app.use("/api/jwks/v1", buildJwksRouter());
   }
 }

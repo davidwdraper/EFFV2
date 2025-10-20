@@ -1,59 +1,60 @@
 // backend/services/jwks/src/controllers/JwksController.ts
 /**
  * NowVibin (NV)
- * File: backend/services/jwks/src/controllers/JwksController.ts
- *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADR-0034 — JWKS Service via GCP KMS, discovered by SvcFacilitator (internalOnly=true)
+ * - ADR-0017 — JWKS Service carve-out (policy/public route)
+ * - ADR-0035 — JWKS via GCP KMS with TTL Cache
  *
  * Purpose:
  * - Thin controller that serves the raw JWKS payload.
- * - Retrieves key material from the configured provider (via factory),
- *   validates via shared jwks.contract, and returns the JSON set.
+ * - Retrieves key material via an injected IJwksProvider (DI), validates against the
+ *   shared jwks.contract, and returns the JSON JWK Set with no NV envelope.
  *
  * Invariants:
- * - **Single concern:** handle the /keys route (GET).
- * - No S2S auth or JWT validation required — this is public key material only.
+ * - Single concern: handle GET /keys (public).
+ * - No S2S auth/JWT validation — this is public key material only.
  * - Fail-fast on provider or schema errors; never return partial data.
- * - Response must be `application/json` with RFC-7517 compliant `{ "keys": [...] }`.
+ * - Response: application/json, exact RFC 7517 shape: { "keys": [...] }.
  */
 
-import type { Request, Response, NextFunction } from "express";
-import { getLogger } from "@nv/shared/logger/Logger";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
+import { ControllerBase } from "@nv/shared/base/ControllerBase";
+import type { IJwksProvider } from "../provider/IJwksProvider";
 import { JwkSetSchema } from "@nv/shared/contracts/security/jwks.contract";
-import { JwksProviderFactory } from "../provider/JwksProviderFactory";
 
-export class JwksController {
-  private readonly log = getLogger().bind({
-    service: "jwks",
-    component: "JwksController",
-  });
+export class JwksController extends ControllerBase {
+  constructor(private readonly provider: IJwksProvider) {
+    super({ service: "jwks", context: { component: "JwksController" } });
+  }
 
-  /** GET /api/jwks/v1/keys — Return RFC 7517 JWK Set */
-  keys() {
-    return async (_req: Request, res: Response, next: NextFunction) => {
-      const requestId = _req.headers["x-request-id"] ?? "unknown";
-      const ctx = { requestId, route: "GET /keys" };
-      this.log.info(ctx, "jwks_keys_enter");
+  /** GET /api/jwks/v1/keys — Return RFC 7517 JWK Set (raw, no NV envelope) */
+  public keys(): RequestHandler {
+    const log = this.bindLog({ route: "GET /keys" });
+
+    return async (req: Request, res: Response, next: NextFunction) => {
+      const requestId =
+        (req.headers["x-request-id"] as string) ??
+        (req.headers["x-correlation-id"] as string) ??
+        (req.headers["request-id"] as string) ??
+        "unknown";
+
+      log.info({ requestId }, "jwks_keys_enter");
 
       try {
-        const provider = JwksProviderFactory.create();
-        const jwkSet = await provider.getJwks();
-        const parsed = JwkSetSchema.parse(jwkSet); // validate structure
+        // Fetch from injected provider (may be backed by JwksCache)
+        const jwkSet = await this.provider.getJwks();
 
-        this.log.info(
-          { ...ctx, keyCount: parsed.keys.length },
-          "jwks_keys_success"
-        );
+        // Validate outbound structure strictly to prevent drift
+        const parsed = JwkSetSchema.parse(jwkSet);
+
+        log.info({ requestId, keyCount: parsed.keys.length }, "jwks_keys_ok");
+
+        // Return RAW JWK Set (NO NV envelope)
         res.status(200).type("application/json").send(parsed);
       } catch (err) {
-        const e =
-          err instanceof Error
-            ? { name: err.name, message: err.message, stack: err.stack }
-            : { message: String(err) };
-        this.log.error({ ...ctx, err: e }, "jwks_keys_failed");
-        return next(err);
+        log.error({ requestId, err: String(err) }, "jwks_keys_error");
+        next(err);
       }
     };
   }

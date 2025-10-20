@@ -12,17 +12,17 @@
  *   - ADR-0030 — ContractBase & idempotent contract identification
  *
  * Purpose:
- * - Normalize S2S request handling and **canonical JSON envelope** responses.
+ * - Normalize S2S request handling and canonical JSON envelope responses.
  * - Framework-agnostic: works with any Express-like req/res.
  *
  * Invariants:
  * - SUCCESS → RouterBase envelope:
  *      { ok: true, service, data: { status, body } }
  * - ERROR   → RFC7807 JSON (NOT enveloped)
- * - `x-request-id` is always echoed as a **response header** (not in body).
+ * - `x-request-id` is always echoed as a response header (not in body).
  *
- * EDGE policy:
- * - Log **ingress** only. Egress logging is owned by SvcClient.
+ * Edge policy (strict):
+ * - Ingress-only, and respects LOG_EDGE=0|1 (or legacy LOG_EDGE_ENABLED).
  */
 
 import { randomUUID } from "crypto";
@@ -64,7 +64,7 @@ export class SvcReceiver extends ServiceBase {
       component: "SvcReceiver.receive",
     });
 
-    // EDGE: ingress only
+    // EDGE: ingress only — obeys LOG_EDGE master switch via BoundLogger.edge()
     log.edge({ phase: "ingress" }, "svc_edge");
 
     try {
@@ -89,7 +89,7 @@ export class SvcReceiver extends ServiceBase {
 
       const status = result.status ?? 200;
 
-      // Completion logs (not EDGE)
+      // Completion logs (level-gated by Logger.ts)
       if (status >= 500) {
         log.error({ status }, "svc receive completed (error)");
       } else if (status >= 400) {
@@ -122,7 +122,7 @@ export class SvcReceiver extends ServiceBase {
     } catch (err) {
       const message = String(err instanceof Error ? err.message : err);
 
-      // Error completion log (not EDGE)
+      // Error completion log
       log.error({ err: message }, "svc receive exception");
 
       res.setHeader("x-request-id", requestId);

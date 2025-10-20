@@ -8,11 +8,13 @@
  *   - ADR-0020 (SvcConfig Mirror & Push Design)
  *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
  *   - ADR-0008 (SvcFacilitator LKG — boot resilience when DB is down)
+ *   - ADR-0033 (Internal-Only Services & S2S Verification Defaults)
  *
  * Purpose:
- * - Load the ENTIRE svcconfig collection (no pre-filtering).
+ * - Load the ENTIRE svcconfig collection (no pre-filtering from Mongo).
  * - Strict-parse each document via the shared contract.
  * - Build an in-memory ServiceConfigMirror keyed by "<slug>@<version>".
+ * - **Include only** records with enabled===true AND internalOnly===false.
  * - Return counts and per-record validation errors for observability.
  *
  * Invariants:
@@ -32,7 +34,7 @@ import {
 export type MirrorLoadResult = {
   mirror: ServiceConfigMirror;
   rawCount: number; // number of docs returned by Mongo
-  activeCount: number; // number of valid records included in the mirror
+  activeCount: number; // number of valid, INCLUDED records (enabled && !internalOnly)
   errors: Array<{ key: string; error: string }>;
 };
 
@@ -94,7 +96,6 @@ export class MirrorDbLoader {
       );
 
       const coll = client.db(this.dbName).collection<Document>(this.collName);
-      // Preserve _id for downstream routePolicyGate (ADR-0032)
       const docs = await coll.find({}).project({ __v: 0 }).toArray();
 
       const rawCount = docs?.length ?? 0;
@@ -133,7 +134,10 @@ export class MirrorDbLoader {
             ...(id ? { _id: id } : {}),
           }).toJSON();
 
-          mirror[svcKey(parsed.slug, parsed.version)] = parsed;
+          // New inclusion rule: enabled && !internalOnly
+          if (parsed.enabled === true && parsed.internalOnly !== true) {
+            mirror[svcKey(parsed.slug, parsed.version)] = parsed;
+          }
         } catch (e) {
           const err = String(e);
           errors.push({ key, error: err });
@@ -150,7 +154,7 @@ export class MirrorDbLoader {
       if (activeCount === 0) {
         this.log.debug(
           `SVF320 load_from_db_empty ${JSON.stringify({
-            reason: "no_valid_records",
+            reason: "no_valid_included_records",
           })}`
         );
         return null;

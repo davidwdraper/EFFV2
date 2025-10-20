@@ -1,9 +1,9 @@
 {
-  "savedAt": "2025-10-20T20:54:33.678Z",
+  "savedAt": "2025-10-20T22:41:58.746Z",
   "meta": {
     "host": "US_C02C96F9MD6T",
     "source": "facilitator",
-    "excludedInternalOnlyCount": 1
+    "excludedInternalOnlyCount": 0
   },
   "mirror": {
     "audit@1": {
@@ -11,7 +11,6 @@
       "slug": "audit",
       "version": 1,
       "enabled": true,
-      "allowProxy": true,
       "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4050",
       "outboundApiPrefix": "/api",
@@ -27,7 +26,6 @@
       "slug": "log",
       "version": 1,
       "enabled": true,
-      "allowProxy": true,
       "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4006",
       "outboundApiPrefix": "/api",
@@ -43,7 +41,6 @@
       "slug": "gateway",
       "version": 1,
       "enabled": true,
-      "allowProxy": true,
       "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4000",
       "outboundApiPrefix": "/api",
@@ -59,7 +56,6 @@
       "slug": "auth",
       "version": 1,
       "enabled": true,
-      "allowProxy": true,
       "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4010",
       "outboundApiPrefix": "/api",
@@ -75,7 +71,6 @@
       "slug": "user",
       "version": 1,
       "enabled": true,
-      "allowProxy": true,
       "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4020",
       "outboundApiPrefix": "/api",
@@ -91,7 +86,6 @@
       "slug": "act",
       "version": 1,
       "enabled": true,
-      "allowProxy": true,
       "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4030",
       "outboundApiPrefix": "/api",
@@ -107,7 +101,6 @@
       "slug": "geo",
       "version": 1,
       "enabled": true,
-      "allowProxy": true,
       "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4040",
       "outboundApiPrefix": "/api",
@@ -123,7 +116,6 @@
       "slug": "jwks",
       "version": 1,
       "enabled": true,
-      "allowProxy": true,
       "internalOnly": false,
       "baseUrl": "http://127.0.0.1:4060",
       "outboundApiPrefix": "/api",

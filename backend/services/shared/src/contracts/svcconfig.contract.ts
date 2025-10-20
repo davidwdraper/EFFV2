@@ -16,6 +16,9 @@
  * - If `exposeHealth === false`, gateway SHOULD 405 health endpoints before proxy.
  * - `etag` is an opaque correlation token; gateway injects/forwards it end-to-end.
  * - Outside production, baseUrl MUST include an explicit port to avoid drift (fail-fast).
+ *
+ * Change log:
+ * - 2025-10-20: Removed `allowProxy` (deprecated). Old DB docs may still carry it; ignored.
  */
 
 import { BaseContract } from "./base.contract";
@@ -27,7 +30,6 @@ export type ServiceConfigRecordJSON = {
   slug: string; // lowercase, [a-z][a-z0-9-]*
   version: number; // int >= 1
   enabled: boolean;
-  allowProxy: boolean;
   internalOnly: boolean; // ← ADR-0033: true => exclude from gateway mirror
   baseUrl: string; // e.g., "http://127.0.0.1:4010"
   outboundApiPrefix: string; // e.g., "/api"
@@ -105,7 +107,6 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
   public readonly slug: string;
   public readonly version: number;
   public readonly enabled: boolean;
-  public readonly allowProxy: boolean;
   public readonly internalOnly: boolean; // ← ADR-0033
   public readonly baseUrl: string;
   public readonly outboundApiPrefix: string;
@@ -146,13 +147,8 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
     }
     const version = versionRaw as number;
 
-    // enabled / allowProxy / internalOnly / exposeHealth
-    for (const f of [
-      "enabled",
-      "allowProxy",
-      "internalOnly",
-      "exposeHealth",
-    ] as const) {
+    // enabled / internalOnly / exposeHealth (booleans)
+    for (const f of ["enabled", "internalOnly", "exposeHealth"] as const) {
       if (typeof (obj as any)[f] !== "boolean")
         throw new Error(`${f}: expected boolean`);
     }
@@ -209,8 +205,7 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
     this.slug = slug;
     this.version = version;
     this.enabled = obj["enabled"] as boolean;
-    this.allowProxy = obj["allowProxy"] as boolean;
-    this.internalOnly = obj["internalOnly"] as boolean; // ← required boolean
+    this.internalOnly = obj["internalOnly"] as boolean;
     this.baseUrl = baseUrl;
     this.outboundApiPrefix = outboundApiPrefix;
     this.configRevision = configRevision as number;
@@ -258,8 +253,7 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
       slug: this.slug,
       version: this.version,
       enabled: this.enabled,
-      allowProxy: this.allowProxy,
-      internalOnly: this.internalOnly, // ← persist in JSON
+      internalOnly: this.internalOnly,
       baseUrl: this.baseUrl,
       outboundApiPrefix: this.outboundApiPrefix,
       configRevision: this.configRevision,

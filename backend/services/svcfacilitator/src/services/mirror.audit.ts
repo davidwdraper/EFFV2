@@ -20,6 +20,10 @@
  * - SVCCONFIG_MONGO_URI
  * - SVCCONFIG_MONGO_DB
  * - SVCCONFIG_MONGO_COLLECTION
+ *
+ * Change Log:
+ * - 2025-10-21: Remove reliance on legacy fields (`__v`, `etag`); `_id` is the only stable id.
+ *               Project only current contract fields (+ `_id`, `port`).
  */
 
 import { MongoClient, ObjectId, type Document } from "mongodb";
@@ -56,6 +60,7 @@ function normalizeId(d: RawDoc): RawDoc {
   if (rawId && typeof rawId === "object" && "$oid" in (rawId as any)) {
     return { ...d, _id: String((rawId as any).$oid) };
   }
+  if (typeof rawId === "string") return d; // already string
   return d;
 }
 
@@ -96,7 +101,25 @@ export async function auditMirrorVsDb(): Promise<void> {
     await client.connect();
 
     const coll = client.db(dbName).collection<Document>(collName);
-    const docs = await coll.find({}).project({ __v: 0 }).toArray();
+    // Project only the current contract fields + `_id` (and `port` if present).
+    // No `__v`, no `etag`, no deprecated prefixes.
+    const docs = await coll
+      .find({})
+      .project({
+        _id: 1,
+        slug: 1,
+        version: 1,
+        enabled: 1,
+        internalOnly: 1,
+        baseUrl: 1,
+        outboundApiPrefix: 1,
+        exposeHealth: 1,
+        updatedAt: 1,
+        updatedBy: 1,
+        notes: 1,
+        port: 1,
+      })
+      .toArray();
 
     // Buckets by inclusion policy (no allowProxy anywhere).
     const breakdown: Record<Bucket, string[]> = {

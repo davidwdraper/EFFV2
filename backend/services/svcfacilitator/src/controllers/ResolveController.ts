@@ -7,24 +7,27 @@
  *   - ADR-0010 (Resolve API — fixed read contract)
  *   - ADR-0020 (SvcConfig Mirror & Push Design)
  *   - ADR-0007 (SvcConfig Contract — fixed shapes & keys, OO form)
+ *   - ADR-0033 (Internal-Only Services & S2S Verification Defaults)
  *
  * Purpose:
  * - Resolve "<slug>@<version>" against the in-memory mirror with operator-friendly
  *   messaging. We validate at runtime so callers get clear reasons:
  *     - invalid_record (422)
  *     - service_disabled (403)
- *     - proxying_disabled (403)
  *     - not_found (404)
  *
  * Response shape (authoritative; required by shared FacilitatorResolver):
  *   200 OK:
  *     {
+ *       "_id": "<stringified db id>",
  *       "slug": "<slug>",
  *       "version": <number>,
  *       "baseUrl": "http(s)://host:port",
- *       "outboundApiPrefix": "/api",
- *       "etag": "<opaque>"
+ *       "outboundApiPrefix": "/api"
  *     }
+ *
+ * Change Log:
+ * - 2025-10-21: Remove legacy fields (`etag`, `allowProxy`). `_id` is the stable identifier.
  */
 
 import {
@@ -44,27 +47,26 @@ function getFromMirror(key: string): unknown | undefined {
 }
 
 type OkPayload = {
+  _id: string;
   slug: string;
   version: number;
   baseUrl: string;
   outboundApiPrefix: string;
-  etag: string;
 };
 
-// Local structural extension to permit optional allowProxy from DB/hydrator.
-// We do NOT change the upstream contract here.
-type WithAllowProxy = ServiceConfigRecordJSON & { allowProxy?: boolean };
+// We no longer support/inspect `allowProxy`. Inclusion policy is enforced upstream:
+// mirror only contains enabled && !internalOnly. Still, we defensively check `enabled`.
+type ParsedRecord = ServiceConfigRecordJSON;
 
 function classifyRecord(raw: unknown):
-  | { ok: true; json: WithAllowProxy }
+  | { ok: true; json: ParsedRecord }
   | {
       ok: false;
-      code: "invalid_record" | "service_disabled" | "proxying_disabled";
+      code: "invalid_record" | "service_disabled";
       msg: string;
     } {
   try {
-    // Contract validation first; then add our local view for allowProxy
-    const parsed = ServiceConfigRecord.parse(raw).toJSON() as WithAllowProxy;
+    const parsed = ServiceConfigRecord.parse(raw).toJSON();
 
     if (parsed.enabled !== true) {
       return {
@@ -74,30 +76,28 @@ function classifyRecord(raw: unknown):
       };
     }
 
-    // Defensively block if explicitly disabled. If missing/undefined, we assume
-    // the hydrator already filtered and allow it (no silent defaults here).
-    if (parsed.allowProxy === false) {
-      return {
-        ok: false,
-        code: "proxying_disabled",
-        msg: "proxying is disabled for this service",
-      };
-    }
-
     return { ok: true, json: parsed };
   } catch (e) {
     return { ok: false, code: "invalid_record", msg: String(e) };
   }
 }
 
-function toOkPayload(rec: WithAllowProxy): OkPayload {
-  // No defaults; these fields must be present and valid per contract.
+function toOkPayload(rec: ParsedRecord): OkPayload {
+  // `_id` is preserved verbatim in the mirror. Require it to be a non-empty string.
+  const id = (rec as any)?._id;
+  if (typeof id !== "string" || id.trim() === "") {
+    throw Object.assign(new Error("resolve_contract_violation: missing _id"), {
+      status: 500,
+      code: "resolve_contract_violation",
+    });
+  }
+
   return {
+    _id: id.trim(),
     slug: rec.slug,
     version: rec.version,
     baseUrl: rec.baseUrl,
     outboundApiPrefix: rec.outboundApiPrefix,
-    etag: rec.etag,
   };
 }
 
@@ -127,7 +127,6 @@ export class ResolveController extends ControllerBase {
 
     const cls = classifyRecord(raw);
     if (!cls.ok) {
-      // invalid_record -> 422, everything else -> 403
       const status = cls.code === "invalid_record" ? 422 : 403;
       return this.fail(status, cls.code, cls.msg);
     }

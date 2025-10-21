@@ -23,6 +23,10 @@
  *     - SVCCONFIG_MONGO_URI
  *     - SVCCONFIG_MONGO_DB
  *     - SVCCONFIG_MONGO_COLLECTION
+ *
+ * Change Log:
+ * - 2025-10-21: Remove any reliance on Mongoose `__v` or `etag`; `_id` is the only stable id.
+ *               Project only the fields defined by the current svcconfig contract (plus `_id`).
  */
 
 import { MongoClient, type Document, ObjectId } from "mongodb";
@@ -96,7 +100,26 @@ export class MirrorDbLoader {
       });
 
       const coll = client.db(this.dbName).collection<Document>(this.collName);
-      const docs = await coll.find({}).project({ __v: 0 }).toArray();
+
+      // Project only the fields defined by the contract + _id.
+      // NOTE: No __v, no etag — those were removed from the data model.
+      const docs = await coll
+        .find({})
+        .project({
+          _id: 1,
+          slug: 1,
+          version: 1,
+          enabled: 1,
+          internalOnly: 1,
+          baseUrl: 1,
+          outboundApiPrefix: 1,
+          exposeHealth: 1,
+          updatedAt: 1,
+          updatedBy: 1,
+          notes: 1,
+          port: 1, // new redundant column (nullable)
+        })
+        .toArray();
 
       const rawCount = docs?.length ?? 0;
       if (!docs || rawCount === 0) {

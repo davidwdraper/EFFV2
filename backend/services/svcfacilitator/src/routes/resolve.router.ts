@@ -7,17 +7,20 @@
  *
  * Contract (RouterBase.jsonOk):
  *   { ok: true, service: "svcfacilitator", data: {
+ *       _id: string,               // stringified DB id (was 'etag'; retired)
  *       slug: string,               // lowercased
  *       version: number >= 1,       // integer
  *       baseUrl: "http(s)://host[:port]",
- *       outboundApiPrefix: "/api",  // no trailing '/'
- *       etag: string
+ *       outboundApiPrefix: "/api"   // no trailing '/'
  *   } }
  *
  * Invariants:
  * - Router is the canonical producer of the Resolve contract.
  * - We unwrap ControllerBase HandlerResult safely (body/data/plain) and validate.
  * - No silent defaults. Fail fast with jsonProblem on violations.
+ *
+ * Notes:
+ * - Legacy fields `etag` and `__v` are removed from the data model. `_id` is the only stable id.
  */
 
 import type { Request, Response } from "express";
@@ -124,20 +127,25 @@ function looksLikeResolvePayload(v: any): boolean {
     (Number.isInteger(v.version) || Number.isInteger(Number(v.version))) &&
     typeof v.baseUrl === "string" &&
     typeof v.outboundApiPrefix === "string" &&
-    typeof v.etag === "string"
+    typeof v._id === "string"
   );
 }
 
 // ── Normalization to canonical contract (type-safe) ─────────────────────────
 
 function normalizeResolveRecord(src: any): {
+  _id: string;
   slug: string;
   version: number;
   baseUrl: string;
   outboundApiPrefix: string;
-  etag: string;
 } {
   const fails: string[] = [];
+
+  const id =
+    typeof src?._id === "string" && src._id.trim()
+      ? src._id.trim()
+      : (fails.push("_id"), "");
 
   const slug =
     typeof src?.slug === "string" && src.slug.trim()
@@ -158,11 +166,6 @@ function normalizeResolveRecord(src: any): {
     fails
   );
 
-  const etag =
-    typeof src?.etag === "string" && src.etag.trim()
-      ? src.etag.trim()
-      : (fails.push("etag"), "");
-
   if (fails.length) {
     const err: any = new Error(
       `resolve_contract_violation: ${fails.join(", ")}`
@@ -172,7 +175,7 @@ function normalizeResolveRecord(src: any): {
     throw err;
   }
 
-  return { slug, version, baseUrl, outboundApiPrefix, etag };
+  return { _id: id, slug, version, baseUrl, outboundApiPrefix };
 }
 
 function normalizeOutboundApiPrefix(input: unknown, fails: string[]): string {

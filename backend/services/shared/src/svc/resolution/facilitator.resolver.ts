@@ -7,11 +7,11 @@
  *   ok: true,
  *   service: "svcfacilitator",
  *   data: {
+ *     _id: string,                  // stringified DB id (replaces legacy `etag`)
  *     slug: string,
  *     version: number>=1,
  *     baseUrl: "http(s)://host[:port]",
- *     outboundApiPrefix: "/api" (no trailing "/"),
- *     etag: string
+ *     outboundApiPrefix: "/api"     // no trailing "/"
  *   }
  * }
  *
@@ -26,6 +26,9 @@
  *   composedBase = <baseUrl><outboundApiPrefix>/<slug>/v<version>
  *
  * No defaults. No compatibility paths. Fail fast on shape errors.
+ *
+ * Change Log:
+ * - 2025-10-21: Switch resolve body validation from `etag` → `_id`; no other behavior changes.
  */
 
 import type { UrlResolver } from "../types";
@@ -217,39 +220,45 @@ export class FacilitatorResolver {
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 function validateResolveData(body: any): {
+  _id: string;
   slug: string;
   version: number;
   baseUrl: string;
   outboundApiPrefix: string;
-  etag: string;
 } {
   const fails: string[] = [];
 
+  const id =
+    typeof body?._id === "string" && body._id.trim()
+      ? body._id.trim()
+      : (fails.push("_id"), "");
+
   const slug =
-    typeof body?.slug === "string" ? body.slug : (fails.push("slug"), "");
+    typeof body?.slug === "string" && body.slug
+      ? String(body.slug)
+      : (fails.push("slug"), "");
+
   const version =
     Number.isFinite(body?.version) && Number(body.version) >= 1
       ? Number(body.version)
       : (fails.push("version"), 0);
+
   const baseUrl =
     typeof body?.baseUrl === "string" && body.baseUrl
       ? body.baseUrl
       : (fails.push("baseUrl"), "");
+
   const outboundApiPrefix =
     typeof body?.outboundApiPrefix === "string" &&
     API_PREFIX_RE.test(body.outboundApiPrefix) &&
     (!body.outboundApiPrefix.endsWith("/") || body.outboundApiPrefix === "/")
       ? body.outboundApiPrefix
       : (fails.push("outboundApiPrefix"), "");
-  const etag =
-    typeof body?.etag === "string" && body.etag
-      ? body.etag
-      : (fails.push("etag"), "");
 
   if (fails.length) {
     throw new Error(`FacilitatorResolver: invalid fields: ${fails.join(", ")}`);
   }
-  return { slug, version, baseUrl, outboundApiPrefix, etag };
+  return { _id: id, slug, version, baseUrl, outboundApiPrefix };
 }
 
 function stripTrailingSlash(s: string): string {

@@ -14,11 +14,11 @@
  * - Mirror/caches keyed by "<slug>@<version>" (lowercase slug).
  * - `internalOnly === true` services MUST be excluded from the gateway mirror (never proxyable).
  * - If `exposeHealth === false`, gateway SHOULD 405 health endpoints before proxy.
- * - `etag` is an opaque correlation token; gateway injects/forwards it end-to-end.
  * - Outside production, baseUrl MUST include an explicit port to avoid drift (fail-fast).
  *
  * Change log:
  * - 2025-10-20: Removed `allowProxy` (deprecated). Old DB docs may still carry it; ignored.
+ * - 2025-10-21: Add `port` (redundant storage); remove `configRevision`, `etag`, prefixes junk.
  */
 
 import { BaseContract } from "./base.contract";
@@ -33,19 +33,19 @@ export type ServiceConfigRecordJSON = {
   internalOnly: boolean; // ← ADR-0033: true => exclude from gateway mirror
   baseUrl: string; // e.g., "http://127.0.0.1:4010"
   outboundApiPrefix: string; // e.g., "/api"
-  configRevision: number; // int >= 1
-  etag: string; // URL-safe opaque token
   exposeHealth: boolean;
   updatedAt: string; // ISO-8601 (normalized)
   updatedBy: string; // REQUIRED operator/user id
   notes?: string;
+
+  /** Redundant explicit port column for fast lookup / display. */
+  port?: number | null;
 };
 
 export type ServiceConfigMirror = Record<string, ServiceConfigRecordJSON>; // key "<slug>@<version>"
 
 const SLUG_RE = /^[a-z][a-z0-9-]*$/;
 const API_PREFIX_RE = /^\/[A-Za-z0-9/-]*$/; // must start with "/"
-const ETAG_RE = /^[A-Za-z0-9_\-=.]+$/; // base64url-ish / URL-safe
 
 function isInt(n: unknown): n is number {
   return typeof n === "number" && Number.isInteger(n);
@@ -110,14 +110,13 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
   public readonly internalOnly: boolean; // ← ADR-0033
   public readonly baseUrl: string;
   public readonly outboundApiPrefix: string;
-  public readonly configRevision: number;
-  public readonly etag: string;
   public readonly exposeHealth: boolean;
   public readonly updatedAt: string; // ISO
   public readonly updatedBy: string;
   public readonly notes?: string;
 
-  private _port?: number; // memoized computed port
+  /** Raw `port` column as stored (optional, nullable). */
+  private readonly _portRaw?: number | null;
 
   /** Construct from an unknown payload; throws on any invalid field. */
   constructor(input: unknown) {
@@ -172,19 +171,6 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
     )!;
     requireApiPrefix(outboundApiPrefix);
 
-    // configRevision
-    const configRevision = obj["configRevision"];
-    if (!isInt(configRevision) || (configRevision as number) < 1) {
-      throw new Error("configRevision: must be an integer >= 1");
-    }
-
-    // etag
-    const etag = ServiceConfigRecord.takeString(obj, "etag", {
-      required: true,
-      trim: true,
-    })!;
-    if (!ETAG_RE.test(etag)) throw new Error("etag: invalid characters");
-
     // updatedAt
     const updatedAt = normalizeUpdatedAt(obj["updatedAt"]);
 
@@ -201,6 +187,16 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
       throw new Error("notes: expected string");
     }
 
+    // port (optional | null)
+    const port = obj["port"];
+    if (
+      port !== undefined &&
+      port !== null &&
+      (!isInt(port) || (port as number) < 1 || (port as number) > 65535)
+    ) {
+      throw new Error("port: expected integer 1..65535, null, or omitted");
+    }
+
     // Assign
     this.slug = slug;
     this.version = version;
@@ -208,12 +204,11 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
     this.internalOnly = obj["internalOnly"] as boolean;
     this.baseUrl = baseUrl;
     this.outboundApiPrefix = outboundApiPrefix;
-    this.configRevision = configRevision as number;
-    this.etag = etag;
     this.exposeHealth = obj["exposeHealth"] as boolean;
     this.updatedAt = updatedAt;
     this.updatedBy = updatedBy;
     this.notes = notes as string | undefined;
+    this._portRaw = port as number | null | undefined;
   }
 
   /** Canonical mirror key "<slug>@<version>" */
@@ -226,9 +221,14 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
     return new Date(this.updatedAt);
   }
 
-  /** Computed port (memoized). Falls back to 80/443 if URL omits port (prod only). */
+  /**
+   * Computed port (memoized) from baseUrl.
+   * NOTE: We intentionally *do not* use `_portRaw` here yet to avoid changing runtime semantics.
+   * Future step can switch to preferring `_portRaw` if present.
+   */
+  private _computedPort?: number;
   public get port(): number {
-    if (this._port !== undefined) return this._port;
+    if (this._computedPort !== undefined) return this._computedPort;
     const u = new URL(this.baseUrl);
     const p = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
     if (!Number.isFinite(p) || p < 1 || p > 65535) {
@@ -236,7 +236,7 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
         `baseUrl: could not resolve a valid port from '${this.baseUrl}'`
       );
     }
-    this._port = p;
+    this._computedPort = p;
     return p;
   }
 
@@ -248,7 +248,6 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
   /** JSON-ready representation (stable order). */
   public toJSON(): ServiceConfigRecordJSON {
     const out: ServiceConfigRecordJSON = {
-      // Preserve _id verbatim if present
       ...(this._id !== undefined ? { _id: this._id } : {}),
       slug: this.slug,
       version: this.version,
@@ -256,24 +255,21 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
       internalOnly: this.internalOnly,
       baseUrl: this.baseUrl,
       outboundApiPrefix: this.outboundApiPrefix,
-      configRevision: this.configRevision,
-      etag: this.etag,
       exposeHealth: this.exposeHealth,
       updatedAt: this.updatedAt,
       updatedBy: this.updatedBy,
     };
     if (this.notes) out.notes = this.notes;
+    if (this._portRaw !== undefined) out.port = this._portRaw;
     return out;
   }
 
   // ── Static constructors / validators ───────────────────────────────────────
 
-  /** Parse one record from unknown input. */
   public static parse(input: unknown): ServiceConfigRecord {
     return new ServiceConfigRecord(input);
   }
 
-  /** Validate and normalize a mirror object; returns JSON-normalized copy. */
   public static parseMirror(input: unknown): ServiceConfigMirror {
     const rec = BaseContract.ensurePlainObject(input, "mirror");
     const out: ServiceConfigMirror = {};
@@ -284,7 +280,6 @@ export class ServiceConfigRecord extends BaseContract<ServiceConfigRecordJSON> {
         );
       }
       const parsed = new ServiceConfigRecord(v).toJSON();
-      // Defensive: ensure key matches payload
       const expected = svcKey(parsed.slug, parsed.version);
       if (k !== expected) {
         throw new Error(

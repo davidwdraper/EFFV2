@@ -1,7 +1,8 @@
-# scripts/smoke/smoke-011-facilitator-resolve.sh
+# backend/tests/smoke/tests/011-facilitator-resolve.sh
 # -----------------------------------------------------------------------------
 # Smoke 011: SvcFacilitator resolve(audit@v1) returns a complete, flat body
-# Docs: SOP; ADRs: adr0020, adr0007
+# Docs: SOP; ADRs: adr0020, adr0007, adr0033
+# Change: expect `_id` (string) instead of legacy `etag`.
 # -----------------------------------------------------------------------------
 set -euo pipefail
 [ "${DEBUG:-0}" = "1" ] && set -x
@@ -22,10 +23,25 @@ STATUS="$(echo "$RESP" | jq -r '.data.status')"
   echo "❌ Unexpected envelope:"; echo "$RESP" | jq .; exit 1; }
 
 BODY="$(echo "$RESP" | jq '.data.body')"
-for key in baseUrl outboundApiPrefix slug version etag; do
+
+# Required fields in the resolve body
+for key in _id baseUrl outboundApiPrefix slug version; do
   TYPE="$(echo "$BODY" | jq -r ".${key} | type")"
   [ "$TYPE" != "null" ] || { echo "❌ Missing .data.body.${key}"; echo "$RESP" | jq .; exit 1; }
 done
+
+# Type checks for critical fields
+ID_TYPE="$(echo "$BODY" | jq -r '._id | type')"
+SLUG_TYPE="$(echo "$BODY" | jq -r '.slug | type')"
+VER_TYPE="$(echo "$BODY" | jq -r '.version | type')"
+URL_TYPE="$(echo "$BODY" | jq -r '.baseUrl | type')"
+PFX_TYPE="$(echo "$BODY" | jq -r '.outboundApiPrefix | type')"
+
+[ "$ID_TYPE" = "string" ] || { echo "❌ _id must be string"; echo "$RESP" | jq .; exit 1; }
+[ "$SLUG_TYPE" = "string" ] || { echo "❌ slug must be string"; echo "$RESP" | jq .; exit 1; }
+[ "$VER_TYPE" = "number" ] || { echo "❌ version must be number"; echo "$RESP" | jq .; exit 1; }
+[ "$URL_TYPE" = "string" ] || { echo "❌ baseUrl must be string"; echo "$RESP" | jq .; exit 1; }
+[ "$PFX_TYPE" = "string" ] || { echo "❌ outboundApiPrefix must be string"; echo "$RESP" | jq .; exit 1; }
 
 echo "✅ OK: resolve body looks good"
 echo "$BODY" | jq .

@@ -27,6 +27,10 @@
 import { randomUUID } from "crypto";
 import { ServiceBase } from "../base/ServiceBase";
 import type { SvcCallOptions, SvcResponse, UrlResolver } from "./types";
+import { getBearerToken } from "../security/getBearerToken"; // minimal addition
+
+// Public endpoints/slugs (never require S2S token in this sprint)
+const PUBLIC_SLUGS = new Set<string>(["jwks", "facilitator"]);
 
 export abstract class SvcClientBase extends ServiceBase {
   protected readonly resolveUrl: UrlResolver;
@@ -85,6 +89,33 @@ export abstract class SvcClientBase extends ServiceBase {
       ...(this.defaults.headers ?? {}),
       ...(opts.headers ?? {}),
     };
+
+    // ── Bearer attach (with small public exceptions) ─────────────────────────
+    // Public endpoints: health, and public slugs (jwks, facilitator).
+    const isHealthPath =
+      opts.path === "health" ||
+      opts.path.endsWith("/health") ||
+      opts.path === "/health";
+
+    const isPublicSlug = PUBLIC_SLUGS.has(opts.slug);
+
+    if (!headers["authorization"] && !isHealthPath && !isPublicSlug) {
+      const log = this.bindLog({
+        slug: opts.slug,
+        version,
+        url,
+        method,
+        component: "SvcClient",
+      });
+      const jwt = await getBearerToken({
+        aud: opts.slug,
+        ttlSec: 120,
+        // issuer: opts.iss is not a thing here; derive inside helper
+        // helper resolves NV_ISSUER || NV_SERVICE_NAME, fail-fast if neither
+        logger: log,
+      });
+      headers["authorization"] = `Bearer ${jwt}`;
+    }
 
     const timeoutMs = opts.timeoutMs ?? this.defaults.timeoutMs ?? 5000;
     const controller = new AbortController();
@@ -148,12 +179,9 @@ export abstract class SvcClientBase extends ServiceBase {
     let msg = "upstream_error";
     if (payload && typeof payload === "object") {
       const p = payload as any;
-      // Prefer RFC7807 fields
-      if (typeof p.detail === "string" && p.detail.length) {
-        msg = p.detail;
-      } else if (typeof p.message === "string" && p.message.length) {
+      if (typeof p.detail === "string" && p.detail.length) msg = p.detail;
+      else if (typeof p.message === "string" && p.message.length)
         msg = p.message;
-      }
     } else if (typeof payload === "string" && payload.length) {
       msg = payload;
     }

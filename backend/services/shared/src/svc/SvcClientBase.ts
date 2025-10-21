@@ -9,6 +9,7 @@
  *   - ADR-0006 (Edge Logging — first-class edge())
  *   - ADR-0028 — HttpAuditWriter over SvcClient (S2S envelope locked)
  *   - ADR-0030 — ContractBase & idempotent contract identification
+ *   - ADR-0036 — Token Minter using GCP KMS Sign
  *
  * Purpose:
  * - Base class for S2S clients. Centralizes URL building, headers/body prep,
@@ -27,10 +28,10 @@
 import { randomUUID } from "crypto";
 import { ServiceBase } from "../base/ServiceBase";
 import type { SvcCallOptions, SvcResponse, UrlResolver } from "./types";
-import { getBearerToken } from "../security/getBearerToken"; // minimal addition
+import { getBearerToken } from "../security/getBearerToken";
 
-// Public endpoints/slugs (never require S2S token in this sprint)
-const PUBLIC_SLUGS = new Set<string>(["jwks", "facilitator"]);
+// Public endpoints/slugs that NEVER require S2S token (this sprint)
+const PUBLIC_SLUGS = new Set<string>(["jwks", "svcfacilitator"]); // <-- fixed
 
 export abstract class SvcClientBase extends ServiceBase {
   protected readonly resolveUrl: UrlResolver;
@@ -91,35 +92,12 @@ export abstract class SvcClientBase extends ServiceBase {
     };
 
     // ── Bearer attach (with small public exceptions) ─────────────────────────
-    // Public endpoints: health, and public slugs (jwks, facilitator).
     const isHealthPath =
       opts.path === "health" ||
       opts.path.endsWith("/health") ||
       opts.path === "/health";
 
     const isPublicSlug = PUBLIC_SLUGS.has(opts.slug);
-
-    if (!headers["authorization"] && !isHealthPath && !isPublicSlug) {
-      const log = this.bindLog({
-        slug: opts.slug,
-        version,
-        url,
-        method,
-        component: "SvcClient",
-      });
-      const jwt = await getBearerToken({
-        aud: opts.slug,
-        ttlSec: 120,
-        // issuer: opts.iss is not a thing here; derive inside helper
-        // helper resolves NV_ISSUER || NV_SERVICE_NAME, fail-fast if neither
-        logger: log,
-      });
-      headers["authorization"] = `Bearer ${jwt}`;
-    }
-
-    const timeoutMs = opts.timeoutMs ?? this.defaults.timeoutMs ?? 5000;
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), timeoutMs);
 
     const log = this.bindLog({
       slug: opts.slug,
@@ -128,6 +106,37 @@ export abstract class SvcClientBase extends ServiceBase {
       method,
       component: "SvcClient",
     });
+
+    if (!headers["authorization"] && !isHealthPath && !isPublicSlug) {
+      const jwt = await getBearerToken({
+        aud: opts.slug,
+        ttlSec: 120,
+        logger: log,
+      });
+      headers["authorization"] = `Bearer ${jwt}`;
+      log.debug(
+        { attachAuth: true, reason: "non-public, non-health" },
+        "s2s auth"
+      );
+    } else {
+      log.debug(
+        {
+          attachAuth: false,
+          reason: headers["authorization"]
+            ? "pre-existing header"
+            : isHealthPath
+            ? "health path"
+            : isPublicSlug
+            ? "public slug"
+            : "n/a",
+        },
+        "s2s auth"
+      );
+    }
+
+    const timeoutMs = opts.timeoutMs ?? this.defaults.timeoutMs ?? 5000;
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
 
     // Edge hit before fetch
     log.edge({ phase: "before_fetch" }, "s2s call");
@@ -168,7 +177,7 @@ export abstract class SvcClientBase extends ServiceBase {
         ok: true,
         status: res.status,
         headers: resHeaders,
-        data: payload as T, // typically the canonical envelope; caller validates/unwraps
+        data: payload as T,
         requestId: requestIdFromHeaders(resHeaders) ?? requestId,
       };
     }

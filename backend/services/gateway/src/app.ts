@@ -162,7 +162,9 @@ export class GatewayApp extends AppBase {
     this.app.use(auditBegin());
     this.app.use(auditEnd());
 
+    // Local health ... not proxied health
     this.app.use(healthProxyTrace({ logger: this.log }));
+
     this.app.use("/api", new ProxyRouter(sc).router());
   }
 

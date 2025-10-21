@@ -16,10 +16,9 @@
  */
 
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
-import type { ISvcconfigResolver } from "../middleware/routePolicyGate";
 import type { SvcConfig } from "../services/svcconfig/SvcConfig";
 
-export class SvcconfigResolver implements ISvcconfigResolver {
+export class SvcconfigResolver {
   constructor(
     private readonly sc: SvcConfig,
     private readonly log: IBoundLogger

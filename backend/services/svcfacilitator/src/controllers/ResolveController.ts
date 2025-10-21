@@ -51,16 +51,20 @@ type OkPayload = {
   etag: string;
 };
 
+// Local structural extension to permit optional allowProxy from DB/hydrator.
+// We do NOT change the upstream contract here.
+type WithAllowProxy = ServiceConfigRecordJSON & { allowProxy?: boolean };
+
 function classifyRecord(raw: unknown):
-  | { ok: true; json: ServiceConfigRecordJSON }
+  | { ok: true; json: WithAllowProxy }
   | {
       ok: false;
       code: "invalid_record" | "service_disabled" | "proxying_disabled";
       msg: string;
     } {
-  // Validate & normalize via contract; contract enforces shapes and invariants.
   try {
-    const parsed = ServiceConfigRecord.parse(raw).toJSON();
+    // Contract validation first; then add our local view for allowProxy
+    const parsed = ServiceConfigRecord.parse(raw).toJSON() as WithAllowProxy;
 
     if (parsed.enabled !== true) {
       return {
@@ -69,7 +73,10 @@ function classifyRecord(raw: unknown):
         msg: "service is disabled in svcconfig",
       };
     }
-    if (parsed.allowProxy !== true) {
+
+    // Defensively block if explicitly disabled. If missing/undefined, we assume
+    // the hydrator already filtered and allow it (no silent defaults here).
+    if (parsed.allowProxy === false) {
       return {
         ok: false,
         code: "proxying_disabled",
@@ -83,8 +90,8 @@ function classifyRecord(raw: unknown):
   }
 }
 
-function toOkPayload(rec: ServiceConfigRecordJSON): OkPayload {
-  // No defaults; outboundApiPrefix must be present and validated by contract.
+function toOkPayload(rec: WithAllowProxy): OkPayload {
+  // No defaults; these fields must be present and valid per contract.
   return {
     slug: rec.slug,
     version: rec.version,

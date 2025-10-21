@@ -1,24 +1,31 @@
 // backend/services/shared/src/svc/resolution/facilitator.resolver.ts
 /**
- * FacilitatorResolver — strict S2S resolver
+ * FacilitatorResolver — strict S2S resolver aligned to RouterBase
  *
- * Required facilitator envelope (RouterBase):
+ * Expected facilitator success envelope (RouterBase.jsonOk):
  * {
  *   ok: true,
  *   service: "svcfacilitator",
- *   data: { status: 200, body: {
+ *   data: {
  *     slug: string,
- *     version: number >=1,
+ *     version: number>=1,
  *     baseUrl: "http(s)://host[:port]",
  *     outboundApiPrefix: "/api" (no trailing "/"),
  *     etag: string
- *   }}
+ *   }
+ * }
+ *
+ * Expected facilitator error envelope (RouterBase.jsonProblem):
+ * {
+ *   ok: false,
+ *   service: "svcfacilitator",
+ *   data: { status: string, detail?: string | object }
  * }
  *
  * Output for SvcClient:
  *   composedBase = <baseUrl><outboundApiPrefix>/<slug>/v<version>
  *
- * No defaults. No compatibility paths. Fail fast if shape is off.
+ * No defaults. No compatibility paths. Fail fast on shape errors.
  */
 
 import type { UrlResolver } from "../types";
@@ -37,7 +44,7 @@ type CacheEntry = { composedBase: string; exp: number };
 
 const API_PREFIX_RE = /^\/[A-Za-z0-9/-]*$/; // must start with "/", no trailing "/"
 const PROD_NAMES = new Set(["production", "prod"]);
-const CACHE_VERSION = "strict.v1";
+const CACHE_VERSION = "routerbase.ok.v1";
 
 export class FacilitatorResolver {
   private readonly baseUrl: string;
@@ -109,58 +116,77 @@ export class FacilitatorResolver {
     )}`;
 
     const res = await this.req(url);
-    if (!res.ok) {
-      throw new Error(
-        `FacilitatorResolver: HTTP ${res.status} from facilitator`
-      );
-    }
-
-    const raw = await res.text();
+    const text = await res.text();
     let json: any;
     try {
-      json = JSON.parse(raw);
+      json = text.length ? JSON.parse(text) : null;
     } catch {
       throw new Error(
         "FacilitatorResolver: non-JSON response from facilitator"
       );
     }
 
-    // ── Strict RouterBase envelope: { ok, service, data: { status, body } } ──
-    const body = extractRouterBaseBody(json);
-    const rec = validateBody(body);
+    // Normalize RouterBase envelopes
+    if (!json || typeof json !== "object") {
+      throw new Error("FacilitatorResolver: invalid response (no object)");
+    }
 
-    assertHttpUrl(rec.baseUrl, "data.body.baseUrl");
-    if (!isProduction()) {
-      const u = new URL(rec.baseUrl);
-      if (!u.port) {
+    if (res.ok) {
+      if (
+        json.ok !== true ||
+        typeof json.data !== "object" ||
+        json.data == null
+      ) {
+        const preview = JSON.stringify({ ok: json.ok, hasData: !!json.data });
         throw new Error(
-          "FacilitatorResolver: baseUrl requires explicit port outside production"
+          `FacilitatorResolver: invalid success envelope. Preview=${preview}`
         );
       }
+      const rec = validateResolveData(json.data);
+
+      assertHttpUrl(rec.baseUrl, "data.baseUrl");
+      if (!isProduction()) {
+        const u = new URL(rec.baseUrl);
+        if (!u.port) {
+          throw new Error(
+            "FacilitatorResolver: baseUrl requires explicit port outside production"
+          );
+        }
+      }
+      requireApiPrefix(rec.outboundApiPrefix);
+
+      const composedBase =
+        stripTrailingSlash(rec.baseUrl) +
+        rec.outboundApiPrefix +
+        "/" +
+        rec.slug +
+        "/v" +
+        rec.version;
+
+      FacilitatorResolver.cache.set(cacheKey, {
+        composedBase,
+        exp: now + this.ttlMs,
+      });
+      return composedBase;
     }
-    requireApiPrefix(rec.outboundApiPrefix);
 
-    const composedBase =
-      stripTrailingSlash(rec.baseUrl) +
-      rec.outboundApiPrefix +
-      "/" +
-      rec.slug +
-      "/v" +
-      rec.version;
-
-    // eslint-disable-next-line no-console
-    console.info("[FacilitatorResolver] composedBase", {
-      slug: rec.slug,
-      version: rec.version,
-      composedBase,
-    });
-
-    FacilitatorResolver.cache.set(cacheKey, {
-      composedBase,
-      exp: now + this.ttlMs,
-    });
-
-    return composedBase;
+    // Non-2xx: RouterBase.jsonProblem
+    const status = res.status;
+    const problem =
+      json && json.data && typeof json.data === "object"
+        ? json.data
+        : undefined;
+    const pStatus = problem?.status;
+    const pDetail = problem?.detail;
+    throw new Error(
+      `FacilitatorResolver: upstream ${status} from facilitator` +
+        (pStatus ? ` (problem.status=${String(pStatus)})` : "") +
+        (pDetail
+          ? ` detail=${
+              typeof pDetail === "string" ? pDetail : JSON.stringify(pDetail)
+            }`
+          : "")
+    );
   };
 
   public static invalidate(key?: string): void {
@@ -190,30 +216,7 @@ export class FacilitatorResolver {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-function extractRouterBaseBody(json: any): any {
-  // Envelope must exist
-  if (!json || typeof json !== "object") {
-    throw new Error("FacilitatorResolver: invalid response (no object)");
-  }
-  if (json.ok !== true) {
-    throw new Error("FacilitatorResolver: invalid response (ok !== true)");
-  }
-  if (!json.data || typeof json.data !== "object") {
-    throw new Error("FacilitatorResolver: invalid response (missing data)");
-  }
-  const status = (json.data as any).status;
-  const body = (json.data as any).body;
-  if (!Number.isFinite(status) || status !== 200 || !body) {
-    // Provide a tiny preview to aid debugging without dumping huge payloads
-    const preview = JSON.stringify({ status, hasBody: Boolean(body) });
-    throw new Error(
-      `FacilitatorResolver: invalid envelope (expected data.status=200 & data.body). Preview=${preview}`
-    );
-  }
-  return body;
-}
-
-function validateBody(body: any): {
+function validateResolveData(body: any): {
   slug: string;
   version: number;
   baseUrl: string;
@@ -221,6 +224,7 @@ function validateBody(body: any): {
   etag: string;
 } {
   const fails: string[] = [];
+
   const slug =
     typeof body?.slug === "string" ? body.slug : (fails.push("slug"), "");
   const version =
@@ -243,9 +247,7 @@ function validateBody(body: any): {
       : (fails.push("etag"), "");
 
   if (fails.length) {
-    throw new Error(
-      `FacilitatorResolver: invalid body fields: ${fails.join(", ")}`
-    );
+    throw new Error(`FacilitatorResolver: invalid fields: ${fails.join(", ")}`);
   }
   return { slug, version, baseUrl, outboundApiPrefix, etag };
 }

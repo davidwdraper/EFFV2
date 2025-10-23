@@ -12,7 +12,7 @@
  */
 
 import { RouterBase } from "@nv/shared/base/RouterBase";
-import { RoutePolicyController } from "../controllers/routePolicy.controller";
+import { RoutePolicyController } from "../controllers/";
 
 export class RoutePolicyRouter extends RouterBase {
   protected configure(): void {

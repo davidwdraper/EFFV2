@@ -5,112 +5,105 @@
  *
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - Addendum: app.ts as Orchestration Only
  * - ADRs:
+ *   - ADR-0002 — SvcFacilitator Minimal (purpose & bootstrap)
+ *   - ADR-0007 — SvcConfig Contract (fixed shapes & keys)
+ *   - ADR-0008 — SvcFacilitator LKG (boot resilience when DB is down)
+ *   - ADR-0013 — Versioned Health Envelope; versioned health routes
  *   - ADR-0014 — Base Hierarchy (Entrypoint → AppBase → ServiceBase)
+ *   - ADR-0015 — Structured Logger with bind() Context
  *   - ADR-0019 — Class Routers via RouterBase
- *   - ADR-0037 — Unified Route Policies (Edge + S2S)
- *   - ADR-0038 — Authorization Hierarchy and Enforcement
+ *   - ADR-0038 — Route Policy Gate & Facilitator Endpoints
+ *   - ADR-0037 — RoutePolicyGate decides S2S public/private (future)
  *
  * Purpose:
- * - Orchestrates SvcFacilitator v2 runtime. Defines order only; no business logic.
+ * - Orchestrates SvcFacilitator runtime. Defines order only; no business logic.
  * - Lifecycle/middleware order from AppBase:
  *     onBoot → health → preRouting → security → parsers → routes → postRouting
  *
- * Notes:
- * - Mirror is DB-backed in v2. Router constructs its own loader (Option 2).
- * - This file stays glanceable: constants up top, one-liners for mounts.
+ * Invariants:
+ * - No env reads. No service construction. DI only.
+ * - Routes are mounted as one-liners; controllers/routers are injected.
  */
 
 import { AppBase } from "@nv/shared/base/AppBase";
-import { MirrorStore } from "./cache/MirrorStore.v2";
-import { buildMirrorRouterV2 } from "./routes/mirror.router.v2";
-import type { MirrorSnapshotBodyV2 } from "./loaders/mirror.loader.v2";
+import type { Router } from "express";
+
+// v2 routers (DI)
+import { ResolveRouterV2 } from "./routes/resolve.router.v2";
+import { MirrorRouterV2 } from "./routes/mirror.router.v2";
+
+// Controller types (for DI clarity)
+import { ResolveController } from "./controllers/ResolveController.v2";
+import { MirrorController } from "./controllers/MirrorController.v2";
+
+// Store (DI target used only for readiness check; app never constructs it)
+import { MirrorStoreV2 } from "./services/mirrorStore.v2";
 
 const SERVICE = "svcfacilitator";
 const V1_BASE = `/api/${SERVICE}/v1`;
 
-export class SvcFacilitatorAppV2 extends AppBase {
-  constructor() {
-    super({ service: SERVICE });
-  }
+type AppDeps = {
+  store: MirrorStoreV2;
+  resolveController: ResolveController;
+  mirrorController: MirrorController;
+};
 
-  private mirrorStore?: MirrorStore<MirrorSnapshotBodyV2>;
-  private mirrorTtlMs!: number;
+export class SvcFacilitatorApp extends AppBase {
+  private readonly store: MirrorStoreV2;
+  private readonly resolveRouter: ResolveRouterV2;
+  private readonly mirrorRouter: MirrorRouterV2;
+
+  /**
+   * DI-only constructor. Callers must construct controllers/stores elsewhere.
+   * No env reads or service construction here.
+   */
+  constructor(deps: AppDeps) {
+    super({ service: SERVICE });
+
+    this.store = deps.store;
+
+    // Routers are glue-only; we inject controllers
+    this.resolveRouter = new ResolveRouterV2(deps.resolveController);
+    this.mirrorRouter = new MirrorRouterV2(deps.mirrorController);
+  }
 
   protected healthBasePath(): string | null {
     return V1_BASE;
   }
 
-  protected async onBoot(): Promise<void> {
-    // Fail-fast envs (no fallbacks, no literals)
-    const maxEntries = this.getEnvInt("MIRROR_CACHE_MAX_ENTRIES")!;
-    const negativeTtlMs = this.getEnvInt("MIRROR_NEGATIVE_TTL_MS")!;
-    this.mirrorTtlMs = this.getEnvInt("MIRROR_TTL_MS")!;
-
-    // Cache owned here; loader is built inside the router (Option 2).
-    this.mirrorStore = new MirrorStore<MirrorSnapshotBodyV2>({
-      maxEntries,
-      negativeTtlMs,
-      logger: {
-        debug: (o, m) => this.log.debug(o as any, m),
-        info: (o, m) => this.log.info(o as any, m),
-        warn: (o, m) => this.log.warn(o as any, m),
-        error: (o, m) => this.log.error(o as any, m),
-      },
-    });
-
-    this.log.info(
-      { maxEntries, negativeTtlMs, mirrorTtlMs: this.mirrorTtlMs },
-      "mirror_store_initialized_v2"
-    );
+  protected readyCheck(): () => boolean {
+    // Dev ≈ Prod behavior: readiness depends on an in-memory mirror snapshot being present.
+    return () => {
+      try {
+        return (this.store.count?.() ?? 0) > 0;
+      } catch {
+        return false;
+      }
+    };
   }
 
-  /** Pre-routing: keep glanceable; add TEMP debug or public bypass here if needed. */
+  /** Pre-routing: run the header echo before any gates. */
   protected mountPreRouting(): void {
-    super.mountPreRouting(); // responseErrorLogger, etc.
-    // this.app.use(debugInboundHeaders(this.log)); // (optional TEMP)
+    super.mountPreRouting(); // responseErrorLogger
   }
 
-  /** Security layer placeholder — verifyS2S would mount here (post-ADR wiring). */
+  /** TEMP security layer: public resolve bypass before verifyS2S (when introduced). */
   protected mountSecurity(): void {
-    // this.app.use(publicResolveBypass(this.log)); // (optional TEMP)
-    // verifyS2S would go here in the future.
+    // this.app.use(publicResolveBypass(this.log));
+    // NOTE: verifyS2S would be mounted AFTER this (future),
+    // and should no-op if (req as any).nvIsPublic === true
   }
 
   protected mountRoutes(): void {
-    if (!this.mirrorStore) {
-      throw new Error("mirrorStore not initialized — run onBoot() first");
-    }
+    // Versioned base; one-liner mounting; no side effects
+    this.app.use(V1_BASE, this.resolveRouter.router());
+    this.app.use(V1_BASE, this.mirrorRouter.router());
 
-    // v2 Mirror: router builds its own DB loader; app passes primitives only.
-    this.app.use(
-      V1_BASE,
-      buildMirrorRouterV2<MirrorSnapshotBodyV2>({
-        db: this.db,
-        store: this.mirrorStore,
-        ttlMs: this.mirrorTtlMs,
-        serviceSlug: SERVICE,
-        logger: {
-          debug: (o, m) => this.log.debug(o as any, m),
-          warn: (o, m) => this.log.warn(o as any, m),
-          error: (o, m) => this.log.error(o as any, m),
-        },
-      })
-    );
-
-    // TODO (next): wire resolve.router.v2 + routePolicy.router.v2
-    // this.app.use(V1_BASE, buildResolveRouterV2({ ... }));
-    // this.app.use(V1_BASE, buildRoutePolicyRouterV2({ ... }));
-
-    this.log.info(
-      { base: V1_BASE, routes: ["GET /mirror"] },
-      "routes_mounted_v2"
-    );
-  }
-
-  /** Ready when app is booted; mirror is lazy-loaded on first hit. */
-  protected readyCheck(): () => boolean {
-    return () => true;
+    // Minimal diagnostic endpoint — returns combined mirror size only (no data dump)
+    this.app.get(`${V1_BASE}/svcconfig/count`, (_req, res) => {
+      const count = this.store.count?.() ?? 0;
+      res.status(200).json({ ok: true, services: count });
+    });
   }
 }

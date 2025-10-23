@@ -1,100 +1,120 @@
 // backend/services/svcfacilitator/src/bootstrap.v2.ts
 /**
- * NowVibin (NV)
- * File: backend/services/svcfacilitator/src/bootstrap.v2.ts
+ * Path: backend/services/svcfacilitator/src/bootstrap.v2.ts
  *
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0002 — SvcFacilitator Minimal (bootstrap & purpose)
- *   - ADR-0007 — SvcConfig Contract (fixed shapes & keys)
- *   - ADR-0008 — SvcFacilitator LKG (boot resilience when DB is down)
- *   - ADR-0014 — Base Hierarchy (Entrypoint → AppBase → ServiceBase)
- *   - ADR-0019 — Class Routers via RouterBase
- *   - ADR-0037 — Unified Route Policies (Edge + S2S)
+ * Purpose
+ * - DI wiring and process bootstrap for SvcFacilitator v2.
+ * - No business logic; construct deps and hand them to the App.
  *
- * Purpose:
- * - **Assembly-only** composition for v2. No business logic, no side effects beyond wiring.
- * - Construct DI graph (DbClient → Repo → Loader → Store → Controllers → App).
- * - Read only the minimum env needed for assembly parameters (TTL, FS LKG path).
- *
- * Invariants:
- * - No hidden defaults. Fail fast if required env is missing.
- * - No barrels/shims. Explicit imports only.
- * - `app.v2.ts` remains orchestration-only; all construction happens here.
+ * Invariants
+ * - Fail fast on env. No hidden defaults.
+ * - Pass REAL Mongo collections (must support find().toArray()).
+ * - The ServiceEntrypoint.run() callback is synchronous.
  */
 
+import { MongoClient } from "mongodb";
+import { getLogger } from "@nv/shared/logger/Logger";
+import { ServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
 import { SvcFacilitatorApp } from "./app.v2";
 
-// Service-owned DB client (reads env internally in services/db.ts)
-import { getSvcFacilitatorDb } from "./services/db.v2";
-
-// Compounded mirror path
-import { SvcConfigWithPoliciesRepoV2 } from "./repos/SvcConfigWithPoliciesRepo.v2";
-import { MirrorDbLoader as MirrorDbLoaderV2 } from "./services/MirrorDbLoader.v2";
+// Store + repo + loader
 import { MirrorStoreV2 } from "./services/mirrorStore.v2";
+import { MirrorDbLoader } from "./services/MirrorDbLoader.v2";
+import {
+  SvcConfigWithPoliciesRepoV2,
+  type MinimalCollection,
+} from "./repos/SvcConfigWithPoliciesRepo.v2";
 
-// Controllers (thin; DI with store)
+// Controllers
 import { ResolveController } from "./controllers/ResolveController.v2";
 import { MirrorController } from "./controllers/MirrorController.v2";
 
-// ── Env helpers (assembly parameters only) ───────────────────────────────────
+const log = getLogger().bind({
+  service: "svcfacilitator",
+  component: "bootstrap",
+  url: "/bootstrap.v2",
+});
 
 function requireEnv(name: string): string {
   const v = process.env[name];
-  if (typeof v !== "string" || v.trim() === "") {
-    throw new Error(`ENV ${name} is required but not set`);
-  }
-  return v.trim();
+  if (!v || !String(v).trim()) throw new Error(`missing required env: ${name}`);
+  return String(v).trim();
 }
 
-function requireIntEnv(name: string): number {
-  const raw = requireEnv(name);
-  const n = Number(raw);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
-    throw new Error(`ENV ${name} must be a non-negative integer`);
+export async function createSvcFacilitatorApp() {
+  // 1) Env
+  const dbUri = requireEnv("SVCCONFIG_DB_URI");
+  const dbName = requireEnv("SVCCONFIG_DB_NAME");
+  const ttlMsRaw = requireEnv("MIRROR_TTL_MS");
+  const ttlMs = Number(ttlMsRaw);
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+    throw new Error(`invalid MIRROR_TTL_MS: ${ttlMsRaw}`);
   }
-  return n;
-}
 
-// ── Bootstrap factory (pure assembly; exported for tests/runners) ────────────
+  // 2) Mongo connect
+  log.debug({ dbUri, dbName }, "SVF200 db_connect_start");
+  const client = await new MongoClient(dbUri).connect();
+  const db = client.db(dbName);
+  log.info({ dbName }, "SVF210 db_connect_ok");
 
-export function createSvcFacilitatorApp(): SvcFacilitatorApp {
-  // Assembly parameters (behavior knobs)
-  // - MIRROR_TTL_MS: in-memory TTL for mirror snapshots
-  // - SVCCONFIG_LKG_PATH: filesystem LKG JSON path (FS-first fallback)
-  const ttlMs = requireIntEnv("MIRROR_TTL_MS");
-  const fsLkgPath = requireEnv("SVCCONFIG_LKG_PATH");
+  // 3) Collections
+  const service_configs = db.collection(
+    "service_configs"
+  ) as unknown as MinimalCollection;
+  const route_policies = db.collection(
+    "route_policies"
+  ) as unknown as MinimalCollection;
 
-  // Service-owned DB client
-  const dbClient = getSvcFacilitatorDb();
+  // 4) Repo → Loader → Store
+  const repo = new SvcConfigWithPoliciesRepoV2(service_configs, route_policies);
+  const loader = new MirrorDbLoader(repo);
+  const store = new MirrorStoreV2({ loader, ttlMs });
 
-  // Repo → Loader
-  const repo = new SvcConfigWithPoliciesRepoV2(dbClient);
-  const loader = new MirrorDbLoaderV2(repo);
-
-  // Store (TTL + FS LKG primary, DB LKG secondary best-effort)
-  const store = new MirrorStoreV2({
-    ttlMs,
-    loader,
-    fsPath: fsLkgPath,
-    db: dbClient,
-  });
-
-  // Controllers
+  // 5) Controllers
   const resolveController = new ResolveController(store);
   const mirrorController = new MirrorController(store);
 
-  // App (orchestration-only)
+  // 6) App
   const app = new SvcFacilitatorApp({
     store,
     resolveController,
     mirrorController,
-    // routePolicyRouter: optional — inject if/when you version that router
   });
 
-  return app;
+  const close = async () => {
+    try {
+      await client.close();
+    } catch {
+      /* no-op */
+    }
+  };
+
+  return { app, store, close };
 }
 
-// Default export for convenience in runners/tests
-export default createSvcFacilitatorApp;
+export async function main() {
+  // Build everything BEFORE calling run
+  const { app, store, close } = await createSvcFacilitatorApp();
+
+  const entry = new ServiceEntrypoint({
+    service: "svcfacilitator",
+    // Warm mirror before listening, so first /mirror doesn’t 503.
+    preStart: async () => {
+      try {
+        const snap = await store.getWithTtl();
+        const count = Object.keys(snap.map ?? {}).length;
+        log.info({ count, source: snap.source }, "SVF311 mirror_warm_ok");
+      } catch (e) {
+        log.warn({ err: String(e) }, "SVF315 mirror_warm_failed");
+      }
+    },
+    onShutdown: async () => {
+      await close();
+    },
+  });
+
+  // Preferred path: BootableApp (AppBase implements boot()+instance)
+  entry.run(
+    () => app as unknown as { boot: () => Promise<void>; instance: any }
+  );
+}

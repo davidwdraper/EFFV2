@@ -3,19 +3,6 @@
  * NowVibin (NV)
  * File: backend/services/svcfacilitator/src/app.v2.ts
  *
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0002 — SvcFacilitator Minimal (purpose & bootstrap)
- *   - ADR-0007 — SvcConfig Contract (fixed shapes & keys)
- *   - ADR-0008 — SvcFacilitator LKG (boot resilience when DB is down)
- *   - ADR-0013 — Versioned Health Envelope; versioned health routes
- *   - ADR-0014 — Base Hierarchy (Entrypoint → AppBase → ServiceBase)
- *   - ADR-0015 — Structured Logger with bind() Context
- *   - ADR-0019 — Class Routers via RouterBase
- *   - ADR-0038 — Route Policy Gate & Facilitator Endpoints
- *   - ADR-0037 — RoutePolicyGate decides S2S public/private (future)
- *
  * Purpose:
  * - Orchestrates SvcFacilitator runtime. Defines order only; no business logic.
  * - Lifecycle/middleware order from AppBase:
@@ -33,12 +20,15 @@ import type { Router } from "express";
 import { ResolveRouterV2 } from "./routes/resolve.router.v2";
 import { MirrorRouterV2 } from "./routes/mirror.router.v2";
 
-// Controller types (for DI clarity)
+// Controllers (DI)
 import { ResolveController } from "./controllers/ResolveController.v2";
 import { MirrorController } from "./controllers/MirrorController.v2";
 
 // Store (DI target used only for readiness check; app never constructs it)
 import { MirrorStoreV2 } from "./services/mirrorStore.v2";
+
+// *** Global error sink (must be last) ***
+import { problem } from "@nv/shared/middleware/problem";
 
 const SERVICE = "svcfacilitator";
 const V1_BASE = `/api/${SERVICE}/v1`;
@@ -54,10 +44,6 @@ export class SvcFacilitatorApp extends AppBase {
   private readonly resolveRouter: ResolveRouterV2;
   private readonly mirrorRouter: MirrorRouterV2;
 
-  /**
-   * DI-only constructor. Callers must construct controllers/stores elsewhere.
-   * No env reads or service construction here.
-   */
   constructor(deps: AppDeps) {
     super({ service: SERVICE });
 
@@ -73,7 +59,6 @@ export class SvcFacilitatorApp extends AppBase {
   }
 
   protected readyCheck(): () => boolean {
-    // Dev ≈ Prod behavior: readiness depends on an in-memory mirror snapshot being present.
     return () => {
       try {
         return (this.store.count?.() ?? 0) > 0;
@@ -85,14 +70,12 @@ export class SvcFacilitatorApp extends AppBase {
 
   /** Pre-routing: run the header echo before any gates. */
   protected mountPreRouting(): void {
-    super.mountPreRouting(); // responseErrorLogger
+    super.mountPreRouting(); // responseErrorLogger, etc.
   }
 
-  /** TEMP security layer: public resolve bypass before verifyS2S (when introduced). */
+  /** TEMP security layer: public resolve bypass before verifyS2S (future). */
   protected mountSecurity(): void {
-    // this.app.use(publicResolveBypass(this.log));
-    // NOTE: verifyS2S would be mounted AFTER this (future),
-    // and should no-op if (req as any).nvIsPublic === true
+    // verifyS2S would go here later (after health); no-op for now.
   }
 
   protected mountRoutes(): void {
@@ -105,5 +88,10 @@ export class SvcFacilitatorApp extends AppBase {
       const count = this.store.count?.() ?? 0;
       res.status(200).json({ ok: true, services: count });
     });
+  }
+
+  /** MUST be last: global error middleware that preserves controller status codes. */
+  protected mountPostRouting(): void {
+    this.app.use(problem);
   }
 }

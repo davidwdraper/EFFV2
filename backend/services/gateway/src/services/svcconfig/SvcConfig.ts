@@ -2,10 +2,11 @@
 /**
  * Docs / SOP
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADR0001: Gateway-Embedded SvcConfig (mirror)
- * - ADR0003: Gateway <-> SvcFacilitator (mirror publish/consume)
+ * - ADR-0001: Gateway-Embedded SvcConfig (mirror)
+ * - ADR-0003: Gateway ↔ SvcFacilitator (mirror publish/consume)
  * - ADR-0012: Gateway SvcConfig (contract + LKG fallback via LkgStore)
  * - ADR-0033: Internal-Only Services — gateway must EXCLUDE internalOnly entries
+ * - ADR-0036: Frozen Plumbing — versioned endpoints only; no compat shims
  *
  * Purpose
  * - Maintain a contract-validated in-memory mirror keyed by <slug>@<version>.
@@ -15,8 +16,13 @@
  *
  * Env (read)
  * - SVCFACILITATOR_BASE_URL        e.g., http://127.0.0.1:4001
- * - SVCFACILITATOR_CONFIG_PATH     default: /api/svcfacilitator/v1/svcconfig
+ * - SVCFACILITATOR_CONFIG_PATH     default: /api/svcfacilitator/v1/mirror
  * - GATEWAY_SVCCONFIG_LKG_PATH     optional JSON path for LKG snapshot (gateway-filtered)
+ *
+ * Notes
+ * - V2 facilitator removed legacy `/svcconfig`. We consume the **versioned** mirror endpoint.
+ * - Accepted shapes: `{ mirror: { "<slug>@<v>": {...} } }` (preferred) or a flat array of parents.
+ * - `_id` MUST be a string per contract; facilitator loaders should coerce before serving.
  */
 
 import assert from "assert";
@@ -35,7 +41,6 @@ export class SvcConfig {
   private readonly log = getLogger().bind({
     slug: "gateway",
     version: 1,
-    url: "/svcconfig",
     component: "SvcConfig",
   });
 
@@ -57,9 +62,9 @@ export class SvcConfig {
 
     const base = (process.env.SVCFACILITATOR_BASE_URL || "").trim();
     const pathSuffix = (
-      process.env.SVCFACILITATOR_CONFIG_PATH ||
-      "/api/svcfacilitator/v1/svcconfig"
-    ).trim();
+      process.env.SVCFACILITATOR_CONFIG_PATH || "/api/svcfacilitator/v1/mirror"
+    ) // v2 default (replaces legacy /svcconfig)
+      .trim();
 
     // If facilitator base is missing, attempt LKG fallback (no hard exit here).
     if (!base) {
@@ -82,16 +87,16 @@ export class SvcConfig {
 
         if (!resp.ok) {
           throw new Error(
-            `HTTP ${resp.status} while fetching svcconfig from facilitator`
+            `HTTP ${resp.status} while fetching mirror from facilitator`
           );
         }
 
         const payload = (await resp.json()) as unknown;
 
         // Accept either:
-        //  A) array of records: [{slug, version, baseUrl, enabled, ...}]
-        //  B) envelope { ok, data: [...] } or { records: [...] }
-        //  C) mirror object { mirror: { "slug@version": {...} } }
+        //  A) mirror object: { mirror: { "<slug>@<v>": {...} } }  ← preferred v2
+        //  B) array of parent records: [{slug, version, baseUrl, enabled, ...}] (legacy-ish)
+        //  C) envelope { ok, data:[...] } or { records:[...] }
         let normalized: Mirror = {};
 
         if (Array.isArray(payload)) {
@@ -130,7 +135,7 @@ export class SvcConfig {
         });
 
         this.log.info(
-          `facilitator_load_success - entries=${this.entries.size}`
+          `facilitator_load_success - entries=${this.entries.size} url=${url}`
         );
         return;
       } catch (err) {
@@ -139,7 +144,7 @@ export class SvcConfig {
           this.log.warn(
             `facilitator_fetch_failed attempt=${attempt}/${maxAttempts} err=${String(
               err
-            )}`
+            )} url=${url}`
           );
           await sleep(250 * attempt);
           continue;
@@ -156,7 +161,7 @@ export class SvcConfig {
     this.loadFromLkgOrThrow(); // LKG should already be filtered; we still validate
   }
 
-  /** Ensure svcconfig is loaded; loads from facilitator if empty. */
+  /** Ensure mirror is loaded; loads from facilitator if empty. */
   public async ensureLoaded(): Promise<void> {
     if (this.entries.size > 0) return;
     await this.load();
@@ -213,7 +218,7 @@ export class SvcConfig {
   private ingest(mirror: Mirror): void {
     this.entries.clear();
     for (const [k, v] of Object.entries(mirror)) {
-      const rec = new ServiceConfigRecord(v).toJSON();
+      const rec = new ServiceConfigRecord(v).toJSON(); // contract enforces _id:string, baseUrl, etc.
       // defensive: ensure key matches content
       if (k !== svcKey(rec.slug, rec.version)) {
         throw new Error(`mirror key mismatch for '${k}'`);
@@ -258,7 +263,7 @@ export class SvcConfig {
     const filtered: Mirror = {};
     const excluded: string[] = [];
     for (const [k, rec] of Object.entries(m)) {
-      if (rec.internalOnly === true) {
+      if ((rec as any).internalOnly === true) {
         excluded.push(k);
         continue;
       }

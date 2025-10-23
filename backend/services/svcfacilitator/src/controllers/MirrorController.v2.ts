@@ -2,31 +2,12 @@
 /**
  * Path: backend/services/svcfacilitator/src/controllers/MirrorController.v2.ts
  *
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0007 — SvcConfig Contract (fixed shapes & keys, OO form)
- *   - ADR-0008 — SvcFacilitator LKG (boot resilience when DB is down)
- *   - ADR-0037 — Unified Route Policies (Edge + S2S)
- *   - ADR-0029 — Contract-ID + BodyHandler pipeline
- *
  * Purpose:
- * - Accept a pushed **combined** mirror from the gateway, validate it against
- *   shared contracts, and atomically replace the in-memory mirror while
- *   persisting LKG via the store (filesystem-first, DB secondary).
- *
- * Behavior:
- * - Payload shape:
- *     { mirror: Record<string, {
- *         serviceConfig: { _id, slug, version, enabled, updatedAt, updatedBy, notes? },
- *         policies: { edge: EdgeRoutePolicyDoc[], s2s: S2SRoutePolicyDoc[] }
- *       }> }
- *   Keys must be "<slug>@<version>" (case-normalized per contract).
+ * - Accept a pushed combined mirror, validate it, and atomically replace the in-memory mirror while persisting LKG.
+ * - Provide a thin READ API to expose the current mirror snapshot.
  *
  * Invariants:
- * - No environment reads here (store handles all persistence).
- * - No filesystem writes here (delegated to store).
- * - Single concern: validate + orchestrate.
+ * - No environment reads. DI only. Single concern: validate → orchestrate → return/throw.
  */
 
 import type { Request, Response } from "express";
@@ -36,20 +17,19 @@ import { SvcReceiver } from "@nv/shared/svc/SvcReceiver";
 import {
   ServiceConfigRecord,
   svcKey,
-  type ServiceConfigRecordJSON,
 } from "@nv/shared/contracts/svcconfig.contract";
-
-import {
-  routePolicyDocArraySchema,
-  type EdgeRoutePolicyDoc,
-  type S2SRoutePolicyDoc,
-} from "@nv/shared/contracts/route_policies.contract";
+import { routePolicyDocArraySchema } from "@nv/shared/contracts/route_policies.contract";
 
 import {
   MirrorStoreV2,
   type MirrorSnapshotV2,
 } from "../services/mirrorStore.v2";
 import type { MirrorMapV2 } from "../services/MirrorDbLoader.v2";
+import type {
+  ServiceConfigParent,
+  EdgeRoutePolicyDoc,
+  S2SRoutePolicyDoc,
+} from "../repos/SvcConfigWithPoliciesRepo.v2";
 
 type MirrorEntryIncoming = {
   serviceConfig: {
@@ -57,6 +37,10 @@ type MirrorEntryIncoming = {
     slug: string;
     version: number;
     enabled: boolean;
+    internalOnly: boolean;
+    baseUrl: string;
+    outboundApiPrefix: string;
+    exposeHealth: boolean;
     updatedAt: unknown;
     updatedBy: string;
     notes?: string;
@@ -69,12 +53,80 @@ type MirrorEntryIncoming = {
 
 type MirrorIncoming = Record<string, MirrorEntryIncoming>;
 
+type HandlerResult = { status: number; body: unknown };
+function isHandlerResult(e: unknown): e is HandlerResult {
+  return (
+    !!e &&
+    typeof e === "object" &&
+    "status" in (e as any) &&
+    "body" in (e as any)
+  );
+}
+
 export class MirrorController extends ControllerBase {
   private readonly rx = new SvcReceiver("svcfacilitator");
 
-  // DI: store owns TTL + LKG (FS-first, DB secondary)
   constructor(private readonly store: MirrorStoreV2) {
-    super({ service: "svcfacilitator" });
+    super({
+      service: "svcfacilitator",
+      context: { component: "MirrorController" },
+    });
+  }
+
+  /**
+   * READ: return current in-memory mirror snapshot.
+   * Throws { status, body } to be formatted by global problem middleware.
+   */
+  public async getMirror(): Promise<Record<string, unknown>> {
+    try {
+      const snap = await this.store.getMirror();
+      if (!snap || Object.keys(snap).length === 0) {
+        // log, then throw a structured 503 — DO NOT down-convert to 500
+        this.log.warn(
+          { stage: "getMirror", reason: "empty_snapshot" },
+          "mirror_unavailable"
+        );
+        throw {
+          status: 503,
+          body: {
+            type: "about:blank",
+            title: "mirror_unavailable",
+            detail: "Mirror is not ready (empty snapshot)",
+          },
+        };
+      }
+      return snap;
+    } catch (err: any) {
+      // If upstream already threw a handler-style error, do not mask it.
+      if (isHandlerResult(err)) {
+        const hb = (err.body ?? {}) as any;
+        this.log.warn(
+          {
+            stage: "getMirror",
+            rethrowing: true,
+            status: err.status,
+            title: hb?.title,
+            detail: hb?.detail,
+          },
+          "mirror_handler_result"
+        );
+        throw err;
+      }
+
+      // Unexpected error: log and throw clean 500
+      this.log.error(
+        { stage: "getMirror", err: String(err) },
+        "mirror_read_error"
+      );
+      throw {
+        status: 500,
+        body: {
+          type: "about:blank",
+          title: "mirror_unavailable",
+          detail: "Failed to load mirror snapshot",
+        },
+      };
+    }
   }
 
   public async mirrorLoad(req: Request, res: Response): Promise<void> {
@@ -96,13 +148,17 @@ export class MirrorController extends ControllerBase {
         json: (payload) => res.json(payload),
       },
       async ({ requestId, body }) => {
-        // 1) Basic envelope check
+        // 1) Envelope check
         const rawMirror: unknown = (body as any)?.mirror;
         if (
           !rawMirror ||
           typeof rawMirror !== "object" ||
           Array.isArray(rawMirror)
         ) {
+          this.log.warn(
+            { stage: "mirrorLoad", requestId },
+            "invalid_payload_no_mirror"
+          );
           return this.bad(
             400,
             requestId,
@@ -131,64 +187,61 @@ export class MirrorController extends ControllerBase {
               );
             }
 
-            // normalize _id to strict string (MirrorEntryV2 requires it)
-            const idStrict = normalizeIdString(parentJson._id);
-            if (!idStrict) {
-              throw new Error(
-                `serviceConfig._id is required and must be a string for '${key}'`
-              );
-            }
+            // normalize _id to strict string (ServiceConfigParent requires it)
+            const idStrict = asStringIdStrict(parentJson._id, `parent ${key}`);
 
-            // children: validate arrays and partition by type
+            // children: validate arrays with Zod, then partition by type
             const edgesAny = routePolicyDocArraySchema.parse(
               value.policies.edge
             );
             const s2sAny = routePolicyDocArraySchema.parse(value.policies.s2s);
 
-            const edge = edgesAny.filter(
-              (p) => p.type === "Edge"
-            ) as EdgeRoutePolicyDoc[];
-            const s2s = s2sAny.filter(
-              (p) => p.type === "S2S"
-            ) as S2SRoutePolicyDoc[];
-
-            if (edge.length !== edgesAny.length) {
+            const edgesOnly = edgesAny.filter((p) => p.type === "Edge");
+            const s2sOnly = s2sAny.filter((p) => p.type === "S2S");
+            if (edgesOnly.length !== edgesAny.length) {
               throw new Error(
                 `policies.edge contains non-Edge entries for '${key}'`
               );
             }
-            if (s2s.length !== s2sAny.length) {
+            if (s2sOnly.length !== s2sAny.length) {
               throw new Error(
                 `policies.s2s contains non-S2S entries for '${key}'`
               );
             }
 
-            // project minimal parent required by MirrorEntryV2 (with _id: string)
-            const parentMinimal: Pick<
-              ServiceConfigRecordJSON,
-              | "_id"
-              | "slug"
-              | "version"
-              | "enabled"
-              | "updatedAt"
-              | "updatedBy"
-              | "notes"
-            > & { _id: string } = {
+            // STRICT normalize children to repo contract types (assert _id/svcconfigId)
+            const edge: EdgeRoutePolicyDoc[] = edgesOnly.map((p: any) =>
+              toEdgePolicyStrict(p, key)
+            );
+            const s2s: S2SRoutePolicyDoc[] = s2sOnly.map((p: any) =>
+              toS2SPolicyStrict(p, key)
+            );
+
+            // project FULL parent required by ServiceConfigParent
+            const parentFull: ServiceConfigParent = {
               _id: idStrict,
               slug: parentJson.slug,
               version: parentJson.version,
               enabled: parentJson.enabled,
+              internalOnly: parentJson.internalOnly,
+              baseUrl: parentJson.baseUrl,
+              outboundApiPrefix: parentJson.outboundApiPrefix,
+              exposeHealth: parentJson.exposeHealth,
               updatedAt: parentJson.updatedAt,
               updatedBy: parentJson.updatedBy,
               ...(parentJson.notes ? { notes: parentJson.notes } : {}),
             };
 
             outputMap[key] = {
-              serviceConfig: parentMinimal,
+              serviceConfig: parentFull,
               policies: { edge, s2s },
             };
           }
-        } catch (e) {
+        } catch (e: any) {
+          this.log.warn(
+            { stage: "mirrorLoad.validate", requestId, error: String(e) },
+            "mirror_validation_failed"
+          );
           return this.bad(
             400,
             requestId,
@@ -201,8 +254,11 @@ export class MirrorController extends ControllerBase {
         let snap: MirrorSnapshotV2 | null = null;
         try {
           snap = await this.store.replaceWithPush(outputMap);
-        } catch (e) {
-          // Store failure shouldn’t leave you blind; we still accept but flag lkgSaved=false
+        } catch (e: any) {
+          this.log.error(
+            { stage: "mirrorLoad.store", requestId, error: String(e) },
+            "mirror_store_replace_failed"
+          );
           return {
             status: 200,
             body: {
@@ -242,23 +298,72 @@ export class MirrorController extends ControllerBase {
     error: string,
     detail: string
   ) {
-    return {
-      status,
-      body: { ok: false, requestId, error, detail },
-    };
+    return { status, body: { ok: false, requestId, error, detail } };
   }
 }
 
-/** Accepts string or {$oid} or other unknown → returns strict string or undefined */
-function normalizeIdString(id: unknown): string | undefined {
+// ── Local strict normalizers ─────────────────────────────────────────────────
+
+function asStringIdStrict(id: unknown, who: string): string {
   if (typeof id === "string" && id.length > 0) return id;
-  if (
-    id &&
-    typeof id === "object" &&
-    "$oid" in (id as any) &&
-    typeof (id as any).$oid === "string"
-  ) {
+  if (id && typeof id === "object" && typeof (id as any).$oid === "string") {
     return (id as any).$oid as string;
   }
-  return undefined;
+  throw new Error(`${who}: _id is required and must be a string`);
+}
+
+function asIsoString(v: unknown, who: string): string {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "string" && v.length > 0) return v;
+  const d = new Date(v as any);
+  if (!Number.isNaN(d.getTime())) return d.toISOString();
+  throw new Error(`${who}: updatedAt must be a Date or ISO string`);
+}
+
+function toEdgePolicyStrict(p: any, parentKey: string): EdgeRoutePolicyDoc {
+  return {
+    _id: asStringIdStrict(p._id, `edge policy for '${parentKey}'`),
+    svcconfigId: asStringIdStrict(
+      p.svcconfigId,
+      `edge policy.svcconfigId for '${parentKey}'`
+    ),
+    type: "Edge",
+    slug: String(p.slug),
+    method: p.method as EdgeRoutePolicyDoc["method"],
+    path: String(p.path),
+    bearerRequired: Boolean(p.bearerRequired),
+    enabled: Boolean(p.enabled),
+    updatedAt: asIsoString(p.updatedAt, `edge policy for '${parentKey}'`),
+    notes: p.notes != null ? String(p.notes) : undefined,
+    minAccessLevel:
+      p.minAccessLevel != null ? Number(p.minAccessLevel) : undefined,
+  };
+}
+
+function toS2SPolicyStrict(p: any, parentKey: string): S2SRoutePolicyDoc {
+  const out: S2SRoutePolicyDoc = {
+    _id: asStringIdStrict(p._id, `s2s policy for '${parentKey}'`),
+    svcconfigId: asStringIdStrict(
+      p.svcconfigId,
+      `s2s policy.svcconfigId for '${parentKey}'`
+    ),
+    type: "S2S",
+    slug: String(p.slug),
+    method: p.method as S2SRoutePolicyDoc["method"],
+    path: String(p.path),
+    enabled: Boolean(p.enabled),
+    updatedAt: asIsoString(p.updatedAt, `s2s policy for '${parentKey}'`),
+    notes: p.notes != null ? String(p.notes) : undefined,
+    minAccessLevel:
+      p.minAccessLevel != null ? Number(p.minAccessLevel) : undefined,
+  };
+  if (Array.isArray((p as any).allowedCallers)) {
+    (out as any).allowedCallers = (p as any).allowedCallers.map((s: any) =>
+      String(s)
+    );
+  }
+  if (Array.isArray((p as any).scopes)) {
+    (out as any).scopes = (p as any).scopes.map((s: any) => String(s));
+  }
+  return out;
 }

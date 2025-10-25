@@ -1,7 +1,6 @@
-// backend/services/svcfacilitator/src/app.v2.ts
+// backend/services/t_entity_crud/src/app.ts
 /**
  * NowVibin (NV)
- * File: backend/services/svcfacilitator/src/app.v2.ts
  *
  * Purpose:
  * - Orchestrates SvcFacilitator runtime. Defines order only; no business logic.

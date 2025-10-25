@@ -3,39 +3,58 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
  *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
- *   - ADR-0015 (Structured Logger with bind() Context)
- *   - ADR-0030 (ContractBase & idempotent contract identification)
  *   - ADR-0032 (RoutePolicyGate — version-agnostic enforcement; health bypass)
+ *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *
- * Purpose:
- * - Canonical Express composition for all services.
- * - Centralizes middleware ordering via overridable hooks:
+ * Purpose (generic):
+ * - Canonical Express composition for ALL services.
+ * - Centralizes lifecycle & middleware order:
  *   onBoot → health → preRouting → routePolicy → security → parsers → routes → postRouting
+ * - Provides a standard, versioned /env/reload endpoint that atomically refreshes the service env DTO.
  *
  * Invariants:
- * - Health routes mount FIRST — before routePolicyGate or verifyS2S.
- * - Routes MUST NOT mount until onBoot() completes.
- * - Environment invariant: Dev == Prod behavior (URLs/ports aside).
+ * - Health mounts FIRST (never gated).
+ * - /env/reload mounts under versioned base and is intended to be policy-gated (UserType >= 5) by RoutePolicy.
+ * - AppBase owns the env DTO reference; services read via getters or pass it to their own layers.
  */
 
 import type { Express, Router, Request, Response, NextFunction } from "express";
 import express = require("express");
-import { ServiceBase } from "./ServiceBase";
-import { mountServiceHealth } from "../health/mount";
-import { responseErrorLogger } from "../middleware/response.error.logger";
+import { mountServiceHealth } from "@nv/shared/health/mount";
+import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 import {
   routePolicyGate,
   type ISvcconfigResolver,
-} from "../middleware/policy/routePolicyGate";
+} from "@nv/shared/middleware/policy/routePolicyGate";
+import { ServiceBase } from "@nv/shared/base/ServiceBase";
+import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+
+export type AppBaseCtor = {
+  service: string;
+  version: number;
+  envDto: SvcEnvDto;
+  /**
+   * Called by the /env/reload endpoint to fetch & validate a fresh SvcEnvDto.
+   * Must throw on failure; AppBase will translate to 500 JSON.
+   */
+  envReloader: () => Promise<SvcEnvDto>;
+};
 
 export abstract class AppBase extends ServiceBase {
   protected readonly app: Express;
   private _booted = false;
 
-  constructor(opts?: { service?: string; context?: Record<string, unknown> }) {
-    super(opts);
+  protected readonly version: number;
+  private _envDto: SvcEnvDto;
+  private readonly envReloader: () => Promise<SvcEnvDto>;
+
+  constructor(opts: AppBaseCtor) {
+    super({ service: opts.service });
+    this.version = opts.version;
+    this._envDto = opts.envDto;
+    this.envReloader = opts.envReloader;
+
     this.app = express();
     this.initApp();
   }
@@ -45,56 +64,60 @@ export abstract class AppBase extends ServiceBase {
     this.app.disable("x-powered-by");
   }
 
+  /** Current environment DTO (read-only outside). */
+  protected get envDto(): SvcEnvDto {
+    return this._envDto;
+  }
+
   /**
    * Public async lifecycle entry.
-   * MUST be awaited by service entrypoints before listen().
+   * MUST be awaited by service factories before listen().
    */
   public async boot(): Promise<void> {
     if (this._booted) return;
 
     await this.onBoot();
 
-    // 1️⃣ Health — always first (never gated)
-    const healthBase = this.healthBasePath();
-    if (healthBase) {
-      this.mountVersionedHealth(healthBase, { readyCheck: this.readyCheck() });
+    // 1) Health — always first (never gated)
+    const base = this.healthBasePath();
+    if (base) {
+      this.mountVersionedHealth(base, { readyCheck: this.readyCheck() });
+      // Standardized env-reload endpoint (intended to be policy-gated by routePolicy)
+      this.mountEnvReload(base);
     }
 
-    // 2️⃣ Pre-routing (edge logs, response error logger, etc.)
+    // 2) Pre-routing (edge logs, response error logger, etc.)
     this.mountPreRouting();
 
-    // 3️⃣ RoutePolicyGate (shared, skips health paths)
+    // 3) RoutePolicyGate (shared, skips health paths)
     this.mountRoutePolicyGate();
 
-    // 4️⃣ Security (verifyS2S, rate limits, etc.)
+    // 4) Security (verifyS2S, rate limits, etc.)
     this.mountSecurity();
 
-    // 5️⃣ Parsers (workers usually want JSON; gateway may override)
+    // 5) Parsers
     this.mountParsers();
 
-    // 6️⃣ Routes (service-specific routes or proxy)
+    // 6) Routes (service-specific one-liners)
     this.mountRoutes();
 
-    // 7️⃣ Post-routing (problem handler, sinks, last-ditch error JSON)
+    // 7) Post-routing (problem handler / last-ditch JSON)
     this.mountPostRouting();
 
     this._booted = true;
     this.log.info({ service: this.service }, "app booted");
   }
 
-  // ───────────────────────────── Hooks (override as needed) ─────────────────────────────
+  // ─────────────── Hooks (override sparingly) ───────────────
 
-  /** One-time, awaitable boot (e.g., start WAL, warm mirrors). Default: no-op. */
+  /** One-time, awaitable boot (e.g., warm caches). Default: no-op. */
   protected async onBoot(): Promise<void> {}
 
-  /**
-   * Default versioned health base path like `/api/<slug>/v1`.
-   * Override if the service uses a nonstandard prefix or multiple versions.
-   */
+  /** Default versioned base like `/api/<slug>/v<major>` */
   protected healthBasePath(): string | null {
     const slug = this.service?.toLowerCase();
     if (!slug) return null;
-    return `/api/${slug}/v1`;
+    return `/api/${slug}/v${this.version}`;
   }
 
   /** Optional readiness function for health. */
@@ -113,10 +136,7 @@ export abstract class AppBase extends ServiceBase {
    */
   protected mountRoutePolicyGate(): void {
     const resolver = this.getSvcconfigResolver();
-    if (!resolver) {
-      this.log.debug("routePolicyGate skipped (no resolver provided)");
-      return;
-    }
+    if (!resolver) return;
 
     const facilitatorBaseUrl = process.env.SVCFACILITATOR_BASE_URL;
     if (!facilitatorBaseUrl) {
@@ -153,7 +173,7 @@ export abstract class AppBase extends ServiceBase {
   /** Service routes (one-liners) or proxy. Must be overridden. */
   protected abstract mountRoutes(): void;
 
-  /** Post-routing error funnel and final JSON handler. Safe for jq/CLI. */
+  /** Post-routing error funnel and final JSON handler. */
   protected mountPostRouting(): void {
     this.app.use(
       (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -164,7 +184,7 @@ export abstract class AppBase extends ServiceBase {
     );
   }
 
-  // ───────────────────────────── Utilities ─────────────────────────────
+  // ─────────────── Built-ins (generic) ───────────────
 
   protected mountVersionedHealth(
     base: string,
@@ -176,10 +196,42 @@ export abstract class AppBase extends ServiceBase {
       readyCheck: opts?.readyCheck,
     });
     this.app.use(base, r);
-    this.log.info(
-      { base, routes: ["GET /health/live", "GET /health/ready"] },
-      "health mounted"
-    );
+  }
+
+  /**
+   * Standardized environment reload endpoint.
+   * Path: `${base}/env/reload` → POST
+   * Contract: returns { ok, reloadedAt, fromEtag?, toEtag? }
+   * Policy: expected to be allowed ONLY for UserType >= 5 via routePolicy.
+   */
+  protected mountEnvReload(base: string): void {
+    const path = `${base}/env/reload`;
+    this.app.post(path, async (req: Request, res: Response) => {
+      // Authorization is expected to be enforced by the routePolicy gate before reaching here.
+      const from = this._envDto?.etag;
+      try {
+        const fresh = await this.envReloader();
+        // Swap atomically
+        this._envDto = fresh;
+        const to = fresh.etag;
+
+        return res.status(200).json({
+          ok: true,
+          reloadedAt: new Date().toISOString(),
+          fromEtag: from ?? null,
+          toEtag: to ?? null,
+        });
+      } catch (err) {
+        return res.status(500).json({
+          ok: false,
+          type: "about:blank",
+          title: "env_reload_failed",
+          detail:
+            (err as Error)?.message ??
+            "Failed to reload environment. Check svcenv availability and policy.",
+        });
+      }
+    });
   }
 
   /** Expose the Express instance to the entrypoint (after boot). */

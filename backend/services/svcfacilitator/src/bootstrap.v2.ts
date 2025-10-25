@@ -2,30 +2,19 @@
 /**
  * Path: backend/services/svcfacilitator/src/bootstrap.v2.ts
  *
- * Purpose
- * - DI wiring and process bootstrap for SvcFacilitator v2.
- * - No business logic; construct deps and hand them to the App.
- *
- * Invariants
- * - Fail fast on env. No hidden defaults.
- * - Pass REAL Mongo collections (must support find().toArray()).
- * - The ServiceEntrypoint.run() callback is synchronous.
+ * Orchestration only; no business logic.
+ * Boot flow: DB → MirrorStore (prewarm) → construct v2 App (routes mount inside).
  */
 
-import { MongoClient } from "mongodb";
 import { getLogger } from "@nv/shared/logger/Logger";
-import { ServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
-import { SvcFacilitatorApp } from "./app.v2";
+import { getSvcFacilitatorDb } from "./services/db.v2";
 
-// Store + repo + loader
-import { MirrorStoreV2 } from "./services/mirrorStore.v2";
+import { ServiceConfigsRepo } from "./repos/ServiceConfigsRepo";
+import { RoutePoliciesRepo } from "./repos/RoutePoliciesRepo";
 import { MirrorDbLoader } from "./services/MirrorDbLoader.v2";
-import {
-  SvcConfigWithPoliciesRepoV2,
-  type MinimalCollection,
-} from "./repos/SvcConfigWithPoliciesRepo.v2";
+import { MirrorStoreV2 } from "./services/mirrorStore.v2";
 
-// Controllers
+import { SvcFacilitatorApp } from "./app.v2";
 import { ResolveController } from "./controllers/ResolveController.v2";
 import { MirrorController } from "./controllers/MirrorController.v2";
 
@@ -35,86 +24,48 @@ const log = getLogger().bind({
   url: "/bootstrap.v2",
 });
 
+// strict env helpers (no defaults)
 function requireEnv(name: string): string {
   const v = process.env[name];
-  if (!v || !String(v).trim()) throw new Error(`missing required env: ${name}`);
-  return String(v).trim();
+  if (!v || v.trim() === "") throw new Error(`Missing required env: ${name}`);
+  return v.trim();
+}
+function requireIntEnv(name: string): number {
+  const raw = requireEnv(name);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`Env ${name} must be a number`);
+  return Math.trunc(n);
 }
 
-export async function createSvcFacilitatorApp() {
-  // 1) Env
-  const dbUri = requireEnv("SVCCONFIG_DB_URI");
-  const dbName = requireEnv("SVCCONFIG_DB_NAME");
-  const ttlMsRaw = requireEnv("MIRROR_TTL_MS");
-  const ttlMs = Number(ttlMsRaw);
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
-    throw new Error(`invalid MIRROR_TTL_MS: ${ttlMsRaw}`);
-  }
+// Build the v2 app and hand back Express
+async function _createSvcFacilitatorApp() {
+  const dbClient = getSvcFacilitatorDb();
+  log.info("SVF210 db_connect_ok", { dbName: (dbClient as any)?.dbName });
 
-  // 2) Mongo connect
-  log.debug({ dbUri, dbName }, "SVF200 db_connect_start");
-  const client = await new MongoClient(dbUri).connect();
-  const db = client.db(dbName);
-  log.info({ dbName }, "SVF210 db_connect_ok");
+  const parentsRepo = new ServiceConfigsRepo(dbClient);
+  const policiesRepo = new RoutePoliciesRepo(dbClient);
+  const loader = new MirrorDbLoader(parentsRepo, policiesRepo);
 
-  // 3) Collections
-  const service_configs = db.collection(
-    "service_configs"
-  ) as unknown as MinimalCollection;
-  const route_policies = db.collection(
-    "route_policies"
-  ) as unknown as MinimalCollection;
+  const ttlMs = requireIntEnv("SVCCONFIG_MIRROR_TTL_MS");
+  const fsPath = requireEnv("SVCCONFIG_LKG_PATH");
+  const mirrorStore = new MirrorStoreV2({ ttlMs, loader, fsPath });
 
-  // 4) Repo → Loader → Store
-  const repo = new SvcConfigWithPoliciesRepoV2(service_configs, route_policies);
-  const loader = new MirrorDbLoader(repo);
-  const store = new MirrorStoreV2({ loader, ttlMs });
+  await mirrorStore.getWithTtl();
 
-  // 5) Controllers
-  const resolveController = new ResolveController(store);
-  const mirrorController = new MirrorController(store);
+  const resolveController = new ResolveController(mirrorStore);
+  const mirrorController = new MirrorController(mirrorStore);
 
-  // 6) App
-  const app = new SvcFacilitatorApp({
-    store,
+  const appV2 = new SvcFacilitatorApp({
+    store: mirrorStore,
     resolveController,
     mirrorController,
   });
 
-  const close = async () => {
-    try {
-      await client.close();
-    } catch {
-      /* no-op */
-    }
-  };
+  log.info("SVF300 app_v2_ready", { service: "svcfacilitator" });
 
-  return { app, store, close };
+  return { app: appV2.expressApp(), mirrorStore };
 }
 
-export async function main() {
-  // Build everything BEFORE calling run
-  const { app, store, close } = await createSvcFacilitatorApp();
-
-  const entry = new ServiceEntrypoint({
-    service: "svcfacilitator",
-    // Warm mirror before listening, so first /mirror doesn’t 503.
-    preStart: async () => {
-      try {
-        const snap = await store.getWithTtl();
-        const count = Object.keys(snap.map ?? {}).length;
-        log.info({ count, source: snap.source }, "SVF311 mirror_warm_ok");
-      } catch (e) {
-        log.warn({ err: String(e) }, "SVF315 mirror_warm_failed");
-      }
-    },
-    onShutdown: async () => {
-      await close();
-    },
-  });
-
-  // Preferred path: BootableApp (AppBase implements boot()+instance)
-  entry.run(
-    () => app as unknown as { boot: () => Promise<void>; instance: any }
-  );
-}
+// Export BOTH named and default to avoid interop/alias surprises
+export const createSvcFacilitatorApp = _createSvcFacilitatorApp;
+export default _createSvcFacilitatorApp;

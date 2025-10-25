@@ -2,46 +2,44 @@
 /**
  * Path: backend/services/svcfacilitator/src/services/MirrorDbLoader.v2.ts
  *
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0020 — SvcConfig Mirror & Push Design
- *   - ADR-0007 — SvcConfig Contract (fixed shapes & keys, OO form)
- *   - ADR-0008 — SvcFacilitator LKG (boot resilience when DB is down)
- *   - ADR-0033 — Internal-Only Services & S2S Verification Defaults
- *   - ADR-0037 — Unified Route Policies (Edge + S2S)
- *   - ADR-0029 — Contract-ID + BodyHandler pipeline
+ * Purpose (locked):
+ * - Repos → Domain entity (single normalization in ServiceConfig.fromDb) → Mirror → Wire.
+ * - Loader never repicks DB fields; repos shape raw DTOs; domain validates loudly.
+ * - DB is the source of truth. No env reads. No Zod here.
  *
- * Purpose:
- * - DB-backed loader for the *combined* mirror: each visible service_config
- *   parent (enabled && !internalOnly) with its enabled route_policies embedded.
- * - **No env reads here** (DI only). LKG and TTL are handled by the store layer.
- *
- * Behavior:
- * - loadFullMirror(): returns a map keyed by "<slug>@<version>" with values:
- *     { serviceConfig: { _id, slug, version, enabled, updatedAt, updatedBy, notes? },
- *       policies: { edge: EdgeRoutePolicyDoc[], s2s: S2SRoutePolicyDoc[] } }
- * - Strict validation: `enabled` and `internalOnly` must be booleans (no coercion).
- * - Returns counts and throws on invalid field types so upstream can fix data.
- *
- * Change Log:
- * - 2025-10-22: Switch to compounded repo (policies embedded)
- * - 2025-10-22: Add strict field validation (no boolean coercion)
+ * Invariants:
+ * - Named imports only.
+ * - Keys in the mirror are "<slug>@<version>".
+ * - Only enabled && !internalOnly parents are included (repo filter).
  */
 
 import { getLogger } from "@nv/shared/logger/Logger";
-import { svcKey } from "@nv/shared/contracts/svcconfig.contract";
+import { Mirror } from "@nv/shared/domain/Mirror";
 import {
-  SvcConfigWithPoliciesRepoV2,
-  type MirrorEntryV2,
-} from "../repos/SvcConfigWithPoliciesRepo.v2";
+  ServiceConfig,
+  type EdgePolicy,
+  type S2SPolicy,
+} from "@nv/shared/domain/ServiceConfig";
 
-export type MirrorMapV2 = Record<string, MirrorEntryV2>;
+import {
+  ServiceConfigsRepo,
+  type ServiceConfigDbDoc, // ← correct type name
+} from "../repos/ServiceConfigsRepo";
+
+import {
+  RoutePoliciesRepo,
+  type RoutePolicyDoc,
+} from "../repos/RoutePoliciesRepo";
+
+import type {
+  ServiceConfigJSON,
+  MirrorJSON,
+} from "@nv/shared/contracts/serviceConfig.wire";
 
 export type MirrorLoadResultV2 = {
-  mirror: MirrorMapV2;
-  rawCount: number; // returned by repo
-  activeCount: number; // inserted into the map
+  mirror: MirrorJSON;
+  rawCount: number;
+  activeCount: number;
   errors: Array<{ key: string; error: string }>;
 };
 
@@ -52,155 +50,134 @@ export class MirrorDbLoader {
     url: "/services/MirrorDbLoader.v2",
   });
 
-  /** Compounded repo (parent + policies). DI from owning service. */
-  private readonly repo: SvcConfigWithPoliciesRepoV2;
+  constructor(
+    private readonly parentsRepo: ServiceConfigsRepo,
+    private readonly policiesRepo: RoutePoliciesRepo
+  ) {}
 
-  constructor(repo: SvcConfigWithPoliciesRepoV2) {
-    this.repo = repo;
-  }
-
-  /**
-   * Load the full combined mirror (visible parents + enabled policies).
-   * Returns null only if repo returned zero visible records *after* validation.
-   * Throws if any record has invalid field types (so bad data is corrected at source).
-   */
   async loadFullMirror(): Promise<MirrorLoadResultV2 | null> {
-    this.log.debug("SVF300 load_from_db_start", { source: "repo.compounded" });
+    this.log.debug("SVF300 load_from_db_start", {
+      source: "repos→domain→mirror",
+    });
 
     const started = Date.now();
-    const entries = await this.repo.findVisibleWithPolicies();
+    const parents = await this.parentsRepo.findVisibleParents();
     const latency = Date.now() - started;
 
-    const rawCount = entries.length;
+    const rawCount = parents.length;
     if (rawCount === 0) {
       this.log.debug("SVF320 load_from_db_empty", { reason: "no_docs" });
       return null;
     }
 
-    const mirror: MirrorMapV2 = Object.create(null);
+    const entities: ServiceConfig[] = [];
     const errors: Array<{ key: string; error: string }> = [];
 
-    for (const e of entries) {
-      const sc = e?.serviceConfig as any;
-      const keyDraft = `${sc?.slug ?? "<unknown>"}@${
-        sc?.version ?? "<unknown>"
-      }`;
-      const id = this.safeId(sc?._id);
+    for (const row of parents as ServiceConfigDbDoc[]) {
+      const kSlug = String((row as any)?.slug ?? "<unknown>");
+      const kVer = String((row as any)?.version ?? "<unknown>");
+      const draftKey = `${kSlug}@${kVer}`;
 
       try {
-        // --- strict field validations (no coercion) ---
-        this.assertBool(sc?.enabled, "enabled", id, sc?.slug, sc?.version);
-        this.assertBool(
-          sc?.internalOnly,
-          "internalOnly",
-          id,
-          sc?.slug,
-          sc?.version
-        );
+        const parentId = (row as any)._id;
 
-        // Normalize only non-semantic surfaces
-        const normalized: MirrorEntryV2 = {
-          ...e,
-          serviceConfig: {
-            ...sc,
-            _id: this.asStringId(sc._id), // acceptable normalization
-            // Keep updatedAt stable: to ISO if Date instance
-            updatedAt:
-              sc.updatedAt instanceof Date
-                ? sc.updatedAt.toISOString()
-                : sc.updatedAt,
-          },
-        };
+        const [edgeRows, s2sRows] = await Promise.all([
+          this.policiesRepo.findEnabledEdgeByParent(parentId),
+          this.policiesRepo.findEnabledS2SByParent(parentId),
+        ]);
 
-        // Safety: repo should have filtered, but assert invariants here
-        if (normalized.serviceConfig.enabled !== true) {
-          throw new Error("enabled must be true for included records");
-        }
-        if (normalized.serviceConfig.internalOnly === true) {
-          throw new Error("internalOnly records must not be included");
-        }
+        const edgePolicies: EdgePolicy[] = edgeRows.map(edgeToDomain);
+        const s2sPolicies: S2SPolicy[] = s2sRows.map(s2sToDomain);
 
-        const key = svcKey(
-          normalized.serviceConfig.slug,
-          normalized.serviceConfig.version
-        );
-        mirror[key] = normalized;
+        // Pass repo-shaped object straight to the domain — single normalization hop.
+        const entity = ServiceConfig.fromDb(row, {
+          edge: edgePolicies,
+          s2s: s2sPolicies,
+        });
+
+        entities.push(entity);
       } catch (err) {
         const msg = String(err);
-        errors.push({ key: keyDraft, error: msg });
-        this.log.warn("SVF415 invalid_field", {
-          id,
-          slug: sc?.slug,
-          version: sc?.version,
+        errors.push({ key: draftKey, error: msg });
+        this.log.warn("SVF415 invalid_parent_or_policy", {
+          key: draftKey,
           error: msg,
         });
       }
     }
 
     if (errors.length > 0) {
-      // Fail-fast so bad data gets fixed; logs include SVF415 per offending record.
       throw new Error(`invalid_service_config_fields count=${errors.length}`);
     }
-
-    const activeCount = Object.keys(mirror).length;
-    if (activeCount === 0) {
+    if (entities.length === 0) {
       this.log.debug("SVF320 load_from_db_empty", {
-        reason: "no_valid_included_records",
+        reason: "no_valid_entities",
         rawCount,
       });
       return null;
     }
 
+    const mirror = Mirror.fromArray(entities);
+    const wire: Record<string, ServiceConfigJSON> = mirror.toObject();
+
     this.log.debug("SVF310 load_from_db_ok", {
       rawCount,
-      activeCount,
+      activeCount: mirror.size(),
       tookMs: latency,
+      keys: mirror.keys(),
     });
 
-    return { mirror, rawCount, activeCount, errors };
+    return {
+      mirror: wire as MirrorJSON,
+      rawCount,
+      activeCount: mirror.size(),
+      errors,
+    };
   }
+}
 
-  // ─────────────────────────────── internals ────────────────────────────────
+/* ------------------------- local adapters ------------------------- */
+/**
+ * Minimal adapters: keep coercion to essentials; the domain enforces invariants.
+ */
 
-  private assertBool(
-    v: unknown,
-    field: "enabled" | "internalOnly",
-    id: string,
-    slug?: string,
-    version?: number
-  ): void {
-    if (typeof v !== "boolean") {
-      const t = typeof v;
-      // Emit precise context to find & fix the doc
-      this.log.warn("SVF415 invalid_field_type", {
-        id,
-        slug,
-        version,
-        field,
-        type: t,
-        value: String(v),
-      });
-      throw new Error(`${field}: expected boolean`);
-    }
-  }
+function asIso(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "string" && v.length > 0) return v;
+  const d = new Date(v as any);
+  if (!Number.isNaN(d.getTime())) return d.toISOString();
+  throw new Error("updatedAt must be a Date or ISO string");
+}
 
-  private safeId(v: unknown): string {
-    try {
-      return this.asStringId(v);
-    } catch {
-      return "<unknown_id>";
-    }
-  }
+function edgeToDomain(p: RoutePolicyDoc): EdgePolicy {
+  return {
+    type: "Edge",
+    svcconfigId: (p as any).svcconfigId,
+    _id: (p as any)._id,
+    slug: String(p.slug),
+    method: String(p.method) as EdgePolicy["method"],
+    path: String(p.path),
+    bearerRequired: Boolean((p as any).bearerRequired),
+    enabled: Boolean(p.enabled),
+    updatedAt: asIso(p.updatedAt),
+    notes: (p as any).notes != null ? String((p as any).notes) : undefined,
+    minAccessLevel:
+      (p as any).minAccessLevel != null
+        ? Number((p as any).minAccessLevel)
+        : undefined,
+  };
+}
 
-  private asStringId(id: unknown): string {
-    if (typeof id === "string") return id;
-    if (id && typeof id === "object") {
-      const anyId = id as any;
-      if (typeof anyId.$oid === "string") return anyId.$oid;
-      if (typeof anyId.toHexString === "function") return anyId.toHexString();
-      const s = String(anyId);
-      if (s && s !== "[object Object]") return s;
-    }
-    throw new Error("_id: expected string-like");
-  }
+function s2sToDomain(p: RoutePolicyDoc): S2SPolicy {
+  return {
+    type: "S2S",
+    svcconfigId: (p as any).svcconfigId,
+    _id: (p as any)._id,
+    slug: String(p.slug),
+    method: String(p.method) as S2SPolicy["method"],
+    path: String(p.path),
+    enabled: Boolean(p.enabled),
+    updatedAt: asIso(p.updatedAt),
+    notes: (p as any).notes != null ? String((p as any).notes) : undefined,
+  };
 }

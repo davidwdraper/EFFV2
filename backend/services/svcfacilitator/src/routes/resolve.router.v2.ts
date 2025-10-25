@@ -2,126 +2,152 @@
 /**
  * Path: backend/services/svcfacilitator/src/routes/resolve.router.v2.ts
  *
- * Routes:
- *   GET /api/svcfacilitator/v1/resolve?slug=<slug>&version=<ver>
- *   GET /api/svcfacilitator/v1/resolve?key=<slug@ver>
- *   GET /api/svcfacilitator/v1/resolve/:slug/v:version
+ * Design / SOP:
+ * - Routes are one-liners; no business logic.
+ * - Always respond with JSON (success or error). Do not fall through to Express HTML.
+ * - Supported forms:
+ *    GET /api/svcfacilitator/v1/resolve?key=<slug@version>
+ *    GET /api/svcfacilitator/v1/resolve?slug=<slug>&version=<ver>
+ *    GET /api/svcfacilitator/v1/resolve/:slug/v:version
  *
- * Contract (RouterBase.jsonOk):
- *   MirrorEntryV2 (combined parent + policies):
- *   {
- *     serviceConfig: {
- *       _id: string,
- *       slug: string,
- *       version: number,
- *       enabled: boolean,
- *       updatedAt: string,
- *       updatedBy: string,
- *       notes?: string
- *     },
- *     policies: {
- *       edge: EdgeRoutePolicyDoc[],
- *       s2s:  S2SRoutePolicyDoc[]
- *     }
- *   }
- *
- * Invariants:
- * - Router is glue-only: versioned path guard, call controller, return JSON.
- * - No env reads. No data reshaping (controller returns contract-ready body).
- * - One-liners; DI for controller.
+ * Why:
+ * - Environment invariance + audit readiness: consistent JSON envelope at the edge.
+ * - Router self-seals with a catch-all JSON 404 to avoid Express HTML even if mount order/base path is wrong.
  */
 
-import type { Request, Response } from "express";
-import { RouterBase } from "@nv/shared/base/RouterBase";
+import { Router, Response } from "express";
 import { ResolveController } from "../controllers/ResolveController.v2";
 
-export class ResolveRouterV2 extends RouterBase {
+/** Minimal RFC7807-ish JSON error */
+function sendProblem(
+  res: Response,
+  status: number,
+  title: string,
+  detail?: string,
+  extra?: Record<string, unknown>
+) {
+  res
+    .status(status)
+    .set("Content-Type", "application/problem+json; charset=utf-8")
+    .json({
+      type: "about:blank",
+      title,
+      status,
+      detail,
+      ...extra,
+    });
+}
+
+function tryJson<T>(
+  res: Response,
+  work: () => Promise<T>,
+  onOk: (val: T) => void
+) {
+  return work()
+    .then(onOk)
+    .catch((err: any) => {
+      // Coerce status: prefer numeric err.status; fall back to numeric err.code; else 500
+      const status =
+        (Number.isFinite(err?.status) && Number(err.status)) ||
+        (Number.isFinite(err?.code) && Number(err.code)) ||
+        500;
+      const title =
+        (typeof err?.title === "string" && err.title) ||
+        "resolve_request_failed";
+      const detail = String(err?.message ?? err);
+      sendProblem(res, status, title, detail);
+    });
+}
+
+export class ResolveRouterV2 {
+  private readonly r: Router;
+
   constructor(private readonly ctrl: ResolveController) {
-    super();
-  }
+    this.r = Router();
 
-  protected configure(): void {
-    this.get("/resolve", (req: Request, res: Response) => {
-      if (!this.requireVersionedApiPath(req, res, "svcfacilitator")) return;
-
-      const slug = (req.query.slug as string | undefined)?.trim();
-      const version = (req.query.version as string | undefined)?.trim();
+    // /resolve?key=<slug@version> OR /resolve?slug=<slug>&version=<ver>
+    this.r.get("/resolve", (req, res) => {
       const key = (req.query.key as string | undefined)?.trim();
+      const slug = (req.query.slug as string | undefined)?.trim();
+      const versionRaw = (req.query.version as string | undefined)?.trim();
 
-      void (async () => {
-        try {
-          const result =
-            key != null && key !== ""
-              ? await this.ctrl.resolveByKey({ body: undefined, key })
-              : await this.ctrl.resolveByParams({
-                  body: undefined,
-                  slug: slug ?? "",
-                  version: version ?? "",
-                });
+      if (key) {
+        return tryJson(
+          res,
+          () => this.ctrl.resolveByKey({ body: undefined, key }),
+          (out) =>
+            res
+              .status(200)
+              .set("Content-Type", "application/json; charset=utf-8")
+              .json(out)
+        );
+      }
 
-          const body = unwrapControllerResult(result);
-          this.jsonOk(res, body);
-        } catch (err: any) {
-          this.jsonProblem(
-            res,
-            asInt(err?.status, 500),
-            err?.code || "error",
-            err?.message || "error"
-          );
-        }
-      })();
+      if (slug && versionRaw) {
+        return tryJson(
+          res,
+          () =>
+            this.ctrl.resolveByParams({
+              body: undefined,
+              slug,
+              version: versionRaw, // controller expects string
+            }),
+          (out) =>
+            res
+              .status(200)
+              .set("Content-Type", "application/json; charset=utf-8")
+              .json(out)
+        );
+      }
+
+      return sendProblem(
+        res,
+        400,
+        "resolve_bad_params",
+        "expected ?key=<slug@version> or ?slug=<slug>&version=<int>"
+      );
     });
 
-    this.get("/resolve/:slug/v:version", (req: Request, res: Response) => {
-      if (!this.requireVersionedApiPath(req, res, "svcfacilitator")) return;
+    // /resolve/:slug/v:version
+    this.r.get("/resolve/:slug/v:version", (req, res) => {
+      const slug = req.params.slug;
+      const versionRaw = req.params.version; // keep as string for controller
+      if (!slug || !versionRaw) {
+        return sendProblem(
+          res,
+          400,
+          "resolve_bad_params",
+          "expected /resolve/:slug/v:version"
+        );
+      }
 
-      void (async () => {
-        try {
-          const result = await this.ctrl.resolveByParams({
+      return tryJson(
+        res,
+        () =>
+          this.ctrl.resolveByParams({
             body: undefined,
-            slug: (req.params.slug || "").trim(),
-            version: (req.params.version || "").trim(),
-          });
-
-          const body = unwrapControllerResult(result);
-          this.jsonOk(res, body);
-        } catch (err: any) {
-          this.jsonProblem(
-            res,
-            asInt(err?.status, 500),
-            err?.code || "error",
-            err?.message || "error"
-          );
-        }
-      })();
+            slug,
+            version: versionRaw,
+          }),
+        (out) =>
+          res
+            .status(200)
+            .set("Content-Type", "application/json; charset=utf-8")
+            .json(out)
+      );
     });
+
+    // ---- SELF-SEALING JSON 404 (router-level) ----
+    // If anything under /resolve* doesn't match above routes, return problem+json,
+    // preventing Express' default HTML 404 from ever reaching the client.
+    this.r.use("/resolve", (req, res) =>
+      sendProblem(res, 404, "not_found", "No resolve route matched")
+    );
+  }
+
+  router(): Router {
+    return this.r;
   }
 }
 
-// ── Unwraps ControllerBase HandlerResult variants (no reshaping) ────────────
-
-function unwrapControllerResult(input: any): any {
-  if (input && typeof input === "object") {
-    if (typeof input.status === "number") {
-      if (input.body && typeof input.body === "object") return input.body;
-      if (input.data && typeof input.data === "object") return input.data;
-    }
-    if (input.ok === true && input.data && typeof input.data === "object") {
-      return input.data;
-    }
-  }
-  // If controller returned a plain object already, pass through
-  if (input && typeof input === "object") return input;
-
-  const err: any = new Error(
-    "resolve_contract_violation: unable to unwrap controller result"
-  );
-  err.status = 500;
-  err.code = "resolve_contract_violation";
-  throw err;
-}
-
-function asInt(v: any, fallback: number): number {
-  const n = Number(v);
-  return Number.isInteger(n) ? n : fallback;
-}
+export default ResolveRouterV2;

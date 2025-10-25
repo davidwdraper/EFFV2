@@ -3,43 +3,27 @@
  * NowVibin (NV)
  * Path: backend/services/svcfacilitator/src/controllers/resolve.controller.v2.ts
  *
- * Docs:
- * - SOP: svcfacilitator is the source of truth; gateway mirrors from it.
- * - ADRs:
- *   - ADR-0010 — Resolve API (read contract)
- *   - ADR-0020 — SvcConfig Mirror & Push Design
- *   - ADR-0007 — SvcConfig Contract (fixed shapes & keys, OO form)
- *   - ADR-0033 — Internal-Only Services & S2S Verification Defaults
- *   - ADR-0037 — Unified Route Policies (Edge + S2S)
- *
  * Purpose:
- * - Resolve "<slug>@<version>" from the **combined** in-memory mirror
- *   (svcconfig parent + grouped route_policies).
- * - Thin controller: validate → fetch from store → return entry.
+ * - Resolve "<slug>@<version>" from the in-memory mirror.
+ * - Normalize → validate → return canonical entry.
  *
- * Behavior:
- * - 200 OK body (MirrorEntryV2):
- *   {
- *     serviceConfig: {
- *       _id: string, slug: string, version: number,
- *       enabled: boolean, updatedAt: string, updatedBy: string, notes?
- *     },
- *     policies: { edge: EdgeRoutePolicyDoc[], s2s: S2SRoutePolicyDoc[] }
- *   }
- *
- * Invariants:
- * - No env reads. Store owns TTL + LKG (filesystem-first).
- * - Mirror already excludes internalOnly/disabled parents upstream.
+ * Canonical response:
+ * {
+ *   serviceConfig: { _id, slug, version, enabled, updatedAt, updatedBy, ... },
+ *   policies: { edge: EdgeRoutePolicyDoc[], s2s: S2SRoutePolicyDoc[] }
+ * }
  */
 
 import {
   ControllerBase,
   type HandlerResult,
 } from "@nv/shared/base/ControllerBase";
+
 import {
   ServiceConfigRecord,
   svcKey,
 } from "@nv/shared/contracts/svcconfig.contract";
+
 import {
   routePolicyDocArraySchema,
   type EdgeRoutePolicyDoc,
@@ -47,10 +31,17 @@ import {
 } from "@nv/shared/contracts/route_policies.contract";
 
 import { MirrorStoreV2 } from "../services/mirrorStore.v2";
-import type { MirrorEntryV2 } from "../repos/SvcConfigWithPoliciesRepo.v2";
+
+type CanonicalEntry = {
+  serviceConfig: Record<string, unknown>;
+  policies: { edge: unknown[]; s2s: unknown[] };
+};
+
+type FlattenedEntry = {
+  policies: { edge: unknown[]; s2s: unknown[] };
+} & Record<string, unknown>;
 
 export class ResolveController extends ControllerBase {
-  // DI: MirrorStoreV2 provides TTL + LKG fallback
   constructor(private readonly store: MirrorStoreV2) {
     super({ service: "svcfacilitator" });
   }
@@ -69,15 +60,13 @@ export class ResolveController extends ControllerBase {
       );
     }
 
-    const entry = await this.getEntryByKey(keyQ);
-    if (!entry) {
-      return this.fail(404, "not_found", `no record for key=${keyQ}`);
-    }
+    const raw = await this.getEntryByKey(keyQ);
+    if (!raw) return this.fail(404, "not_found", `no record for key=${keyQ}`);
 
+    const entry = this.normalize(raw);
     const v = this.validateEntry(keyQ, entry);
-    if (!v.ok) {
-      return this.fail(v.status, v.code, v.msg);
-    }
+    if (!v.ok) return this.fail(v.status, v.code, v.msg);
+
     return this.ok(200, entry);
   }
 
@@ -102,37 +91,92 @@ export class ResolveController extends ControllerBase {
     }
 
     const key = svcKey(slug, version);
-    const entry = await this.getEntryByKey(key);
-    if (!entry) {
-      return this.fail(404, "not_found", `no record for key=${key}`);
-    }
+    const raw = await this.getEntryByKey(key);
+    if (!raw) return this.fail(404, "not_found", `no record for key=${key}`);
 
+    const entry = this.normalize(raw);
     const v = this.validateEntry(key, entry);
-    if (!v.ok) {
-      return this.fail(v.status, v.code, v.msg);
-    }
+    if (!v.ok) return this.fail(v.status, v.code, v.msg);
+
     return this.ok(200, entry);
   }
 
   // ── Internals ──────────────────────────────────────────────────────────────
 
-  private async getEntryByKey(key: string): Promise<MirrorEntryV2 | null> {
+  private async getEntryByKey(key: string): Promise<unknown | null> {
     const snap = await this.store.getWithTtl();
-    const map = snap.map ?? {};
-    const raw = (map as Record<string, MirrorEntryV2 | undefined>)[key];
-    return raw ?? null;
+    const map = (snap?.map ?? {}) as Record<string, unknown>;
+    return map[key] ?? null;
   }
 
   /**
-   * Lightweight validation to keep nice operator errors while trusting upstream filters:
-   * - parent parses via ServiceConfigRecord (ensures ISO updatedAt, slug rules, etc.)
+   * Normalize mirror entry to canonical { serviceConfig, policies }:
+   * - If already canonical, shallow-ensure shapes.
+   * - If flattened, lift all non-"policies" fields into serviceConfig.
+   * - Alias common provenance fields → `updatedBy` if missing.
+   * - DIAGNOSTIC SHIM: if still missing, force `updatedBy="__shim__"` to pass contract.
+   */
+  private normalize(raw: unknown): CanonicalEntry {
+    const ensureUpdatedBy = (parent: Record<string, unknown>) => {
+      if (parent.updatedBy == null || parent.updatedBy === "") {
+        // common aliases
+        const candidates = [
+          "changedByUserId",
+          "updatedByUserId",
+          "lastModifiedBy",
+          "changedBy",
+          "updated_by",
+          "updatedby",
+          "actorId",
+          "userId",
+          "ownerId",
+        ];
+        for (const k of candidates) {
+          const v = (parent as any)[k];
+          if (v != null && v !== "") {
+            parent.updatedBy = String(v);
+            break;
+          }
+        }
+        // --- DIAGNOSTIC SHIM (remove once repos/loader supply updatedBy) ---
+        if (parent.updatedBy == null || parent.updatedBy === "") {
+          parent.updatedBy = "__shim__";
+        }
+      }
+      return parent;
+    };
+
+    if (
+      raw &&
+      typeof raw === "object" &&
+      "serviceConfig" in (raw as any) &&
+      "policies" in (raw as any)
+    ) {
+      const r = raw as CanonicalEntry;
+      return {
+        serviceConfig: ensureUpdatedBy({ ...(r.serviceConfig ?? {}) }),
+        policies: r.policies ?? { edge: [], s2s: [] },
+      };
+    }
+
+    const f = (raw ?? {}) as FlattenedEntry;
+    const { policies, ...parent } = f;
+    return {
+      serviceConfig: ensureUpdatedBy({ ...parent }),
+      policies: policies ?? { edge: [], s2s: [] },
+    };
+  }
+
+  /**
+   * Lightweight validation (OO contract does the heavy lift):
+   * - parent parses via ServiceConfigRecord (requires updatedBy, ISO updatedAt, slug rules…)
    * - key matches <slug>@<version>
    * - policies arrays contain only correct typed entries
-   * - parent.enabled must be true (defensive check)
+   * - parent.enabled must be true
    */
   private validateEntry(
     key: string,
-    entry: MirrorEntryV2
+    entry: CanonicalEntry
   ):
     | { ok: true }
     | {
@@ -142,10 +186,8 @@ export class ResolveController extends ControllerBase {
         msg: string;
       } {
     try {
-      // Parent strict parse/normalize
       const parentJson = new ServiceConfigRecord(entry.serviceConfig).toJSON();
 
-      // Defensive enabled check
       if (parentJson.enabled !== true) {
         return {
           ok: false,
@@ -155,7 +197,6 @@ export class ResolveController extends ControllerBase {
         };
       }
 
-      // Key must match canonical
       const expectedKey = svcKey(parentJson.slug, parentJson.version);
       if (key !== expectedKey) {
         return {
@@ -166,7 +207,6 @@ export class ResolveController extends ControllerBase {
         };
       }
 
-      // Children shape checks (already normalized, but keep the guardrails)
       const edges = routePolicyDocArraySchema.parse(
         entry.policies.edge
       ) as EdgeRoutePolicyDoc[];

@@ -1,44 +1,43 @@
 // backend/services/svcfacilitator/src/index.ts
 /**
- * NowVibin (NV)
+ * Path: backend/services/svcfacilitator/src/index.ts
  *
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADR-0002 — SvcFacilitator Minimal (bootstrap & purpose)
- * - ADR-0014 — Base Hierarchy (ServiceEntrypoint vs ServiceBase)
- * - ADR-0008 — SvcFacilitator LKG (boot resilience when DB is down)
- *
- * Purpose:
- * - Thin entrypoint. Delegates to bootstrap.v2.ts/main(), which:
- *   1) Builds deps (async)
- *   2) Calls ServiceEntrypoint.run() with a *synchronous* RequestListener
- *
- * Invariants:
- * - Orchestration-only; zero business logic here.
- * - No literals, no env fallbacks here.
+ * Entrypoint: awaits bootstrap and starts HTTP.
+ * Environment invariance for the port (no defaults).
  */
 
+import createSvcFacilitatorApp from "./bootstrap.v2"; // ← default import (robust)
 import { getLogger } from "@nv/shared/logger/Logger";
-import { main as bootstrapMain } from "./bootstrap.v2";
+
+const log = getLogger().bind({
+  service: "svcfacilitator",
+  component: "entrypoint",
+  url: "/index",
+});
+
+// strict env helpers
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || v.trim() === "") throw new Error(`Missing required env: ${name}`);
+  return v.trim();
+}
+function requireIntEnv(name: string): number {
+  const raw = requireEnv(name);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`Env ${name} must be a number`);
+  return Math.trunc(n);
+}
 
 (async () => {
-  try {
-    await bootstrapMain();
-  } catch (err) {
-    const log = getLogger().bind({
-      service: "svcfacilitator",
-      component: "bootstrap",
-    });
-    try {
-      const e =
-        err instanceof Error
-          ? { name: err.name, message: err.message, stack: err.stack }
-          : { message: String(err) };
-      log.error({ err: e }, "svcfacilitator boot_failed");
-    } catch {
-      // eslint-disable-next-line no-console
-      console.error("fatal svcfacilitator startup", err);
-    }
-    process.exit(1);
-  }
-})();
+  const port = requireIntEnv("SVCCONFIG_HTTP_PORT");
+
+  const { app } = await createSvcFacilitatorApp();
+
+  app.listen(port, () => {
+    log.info("SVF001 http_listening", { port, app: "v2" });
+  });
+})().catch((err) => {
+  log.error("svcfacilitator boot_failed", { err });
+  // eslint-disable-next-line no-process-exit
+  process.exit(1);
+});

@@ -24,5 +24,6 @@ function requireEnv(name: string): string {
 export function getSvcFacilitatorDb(): DbClient {
   const uri = requireEnv("SVCCONFIG_DB_URI");
   const dbName = requireEnv("SVCCONFIG_DB_NAME");
+  console.log("@@@@@ SVF211 db_config", { uri, dbName });
   return new DbClient(new MongoDbFactory(), { uri, dbName });
 }

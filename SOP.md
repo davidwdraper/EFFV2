@@ -224,4 +224,74 @@ Any class doing two jobs? (If yes, split.)
 
 Could this ship to prod unchanged with different env values? If not, fix it.
 
+All new development is to be based around DTO's. Domain data lives nowhere but in the same DTO. Different views of the same data will be two different DTOs, but that should be the exception. When domain data is extracted from the DB for UI viewing, the query should exclude all private info (i.e., password hash in user DTO). If private data is needed internally, than a seperate internal DTO is created. There has to be a very good reason to have two different DTOs for the same DB model.
+
+All new service development is going to be done like this:
+
+There will be template services for each of the common service types: entity-crud, micro orchestration services (MOS), 3rd party api interfacing, cron jobs. Each template service will be runnable by simply cloning it and assigning a port. The crud template will have a sample DB, so testing will be e2e rather than mocking the DB.
+
+User auth will be coming up shortly, so this has to be memorized:
+
+export const enum UserType {
+Anon = 0, // public
+Free = 1, // can CRUD own
+LowFee = 2, // can CRUD own
+HighFee = 3, // can CRUD own
+AdminDomain = 4, // read/write domain data; override ownership
+AdminSystem = 5, // + system data manager (e.g., svcconfig)
+AdminRoot = 6 // + kill switch
+}
+
+The overview of how the 1st service template is to built (entity-crud) is:
+
+1. index.ts: load the env, bootstrap, start the app, and listen on a port. Nothing more.
+2. app.ts: inherits from AppBase. Orchestrate the order of the pipeline. Everything that is generic from service-to-service i in appBase. Nothing more.
+3. routes.ts: inherits from RouteBase. One line per route, builds a route specific controller.
+4. controller.ts: inherits from ControllerBase. Controller is the orchestrator of handlers. No other logic goes in the controller.
+5. <purpose>.handler.ts: One or more controller specific handlers in a handlers folder under the parent controller.
+6. A handler only has a single purpose. If it's useful to more than one controller, then it's not a handler; it's a service, and goes under the services folder. Handlers instantiate TS objects that don't know they're living within a micro-service context. They are pure OO encapsulations.
+7. If a class is useful across handlers, then it's s service. A service should never be specific to just one controller. If it is, it's a handler, not a service.
+8. The DTO is the mother of all data. Each DTO inherits from DtoBase and there is an IDto interface. The DTO will have toJson() and fromJson() methods for fs stores and/or wire transfers. The DTO is responsible for its own data validation and user-authorization. user-auth is built into the getters and setters of each DTO property.
+
+The shared SvcClient class is the how S2S calls are made. It uses slug@version to find target URLs via an internal call the svcfacililtator (if not in local TTL cache).
+
+The template's AppBase will provide bearer token authentication, using a security object that caches jwks keys with remain TTL. New keys are obtained from the jwks service. This logic is in place. Ask when you need to see it.
+
+As we build the template entity-crud service, we start at index.ts and work our way out. We do each file one-by-one and discuss and justify every snippet in the file. The template will be the scafolding for dozens of future services, so it has to be spot on. To make sure we don't totally alienate existing code, I will provide you an index.ts, and much of the files as we progress. Your job will be to strip them to the bones. But will want: adequate try/catch blocks, re-throws will additional context, and log.debug() instrumentation everywhere it makes sense.
+
+Once we have a working entity-crud service, we'll create a generic test harness that will work on all services that are derived from the entity-crud template. When that runs green, we rebuild the svcfacilitator by clonging entity-crud and renaming in the appropriate places.
+
+folder hierarchy:
+backend/services/t_entity_crud/
+--package.json
+--tsconfig.json
+--src/
+----index.ts
+----app.ts
+----routes/
+------<route1>.route.ts
+------<route2>.route.ts
+----controllers/
+------<route1.controller>/
+--------<route1>.controller.ts
+--------<handlers>/
+----------<handler1>.<route1>.handler.ts
+----------<handler2>.<route1>.handler.ts
+------<route2.controller>/
+--------<route2>.controller.ts
+--------<handlers>/
+----------<handler1>.<route2>.handler.ts
+----------<handler2>.<route2>.handler.ts
+----services/
+------<service1>.service.ts
+------<service2>.service.ts
+----dtos/ <== only if the DTO will never be exposed outside the service
+------<dto1>.dto.ts
+------<dto2>.dto.ts
+----repos
+------<repo1>.repo.ts
+------<repo2>.repo.ts
+
+If you want to reword what I just said to make it more concise for yourself, go ahead. Give it back, I'll store and reprovide it to you at the start of each session.
+
 Your previous session notes below:

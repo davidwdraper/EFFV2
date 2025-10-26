@@ -1,20 +1,19 @@
 // backend/services/shared/src/http/ControllerBase.ts
 /**
  * Docs:
- * - ADR-0041 (Controller & Handler Architecture)
- * - ADR-0042 (HandlerContext Bus — KISS)
- * - ADR-0043 (DTO Hydration & Context-Driven Failure Propagation)
+ * - ADR-0041/0042/0043
  *
  * Purpose:
  * - Shared controller base:
  *   • Accepts service app via DI
- *   • Seeds HandlerContext (incl. "App")
+ *   • Seeds HandlerContext (incl. "App" and **"svcEnv"**)
  *   • finalize(ctx) maps context → HTTP response
  */
 
 import type { Request, Response } from "express";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
-import { getLogger, type IBoundLogger } from "@nv/shared/logger/Logger";
+import { HandlerContext } from "../http/HandlerContext";
+import { getLogger, type IBoundLogger } from "../logger/Logger";
+import type { SvcEnvDto } from "../dto/svcenv.dto";
 
 type ProblemJson = {
   type: string;
@@ -32,7 +31,6 @@ export abstract class ControllerBase {
 
   constructor(app: unknown) {
     this.app = app;
-    // Prefer the service’s bound logger if present; else create one.
     const appLog = (app as any)?.log as IBoundLogger | undefined;
     this.log =
       appLog?.bind({ component: "ControllerBase" }) ??
@@ -56,18 +54,39 @@ export abstract class ControllerBase {
     ctx.set("query", req.query);
     ctx.set("body", req.body);
 
-    // DI app into context (your requirement): handlers can use App.log
+    // Inject App for direct access to bound loggers etc.
     ctx.set("App", this.app);
     ctx.set("res", res);
 
-    this.log.debug({ event: "make_context", requestId }, "Context seeded");
+    // Try to expose SvcEnvDto from the app — supports several shapes to avoid tight coupling
+    const svcEnv: SvcEnvDto | undefined =
+      (this.app as any)?.svcEnv ??
+      (this.app as any)?.env ??
+      (this.app as any)?.getEnv?.() ??
+      (this.app as any)?.getSvcEnv?.();
+
+    if (svcEnv) {
+      ctx.set("svcEnv", svcEnv);
+    } else {
+      // No svcEnv — downstream env-validation handler should fail fast
+      ctx.set("handlerStatus", "error");
+      ctx.set("status", 500);
+      ctx.set("error", {
+        code: "SVCENV_MISSING",
+        message:
+          "SvcEnvDto not available on App. Ops: ensure App exposes svcEnv via a public getter or property.",
+        hint: "AppBase holds envDto; provide a public accessor and ensure ControllerBase can read it.",
+      });
+    }
+
+    this.log.debug(
+      { event: "make_context", requestId, hasSvcEnv: !!svcEnv },
+      "Context seeded"
+    );
     return ctx;
   }
 
-  /**
-   * Final line in controllers: return super.finalize(ctx)
-   * Maps HandlerContext → HTTP per ADR-0043.
-   */
+  /** Controllers end with: return super.finalize(ctx) */
   protected finalize(ctx: HandlerContext): void {
     const res = ctx.get<Response>("res")!;
     const requestId = ctx.get<string>("requestId") ?? "";
@@ -84,7 +103,6 @@ export abstract class ControllerBase {
       "Finalize start"
     );
 
-    // Error path
     if (handlerStatus === "error" || (statusFromCtx && statusFromCtx >= 400)) {
       const status =
         statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
@@ -98,7 +116,6 @@ export abstract class ControllerBase {
       return;
     }
 
-    // Warning path (no error)
     if (handlerStatus === "warn") {
       if (Array.isArray(warnings)) {
         for (const w of warnings) {
@@ -113,12 +130,9 @@ export abstract class ControllerBase {
       return;
     }
 
-    // OK path
     res.status(200).json(result ?? { ok: true });
     this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
   }
-
-  // ───────────── helpers ─────────────
 
   private toProblemJson(
     err: any,

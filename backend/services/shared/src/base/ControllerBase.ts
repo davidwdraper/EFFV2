@@ -1,114 +1,147 @@
-// backend/services/shared/src/base/ControllerBase.ts
+// backend/services/shared/src/http/ControllerBase.ts
 /**
- * NowVibin (NV)
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0014 (Base Hierarchy — ControllerBase extends ServiceBase)
- *   - ADR-0015 (Structured Logger with bind() Context)
- *   - ADR-0041 (Controller & Handler Architecture)
- *   - ADR-0042 (HandlerContext Bus — KISS)
+ * - ADR-0041 (Controller & Handler Architecture)
+ * - ADR-0042 (HandlerContext Bus — KISS)
+ * - ADR-0043 (DTO Hydration & Context-Driven Failure Propagation)
  *
  * Purpose:
  * - Shared controller base:
- *   • Constructs and seeds HandlerContext (the request “bus”).
- *   • Adapts controller business functions to Express.
- *   • Emits canonical envelopes based solely on HandlerContext keys.
- *
- * Invariants:
- * - Controllers contain no business logic.
- * - Derived controllers cannot alter HandlerContext construction.
- * - Success → { ok:true,  service, data? }
- * - Error   → { ok:false, service, data:{ status, detail? } }
+ *   • Accepts service app via DI
+ *   • Seeds HandlerContext (incl. "App")
+ *   • finalize(ctx) maps context → HTTP response
  */
 
-import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { ServiceBase } from "./ServiceBase";
-import { HandlerContext, CtxKeys } from "../http/HandlerContext";
+import type { Request, Response } from "express";
+import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { getLogger, type IBoundLogger } from "@nv/shared/logger/Logger";
 
-export abstract class ControllerBase extends ServiceBase {
-  protected constructor(opts?: {
-    service?: string;
-    context?: Record<string, unknown>;
-  }) {
-    super({
-      service: opts?.service,
-      context: { component: "Controller", ...(opts?.context ?? {}) },
-    });
+type ProblemJson = {
+  type: string;
+  title: string;
+  detail?: string;
+  status?: number;
+  code?: string;
+  issues?: Array<{ path: string; code: string; message: string }>;
+  requestId?: string;
+};
+
+export abstract class ControllerBase {
+  protected readonly app: unknown;
+  protected readonly log: IBoundLogger;
+
+  constructor(app: unknown) {
+    this.app = app;
+    // Prefer the service’s bound logger if present; else create one.
+    const appLog = (app as any)?.log as IBoundLogger | undefined;
+    this.log =
+      appLog?.bind({ component: "ControllerBase" }) ??
+      getLogger({ service: "shared", component: "ControllerBase" });
+
+    this.log.debug(
+      { event: "construct", hasApp: !!app },
+      "ControllerBase ctor"
+    );
   }
 
-  // ────────────────────────────────────────────────────────────────
-  // Express adapter: wrap business(ctx) into a RequestHandler
-  // ────────────────────────────────────────────────────────────────
+  /** Seed a fresh HandlerContext (ADR-0042). */
+  protected makeContext(req: Request, res: Response): HandlerContext {
+    const ctx = new HandlerContext();
+
+    const requestId = (req.headers["x-request-id"] as string) ?? this.randId();
+
+    ctx.set("requestId", requestId);
+    ctx.set("headers", req.headers);
+    ctx.set("params", req.params);
+    ctx.set("query", req.query);
+    ctx.set("body", req.body);
+
+    // DI app into context (your requirement): handlers can use App.log
+    ctx.set("App", this.app);
+    ctx.set("res", res);
+
+    this.log.debug({ event: "make_context", requestId }, "Context seeded");
+    return ctx;
+  }
 
   /**
-   * Wraps a controller-specific business function that:
-   *  - receives a seeded HandlerContext (the bus),
-   *  - runs its handler chain,
-   *  - writes results into the context (CtxKeys.*),
-   *  - returns void/Promise<void>.
-   *
-   * The HTTP response is produced **only** from the context keys:
-   *  - Error keys (ErrStatus/ErrCode/ErrDetail) short-circuit to error envelope
-   *  - Otherwise ResStatus/ResBody drive the success envelope (default 200)
+   * Final line in controllers: return super.finalize(ctx)
+   * Maps HandlerContext → HTTP per ADR-0043.
    */
-  public handle(
-    business: (ctx: HandlerContext) => void | Promise<void>
-  ): RequestHandler {
-    const log = this.bindLog({ kind: "http", adapter: "controller_handle" });
+  protected finalize(ctx: HandlerContext): void {
+    const res = ctx.get<Response>("res")!;
+    const requestId = ctx.get<string>("requestId") ?? "";
+    const handlerStatus = (
+      ctx.get<string>("handlerStatus") ?? "ok"
+    ).toLowerCase();
+    const statusFromCtx = ctx.get<number>("status");
+    const error = ctx.get<any>("error");
+    const warnings = ctx.get<any[]>("warnings");
+    const result = ctx.get<any>("result");
 
-    return async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        // Build + seed the HandlerContext (KISS bus)
-        const ctx = new HandlerContext();
-        ctx.set(
-          CtxKeys.RequestId,
-          (req.header("x-request-id") ?? "") as string
-        );
-        ctx.set(CtxKeys.Headers, req.headers as Record<string, unknown> as any);
-        ctx.set(CtxKeys.Params, (req.params ?? {}) as Record<string, string>);
-        ctx.set(CtxKeys.Query, (req.query ?? {}) as Record<string, unknown>);
-        ctx.set(CtxKeys.Body, (req as any).body);
+    this.log.debug(
+      { event: "finalize_enter", requestId, handlerStatus, statusFromCtx },
+      "Finalize start"
+    );
 
-        log.debug(
-          { url: req.originalUrl, method: req.method },
-          "controller_enter"
-        );
+    // Error path
+    if (handlerStatus === "error" || (statusFromCtx && statusFromCtx >= 400)) {
+      const status =
+        statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
+      const body: ProblemJson = this.toProblemJson(error, status, requestId);
+      res.status(status).type("application/problem+json").json(body);
+      this.log.error(
+        { event: "finalize_error", requestId, status, problem: body },
+        "Controller error response"
+      );
+      this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
+      return;
+    }
 
-        // Execute controller-defined orchestration (handler chain)
-        await business(ctx);
-
-        // 1) Error branch (fail-fast)
-        const errStatus = ctx.get<number>(CtxKeys.ErrStatus);
-        if (typeof errStatus === "number") {
-          const code = ctx.get<string>(CtxKeys.ErrCode) ?? "error";
-          const detail = ctx.get(CtxKeys.ErrDetail);
-          res.status(errStatus).json({
-            ok: false,
-            service: this.service,
-            data: { status: code, detail },
-          });
-          log.debug({ status: errStatus }, "controller_exit_error");
-          return;
+    // Warning path (no error)
+    if (handlerStatus === "warn") {
+      if (Array.isArray(warnings)) {
+        for (const w of warnings) {
+          this.log.warn(
+            { event: "warn", requestId, warning: w },
+            "Handler warning"
+          );
         }
-
-        // 2) Success branch
-        const status = ctx.get<number>(CtxKeys.ResStatus) ?? 200;
-        const body = ctx.get(CtxKeys.ResBody);
-
-        if (body !== undefined) {
-          res
-            .status(status)
-            .json({ ok: true, service: this.service, data: body });
-        } else {
-          res.status(status).json({ ok: true, service: this.service });
-        }
-
-        log.debug({ status }, "controller_exit_ok");
-      } catch (err) {
-        log.error({ err: String(err) }, "controller_error");
-        next(err);
       }
+      res.status(200).json(result ?? { ok: true, warnings });
+      this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
+      return;
+    }
+
+    // OK path
+    res.status(200).json(result ?? { ok: true });
+    this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
+  }
+
+  // ───────────── helpers ─────────────
+
+  private toProblemJson(
+    err: any,
+    status: number,
+    requestId?: string
+  ): ProblemJson {
+    const code = err?.code ?? "UNSPECIFIED";
+    const detail = err?.message ?? err?.detail ?? "Unhandled error";
+    const issues = Array.isArray(err?.issues) ? err.issues : undefined;
+
+    return {
+      type: "about:blank",
+      title:
+        err?.title ?? (status >= 500 ? "Internal Server Error" : "Bad Request"),
+      detail,
+      status,
+      code,
+      issues,
+      requestId,
     };
+  }
+
+  private randId(): string {
+    return Math.random().toString(36).slice(2, 10);
   }
 }

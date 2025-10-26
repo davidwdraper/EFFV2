@@ -1,16 +1,17 @@
-// backend/services/t_entity_crud/src/dtos/xxx.dto.ts
+// backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0015 (DTO-First Development)
+ *   - ADR-0040 (DTO-Only Persistence)
  *
  * Purpose:
  * - Xxx DTO: sole contract + validator for the t_entity_crud template.
  * - Encapsulates data entirely; exposes only getters and toJson().
  *
  * Invariants:
- * - DB primary key is stored internally as _id; when exposed, use getter xxxId.
+ * - DB primary key is stored internally as _id; exposed via getter xxxId.
  * - No exported internal state, schemas, or types.
  */
 
@@ -68,15 +69,35 @@ export class XxxDto extends BaseDto {
   }
 
   /** Hydrate from persistence or wire JSON (same schema authority). */
-  public static fromJson(json: unknown): XxxDto {
-    return XxxDto.create(json);
+  public static fromJson(json: unknown): XxxDto;
+  public static fromJson(json: unknown, opts: { validate: boolean }): XxxDto;
+  public static fromJson(json: unknown, opts?: { validate: boolean }): XxxDto {
+    const validate = opts?.validate !== false; // default true for safety
+
+    if (validate) {
+      const parsed = _schema.safeParse(json);
+      if (!parsed.success) {
+        throw new DtoValidationError(
+          "Invalid Xxx payload. Ops: validate client/body mapper; ensure required fields are present and typed correctly.",
+          parsed.error.issues.map((i) => ({
+            path: i.path.join("."),
+            code: i.code,
+            message: i.message,
+          })),
+          "Ops: Check request logs with x-request-id or compare persisted doc against DTO rules."
+        );
+      }
+      return new XxxDto(parsed.data);
+    }
+
+    // Trusted hydration path (DB/WAL/FS): skip redundant validation
+    const parsed = _schema.parse(json);
+    return new XxxDto(parsed);
   }
 
   // ---- ID exposure policy ----
   /** Public-facing primary key alias (keeps multi-DTO responses unambiguous). */
   public get xxxId(): string | undefined {
-    // Map the internal DB _id to the exposed alias
-    // (We deliberately DO NOT expose a generic 'id' getter.)
     const id = (this as unknown as { _internalId?: string })._internalId;
     return id;
   }
@@ -120,8 +141,6 @@ export class XxxDto extends BaseDto {
   }
 
   // ---- Internals ----
-
-  /** Single, drift-free mutation path using BaseDto helpers for meta/id. */
   private _mutate(
     patch: Partial<
       Pick<_State, "txtfield1" | "txtfield2" | "numfield1" | "numfield2">
@@ -132,7 +151,6 @@ export class XxxDto extends BaseDto {
       ...patch,
     } as Record<string, unknown>;
 
-    // Compose with current id/meta, validate once, then re-extract id/meta
     const composed = this._composeForValidation(nextCandidate);
     const parsed = _schema.safeParse(composed);
     if (!parsed.success) {

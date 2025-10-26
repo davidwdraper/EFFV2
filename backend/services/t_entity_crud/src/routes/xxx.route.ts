@@ -19,7 +19,7 @@
 import { RouterBase } from "@nv/shared/base/RouterBase";
 
 // Route-specific controllers (to be implemented next)
-import { XxxCreateController } from "../controllers/xxx.create.controller";
+import { XxxCreateController } from "../controllers/xxx.create.controller/xxx.create.controller";
 import { XxxReadController } from "../controllers/xxx.read.controller";
 import { XxxUpdateController } from "../controllers/xxx.update.controller";
 import { XxxDeleteController } from "../controllers/xxx.delete.controller";

@@ -1,24 +1,40 @@
-// backend/services/t_entity_crud/src/controllers/create/xxx.create.controller.ts
+// backend/services/t_entity_crud/src/controllers/xxx.create.controller/xxx.create.controller.ts
 /**
- * Purpose: Per-route controller for PUT /api/xxx/v1/create (no-op stub).
- * Notes: Controllers orchestrate only; handlers will be added later.
+ * Purpose:
+ * - Orchestrate PUT /api/xxx/v1/create
+ * - Declare which DTOs carry IndexHints for this controller; ControllerBase ensures them once.
+ * - No business logic; ends with super.finalize(ctx)
  */
-import type { RequestHandler } from "express";
+
+import { Request, Response } from "express";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { CtxKeys } from "@nv/shared/http/HandlerContext";
+import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { DtoFromJsonCreateHandler } from "./handlers/dtoFromJson.create.handler";
+import { DtoToDbCreateHandler } from "./handlers/dtoToDb.create.handler";
+import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { DbWriteCreateHandler } from "backend/services/t_entity_crud/src/controllers/xxx.create.controller/handlers/dbWrite.create.handler";
 
 export class XxxCreateController extends ControllerBase {
-  constructor() {
-    super({ service: "t_entity_crud" });
+  constructor(app: unknown) {
+    super(app); // triggers one-time index ensure via DTO hints
   }
-  public handle(): RequestHandler {
-    return super.handle(async (ctx) => {
-      ctx.set(CtxKeys.ErrStatus, 501);
-      ctx.set(CtxKeys.ErrCode, "not_implemented");
-      ctx.set(
-        CtxKeys.ErrDetail,
-        "Create Xxx is not implemented yet. Wire handlers next (validate → persist WAL-first → DB)."
-      );
-    });
+
+  /** Tell ControllerBase which DTOs to read & burn index hints from */
+  protected override indexHintDtos(): Function[] {
+    return [XxxDto];
+  }
+
+  public async put(req: Request, res: Response): Promise<void> {
+    const ctx: HandlerContext = this.makeContext(req, res);
+
+    const handlers = [
+      new DtoFromJsonCreateHandler(ctx),
+      new DtoToDbCreateHandler(ctx), // provides dbWriter (no write here)
+      new DbWriteCreateHandler(ctx), // does the actual write
+    ];
+
+    for (const h of handlers) await h.run();
+
+    return super.finalize(ctx);
   }
 }

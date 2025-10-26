@@ -1,19 +1,36 @@
 // backend/services/shared/src/http/ControllerBase.ts
 /**
  * Docs:
- * - ADR-0041/0042/0043
+ * - ADR-0040 (DTO-Only Persistence via Managers)
+ * - ADR-0041 (Controller & Handler Architecture)
+ * - ADR-0042 (HandlerContext Bus)
+ * - ADR-0043 (DTO Hydration & Context Failure Propagation)
  *
  * Purpose:
- * - Shared controller base:
- *   • Accepts service app via DI
- *   • Seeds HandlerContext (incl. "App" and **"svcEnv"**)
- *   • finalize(ctx) maps context → HTTP response
+ * - Shared abstract controller base for all NowVibin backend services.
+ * - Injects AppBase instance; seeds HandlerContext; finalizes responses.
+ * - Ensures DTO-defined IndexHints are applied once at service boot.
+ * - Provides standardized finalize() logic (Problem+JSON output).
+ *
+ * Behavior:
+ * - Instantiated by service controllers (e.g., XxxCreateController).
+ * - During construction, checks registered DTOs for IndexHints and
+ *   applies indexes idempotently (burn-after-read).
+ * - Does not perform business logic; controllers sequence handlers.
+ *
+ * Notes:
+ * - Index ensure is non-blocking async; safe to call in ctor.
+ * - WeakSet prevents double ensures even if DTO appears in multiple controllers.
  */
 
 import type { Request, Response } from "express";
 import { HandlerContext } from "../http/HandlerContext";
 import { getLogger, type IBoundLogger } from "../logger/Logger";
 import type { SvcEnvDto } from "../dto/svcenv.dto";
+import { consumeIndexHints } from "../dto/persistence/index-hints";
+import { mongoFromHints } from "../dto/persistence/indexes/mongoFromHints";
+import { applyMongoIndexes } from "../dto/persistence/indexes/applyMongoIndexes";
+import { getMongoCollectionFromSvcEnv } from "../dto/persistence/adapters/mongo/connectFromSvcEnv";
 
 type ProblemJson = {
   type: string;
@@ -27,10 +44,14 @@ type ProblemJson = {
 
 export abstract class ControllerBase {
   protected readonly app: unknown;
-  protected readonly log: IBoundLogger;
+  protected readonly log!: IBoundLogger; // definite assignment OK
+
+  // Global guard so indexes ensure only once per DTO
+  private static _ensuredForDto = new WeakSet<Function>();
 
   constructor(app: unknown) {
     this.app = app;
+
     const appLog = (app as any)?.log as IBoundLogger | undefined;
     this.log =
       appLog?.bind({ component: "ControllerBase" }) ??
@@ -40,12 +61,97 @@ export abstract class ControllerBase {
       { event: "construct", hasApp: !!app },
       "ControllerBase ctor"
     );
+
+    // One-time index ensure
+    const svcEnv: SvcEnvDto | undefined =
+      (this.app as any)?.svcEnv ??
+      (this.app as any)?.env ??
+      (this.app as any)?.getEnv?.() ??
+      (this.app as any)?.getSvcEnv?.();
+
+    const dtos = this.indexHintDtos();
+    if (!Array.isArray(dtos) || dtos.length === 0) return;
+
+    if (!svcEnv) {
+      this.log.warn(
+        { event: "index_ensure_skipped", reason: "svcEnv_missing" },
+        "SvcEnv missing; index ensure skipped"
+      );
+      return;
+    }
+
+    (async () => {
+      for (const DtoCtor of dtos) {
+        if (ControllerBase._ensuredForDto.has(DtoCtor)) continue;
+
+        try {
+          const hints = consumeIndexHints(DtoCtor);
+          if (hints.length === 0) {
+            this.log.debug(
+              { event: "index_no_hints", dto: DtoCtor.name },
+              "No index hints to apply"
+            );
+            ControllerBase._ensuredForDto.add(DtoCtor);
+            continue;
+          }
+
+          const entity =
+            (DtoCtor as any)?.entitySlug ??
+            (DtoCtor as any)?.collectionName ??
+            DtoCtor.name.replace(/Dto$/, "").toLowerCase();
+
+          const specs = mongoFromHints(entity, hints);
+          const collection = await getMongoCollectionFromSvcEnv(svcEnv);
+          const collName =
+            (svcEnv as any).mongoCollection?.() ??
+            (svcEnv as any).mongoCollection ??
+            (collection as any)?.collectionName ??
+            entity;
+
+          await applyMongoIndexes(collection, specs, {
+            collectionName: String(collName),
+          });
+
+          this.log.debug(
+            {
+              event: "index_ensured",
+              dto: DtoCtor.name,
+              collection: collName,
+              count: specs.length,
+            },
+            "Indexes ensured (idempotent)"
+          );
+          ControllerBase._ensuredForDto.add(DtoCtor);
+        } catch (err) {
+          this.log.error(
+            {
+              event: "index_ensure_failed",
+              dto: DtoCtor?.name ?? "UnknownDto",
+              error: (err as Error)?.message ?? String(err),
+            },
+            "Failed to ensure indexes from DTO hints"
+          );
+        }
+      }
+    })().catch((e) =>
+      this.log.error(
+        {
+          event: "index_ensure_unhandled",
+          error: (e as Error)?.message ?? String(e),
+        },
+        "Unhandled error in index ensure task"
+      )
+    );
   }
 
-  /** Seed a fresh HandlerContext (ADR-0042). */
+  /** Subclasses declare which DTOs should have index hints consumed. */
+  protected indexHintDtos(): Function[] {
+    return [];
+  }
+
+  /** Create and seed HandlerContext per ADR-0042. */
   protected makeContext(req: Request, res: Response): HandlerContext {
     const ctx = new HandlerContext();
-
     const requestId = (req.headers["x-request-id"] as string) ?? this.randId();
 
     ctx.set("requestId", requestId);
@@ -53,12 +159,9 @@ export abstract class ControllerBase {
     ctx.set("params", req.params);
     ctx.set("query", req.query);
     ctx.set("body", req.body);
-
-    // Inject App for direct access to bound loggers etc.
     ctx.set("App", this.app);
     ctx.set("res", res);
 
-    // Try to expose SvcEnvDto from the app — supports several shapes to avoid tight coupling
     const svcEnv: SvcEnvDto | undefined =
       (this.app as any)?.svcEnv ??
       (this.app as any)?.env ??
@@ -68,14 +171,13 @@ export abstract class ControllerBase {
     if (svcEnv) {
       ctx.set("svcEnv", svcEnv);
     } else {
-      // No svcEnv — downstream env-validation handler should fail fast
       ctx.set("handlerStatus", "error");
       ctx.set("status", 500);
       ctx.set("error", {
         code: "SVCENV_MISSING",
         message:
-          "SvcEnvDto not available on App. Ops: ensure App exposes svcEnv via a public getter or property.",
-        hint: "AppBase holds envDto; provide a public accessor and ensure ControllerBase can read it.",
+          "SvcEnvDto not available. Ops: ensure App exposes svcEnv or getter for env DTO.",
+        hint: "AppBase owns envDto; export via public getter.",
       });
     }
 
@@ -86,7 +188,7 @@ export abstract class ControllerBase {
     return ctx;
   }
 
-  /** Controllers end with: return super.finalize(ctx) */
+  /** Controller finalization — maps context → HTTP per ADR-0043. */
   protected finalize(ctx: HandlerContext): void {
     const res = ctx.get<Response>("res")!;
     const requestId = ctx.get<string>("requestId") ?? "";

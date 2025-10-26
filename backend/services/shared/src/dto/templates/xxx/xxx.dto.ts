@@ -4,23 +4,29 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0015 (DTO-First Development)
- *   - ADR-0040 (DTO-Only Persistence)
+ *   - ADR-0040 (DTO-Only Persistence via Managers)
  *
  * Purpose:
- * - Xxx DTO: sole contract + validator for the t_entity_crud template.
- * - Encapsulates data entirely; exposes only getters and toJson().
+ * - Xxx DTO: canonical contract + validator for the t_entity_crud template.
+ * - Encapsulates data and validation; exposes only getters and toJson().
+ * - Declares static IndexHints so ControllerBase can ensure DB indexes at boot.
  *
  * Invariants:
- * - DB primary key is stored internally as _id; exposed via getter xxxId.
- * - No exported internal state, schemas, or types.
+ * - DTOs are persistence-agnostic. They never import Mongo/DB logic directly.
+ * - IndexHints are abstract (lookup/unique/text/ttl) and translated by adapters.
+ * - _id is internal; exposed alias is xxxId for clarity.
+ *
+ * Notes:
+ * - Inside the shared package, use **relative** imports (no @nv/shared).
  */
 
 import { z } from "zod";
-import { BaseDto, DtoValidationError } from "@nv/shared/dto/base.dto";
+import { BaseDto, DtoValidationError } from "../../base.dto";
+import type { IndexHint } from "../../persistence/index-hints";
 
 // Internal-only schema (includes _id + meta so persistence can hydrate seamlessly)
 const _schema = z.object({
-  _id: z.string().min(1).optional(), // DB gospel; internal only
+  _id: z.string().min(1).optional(),
   txtfield1: z.string().min(1, "txtfield1 required"),
   txtfield2: z.string().min(1, "txtfield2 required"),
   numfield1: z.number(),
@@ -39,8 +45,18 @@ export class XxxDto extends BaseDto {
     "_id" | "createdAt" | "updatedAt" | "updatedByUserId"
   >;
 
+  // ---- Index hints (DB-agnostic; consumed at boot by ControllerBase) ----
+  public static indexHints: IndexHint[] = [
+    { kind: "lookup", fields: ["txtfield1"] },
+    { kind: "lookup", fields: ["numfield1", "numfield2"] },
+    // { kind: "unique", fields: ["txtfield1"] }, // example: enforce uniqueness
+    // { kind: "ttl", field: "updatedAt", seconds: 86400 }, // example: TTL 1 day
+  ];
+  public static getIndexHints(): IndexHint[] {
+    return this.indexHints;
+  }
+
   private constructor(validated: _State) {
-    // Base stores id/meta; we keep the entity fields sealed in _state
     super({
       id: validated._id,
       createdAt: validated.createdAt,
@@ -56,29 +72,32 @@ export class XxxDto extends BaseDto {
     const parsed = _schema.safeParse(input);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "Invalid Xxx payload. Ops: validate client/body mapper; ensure all four fields exist and are typed correctly (two strings, two numbers).",
+        "Invalid Xxx payload. Ops: verify client/body mapper; all four fields required (two strings, two numbers).",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
           message: i.message,
         })),
-        "Ops: If this came from the API, inspect request logs with x-request-id; if from DB, run a sample findOne() and compare document against DTO rules."
+        "Ops: If this came from the API, inspect logs with x-request-id; if from DB, compare document to DTO rules."
       );
     }
     return new XxxDto(parsed.data);
   }
 
-  /** Hydrate from persistence or wire JSON (same schema authority). */
+  /**
+   * Hydrate from persistence or wire JSON (same schema authority).
+   * Overloads preserve BaseDto static compatibility while allowing validate flag.
+   */
   public static fromJson(json: unknown): XxxDto;
   public static fromJson(json: unknown, opts: { validate: boolean }): XxxDto;
   public static fromJson(json: unknown, opts?: { validate: boolean }): XxxDto {
-    const validate = opts?.validate !== false; // default true for safety
+    const validate = opts?.validate !== false; // default to true for ingress safety
 
     if (validate) {
       const parsed = _schema.safeParse(json);
       if (!parsed.success) {
         throw new DtoValidationError(
-          "Invalid Xxx payload. Ops: validate client/body mapper; ensure required fields are present and typed correctly.",
+          "Invalid Xxx payload. Ops: validate client/body mapper; ensure required fields and types.",
           parsed.error.issues.map((i) => ({
             path: i.path.join("."),
             code: i.code,
@@ -90,16 +109,14 @@ export class XxxDto extends BaseDto {
       return new XxxDto(parsed.data);
     }
 
-    // Trusted hydration path (DB/WAL/FS): skip redundant validation
+    // Trusted hydration path (e.g., DB/WAL/FS) — skip redundant safeParse cost
     const parsed = _schema.parse(json);
     return new XxxDto(parsed);
   }
 
-  // ---- ID exposure policy ----
-  /** Public-facing primary key alias (keeps multi-DTO responses unambiguous). */
+  // ---- ID exposure ----
   public get xxxId(): string | undefined {
-    const id = (this as unknown as { _internalId?: string })._internalId;
-    return id;
+    return (this as unknown as { _internalId?: string })._internalId;
   }
 
   // ---- Field getters ----
@@ -116,7 +133,7 @@ export class XxxDto extends BaseDto {
     return this._state.numfield2;
   }
 
-  // ---- Narrow mutators (all paths revalidate through the schema) ----
+  // ---- Narrow mutators (all paths revalidate via schema) ----
   public setTxtfield1(v: string): this {
     return this._mutate({ txtfield1: v });
   }
@@ -146,22 +163,21 @@ export class XxxDto extends BaseDto {
       Pick<_State, "txtfield1" | "txtfield2" | "numfield1" | "numfield2">
     >
   ): this {
-    const nextCandidate = {
-      ...this._state,
-      ...patch,
-    } as Record<string, unknown>;
-
+    const nextCandidate = { ...this._state, ...patch } as Record<
+      string,
+      unknown
+    >;
     const composed = this._composeForValidation(nextCandidate);
     const parsed = _schema.safeParse(composed);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "Xxx mutation rejected by DTO. Ops: verify field types and constraints; see issues for the specific field(s).",
+        "Xxx mutation rejected. Ops: verify field types and constraints.",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
           message: i.message,
         })),
-        "Ops: If mutations come from a controller, confirm input mapping; if internal service logic, inspect the last write and ensure invariants are preserved."
+        "Ops: If from controller, confirm input mapping; if internal, inspect last write and ensure invariants."
       );
     }
 

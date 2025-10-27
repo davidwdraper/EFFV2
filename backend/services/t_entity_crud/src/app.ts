@@ -14,13 +14,15 @@
  * - No env reads here; env arrives via injected SvcEnvDto and is reloaded via AppBase.
  */
 
-import type { Express } from "express";
+import type { Express, Router } from "express";
+import express = require("express");
 import { AppBase } from "@nv/shared/base/AppBase";
 import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+import { buildXxxRouter } from "./routes/xxx.route";
 
 type CreateAppOptions = {
-  slug: string;
-  version: number;
+  slug: string; // e.g., "xxx" (slug == API segment)
+  version: number; // e.g., 1
   envDto: SvcEnvDto;
   /**
    * Supplies a fresh SvcEnvDto when /env/reload is called.
@@ -30,10 +32,10 @@ type CreateAppOptions = {
 };
 
 /** Minimal template app class; add routes as one-liners in mountRoutes(). */
-class TemplateCrudApp extends AppBase {
+class XxxApp extends AppBase {
   constructor(opts: CreateAppOptions) {
     super({
-      service: opts.slug,
+      service: opts.slug, // ControllerBase expects this to match API slug segment
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
@@ -42,9 +44,15 @@ class TemplateCrudApp extends AppBase {
 
   // Service-specific routes — keep to one-liners that import real routers.
   protected override mountRoutes(): void {
-    // Example (commented until the template consumer adds real routers):
-    // const base = `/api/${this.service}/v${this.version}`;
-    // this.app.use(base, new UsersRouter(/* deps */).router());
+    const base = this.healthBasePath(); // `/api/<slug>/v<version>`
+    if (!base) {
+      this.log.error({ reason: "no_base" }, "Failed to derive base path");
+      throw new Error("Base path missing — check AppBase.healthBasePath()");
+    }
+
+    const r: Router = buildXxxRouter(this);
+    this.app.use(base, r);
+    this.log.info({ base }, "routes mounted");
   }
 }
 
@@ -57,7 +65,7 @@ class TemplateCrudApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new TemplateCrudApp(opts);
+  const app = new XxxApp(opts);
   await app.boot();
   return { app: app.instance };
 }

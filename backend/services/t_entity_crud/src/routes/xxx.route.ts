@@ -8,37 +8,39 @@
  *   - ADR-0040 (DTO-Only Persistence; WAL-first writes)
  *
  * Purpose:
- * - Wire one specialized controller per route. No handlers yet.
- * - Controllers expose .handle() (ControllerBase.handle wrapper).
+ * - Build a router bound to this App instance, passing the App into controllers.
+ * - Paths are **relative** to the versioned base mounted by App (e.g., /api/xxx/v1).
  *
- * Notes:
- * - Router builds controllers only. All other deps (db/fs/etc.) are created inside handlers later.
- * - Health is versioned; paths follow: /api/<slug>/v<major>/...
+ * Invariants:
+ * - Controller instances are constructed once (no per-request `new`).
+ * - Router wires one-liners only; no business logic here.
  */
 
-import { RouterBase } from "@nv/shared/base/RouterBase";
-
-// Route-specific controllers (to be implemented next)
+import { Router } from "express";
+import type { AppBase } from "@nv/shared/base/AppBase";
 import { XxxCreateController } from "../controllers/xxx.create.controller/xxx.create.controller";
-import { XxxReadController } from "../controllers/xxx.read.controller";
-import { XxxUpdateController } from "../controllers/xxx.update.controller";
-import { XxxDeleteController } from "../controllers/xxx.delete.controller";
-import { XxxListController } from "../controllers/xxx.list.controller";
+// (Placeholders for later routes if/when you add them)
+// import { XxxReadController } from "../controllers/xxx.read.controller";
+// import { XxxUpdateController } from "../controllers/xxx.update.controller";
+// import { XxxDeleteController } from "../controllers/xxx.delete.controller";
+// import { XxxListController } from "../controllers/xxx.list.controller";
 
-export class XxxRouter extends RouterBase {
-  protected configure(): void {
-    // Instantiate one controller per route (no service deps here)
-    const createCtl = new XxxCreateController();
-    const readCtl = new XxxReadController();
-    const updateCtl = new XxxUpdateController();
-    const deleteCtl = new XxxDeleteController();
-    const listCtl = new XxxListController();
+export function buildXxxRouter(app: AppBase): ReturnType<typeof Router> {
+  const r = Router();
 
-    // Mount one-liners
-    this.put("/api/xxx/v1/create", createCtl.handle());
-    this.get("/api/xxx/v1/:xxxId", readCtl.handle());
-    this.patch("/api/xxx/v1/:xxxId", updateCtl.handle());
-    this.delete("/api/xxx/v1/:xxxId", deleteCtl.handle());
-    this.get("/api/xxx/v1/list", listCtl.handle());
-  }
+  // Construct controllers ONCE, injecting the App (gives them logger + svcEnv)
+  const createCtl = new XxxCreateController(app);
+  // const readCtl = new XxxReadController(app);
+  // const updateCtl = new XxxUpdateController(app);
+  // const deleteCtl = new XxxDeleteController(app);
+  // const listCtl = new XxxListController(app);
+
+  // Mount **relative** to /api/<slug>/v<version>
+  r.put("/create", (req, res) => createCtl.put(req, res));
+  // r.get("/:xxxId", (req, res) => readCtl.get(req, res));
+  // r.patch("/:xxxId", (req, res) => updateCtl.patch(req, res));
+  // r.delete("/:xxxId", (req, res) => deleteCtl.delete(req, res));
+  // r.get("/list", (req, res) => listCtl.get(req, res));
+
+  return r;
 }

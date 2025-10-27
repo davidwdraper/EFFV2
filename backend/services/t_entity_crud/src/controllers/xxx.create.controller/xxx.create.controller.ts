@@ -1,21 +1,22 @@
 // backend/services/t_entity_crud/src/controllers/xxx.create.controller/xxx.create.controller.ts
 /**
  * Purpose:
- * - Orchestrate PUT /api/xxx/v1/create
- * - Declare which DTOs carry IndexHints for this controller; ControllerBase ensures them once.
- * - No business logic; ends with super.finalize(ctx)
+ * - Orchestrate PUT /api/xxx/v1/create (mounted at /create relative to base).
+ * - Declare which DTOs carry IndexHints; ControllerBase ensures them once.
+ * - No business logic; ends with super.finalize(ctx).
  */
 
 import { Request, Response } from "express";
+import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import { HandlerContext } from "@nv/shared/http/HandlerContext";
 import { DtoFromJsonCreateHandler } from "./handlers/dtoFromJson.create.handler";
 import { DtoToDbCreateHandler } from "./handlers/dtoToDb.create.handler";
+import { DbWriteCreateHandler } from "./handlers/dbWrite.create.handler";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
-import { DbWriteCreateHandler } from "backend/services/t_entity_crud/src/controllers/xxx.create.controller/handlers/dbWrite.create.handler";
 
 export class XxxCreateController extends ControllerBase {
-  constructor(app: unknown) {
+  constructor(app: AppBase) {
     super(app); // triggers one-time index ensure via DTO hints
   }
 

@@ -210,4 +210,4 @@ to triage the situation.
 
 No models, no schemas, no leaked shapes. The DTO is the only source of truth, and persistence just moves opaque JSON in/out via dto.toJson() / DtoClass.fromJson().
 
-Always provide ADR docs and downloadable .md files
+Always provide ADR docs as downloadable .md files

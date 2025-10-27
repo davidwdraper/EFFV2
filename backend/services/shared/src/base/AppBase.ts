@@ -6,6 +6,7 @@
  *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
  *   - ADR-0032 (RoutePolicyGate — version-agnostic enforcement; health bypass)
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
+ *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose (generic):
  * - Canonical Express composition for ALL services.
@@ -21,7 +22,6 @@
 
 import type { Express, Router, Request, Response, NextFunction } from "express";
 import express = require("express");
-import { mountServiceHealth } from "@nv/shared/health/mount";
 import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 import {
   routePolicyGate,
@@ -64,8 +64,16 @@ export abstract class AppBase extends ServiceBase {
     this.app.disable("x-powered-by");
   }
 
-  /** Current environment DTO (read-only outside). */
+  /** Current environment DTO (protected for subclasses). */
   protected get envDto(): SvcEnvDto {
+    return this._envDto;
+  }
+
+  /** ADR-0044: Public accessors so controllers/handlers can retrieve the DTO instance. */
+  public get svcEnv(): SvcEnvDto {
+    return this._envDto;
+  }
+  public getSvcEnv(): SvcEnvDto {
     return this._envDto;
   }
 
@@ -186,16 +194,37 @@ export abstract class AppBase extends ServiceBase {
 
   // ─────────────── Built-ins (generic) ───────────────
 
+  /**
+   * Explicit versioned health path to avoid double-prefix ambiguity.
+   * Final path: `${base}/health` (e.g., /api/xxx/v1/health)
+   */
   protected mountVersionedHealth(
     base: string,
     opts?: { readyCheck?: () => Promise<boolean> | boolean }
   ): void {
-    const r: Router = express.Router();
-    mountServiceHealth(r as any, {
-      service: this.service,
-      readyCheck: opts?.readyCheck,
+    const path = `${base}/health`;
+    this.app.get(path, async (_req: Request, res: Response) => {
+      try {
+        const ready = opts?.readyCheck ? await opts.readyCheck() : true;
+        res.status(200).json({
+          ok: true,
+          service: this.service,
+          version: this.version,
+          ready,
+          ts: new Date().toISOString(),
+        });
+      } catch {
+        // If the readyCheck throws, still return a syntactically valid health, but ready=false
+        res.status(200).json({
+          ok: true,
+          service: this.service,
+          version: this.version,
+          ready: false,
+          ts: new Date().toISOString(),
+        });
+      }
     });
-    this.app.use(base, r);
+    this.log.info({ path }, "health mounted");
   }
 
   /**
@@ -206,13 +235,11 @@ export abstract class AppBase extends ServiceBase {
    */
   protected mountEnvReload(base: string): void {
     const path = `${base}/env/reload`;
-    this.app.post(path, async (req: Request, res: Response) => {
-      // Authorization is expected to be enforced by the routePolicy gate before reaching here.
+    this.app.post(path, async (_req: Request, res: Response) => {
       const from = this._envDto?.etag;
       try {
         const fresh = await this.envReloader();
-        // Swap atomically
-        this._envDto = fresh;
+        this._envDto = fresh; // atomic swap
         const to = fresh.etag;
 
         return res.status(200).json({
@@ -232,6 +259,7 @@ export abstract class AppBase extends ServiceBase {
         });
       }
     });
+    this.log.info({ path }, "env reload mounted");
   }
 
   /** Expose the Express instance to the entrypoint (after boot). */

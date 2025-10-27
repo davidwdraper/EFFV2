@@ -2,6 +2,7 @@
 /**
  * Purpose: Per-route controller for GET /api/xxx/v1/:xxxId (no-op stub).
  */
+/*
 import type { RequestHandler } from "express";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import { CtxKeys } from "@nv/shared/http/HandlerContext";
@@ -21,3 +22,4 @@ export class XxxReadController extends ControllerBase {
     });
   }
 }
+  */

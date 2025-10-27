@@ -46,15 +46,17 @@ export class XxxDto extends BaseDto {
   >;
 
   // ---- Index hints (DB-agnostic; consumed at boot by ControllerBase) ----
-  public static indexHints: IndexHint[] = [
+  static indexHints = [
     { kind: "lookup", fields: ["txtfield1"] },
     { kind: "lookup", fields: ["numfield1", "numfield2"] },
-    // { kind: "unique", fields: ["txtfield1"] }, // example: enforce uniqueness
-    // { kind: "ttl", field: "updatedAt", seconds: 86400 }, // example: TTL 1 day
-  ];
-  public static getIndexHints(): IndexHint[] {
-    return this.indexHints;
-  }
+    {
+      kind: "unique",
+      fields: ["txtfield2"],
+      options: { name: "uniq_txtfield2" },
+    },
+    // { kind: "text", fields: ["txtfield1", "txtfield2"] },
+    // { kind: "ttl", field: "createdAt", seconds: 60 * 60 * 24 },
+  ] as const;
 
   private constructor(validated: _State) {
     super({

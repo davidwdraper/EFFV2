@@ -22,6 +22,10 @@ export class XxxCreateController extends ControllerBase {
 
   /** Tell ControllerBase which DTOs to read & burn index hints from */
   protected override indexHintDtos(): Function[] {
+    this.log.debug(
+      { event: "index_hint_dtos_called" },
+      "Providing index hint DTO: XxxDto for XxxCreateController"
+    );
     return [XxxDto];
   }
 

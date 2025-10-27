@@ -21,7 +21,7 @@ import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 // ———————————————————————————————————————————————————————————————
 // Service identity (explicit; no env needed for these)
 // ———————————————————————————————————————————————————————————————
-const SERVICE_SLUG = "t_entity_crud"; // update per cloned service
+const SERVICE_SLUG = "xxx"; // update per cloned service
 const SERVICE_VERSION = 1; // major API version
 
 // ———————————————————————————————————————————————————————————————

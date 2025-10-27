@@ -4,6 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env)
+ *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose:
  * - Strict DTO for non-secret environment configuration keyed by env@slug@version.
@@ -13,6 +14,7 @@
  * - Data enters via fromJson(), exits via toJson().
  * - No field exposure, no logging, no "all()" snapshots.
  * - Validation errors aggregated and thrown as DtoValidationError.
+ * - Generic access only (getEnvVar/tryEnvVar/hasEnvVar/listEnvVars). No DTO-specific getters.
  */
 
 import { z } from "zod";
@@ -39,7 +41,8 @@ export type SvcEnvWire = z.infer<typeof SvcEnvWireSchema>;
 
 export class SvcEnvDto extends BaseDto {
   private readonly _key: string;
-  private readonly _vars: Record<string, string>;
+  private readonly _varsObj: Record<string, string>;
+  private readonly _varsMap: Map<string, string>;
   private readonly _etag?: string;
 
   private readonly _slug?: string;
@@ -52,7 +55,8 @@ export class SvcEnvDto extends BaseDto {
   private constructor(parsed: SvcEnvWire) {
     super();
     this._key = parsed.key;
-    this._vars = parsed.vars;
+    this._varsObj = parsed.vars;
+    this._varsMap = new Map(Object.entries(parsed.vars));
     this._etag = parsed.etag;
     this._slug = parsed.slug;
     this._env = parsed.env;
@@ -81,8 +85,11 @@ export class SvcEnvDto extends BaseDto {
 
     // Normalize keys (no coercion of values)
     const normalizedVars: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed.vars))
-      normalizedVars[k.trim()] = v;
+    for (const [k, v] of Object.entries(parsed.vars)) {
+      const key = k.trim();
+      if (!key) continue;
+      normalizedVars[key] = v;
+    }
 
     return new SvcEnvDto({
       ...parsed,
@@ -95,7 +102,7 @@ export class SvcEnvDto extends BaseDto {
   public override toJson(): SvcEnvWire {
     return {
       key: this._key,
-      vars: { ...this._vars },
+      vars: { ...this._varsObj },
       etag: this._etag,
       slug: this._slug,
       env: this._env,
@@ -106,7 +113,7 @@ export class SvcEnvDto extends BaseDto {
     };
   }
 
-  // ==== Internal Access (strict getters only) ====
+  // ==== Metadata (read-only) ====
   get key(): string {
     return this._key;
   }
@@ -132,20 +139,46 @@ export class SvcEnvDto extends BaseDto {
     return this._notes;
   }
 
-  /** Retrieve a required variable; throws if missing. */
-  public getVar(name: string): string {
-    const v = this._vars[name];
+  // ==== ADR-0044: Generic Key/Value API ====
+
+  /**
+   * Retrieve a required variable; throws if missing (no defaults).
+   * Error includes key, svcenv key, and etag for Ops correlation.
+   */
+  public getEnvVar(name: string): string {
+    const v = this._varsMap.get(name);
     if (v === undefined) {
+      const base = `Missing required env var "${name}" in svcenv key="${this._key}"`;
+      const et = this._etag ? ` (etag=${this._etag})` : "";
       throw new Error(
-        `Missing required env var "${name}" in svcenv key="${this._key}". ` +
-          `Ensure the svcenv document includes this variable.`
+        `${base}${et}. Ops: ensure svcenv document includes this key and the service has permission to read it.`
       );
     }
     return v;
   }
 
   /** Retrieve an optional variable (undefined if absent). */
+  public tryEnvVar(name: string): string | undefined {
+    return this._varsMap.get(name);
+  }
+
+  /** Predicate — does the key exist? */
+  public hasEnvVar(name: string): boolean {
+    return this._varsMap.has(name);
+  }
+
+  /** List all available variable keys (copy). */
+  public listEnvVars(): string[] {
+    return Array.from(this._varsMap.keys());
+  }
+
+  // ==== Temporary aliases (migration aid) ====
+  /** @deprecated — use getEnvVar(name). */
+  public getVar(name: string): string {
+    return this.getEnvVar(name);
+  }
+  /** @deprecated — use tryEnvVar(name). */
   public maybeVar(name: string): string | undefined {
-    return this._vars[name];
+    return this.tryEnvVar(name);
   }
 }

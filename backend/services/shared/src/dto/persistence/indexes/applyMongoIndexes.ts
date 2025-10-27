@@ -1,79 +1,105 @@
+// backend/services/shared/src/dto/persistence/indexes/applyMongoIndexes.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0040 (DTO-Only Persistence via Managers)
+ * - ADR-0040/0041 (DTO-only persistence)
+ * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose:
- * - Apply Mongo index definitions idempotently at startup.
- * - Used by ControllerBase to ensure indexes from DTO IndexHints.
+ * - Apply Mongo index specs idempotently.
+ * - If the target collection does not exist yet (common at boot), create it first.
  *
- * Invariants:
- * - Never throws fatally on "already exists" errors.
- * - Logs or rethrows only unexpected driver errors.
- * - No writes or schema creation outside Mongo’s index subsystem.
+ * Behavior:
+ * - Preflights collection existence via listCollections({ name }).
+ * - Creates the collection if missing.
+ * - Calls collection.createIndex(keys, options) for each spec.
+ * - Does not throw on per-index errors unless absolutely necessary; let caller decide.
  */
 
-import type { Collection, CreateIndexesOptions } from "mongodb";
+import type { MongoIndexSpec } from "./mongoFromHints";
 
-export type MongoIndexSpec = {
-  keys: Record<string, 1 | -1 | "text" | "hashed">;
-  options?: CreateIndexesOptions & { name?: string };
+type AnyCollection = {
+  collectionName?: string;
+  createIndex: (
+    keys: Record<string, any>,
+    options?: Record<string, any>
+  ) => Promise<string>;
+  db?: {
+    listCollections: (
+      filter: Record<string, any>,
+      opts?: Record<string, any>
+    ) => {
+      toArray: () => Promise<Array<{ name: string }>>;
+    };
+    createCollection: (name: string) => Promise<any>;
+  };
 };
 
-/**
- * Applies indexes idempotently.
- * @param collection - MongoDB Collection
- * @param specs - Array of index definitions
- * @param opts - Optional logging/metadata
- */
 export async function applyMongoIndexes(
-  collection: Collection,
+  collection: AnyCollection,
   specs: MongoIndexSpec[],
   opts?: {
     collectionName?: string;
-    log?: (msg: string, meta?: unknown) => void;
+    log?: {
+      info?: Function;
+      warn?: Function;
+      error?: Function;
+      debug?: Function;
+    };
   }
 ): Promise<void> {
-  const log = opts?.log ?? (() => {});
-  const name = opts?.collectionName ?? collection.collectionName;
+  const log = opts?.log;
+  const collName =
+    opts?.collectionName ??
+    (collection as any).collectionName ??
+    "unknown_collection";
 
-  if (!specs?.length) {
-    log(`applyMongoIndexes: no index specs provided for ${name}`);
-    return;
+  // Preflight: ensure collection exists (avoid "ns does not exist")
+  const db = (collection as any).db;
+  if (db && typeof db.listCollections === "function") {
+    try {
+      const existing = await db
+        .listCollections({ name: collName }, { nameOnly: true })
+        .toArray();
+      if (!Array.isArray(existing) || existing.length === 0) {
+        await db.createCollection(collName);
+        log?.info?.(
+          { event: "collection_created", collection: collName },
+          "Mongo collection created"
+        );
+      }
+    } catch (e) {
+      // If we can't preflight, surface a clear message — indexes will almost certainly fail otherwise.
+      const msg = (e as Error)?.message ?? String(e);
+      throw new Error(`Failed preflight for collection "${collName}": ${msg}`);
+    }
   }
 
-  try {
-    const existing = await collection.indexes();
-    const existingNames = new Set(existing.map((e) => e.name));
-
-    for (const spec of specs) {
-      const { keys, options } = spec;
-      const idxName =
-        options?.name ?? `${Object.keys(keys).join("_")}_${name}_idx`;
-
-      if (existingNames.has(idxName)) {
-        log(`index exists: ${idxName} on ${name}`);
-        continue;
-      }
-
-      try {
-        await collection.createIndex(keys, { ...options, name: idxName });
-        log(`index created: ${idxName} on ${name}`, { keys, options });
-      } catch (err) {
-        const msg = (err as Error)?.message ?? String(err);
-        if (/already exists/i.test(msg)) {
-          log(`index already exists (race ok): ${idxName}`);
-          continue;
-        }
-        log(`index creation failed: ${idxName}`, { error: msg });
-        throw err;
-      }
+  // Apply each index spec idempotently
+  for (const spec of specs) {
+    try {
+      await collection.createIndex(spec.keys, spec.options);
+      log?.debug?.(
+        {
+          event: "index_applied",
+          collection: collName,
+          keys: spec.keys,
+          options: spec.options,
+        },
+        "Mongo index ensured"
+      );
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e);
+      // Report but do not crash the service at boot; leave policy to caller.
+      log?.error?.(
+        {
+          event: "index_apply_failed",
+          collection: collName,
+          keys: spec.keys,
+          options: spec.options,
+          error: msg,
+        },
+        "Failed to apply index"
+      );
     }
-
-    log(`index ensure complete for ${name}`);
-  } catch (err) {
-    log(`index ensure error for ${name}`, { error: (err as Error)?.message });
-    throw err;
   }
 }

@@ -1,37 +1,97 @@
 // backend/services/shared/src/dto/persistence/index-hints.ts
 /**
- * Purpose:
- * - DB-agnostic index hints + helpers to attach/read/consume them from a DTO class.
- * - No BaseDto edits required; safe to use with existing DTO classes.
+ * Docs:
+ * - ADR-0040 (DTO-only persistence)
+ * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
- * Usage in a DTO module:
- *   setIndexHints(XxxDto, [{ kind: "lookup", fields: ["txtfield1"] }]);
- *   // later at boot/handler:
- *   const hints = consumeIndexHints(XxxDto); // returns hints and clears them
+ * Purpose:
+ * - Burn-after-read consumption of static index hints on DTO classes.
+ * - DTO declares; boot helper consumes; hints are deleted (no runtime baggage).
  */
 
+export type LookupIndexHint = {
+  kind: "lookup";
+  fields: string[]; // simple ascending compound index
+  options?: { name?: string; sparse?: boolean };
+};
+
+export type UniqueIndexHint = {
+  kind: "unique";
+  fields: string[]; // unique compound index
+  options?: { name?: string; sparse?: boolean };
+};
+
+export type TextIndexHint = {
+  kind: "text";
+  fields: string[]; // text index over these fields
+  options?: { name?: string };
+};
+
+export type TtlIndexHint = {
+  kind: "ttl";
+  field: string; // single datetime field
+  seconds: number; // expireAfterSeconds
+  options?: { name?: string };
+};
+
+export type HashIndexHint = {
+  kind: "hash";
+  fields: string[]; // hashed index (Mongo)
+  options?: { name?: string; sparse?: boolean };
+};
+
 export type IndexHint =
-  | { kind: "lookup"; fields: string[] } // equality / sort
-  | { kind: "unique"; fields: string[] } // must be unique together
-  | { kind: "text"; fields: string[] } // full-text search
-  | { kind: "ttl"; field: string; seconds: number }; // expiry
+  | LookupIndexHint
+  | UniqueIndexHint
+  | TextIndexHint
+  | TtlIndexHint
+  | HashIndexHint;
 
-type HintCarrier = { __indexHints__?: IndexHint[] };
+// Guards against double-consumption if the same DTO is passed twice.
+const CONSUMED = new WeakSet<Function>();
 
-export function setIndexHints(ctor: Function, hints: IndexHint[]): void {
-  const anyCtor = ctor as unknown as HintCarrier;
-  anyCtor.__indexHints__ = Array.isArray(hints) ? [...hints] : [];
-}
+export function consumeIndexHints(DtoCtor: Function): IndexHint[] {
+  if (CONSUMED.has(DtoCtor)) return [];
 
-export function getIndexHints<T = unknown>(ctor: Function): IndexHint[] {
-  const anyCtor = ctor as unknown as HintCarrier;
-  return anyCtor.__indexHints__ ? [...anyCtor.__indexHints__] : [];
-}
+  // Supported declaration styles on the DTO class:
+  // 1) static indexHints: IndexHint[]
+  // 2) static getIndexHints(): IndexHint[]
+  const fromFunc = (DtoCtor as any)?.getIndexHints?.();
+  const fromStatic = (DtoCtor as any)?.indexHints as IndexHint[] | undefined;
 
-/** Returns the current hints AND clears them from the class (one-shot). */
-export function consumeIndexHints(ctor: Function): IndexHint[] {
-  const anyCtor = ctor as unknown as HintCarrier;
-  const out = anyCtor.__indexHints__ ? [...anyCtor.__indexHints__] : [];
-  anyCtor.__indexHints__ = []; // delete deadwood
-  return out;
+  const src: IndexHint[] = Array.isArray(fromFunc)
+    ? fromFunc
+    : Array.isArray(fromStatic)
+    ? fromStatic
+    : [];
+
+  // Defensive copy so downstream mutations can’t touch the class
+  const hints: IndexHint[] = src.map((h) =>
+    h.kind === "ttl"
+      ? {
+          kind: "ttl",
+          field: h.field,
+          seconds: h.seconds,
+          options: h.options ? { ...h.options } : undefined,
+        }
+      : {
+          kind: h.kind,
+          fields: [...(h as any).fields],
+          options: (h as any).options ? { ...(h as any).options } : undefined,
+        }
+  );
+
+  // Burn after read
+  try {
+    if ((DtoCtor as any).indexHints !== undefined)
+      delete (DtoCtor as any).indexHints;
+  } catch {}
+  if (typeof (DtoCtor as any).getIndexHints === "function") {
+    try {
+      (DtoCtor as any).getIndexHints = () => [];
+    } catch {}
+  }
+
+  CONSUMED.add(DtoCtor);
+  return hints;
 }

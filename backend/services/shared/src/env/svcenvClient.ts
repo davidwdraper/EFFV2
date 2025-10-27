@@ -37,26 +37,42 @@ export class SvcEnvClient {
   /** Resolve the current environment for the calling service. */
   public async getCurrentEnv(_opts: GetCurrentEnvOptions): Promise<string> {
     // Template implementation: return a stable value synchronously.
-    // Production: call `/api/svcenv/v1/env/current` with S2S auth.
     return "dev";
   }
 
   /** Fetch env@slug@version config as a DTO (strict DTO boundary). */
   public async getConfig(opts: GetConfigOptions): Promise<SvcEnvDto> {
     const { slug, version, env } = opts;
-    // Production: perform network call and pass the response into SvcEnvDto.fromJson().
-    // Template: feed static JSON into the DTO to respect DTO ownership of validation/shape.
+
+    // For local dev, align with what our Mongo adapter expects:
+    // Prefer NV_MONGO_* (and keep SVCENV_DB_* for future svcenv service).
+    const NV_HTTP_HOST = "127.0.0.1";
+    const NV_HTTP_PORT = slug === "xxx" ? "4015" : "4999";
+
+    // Mongo — pick sane local defaults; adapter will read NV_MONGO_* first.
+    const NV_MONGO_URI = "mongodb://127.0.0.1:27017";
+    const NV_MONGO_DB = "nv_env_dev";
+    const NV_MONGO_COLLECTION = slug; // use service slug for collection in template
+
     return SvcEnvDto.fromJson({
       key: `${env}@${slug}@${version}`,
       slug,
       env,
       version,
       vars: {
-        NV_HTTP_HOST: "127.0.0.1",
-        NV_HTTP_PORT: "4015",
-        SVCENV_DB_NAME: "nv_svcenv",
-        SVCENV_DB_COLLECTION: "svcenv",
-        SVCENV_DB_URI: "mongodb://127.0.0.1:27017",
+        // HTTP listener
+        NV_HTTP_HOST,
+        NV_HTTP_PORT,
+
+        // Mongo (what adapters look for)
+        NV_MONGO_URI,
+        NV_MONGO_DB,
+        NV_MONGO_COLLECTION,
+
+        // Legacy svcenv keys kept for forward/back compat (no harm)
+        SVCENV_DB_URI: NV_MONGO_URI,
+        SVCENV_DB_NAME: NV_MONGO_DB,
+        SVCENV_DB_COLLECTION: NV_MONGO_COLLECTION,
       },
       etag: 'W/"template-etag"',
       updatedAt: new Date().toISOString(),

@@ -4,14 +4,11 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
+ *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose (template):
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Delegates heavy lifting to AppBase; mounts service routes as one-liners.
- *
- * Invariants:
- * - Health first (versioned), then reload endpoint, then policy/security/parsers/routes/post.
- * - No env reads here; env arrives via injected SvcEnvDto and is reloaded via AppBase.
  */
 
 import type { Express, Router } from "express";
@@ -19,30 +16,35 @@ import express = require("express");
 import { AppBase } from "@nv/shared/base/AppBase";
 import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { buildXxxRouter } from "./routes/xxx.route";
+import { ensureIndexesForDtos } from "@nv/shared/dto/persistence/indexes/ensureIndexes";
+import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 
 type CreateAppOptions = {
-  slug: string; // e.g., "xxx" (slug == API segment)
-  version: number; // e.g., 1
+  slug: string;
+  version: number;
   envDto: SvcEnvDto;
-  /**
-   * Supplies a fresh SvcEnvDto when /env/reload is called.
-   * Must throw on failure (AppBase translates to 500).
-   */
   envReloader: () => Promise<SvcEnvDto>;
 };
 
-/** Minimal template app class; add routes as one-liners in mountRoutes(). */
 class XxxApp extends AppBase {
   constructor(opts: CreateAppOptions) {
     super({
-      service: opts.slug, // ControllerBase expects this to match API slug segment
+      service: opts.slug,
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
     });
   }
 
-  // Service-specific routes — keep to one-liners that import real routers.
+  /** Boot-time: ensure indexes deterministically; hints are burned after read. */
+  protected override async onBoot(): Promise<void> {
+    await ensureIndexesForDtos({
+      dtos: [XxxDto],
+      svcEnv: this.svcEnv, // ADR-0044 accessor
+      log: this.log,
+    });
+  }
+
   protected override mountRoutes(): void {
     const base = this.healthBasePath(); // `/api/<slug>/v<version>`
     if (!base) {
@@ -56,12 +58,6 @@ class XxxApp extends AppBase {
   }
 }
 
-/**
- * Factory:
- * - Builds the app
- * - Boots it (ordered & synchronous)
- * - Returns { app: Express } for index.ts to .listen()
- */
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {

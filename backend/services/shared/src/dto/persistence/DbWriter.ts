@@ -1,10 +1,11 @@
 // backend/services/shared/src/dto/persistence/DbWriter.ts
 /**
  * Docs:
- * - ADR-0040/0041/0042/0043
+ * - ADR-0040/0041/0042/0043/0044
  *
  * Purpose:
  * - Concrete writer: uses **SvcEnvDto** to connect and write dto.toJson().
+ * - All env access is through the generic SvcEnvDto API (ADR-0044).
  */
 
 import type { BaseDto } from "../base.dto";

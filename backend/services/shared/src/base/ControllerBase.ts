@@ -4,33 +4,21 @@
  * - ADR-0040 (DTO-Only Persistence via Managers)
  * - ADR-0041 (Controller & Handler Architecture)
  * - ADR-0042 (HandlerContext Bus)
- * - ADR-0043 (DTO Hydration & Context Failure Propagation)
+ * - ADR-0043 (DTO Hydration & Failure Propagation)
+ * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose:
- * - Shared abstract controller base for all NowVibin backend services.
+ * - Shared abstract controller base for all services.
  * - Injects AppBase instance; seeds HandlerContext; finalizes responses.
- * - Ensures DTO-defined IndexHints are applied once at service boot.
- * - Provides standardized finalize() logic (Problem+JSON output).
- *
- * Behavior:
- * - Instantiated by service controllers (e.g., XxxCreateController).
- * - During construction, checks registered DTOs for IndexHints and
- *   applies indexes idempotently (burn-after-read).
- * - Does not perform business logic; controllers sequence handlers.
  *
  * Notes:
- * - Index ensure is non-blocking async; safe to call in ctor.
- * - WeakSet prevents double ensures even if DTO appears in multiple controllers.
+ * - NO index work here. Indexes are ensured at boot by the app (see ensureIndexes.ts).
  */
 
 import type { Request, Response } from "express";
 import { HandlerContext } from "../http/HandlerContext";
 import { getLogger, type IBoundLogger } from "../logger/Logger";
 import type { SvcEnvDto } from "../dto/svcenv.dto";
-import { consumeIndexHints } from "../dto/persistence/index-hints";
-import { mongoFromHints } from "../dto/persistence/indexes/mongoFromHints";
-import { applyMongoIndexes } from "../dto/persistence/indexes/applyMongoIndexes";
-import { getMongoCollectionFromSvcEnv } from "../dto/persistence/adapters/mongo/connectFromSvcEnv";
 
 type ProblemJson = {
   type: string;
@@ -46,9 +34,6 @@ export abstract class ControllerBase {
   protected readonly app: unknown;
   protected readonly log!: IBoundLogger; // definite assignment OK
 
-  // Global guard so indexes ensure only once per DTO
-  private static _ensuredForDto = new WeakSet<Function>();
-
   constructor(app: unknown) {
     this.app = app;
 
@@ -61,92 +46,6 @@ export abstract class ControllerBase {
       { event: "construct", hasApp: !!app },
       "ControllerBase ctor"
     );
-
-    // One-time index ensure
-    const svcEnv: SvcEnvDto | undefined =
-      (this.app as any)?.svcEnv ??
-      (this.app as any)?.env ??
-      (this.app as any)?.getEnv?.() ??
-      (this.app as any)?.getSvcEnv?.();
-
-    const dtos = this.indexHintDtos();
-    if (!Array.isArray(dtos) || dtos.length === 0) return;
-
-    if (!svcEnv) {
-      this.log.warn(
-        { event: "index_ensure_skipped", reason: "svcEnv_missing" },
-        "SvcEnv missing; index ensure skipped"
-      );
-      return;
-    }
-
-    (async () => {
-      for (const DtoCtor of dtos) {
-        if (ControllerBase._ensuredForDto.has(DtoCtor)) continue;
-
-        try {
-          const hints = consumeIndexHints(DtoCtor);
-          if (hints.length === 0) {
-            this.log.debug(
-              { event: "index_no_hints", dto: DtoCtor.name },
-              "No index hints to apply"
-            );
-            ControllerBase._ensuredForDto.add(DtoCtor);
-            continue;
-          }
-
-          const entity =
-            (DtoCtor as any)?.entitySlug ??
-            (DtoCtor as any)?.collectionName ??
-            DtoCtor.name.replace(/Dto$/, "").toLowerCase();
-
-          const specs = mongoFromHints(entity, hints);
-          const collection = await getMongoCollectionFromSvcEnv(svcEnv);
-          const collName =
-            (svcEnv as any).mongoCollection?.() ??
-            (svcEnv as any).mongoCollection ??
-            (collection as any)?.collectionName ??
-            entity;
-
-          await applyMongoIndexes(collection, specs, {
-            collectionName: String(collName),
-          });
-
-          this.log.debug(
-            {
-              event: "index_ensured",
-              dto: DtoCtor.name,
-              collection: collName,
-              count: specs.length,
-            },
-            "Indexes ensured (idempotent)"
-          );
-          ControllerBase._ensuredForDto.add(DtoCtor);
-        } catch (err) {
-          this.log.error(
-            {
-              event: "index_ensure_failed",
-              dto: DtoCtor?.name ?? "UnknownDto",
-              error: (err as Error)?.message ?? String(err),
-            },
-            "Failed to ensure indexes from DTO hints"
-          );
-        }
-      }
-    })().catch((e) =>
-      this.log.error(
-        {
-          event: "index_ensure_unhandled",
-          error: (e as Error)?.message ?? String(e),
-        },
-        "Unhandled error in index ensure task"
-      )
-    );
-  }
-
-  /** Subclasses declare which DTOs should have index hints consumed. */
-  protected indexHintDtos(): Function[] {
-    return [];
   }
 
   /** Create and seed HandlerContext per ADR-0042. */
@@ -242,7 +141,8 @@ export abstract class ControllerBase {
     requestId?: string
   ): ProblemJson {
     const code = err?.code ?? "UNSPECIFIED";
-    const detail = err?.message ?? err?.detail ?? "Unhandled error";
+    // Prefer detail over message to surface driver errors (earlier change)
+    const detail = err?.detail ?? err?.message ?? "Unhandled error";
     const issues = Array.isArray(err?.issues) ? err.issues : undefined;
 
     return {

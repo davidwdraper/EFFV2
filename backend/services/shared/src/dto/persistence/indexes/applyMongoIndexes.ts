@@ -10,7 +10,7 @@
  *
  * Behavior:
  * - Preflights collection existence via listCollections({ name }).
- * - Creates the collection if missing.
+ * - Creates the collection if missing (best-effort; non-fatal if preflight fails).
  * - Calls collection.createIndex(keys, options) for each spec.
  * - Does not throw on per-index errors unless absolutely necessary; let caller decide.
  */
@@ -23,6 +23,9 @@ type AnyCollection = {
     keys: Record<string, any>,
     options?: Record<string, any>
   ) => Promise<string>;
+  indexes?: () => Promise<
+    Array<{ name: string; key: Record<string, unknown> }>
+  >;
   db?: {
     listCollections: (
       filter: Record<string, any>,
@@ -38,7 +41,7 @@ export async function applyMongoIndexes(
   collection: AnyCollection,
   specs: MongoIndexSpec[],
   opts?: {
-    collectionName?: string;
+    collectionName?: string; // for logging only
     log?: {
       info?: Function;
       warn?: Function;
@@ -48,52 +51,59 @@ export async function applyMongoIndexes(
   }
 ): Promise<void> {
   const log = opts?.log;
-  const collName =
-    opts?.collectionName ??
+  const actualName =
     (collection as any).collectionName ??
+    opts?.collectionName ??
     "unknown_collection";
+  const logName = opts?.collectionName ?? actualName;
 
-  // Preflight: ensure collection exists (avoid "ns does not exist")
+  // Best-effort preflight: use the actual collection's name; don't abort on failure.
   const db = (collection as any).db;
   if (db && typeof db.listCollections === "function") {
     try {
       const existing = await db
-        .listCollections({ name: collName }, { nameOnly: true })
+        .listCollections({ name: actualName }, { nameOnly: true })
         .toArray();
       if (!Array.isArray(existing) || existing.length === 0) {
-        await db.createCollection(collName);
+        await db.createCollection(actualName);
         log?.info?.(
-          { event: "collection_created", collection: collName },
+          { event: "collection_created", collection: logName },
           "Mongo collection created"
         );
       }
     } catch (e) {
-      // If we can't preflight, surface a clear message — indexes will almost certainly fail otherwise.
       const msg = (e as Error)?.message ?? String(e);
-      throw new Error(`Failed preflight for collection "${collName}": ${msg}`);
+      log?.warn?.(
+        {
+          event: "collection_preflight_failed",
+          collection: logName,
+          error: msg,
+        },
+        "Collection preflight failed (continuing; createIndex will autocreate)"
+      );
     }
   }
 
   // Apply each index spec idempotently
   for (const spec of specs) {
     try {
-      await collection.createIndex(spec.keys, spec.options);
+      const res = await collection.createIndex(spec.keys, spec.options);
       log?.debug?.(
         {
           event: "index_applied",
-          collection: collName,
+          collection: logName,
           keys: spec.keys,
           options: spec.options,
+          result: res,
         },
         "Mongo index ensured"
       );
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e);
-      // Report but do not crash the service at boot; leave policy to caller.
       log?.error?.(
         {
           event: "index_apply_failed",
-          collection: collName,
+          collection: logName,
           keys: spec.keys,
           options: spec.options,
           error: msg,

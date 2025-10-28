@@ -6,7 +6,7 @@
  *   - ADR-0015 (Structured Logger with bind() Context)
  *   - ADR-0016 (Logging Architecture & Runtime Config)
  *   - ADR-0018 (Debug Log Origin Capture)
- *   - ADR-0006 (Gateway Edge Logging — first-class edge() channel)
+ *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose:
  * - Single shared logging API for all services with contextual .bind().
@@ -15,38 +15,30 @@
  *     log.info("msg", {meta})    OR  log.info({meta}, "msg")
  * - debug() adds origin capture (file/method/line).
  *
- * Runtime Controls (env):
- * - LOG_LEVEL=debug|info|warn|error   (default: info) — filters info/debug as expected.
- * - LOG_EDGE=0|1 or false|true        (default: 1/true) — master switch for edge logs.
- * - LOG_EDGE_ENABLED=true|false       (legacy; ignored if LOG_EDGE is set).
- * - LOG_DEBUG_ORIGIN=true|false       (default: true) — include origin on debug lines.
+ * Runtime Controls (strict, via SvcEnvDto only):
+ * - LOG_LEVEL = debug | info | warn | error   (REQUIRED — no defaults)
  *
- * Formatting:
- * - Fallback console formatter prefixes timestamps.
- * - "***ERROR***" for errors, "**WARN" for warnings.
+ * Notes:
+ * - Edge channel and debug-origin are always enabled (no flags, greenfield).
+ * - No process.env usage anywhere; fail-fast if SvcEnv not set.
  */
 
 type Json = Record<string, unknown>;
 
 /** Canonical logger contract — edge() is first class, not optional. */
 export interface ILogger {
-  // edge
   edge(msg: string, ...rest: unknown[]): void;
   edge(obj: Json, msg?: string, ...rest: unknown[]): void;
 
-  // info
   info(msg: string, ...rest: unknown[]): void;
   info(obj: Json, msg?: string, ...rest: unknown[]): void;
 
-  // debug
   debug(msg: string, ...rest: unknown[]): void;
   debug(obj: Json, msg?: string, ...rest: unknown[]): void;
 
-  // warn
   warn(msg: string, ...rest: unknown[]): void;
   warn(obj: Json, msg?: string, ...rest: unknown[]): void;
 
-  // error
   error(msg: string, ...rest: unknown[]): void;
   error(obj: Json, msg?: string, ...rest: unknown[]): void;
 }
@@ -78,10 +70,37 @@ export interface IBoundLogger {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Root logger installation
+// Root logger + strict env source (SvcEnvDto)
 // ────────────────────────────────────────────────────────────────────────────
 
 let ROOT: ILogger | null = null;
+
+// Strict SvcEnv binding (no fallbacks, required)
+type SvcEnvLike = { getEnvVar: (k: string) => string };
+let SVCENV: SvcEnvLike | null = null;
+
+/** Must be called once early (e.g., AppBase after env resolved). */
+export function setLoggerEnv(env: SvcEnvLike): void {
+  if (!env || typeof env.getEnvVar !== "function") {
+    throw new Error(
+      "Logger: setLoggerEnv requires a SvcEnvDto-like object with getEnvVar()."
+    );
+  }
+  SVCENV = env;
+}
+
+function getEnvStrict(key: string): string {
+  if (!SVCENV) {
+    throw new Error(
+      `Logger: SvcEnv not set. Call setLoggerEnv(...) before using the logger (missing key: ${key}).`
+    );
+  }
+  const v = SVCENV.getEnvVar(key); // will throw if missing — desired
+  if (v == null || `${v}`.trim() === "") {
+    throw new Error(`Logger: required env "${key}" is empty.`);
+  }
+  return `${v}`;
+}
 
 /** Local-time timestamp "YYYY-MM-DD HH:mm:ss". */
 function tsLocal(): string {
@@ -122,39 +141,25 @@ function normalizeRoot(logger: Partial<ILogger>): ILogger {
   const fbWarn = writer("WARN");
   const fbError = writer("ERROR");
 
-  /**
-   * Convert variadic overloads into a canonical (obj,msg,rest) triple.
-   * Supported call patterns:
-   *  - fn("msg")
-   *  - fn("msg", {meta}, ...more)
-   *  - fn({meta}, "msg", ...more)
-   *  - fn({meta})
-   *  - fn({meta1}, {meta2}, "msg")  // merged meta
-   */
   const toTriple = (args: unknown[]): [Json, string | undefined, unknown[]] => {
     if (args.length === 0) return [{}, undefined, []];
-
     const [a0, a1, ...rest] = args;
 
-    // Case A: first arg is string message
     if (typeof a0 === "string") {
       const msg = a0 as string;
       if (a1 && typeof a1 === "object" && !Array.isArray(a1)) {
         const meta = { ...(a1 as Json) };
         const tail: unknown[] = [];
         for (const r of rest) {
-          if (r && typeof r === "object" && !Array.isArray(r)) {
+          if (r && typeof r === "object" && !Array.isArray(r))
             Object.assign(meta, r as Json);
-          } else {
-            tail.push(r);
-          }
+          else tail.push(r);
         }
         return [meta, msg, tail];
       }
       return [{}, msg, [a1, ...rest].filter((x) => x !== undefined)];
     }
 
-    // Case B: first arg is an object (meta first)
     if (a0 && typeof a0 === "object" && !Array.isArray(a0)) {
       const meta = { ...(a0 as Json) };
       let msg: string | undefined = undefined;
@@ -162,52 +167,46 @@ function normalizeRoot(logger: Partial<ILogger>): ILogger {
       if (typeof a1 === "string") {
         msg = a1 as string;
         for (const r of rest) {
-          if (r && typeof r === "object" && !Array.isArray(r)) {
+          if (r && typeof r === "object" && !Array.isArray(r))
             Object.assign(meta, r as Json);
-          } else {
-            tail.push(r);
-          }
+          else tail.push(r);
         }
       } else {
         for (const r of [a1, ...rest]) {
-          if (r && typeof r === "object" && !Array.isArray(r)) {
+          if (r && typeof r === "object" && !Array.isArray(r))
             Object.assign(meta, r as Json);
-          } else if (r !== undefined) {
-            tail.push(r);
-          }
+          else if (r !== undefined) tail.push(r);
         }
       }
       return [meta, msg, tail];
     }
 
-    // Fallback: unknown shapes
     return [{ arg0: a0, arg1: a1 }, undefined, rest ?? []];
   };
 
   const fallback: ILogger = {
     edge: (...args: unknown[]) => {
-      const [obj, msg, rest] = toTriple(args);
-      fbEdge(obj, msg, ...rest);
+      const [o, m, t] = toTriple(args);
+      fbEdge(o, m, ...t);
     },
     info: (...args: unknown[]) => {
-      const [obj, msg, rest] = toTriple(args);
-      fbInfo(obj, msg, ...rest);
+      const [o, m, t] = toTriple(args);
+      fbInfo(o, m, ...t);
     },
     debug: (...args: unknown[]) => {
-      const [obj, msg, rest] = toTriple(args);
-      fbDebug(obj, msg, ...rest);
+      const [o, m, t] = toTriple(args);
+      fbDebug(o, m, ...t);
     },
     warn: (...args: unknown[]) => {
-      const [obj, msg, rest] = toTriple(args);
-      fbWarn(obj, msg, ...rest);
+      const [o, m, t] = toTriple(args);
+      fbWarn(o, m, ...t);
     },
     error: (...args: unknown[]) => {
-      const [obj, msg, rest] = toTriple(args);
-      fbError(obj, msg, ...rest);
+      const [o, m, t] = toTriple(args);
+      fbError(o, m, ...t);
     },
   };
 
-  // If a root is provided, use it as-is; otherwise use fallback
   return {
     edge: logger.edge ?? fallback.edge,
     info: logger.info ?? fallback.info,
@@ -228,7 +227,7 @@ export function getLogger(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Level + flag evaluation (centralized)
+// Level evaluation (strict) — from SvcEnv only
 // ────────────────────────────────────────────────────────────────────────────
 
 type LevelName = "debug" | "info" | "warn" | "error";
@@ -239,38 +238,22 @@ const LEVEL_ORDER: Record<LevelName, number> = {
   error: 40,
 };
 
-function parseLevel(env = process.env.LOG_LEVEL): LevelName {
-  const v = String(env ?? "info")
-    .toLowerCase()
-    .trim();
-  if (v === "debug" || v === "info" || v === "warn" || v === "error") return v;
-  return "info";
+function parseLevelStrict(): LevelName {
+  const raw = getEnvStrict("LOG_LEVEL").toLowerCase().trim();
+  if (raw === "debug" || raw === "info" || raw === "warn" || raw === "error")
+    return raw;
+  throw new Error(
+    `Logger: invalid LOG_LEVEL="${raw}". Use one of debug|info|warn|error.`
+  );
 }
 
 function levelAllows(target: LevelName): boolean {
-  const current = parseLevel();
+  const current = parseLevelStrict();
   return LEVEL_ORDER[target] >= LEVEL_ORDER[current];
 }
 
-function parseBoolEnv(value: string | undefined, defaultTrue = true): boolean {
-  if (value == null) return defaultTrue;
-  const v = value.toString().trim().toLowerCase();
-  return !(v === "0" || v === "false" || v === "no" || v === "off");
-}
-
-function isEdgeEnabled(): boolean {
-  // New flag wins if present
-  if (process.env.LOG_EDGE != null)
-    return parseBoolEnv(process.env.LOG_EDGE, true);
-  // Legacy fallback
-  return parseBoolEnv(process.env.LOG_EDGE_ENABLED, true);
-}
-
 // ────────────────────────────────────────────────────────────────────────────
-/**
- * BoundLogger uses arrow functions for public methods to **capture `this`**,
- * so calls like `const d = log.debug; d("msg")` remain safe.
- */
+// Bound logger
 // ────────────────────────────────────────────────────────────────────────────
 
 class BoundLogger implements IBoundLogger {
@@ -285,22 +268,21 @@ class BoundLogger implements IBoundLogger {
     return ROOT;
   }
 
-  // edge (honors LOG_EDGE)
+  // edge (always enabled)
   public edge = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
-    if (!isEdgeEnabled()) return;
     const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
     if ((obj as any)["category"] == null) (obj as any).category = "edge";
     this.root().edge(obj, msg, ...tail);
   };
 
-  // info (honors LOG_LEVEL)
+  // info (honors strict LOG_LEVEL)
   public info = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     if (!levelAllows("info")) return;
     const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
     this.root().info(obj, msg, ...tail);
   };
 
-  // warn (honors LOG_LEVEL)
+  // warn (honors strict LOG_LEVEL)
   public warn = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     if (!levelAllows("warn")) return;
     const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
@@ -309,25 +291,21 @@ class BoundLogger implements IBoundLogger {
 
   // error (always logs)
   public error = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
-    // Error is highest severity; always allowed.
     const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
     this.root().error(obj, msg, ...tail);
   };
 
-  // debug (honors LOG_LEVEL + origin toggle)
+  // debug (honors strict LOG_LEVEL; always includes origin)
   public debug = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     if (!levelAllows("debug")) return;
-    const includeOrigin =
-      (process.env.LOG_DEBUG_ORIGIN ?? "true").toLowerCase() !== "false";
     const [obj0, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
-    const obj = includeOrigin ? { ...obj0, origin: captureOrigin(2) } : obj0;
+    const obj = { ...obj0, origin: captureOrigin(2) };
     this.root().debug(obj, msg, ...tail);
   };
 
   public serializeError(err: unknown) {
-    if (err instanceof Error) {
+    if (err instanceof Error)
       return { name: err.name, message: err.message, stack: err.stack };
-    }
     return { message: String(err) };
   }
 }
@@ -388,10 +366,7 @@ function normalizeForBound(
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * Capture file/method/line from the current stack frame.
- * depth=2 typically points at the caller of logger.debug().
- */
+/** Capture file/method/line from the current stack frame. */
 function captureOrigin(depth = 2): Record<string, string | number | undefined> {
   const e = new Error();
   const lines = (e.stack || "").split("\n");

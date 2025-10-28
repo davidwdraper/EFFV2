@@ -18,6 +18,7 @@ import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { buildXxxRouter } from "./routes/xxx.route";
 import { ensureIndexesForDtos } from "@nv/shared/dto/persistence/indexes/ensureIndexes";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
 type CreateAppOptions = {
   slug: string;
@@ -28,6 +29,9 @@ type CreateAppOptions = {
 
 class XxxApp extends AppBase {
   constructor(opts: CreateAppOptions) {
+    // IMPORTANT: logger requires SvcEnv **before** any logging occurs
+    setLoggerEnv(opts.envDto);
+
     super({
       service: opts.slug,
       version: opts.version,

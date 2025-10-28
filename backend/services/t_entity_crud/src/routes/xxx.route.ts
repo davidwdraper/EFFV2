@@ -20,22 +20,37 @@ import { Router } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { XxxCreateController } from "../controllers/xxx.create.controller/xxx.create.controller";
 import { XxxReadController } from "../controllers/xxx.read.controller/xxx.read.controller";
+import { XxxDeleteController } from "../controllers/xxx.delete.controller/xxx.delete.controller";
+import { XxxUpdateController } from "../controllers/xxx.update.controller/xxx.update.controller";
+import { XxxListController } from "../controllers/xxx.list.controller/xxx.list.controller";
 
 export function buildXxxRouter(app: AppBase): ReturnType<typeof Router> {
   const r = Router();
 
-  // Construct controllers ONCE, injecting the App (gives them logger + svcEnv)
+  // Construct controllers once
   const createCtl = new XxxCreateController(app);
+  const updateCtl = new XxxUpdateController(app);
   const readCtl = new XxxReadController(app);
+  const deleteCtl = new XxxDeleteController(app);
+  const listCtl = new XxxListController(app);
 
-  // Mount **relative** to /api/<slug>/v<version>
+  // LIST
+  r.get("/list", (req, res) => listCtl.get(req, res));
+
+  // CREATE
   r.put("/create", (req, res) => createCtl.put(req, res));
 
-  // Support BOTH shapes:
-  //   /read?id=<_id>      (query)
-  //   /read/<_id>         (path param)
+  // UPDATE — canonical path-param form
+  r.patch("/:xxxId", (req, res) => updateCtl.patch(req, res));
+
+  // READ — support query + param
   r.get("/read", (req, res) => readCtl.get(req, res));
   r.get("/read/:xxxId", (req, res) => readCtl.get(req, res));
+
+  // DELETE — support query + param + bare /:xxxId (smoke #8 uses the bare form)
+  r.delete("/delete", (req, res) => deleteCtl.delete(req, res));
+  r.delete("/delete/:xxxId", (req, res) => deleteCtl.delete(req, res));
+  r.delete("/:xxxId", (req, res) => deleteCtl.delete(req, res));
 
   return r;
 }

@@ -21,7 +21,7 @@ export type MongoIndexSpec = {
 function withOpt<T extends object>(base: T, add: Record<string, unknown>): T {
   const out: any = { ...base };
   for (const [k, v] of Object.entries(add)) {
-    if (v === undefined) continue; // drop undefined
+    if (v === undefined || v === null) continue; // drop undefined/null
     if (k === "sparse" && typeof v !== "boolean") continue; // drop non-boolean sparse
     out[k] = v;
   }

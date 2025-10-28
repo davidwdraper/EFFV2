@@ -1,35 +1,69 @@
 // backend/services/shared/src/dto/base.dto.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
- *   - ADR-0039 (svcenv centralized non-secret env)
+ *   - ADR-0040 (DTO-Only Persistence)
+ *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose:
- * - Abstract foundation for all DTOs.
- * - Unifies metadata + _id handling, safe serialization, and validation ergonomics.
+ * - Abstract DTO base with single outbound JSON path.
+ * - Meta stamping (createdAt/updatedAt/updatedByUserId) happens **inside toJson()** via helper.
  *
- * Rules:
- * - DTOs are pure (no I/O/logging).
- * - No external “contracts” — each concrete DTO is its own authority.
- * - Nothing internal is exported; data escapes only via getters and toJson().
- *
- * Ops Note:
- * - All thrown errors include guidance to speed triage.
+ * Notes:
+ * - DTOs remain pure (no logging). Handlers log errors.
  */
 
-// Internal-only metadata shape (NOT exported)
 type _DtoMeta = {
   createdAt?: string; // ISO-8601
   updatedAt?: string; // ISO-8601
-  updatedByUserId?: string; // opaque id
+  updatedByUserId?: string; // opaque principal
 };
 
-export abstract class BaseDto {
-  // DB primary key (private), gospel internally; surface as <slug>Id via subclass getter.
-  private _id?: string;
+/** Thrown when a DTO does not support runtime mutation. Handlers should log as error. */
+export class DtoMutationUnsupportedError extends Error {
+  constructor(dtoName: string, method: "updateFrom" | "patchFrom") {
+    super(
+      `${dtoName} does not support ${method}(). Ops: this DTO is immutable; use the approved reload/replace flow instead.`
+    );
+    this.name = "DtoMutationUnsupportedError";
+  }
+}
 
-  // Canonical operational metadata present on all DTOs (private).
+export class DtoValidationError extends Error {
+  public readonly issues: Array<{
+    path: string;
+    code: string;
+    message: string;
+  }>;
+  public readonly opsHint: string;
+  constructor(
+    message: string,
+    issues: Array<{ path: string; code: string; message: string }>,
+    opsHint?: string
+  ) {
+    super(message);
+    this.name = "DtoValidationError";
+    this.issues = issues;
+    this.opsHint =
+      opsHint ??
+      "Ops: Check caller payload against DTO requirements; confirm versions match; re-run with DEBUG and requestId to capture the failing field(s).";
+  }
+}
+
+export abstract class BaseDto {
+  // Process-wide default principal (set once at boot; no env reads here)
+  private static _defaults = {
+    updatedByUserId: "system",
+  };
+
+  /** Configure default principal once at service boot. */
+  public static configureDefaults(opts: { updatedByUserId?: string }): void {
+    if (opts.updatedByUserId)
+      BaseDto._defaults.updatedByUserId = opts.updatedByUserId;
+  }
+
+  private _id?: string;
   private _meta: _DtoMeta;
 
   protected constructor(args?: { id?: string } & _DtoMeta) {
@@ -41,7 +75,7 @@ export abstract class BaseDto {
     };
   }
 
-  // ---- ID accessors (subclasses expose a friendly alias like xxxId) ----
+  // ---- Internal id accessors (subclasses may expose friendly alias) ----
   protected get _internalId(): string | undefined {
     return this._id;
   }
@@ -49,7 +83,7 @@ export abstract class BaseDto {
     this._id = id;
   }
 
-  // ---- Metadata getters (read-only to callers) ----
+  // ---- Meta getters (read-only) ----
   get createdAt(): string | undefined {
     return this._meta.createdAt;
   }
@@ -61,22 +95,18 @@ export abstract class BaseDto {
   }
 
   /**
-   * Set/merge metadata. If only updatedByUserId is provided, auto-stamp updatedAt.
-   * Callers (controllers/services) provide explicit values — no hidden clocks required.
+   * Explicit meta merge from callers (controllers/services).
+   * If only updatedByUserId is provided, auto-stamp updatedAt.
    */
   public setMeta(meta: Partial<_DtoMeta> & { updatedByUserId?: string }): this {
     const next: _DtoMeta = { ...this._meta, ...meta };
-    if (meta.updatedByUserId && !meta.updatedAt) {
+    if (meta.updatedByUserId && !meta.updatedAt)
       next.updatedAt = new Date().toISOString();
-    }
     this._meta = next;
     return this;
   }
 
-  /**
-   * Helper for subclasses: merge current meta/_id into a body before validation.
-   * Avoids per-DTO boilerplate and drift.
-   */
+  /** Helper: merge current meta/id into a body before schema validation. */
   protected _composeForValidation<T extends Record<string, unknown>>(
     body: T
   ): T {
@@ -89,10 +119,7 @@ export abstract class BaseDto {
     return withMeta as T;
   }
 
-  /**
-   * Helper for subclasses: after schema validation, extract + persist _id/meta
-   * and return the remaining pure state object for storage inside the DTO.
-   */
+  /** Helper: after validation, persist id/meta internally and keep domain state. */
   protected _extractMetaAndId<T extends Record<string, unknown>>(
     validated: T
   ): Omit<T, "_id" | "createdAt" | "updatedAt" | "updatedByUserId"> {
@@ -116,52 +143,42 @@ export abstract class BaseDto {
   }
 
   /**
-   * Merge metadata + id into the serialized output.
-   * Subclasses should call this inside toJson().
+   * Finalize outbound JSON (single path): ensure createdAt (if missing),
+   * always refresh updatedAt, and ensure updatedByUserId (default if missing).
+   * Called **inside** concrete DTO.toJson() implementations.
    */
-  protected _withMeta<T extends Record<string, unknown>>(body: T): T {
+  protected _finalizeToJson<T extends Record<string, unknown>>(body: T): T {
+    const now = new Date().toISOString();
+    if (!this._meta.createdAt) this._meta.createdAt = now;
+    this._meta.updatedAt = now;
+    if (!this._meta.updatedByUserId)
+      this._meta.updatedByUserId = BaseDto._defaults.updatedByUserId;
+
     const out: Record<string, unknown> = { ...body };
     if (this._id) out._id = this._id;
-    if (this._meta.createdAt) out.createdAt = this._meta.createdAt;
-    if (this._meta.updatedAt) out.updatedAt = this._meta.updatedAt;
-    if (this._meta.updatedByUserId)
-      out.updatedByUserId = this._meta.updatedByUserId;
+    out.createdAt = this._meta.createdAt;
+    out.updatedAt = this._meta.updatedAt;
+    out.updatedByUserId = this._meta.updatedByUserId;
     return out as T;
   }
 
-  /** Convert DTO to canonical wire-safe JSON representation. */
+  /** Subclasses must implement the single outbound JSON path. */
   public abstract toJson(): unknown;
 
-  /** Construct a DTO from validated JSON. Must be overridden by subclasses. */
+  /** Subclasses must implement a static fromJson. */
   public static fromJson(_json: unknown): BaseDto {
     throw new Error(
       "BaseDto.fromJson must be implemented by subclass. Ops: verify the concrete DTO implements fromJson()."
     );
   }
-}
 
-/**
- * Validation error used by DTOs when schema validation fails.
- * Includes per-field issues AND an Ops triage hint.
- */
-export class DtoValidationError extends Error {
-  public readonly issues: Array<{
-    path: string;
-    code: string;
-    message: string;
-  }>;
-  public readonly opsHint: string;
-
-  constructor(
-    message: string,
-    issues: Array<{ path: string; code: string; message: string }>,
-    opsHint?: string
-  ) {
-    super(message);
-    this.name = "DtoValidationError";
-    this.issues = issues;
-    this.opsHint =
-      opsHint ??
-      "Ops: Check caller payload against DTO requirements; confirm versions match; re-run with DEBUG to capture the failing field(s). If this originates from persistence, inspect the collection for out-of-spec documents.";
+  // ---- Optional mutation API (immutable by default) ----
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public updateFrom(_other: this): this {
+    throw new DtoMutationUnsupportedError(this.constructor.name, "updateFrom");
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public patchFrom(_json: unknown): this {
+    throw new DtoMutationUnsupportedError(this.constructor.name, "patchFrom");
   }
 }

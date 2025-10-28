@@ -54,6 +54,9 @@ export class SvcEnvClient {
     const NV_MONGO_DB = "nv_env_dev";
     const NV_MONGO_COLLECTION = slug; // use service slug for collection in template
 
+    // New: default log level for local dev
+    const LOG_LEVEL = "debug";
+
     return SvcEnvDto.fromJson({
       key: `${env}@${slug}@${version}`,
       slug,
@@ -63,6 +66,9 @@ export class SvcEnvClient {
         // HTTP listener
         NV_HTTP_HOST,
         NV_HTTP_PORT,
+
+        // Logging
+        LOG_LEVEL,
 
         // Mongo (what adapters look for)
         NV_MONGO_URI,

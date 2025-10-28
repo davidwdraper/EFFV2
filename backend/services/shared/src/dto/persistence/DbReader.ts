@@ -14,6 +14,7 @@
 import type { SvcEnvDto } from "../svcenv.dto";
 import { getMongoCollectionFromSvcEnv } from "./adapters/mongo/connectFromSvcEnv";
 import { mongoNormalizeId } from "./adapters/mongo/mongoNormalizeId";
+import { ObjectId } from "mongodb";
 
 type Ctor<T> = {
   fromJson: (j: unknown, opts?: { validate?: boolean }) => T;
@@ -39,6 +40,33 @@ export class DbReader<TDto> {
   // Env-driven; no guessing collection names
   private async collection(): Promise<any> {
     return getMongoCollectionFromSvcEnv(this.svcEnv);
+  }
+
+  // Best-effort coercion: string/"$oid" → ObjectId, else fall back to raw
+  private coerceObjectId(id: unknown): unknown {
+    if (!id) return id;
+    if (typeof id === "string") {
+      try {
+        return new ObjectId(id);
+      } catch {
+        return id; // let Mongo match fail naturally if not a valid ObjectId
+      }
+    }
+    if (typeof id === "object" && id !== null && "$oid" in (id as any)) {
+      const s = String((id as any)["$oid"] ?? "");
+      try {
+        return new ObjectId(s);
+      } catch {
+        return s;
+      }
+    }
+    return id;
+  }
+
+  /** Convenience: find by _id with safe coercion to ObjectId when possible. */
+  public async readById(id: unknown): Promise<TDto | undefined> {
+    const _id = this.coerceObjectId(id);
+    return this.readOne({ _id });
   }
 
   public async readOne(

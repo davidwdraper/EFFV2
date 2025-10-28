@@ -3,14 +3,16 @@
  * Docs:
  * - ADR-0040/41 (DTO-only persistence)
  * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ * - ADR-0045 (Index Hints — burn-after-read & boot ensure)
  *
  * Purpose:
  * - Deterministically ensure Mongo indexes for a set of DTOs at service boot.
  * - Consumes index hints (burn-after-read) and applies them idempotently.
+ * - Logs post-ensure index inventory for drift detection.
  */
 
 import type { SvcEnvDto } from "../../svcenv.dto";
-import { consumeIndexHints } from "../index-hints";
+import { consumeIndexHints } from "../index-hints"; // keep your existing export point
 import { mongoFromHints } from "./mongoFromHints";
 import { applyMongoIndexes } from "./applyMongoIndexes";
 import { getMongoCollectionFromSvcEnv } from "../adapters/mongo/connectFromSvcEnv";
@@ -34,10 +36,9 @@ export async function ensureIndexesForDtos(opts: {
     { event: "index_ensure_enter", dtos: dtoNames, count: dtos.length },
     "Boot index ensure: enter"
   );
-  log?.debug?.(
-    { event: "index_ensure_debug", dtosLen: dtos.length },
-    "Boot index ensure: debug"
-  );
+
+  // Resolve the target collection via env (ADR-0044). Single collection per service.
+  const collection = await getMongoCollectionFromSvcEnv(svcEnv);
 
   for (const DtoCtor of dtos) {
     const dtoName = (DtoCtor as any)?.name ?? "UnknownDto";
@@ -48,8 +49,8 @@ export async function ensureIndexesForDtos(opts: {
         {
           event: "index_hints_consumed",
           dto: dtoName,
-          count: hints.length,
-          sample: hints[0],
+          count: hints?.length ?? 0,
+          sample: hints && hints[0],
         },
         "Index hints read"
       );
@@ -62,7 +63,6 @@ export async function ensureIndexesForDtos(opts: {
         continue;
       }
 
-      // Entity/collection naming: allow DTO to override via statics.
       const entity =
         (DtoCtor as any)?.entitySlug ??
         (DtoCtor as any)?.collectionName ??
@@ -70,25 +70,43 @@ export async function ensureIndexesForDtos(opts: {
 
       const specs = mongoFromHints(entity, hints);
 
-      // Resolve the target collection using generic env keys (ADR-0044)
-      const collection = await getMongoCollectionFromSvcEnv(svcEnv);
-
-      // Log the resolved collection name we *intend* to use (for observability only)
-      const collName =
-        (svcEnv as any).tryEnvVar?.("NV_MONGO_COLLECTION") ??
-        (svcEnv as any).getEnvVar?.("NV_MONGO_COLLECTION") ??
-        entity;
-
       await applyMongoIndexes(collection, specs, {
-        collectionName: String(collName),
+        collectionName:
+          (svcEnv as any).tryEnvVar?.("NV_MONGO_COLLECTION") ??
+          (svcEnv as any).getEnvVar?.("NV_MONGO_COLLECTION") ??
+          entity,
         log,
       });
+
+      // Post-ensure inventory for observability
+      if (typeof (collection as any).indexes === "function") {
+        try {
+          const inv = await (collection as any).indexes();
+          log?.info?.(
+            {
+              event: "index_inventory",
+              dto: dtoName,
+              count: Array.isArray(inv) ? inv.length : undefined,
+              names: Array.isArray(inv) ? inv.map((i) => i.name) : undefined,
+            },
+            "Index inventory after ensure"
+          );
+        } catch (e) {
+          log?.warn?.(
+            {
+              event: "index_inventory_failed",
+              dto: dtoName,
+              error: (e as Error)?.message,
+            },
+            "Failed to list indexes after ensure"
+          );
+        }
+      }
 
       log?.info?.(
         {
           event: "index_ensured",
           dto: dtoName,
-          collection: collName,
           count: specs.length,
         },
         "Indexes ensured (idempotent)"
@@ -102,7 +120,7 @@ export async function ensureIndexesForDtos(opts: {
         },
         "Failed to ensure indexes"
       );
-      // Non-fatal by design: indexes are desirable, but shouldn't block boot.
+      // Non-fatal by design
     }
   }
 

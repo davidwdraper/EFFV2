@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/ControllerBase.ts
+// backend/services/shared/src/base/ControllerBase.ts
 /**
  * Docs:
  * - ADR-0040 (DTO-Only Persistence via Managers)
@@ -108,11 +108,22 @@ export abstract class ControllerBase {
       const status =
         statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
       const body: ProblemJson = this.toProblemJson(error, status, requestId);
+
       res.status(status).type("application/problem+json").json(body);
-      this.log.error(
-        { event: "finalize_error", requestId, status, problem: body },
-        "Controller error response"
-      );
+
+      // Log level policy: 5xx = ERROR, 4xx = WARN (intentional/client/data issues).
+      if (status >= 500) {
+        this.log.error(
+          { event: "finalize_error", requestId, status, problem: body },
+          "Controller error response"
+        );
+      } else {
+        this.log.warn(
+          { event: "finalize_client_error", requestId, status, problem: body },
+          "Controller client/data response"
+        );
+      }
+
       this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
       return;
     }
@@ -126,7 +137,11 @@ export abstract class ControllerBase {
           );
         }
       }
-      res.status(200).json(result ?? { ok: true, warnings });
+      const body =
+        result && typeof result === "object"
+          ? { ...result, warnings }
+          : { ok: true, warnings };
+      res.status(200).json(body);
       this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
       return;
     }
@@ -141,7 +156,7 @@ export abstract class ControllerBase {
     requestId?: string
   ): ProblemJson {
     const code = err?.code ?? "UNSPECIFIED";
-    // Prefer detail over message to surface driver errors (earlier change)
+    // Prefer detail over message to surface driver errors
     const detail = err?.detail ?? err?.message ?? "Unhandled error";
     const issues = Array.isArray(err?.issues) ? err.issues : undefined;
 

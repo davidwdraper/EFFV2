@@ -1,88 +1,76 @@
 // backend/services/t_entity_crud/src/controllers/xxx.create.controller/handlers/dbWrite.create.handler.ts
 /**
  * Docs:
- * - ADR-0040 (DTO-Only Persistence via Managers)
- * - ADR-0041 (Controller & Handler Architecture)
- * - ADR-0042 (HandlerContext Bus, KISS)
- * - ADR-0043 (Hydration & Failure Propagation; finalize())
+ * - ADR-0040/41/42/43/44
  *
  * Purpose:
- * - Execute the actual DB write for PUT /api/xxx/v1/create.
- * - Reads a pre-constructed DbWriter<XxxDto> from HandlerContext and calls write().
- * - On success, stashes the insert id in context under "insertedId" and "result".
- *
- * Inputs (ctx):
- * - "dbWriter": DbWriter<XxxDto> (created by dtoToDb.create.handler)
- *
- * Outputs (ctx):
- * - "insertedId": string
- * - "result": { ok: true, id: string }
- * - "handlerStatus": "ok" | "error"
- *
- * Failure semantics:
- * - If "dbWriter" missing → 500 with Ops guidance.
- * - If write() throws → 500 with error code DB_WRITE_FAILED and actionable hints.
+ * - Execute DB write for PUT /api/xxx/v1/create.
+ * - On duplicate key:
+ *    - **Log at WARN** (data issue)
+ *    - **Return HTTP 409** Conflict (operation failed)
  */
 
-import { HandlerBase } from "@nv/shared/http/HandlerBase";
 import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { DbManagerHandler } from "@nv/shared/http/DbManagerHandler";
 import { DbWriter } from "@nv/shared/dto/persistence/DbWriter";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { DuplicateKeyError } from "@nv/shared/dto/persistence/adapters/mongo/dupeKeyError";
 
-export class DbWriteCreateHandler extends HandlerBase {
+export class DbWriteCreateHandler extends DbManagerHandler<
+  DbWriter<XxxDto>,
+  { id: string }
+> {
   constructor(ctx: HandlerContext) {
-    super(ctx);
-  }
+    super(
+      ctx,
+      "dbWriter",
+      (w) => w.write(),
+      (c, { id }) => {
+        c.set("insertedId", id);
+        c.set("result", { ok: true, id });
+      },
+      // Duplicate policy: warn log + 409 error response
+      (c, err: DuplicateKeyError) => {
+        // 1) Record a warning for operators (and keep it in the finalized payload for visibility)
+        const warning = {
+          code: "DUPLICATE",
+          message: "Unique constraint violation (duplicate key).",
+          detail: err.message,
+          index: err.index,
+          key: err.key,
+        };
+        c.set("warnings", [...(c.get<any[]>("warnings") ?? []), warning]);
 
-  protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_enter" }, "dbWrite.create handler enter");
+        // 2) Emit WARN-level log (data-related issue)
+        const log = (c.get<any>("App") as any)?.log ?? console;
+        log.warn?.(
+          {
+            event: "duplicate_key",
+            index: err.index,
+            key: err.key,
+            detail: err.message,
+          },
+          "dbWrite.create duplicate — returning 409"
+        );
 
-    // Retrieve the prepared writer
-    const writer = this.ctx.get<DbWriter<XxxDto>>("dbWriter");
-    if (!writer) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "DB_WRITER_MISSING",
-        message:
-          "DbWriter not found in context. Ops: ensure dtoToDb.create.handler runs before dbWrite.create.handler.",
-        hint: "Verify handler ordering in xxx.create.controller.ts. dtoFromJson → dtoToDb → dbWrite is the required sequence.",
-      });
-      this.log.debug(
-        { event: "execute_error", reason: "writer_missing" },
-        "DbWriter missing from context"
-      );
-      return;
-    }
-
-    try {
-      const { id } = await writer.write();
-
-      // Persist outcome into context for finalize() and/or downstream shapers
-      this.ctx.set("insertedId", id);
-      this.ctx.set("result", { ok: true, id });
-      this.ctx.set("handlerStatus", "ok");
-
-      this.log.debug({ event: "write_ok", id }, "dbWrite.create succeeded");
-    } catch (err) {
-      const msg = (err as Error)?.message ?? String(err);
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "DB_WRITE_FAILED",
-        message:
-          "Database write failed for XxxDto. Ops: see detail; verify Mongo connectivity, credentials, and collection write concerns.",
-        detail: msg,
-        hint: "Check svcEnv Mongo URL/DB/collection, user privileges (insert), and index conflicts (e.g., unique violations). Use x-request-id to correlate logs.",
-      });
-
-      this.log.debug(
-        { event: "execute_error", error: msg },
-        "dbWrite.create failed"
-      );
-      return;
-    }
-
-    this.log.debug({ event: "execute_exit" }, "dbWrite.create handler exit");
+        // 3) Fail the operation with a 409 Conflict (operation did not succeed)
+        c.set("status", 409);
+        c.set("handlerStatus", "error"); // ControllerBase → problem+json
+        c.set("error", {
+          code: "DUPLICATE",
+          title: "Conflict",
+          detail: err.message,
+          issues: err.key
+            ? [
+                {
+                  path: Object.keys(err.key).join(","),
+                  code: "unique",
+                  message: "duplicate value",
+                },
+              ]
+            : undefined,
+        });
+      }
+    );
   }
 }

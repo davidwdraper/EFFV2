@@ -2,8 +2,8 @@
 /**
  * Purpose:
  * - Orchestrate PUT /api/xxx/v1/create (mounted at /create relative to base).
- * - Declare which DTOs carry IndexHints; ControllerBase ensures them once.
  * - No business logic; ends with super.finalize(ctx).
+ * - Index ensuring happens at app boot (not here).
  */
 
 import { Request, Response } from "express";
@@ -13,20 +13,10 @@ import { HandlerContext } from "@nv/shared/http/HandlerContext";
 import { DtoFromJsonCreateHandler } from "./handlers/dtoFromJson.create.handler";
 import { DtoToDbCreateHandler } from "./handlers/dtoToDb.create.handler";
 import { DbWriteCreateHandler } from "./handlers/dbWrite.create.handler";
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 
 export class XxxCreateController extends ControllerBase {
   constructor(app: AppBase) {
-    super(app); // triggers one-time index ensure via DTO hints
-  }
-
-  /** Tell ControllerBase which DTOs to read & burn index hints from */
-  protected override indexHintDtos(): Function[] {
-    this.log.debug(
-      { event: "index_hint_dtos_called" },
-      "Providing index hint DTO: XxxDto for XxxCreateController"
-    );
-    return [XxxDto];
+    super(app);
   }
 
   public async put(req: Request, res: Response): Promise<void> {

@@ -19,28 +19,23 @@
 import { Router } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { XxxCreateController } from "../controllers/xxx.create.controller/xxx.create.controller";
-// (Placeholders for later routes if/when you add them)
-// import { XxxReadController } from "../controllers/xxx.read.controller";
-// import { XxxUpdateController } from "../controllers/xxx.update.controller";
-// import { XxxDeleteController } from "../controllers/xxx.delete.controller";
-// import { XxxListController } from "../controllers/xxx.list.controller";
+import { XxxReadController } from "../controllers/xxx.read.controller/xxx.read.controller";
 
 export function buildXxxRouter(app: AppBase): ReturnType<typeof Router> {
   const r = Router();
 
   // Construct controllers ONCE, injecting the App (gives them logger + svcEnv)
   const createCtl = new XxxCreateController(app);
-  // const readCtl = new XxxReadController(app);
-  // const updateCtl = new XxxUpdateController(app);
-  // const deleteCtl = new XxxDeleteController(app);
-  // const listCtl = new XxxListController(app);
+  const readCtl = new XxxReadController(app);
 
   // Mount **relative** to /api/<slug>/v<version>
   r.put("/create", (req, res) => createCtl.put(req, res));
-  // r.get("/:xxxId", (req, res) => readCtl.get(req, res));
-  // r.patch("/:xxxId", (req, res) => updateCtl.patch(req, res));
-  // r.delete("/:xxxId", (req, res) => deleteCtl.delete(req, res));
-  // r.get("/list", (req, res) => listCtl.get(req, res));
+
+  // Support BOTH shapes:
+  //   /read?id=<_id>      (query)
+  //   /read/<_id>         (path param)
+  r.get("/read", (req, res) => readCtl.get(req, res));
+  r.get("/read/:xxxId", (req, res) => readCtl.get(req, res));
 
   return r;
 }

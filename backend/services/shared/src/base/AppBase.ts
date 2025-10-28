@@ -73,9 +73,6 @@ export abstract class AppBase extends ServiceBase {
   public get svcEnv(): SvcEnvDto {
     return this._envDto;
   }
-  public getSvcEnv(): SvcEnvDto {
-    return this._envDto;
-  }
 
   /**
    * Public async lifecycle entry.

@@ -1,24 +1,24 @@
 // backend/services/t_entity_crud/src/controllers/xxx.list.controller/handlers/dbRead.list.handler.ts
 /**
  * Docs:
- * - ADR-0040/0041/0042
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADRs:
+ *   - ADR-0040 (DTO-Only Persistence; reads hydrate DTOs)
+ *   - ADR-0041 (Controller & Handler Architecture — per-route controllers)
+ *   - ADR-0042 (HandlerContext Bus — KISS)
+ *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
+ *   - ADR-0048 (DbReader/DbWriter contracts)
  *
  * Purpose:
- * - Use DbReader<XxxDto> to fetch the full filtered set (no pagination for now).
- *
- * Inputs (ctx):
- * - "svcEnv": SvcEnvDto
- * - "list.dtoCtor": XxxDto constructor
- * - "list.filter": Record<string, unknown>
- *
- * Outputs (ctx):
- * - "result": { ok: true, docs: Array<unknown> }
+ * - Use DbReader<XxxDto> to fetch a deterministic batch with cursor pagination.
+ * - Return { ok, docs, nextCursor } (docs via DTO.toJson()).
  */
 
 import { HandlerBase } from "@nv/shared/http/HandlerBase";
 import { HandlerContext } from "@nv/shared/http/HandlerContext";
 import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { DbReader } from "@nv/shared/dto/persistence/DbReader";
+import { DtoBagView } from "@nv/shared/dto/DtoBagView";
 
 export class DbReadListHandler extends HandlerBase {
   constructor(ctx: HandlerContext) {
@@ -43,21 +43,44 @@ export class DbReadListHandler extends HandlerBase {
 
     const filter =
       (this.ctx.get("list.filter") as Record<string, unknown>) ?? {};
+    const q = (this.ctx.get("query") as Record<string, unknown>) ?? {};
 
-    // No pagination yet: fetch “all” (temporary high cap to avoid accidental explosions).
-    const TEMP_HIGH_CAP = 100_000;
+    const DEFAULT_LIMIT = 50;
+    const MAX_LIMIT = 1000;
+    let limit = DEFAULT_LIMIT;
+    if (q.limit !== undefined) {
+      const n =
+        typeof q.limit === "string" ? Number(q.limit) : (q.limit as number);
+      if (Number.isFinite(n) && n > 0)
+        limit = Math.min(Math.trunc(n), MAX_LIMIT);
+    }
+
+    const cursor =
+      typeof q.cursor === "string" && q.cursor.trim() ? q.cursor.trim() : null;
 
     const reader = new DbReader<any>({ dtoCtor, svcEnv, validateReads: false });
-    const dtos = await reader.readMany(filter, TEMP_HIGH_CAP);
 
-    // Single-exit serialization (DTO.toJson stamps meta).
-    const docs = dtos.map((d: any) => d.toJson());
-    this.ctx.set("result", { ok: true, docs });
+    const { bag, nextCursor } = await reader.readBatch({
+      filter,
+      limit,
+      cursor,
+      // order?: default (_id asc) inside DbReader
+    });
+
+    // ✅ Use the factory; do NOT pass {}.
+    const docs = DtoBagView.fromBag(bag).toJsonArray();
+
+    this.ctx.set("result", { ok: true, docs, nextCursor });
     this.ctx.set("handlerStatus", "ok");
 
     this.log.debug(
-      { event: "list_complete", count: docs.length },
-      "list read complete"
+      {
+        event: "list_batch_complete",
+        count: docs.length,
+        hasNext: !!nextCursor,
+        limit,
+      },
+      "list batch read complete"
     );
   }
 }

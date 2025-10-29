@@ -18,7 +18,7 @@
  */
 
 import { z } from "zod";
-import { BaseDto, DtoValidationError } from "./base.dto";
+import { BaseDto, DtoValidationError } from "./DtoBase";
 
 /** Internal validation schema (not exported). */
 const SvcEnvWireSchema = z.object({

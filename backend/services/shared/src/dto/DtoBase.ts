@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/base.dto.ts
+// backend/services/shared/src/dto/DtoBase.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak

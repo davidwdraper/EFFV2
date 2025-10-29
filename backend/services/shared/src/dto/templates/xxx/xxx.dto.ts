@@ -12,7 +12,7 @@
  */
 
 import { z } from "zod";
-import { BaseDto, DtoValidationError } from "../../base.dto";
+import { BaseDto, DtoValidationError } from "../../DtoBase";
 import type { IndexHint } from "../../persistence/index-hints";
 
 const _schema = z.object({

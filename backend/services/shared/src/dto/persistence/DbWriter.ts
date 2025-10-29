@@ -8,7 +8,7 @@
  * - Maps Mongo duplicate key errors to a structured DuplicateKeyError.
  */
 
-import type { BaseDto } from "../base.dto";
+import type { BaseDto } from "../DtoBase";
 import { DbManagerBase } from "./DbManagerBase";
 import { getMongoCollectionFromSvcEnv } from "./adapters/mongo/connectFromSvcEnv";
 import {

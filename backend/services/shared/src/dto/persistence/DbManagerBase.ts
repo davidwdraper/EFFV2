@@ -9,7 +9,7 @@
  * - Subclasses (e.g., DbWriter) use svcEnv getters to connect.
  */
 
-import type { BaseDto } from "../../dto/base.dto"; // if file is here adjust path accordingly
+import type { BaseDto } from "../DtoBase"; // if file is here adjust path accordingly
 import type { SvcEnvDto } from "../svcenv.dto";
 
 export abstract class DbManagerBase<TDto extends BaseDto> {

@@ -44,13 +44,16 @@ done
 say "Fetching page 1…"
 P1_JSON="$(list_page "")"
 echo "${P1_JSON}" | jq -e '.ok == true' >/dev/null
-P1_IDS=($(echo "${P1_JSON}" | jq -r '.docs[]._id'))
+# Guard: DTO-only — every doc must have xxxId
+echo "${P1_JSON}" | jq -e 'all(.docs[]; has("xxxId"))' >/dev/null
+P1_IDS=($(echo "${P1_JSON}" | jq -r '.docs[].xxxId'))
 P1_NEXT="$(echo "${P1_JSON}" | jq -r '.nextCursor // empty')"
 
 say "Fetching page 2…"
 P2_JSON="$(list_page "${P1_NEXT}")"
 echo "${P2_JSON}" | jq -e '.ok == true' >/dev/null
-P2_IDS=($(echo "${P2_JSON}" | jq -r '.docs[]._id'))
+echo "${P2_JSON}" | jq -e 'all(.docs[]; has("xxxId"))' >/dev/null
+P2_IDS=($(echo "${P2_JSON}" | jq -r '.docs[].xxxId'))
 P2_NEXT="$(echo "${P2_JSON}" | jq -r '.nextCursor // empty')"
 
 # Assertions: sizes and no overlap
@@ -72,5 +75,4 @@ done
 
 say "OK: no overlap; deterministic cursor paging works."
 [[ -n "${P2_NEXT}" ]] && say "Note: more pages available (nextCursor present)."
-
 exit 0

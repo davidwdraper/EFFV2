@@ -16,7 +16,7 @@ import { BaseDto, DtoValidationError } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
 
 const _schema = z.object({
-  _id: z.string().min(1).optional(),
+  xxxId: z.string().min(1).optional(),
   txtfield1: z.string().min(1, "txtfield1 required"),
   txtfield2: z.string().min(1, "txtfield2 required"),
   numfield1: z.number(),
@@ -39,9 +39,10 @@ type _State = z.infer<typeof _schema>;
 type _Patch = z.infer<typeof _patchSchema>;
 
 export class EnvDto extends BaseDto {
+  private _xxxId?: string;
   private _state: Omit<
     _State,
-    "_id" | "createdAt" | "updatedAt" | "updatedByUserId"
+    "xxxId" | "createdAt" | "updatedAt" | "updatedByUserId"
   >;
 
   static indexHints: ReadonlyArray<IndexHint> = [
@@ -56,12 +57,12 @@ export class EnvDto extends BaseDto {
 
   private constructor(validated: _State) {
     super({
-      id: validated._id,
       createdAt: validated.createdAt,
       updatedAt: validated.updatedAt,
       updatedByUserId: validated.updatedByUserId,
     });
-    const { _id, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
+    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
+    this._xxxId = xxxId;
     this._state = rest;
   }
 

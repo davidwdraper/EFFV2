@@ -8,6 +8,11 @@
  * - On duplicate key:
  *    - **Log at WARN** (data issue)
  *    - **Return HTTP 409** Conflict (operation failed)
+ *
+ * Instrumentation:
+ * - DEBUG create_target { collection }
+ * - DEBUG insert_one_complete { id, collection }
+ * - WARN  duplicate_key { index, key, detail }
  */
 
 import { HandlerContext } from "@nv/shared/http/HandlerContext";
@@ -23,9 +28,28 @@ export class DbWriteCreateHandler extends DbManagerHandler<
   constructor(ctx: HandlerContext) {
     super(
       ctx,
+      // ctx key where the writer is stored by DtoToDbCreateHandler
       "dbWriter",
+      // writer action: perform the write
       (w) => w.write(),
+      // success: capture id, set result, and emit debug logs
       (c, { id }) => {
+        // Resolve logger & collection for consistent diagnostics
+        const log = (c.get<any>("App") as any)?.log ?? console;
+        const writer = c.get<DbWriter<XxxDto>>("dbWriter");
+        const collection = (writer as any)?.collectionName ?? "unknown";
+
+        // DEBUG: show where we wrote and what id Mongo assigned
+        log.debug?.(
+          { event: "create_target", collection },
+          "create will write to collection"
+        );
+        log.debug?.(
+          { event: "insert_one_complete", id, collection },
+          "create complete"
+        );
+
+        // Surface result to the finalize step (controller stays orchestration-only)
         c.set("insertedId", id);
         c.set("result", { ok: true, id });
       },

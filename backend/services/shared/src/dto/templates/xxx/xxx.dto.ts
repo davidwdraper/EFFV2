@@ -5,10 +5,12 @@
  * - ADRs:
  *   - ADR-0015 (DTO-First Development)
  *   - ADR-0040 (DTO-Only Persistence via Managers)
+ *   - ADR-0047 (DtoBag — pk & filter shaping live in DTO space)
+ *   - ADR-0048 (pk mapping at persistence edge)
  *
- * Purpose:
- * - Xxx DTO for the t_entity_crud template.
- * - Meta stamping is done by BaseDto._finalizeToJson() INSIDE toJson().
+ * Policy:
+ * - DTOs NEVER expose `_id`. Canonical id on the surface is `xxxId` (string).
+ * - DbWriter/DbReader handle `_id<ObjectId>` ⇄ `xxxId<string>` mapping at the edge.
  */
 
 import { z } from "zod";
@@ -16,11 +18,16 @@ import { BaseDto, DtoValidationError } from "../../DtoBase";
 import type { IndexHint } from "../../persistence/index-hints";
 
 const _schema = z.object({
-  _id: z.string().min(1).optional(),
+  // pk in DTO space (string). Optional on create; always present after read.
+  xxxId: z.string().min(1).optional(),
+
+  // business fields
   txtfield1: z.string().min(1, "txtfield1 required"),
   txtfield2: z.string().min(1, "txtfield2 required"),
   numfield1: z.number(),
   numfield2: z.number(),
+
+  // meta (stamped by BaseDto during toJson())
   createdAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime().optional(),
   updatedByUserId: z.string().optional(),
@@ -39,9 +46,10 @@ type _State = z.infer<typeof _schema>;
 type _Patch = z.infer<typeof _patchSchema>;
 
 export class XxxDto extends BaseDto {
+  private _xxxId?: string;
   private _state: Omit<
     _State,
-    "_id" | "createdAt" | "updatedAt" | "updatedByUserId"
+    "xxxId" | "createdAt" | "updatedAt" | "updatedByUserId"
   >;
 
   static indexHints: ReadonlyArray<IndexHint> = [
@@ -55,13 +63,14 @@ export class XxxDto extends BaseDto {
   ];
 
   private constructor(validated: _State) {
+    // BaseDto now handles meta ONLY — no id here.
     super({
-      id: validated._id,
       createdAt: validated.createdAt,
       updatedAt: validated.updatedAt,
       updatedByUserId: validated.updatedByUserId,
     });
-    const { _id, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
+    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
+    this._xxxId = xxxId;
     this._state = rest;
   }
 
@@ -83,8 +92,8 @@ export class XxxDto extends BaseDto {
   public static fromJson(json: unknown): XxxDto;
   public static fromJson(json: unknown, opts: { validate: boolean }): XxxDto;
   public static fromJson(json: unknown, opts?: { validate: boolean }): XxxDto {
-    const validate = opts?.validate !== false;
-    if (validate) {
+    const doValidate = opts?.validate !== false; // default true
+    if (doValidate) {
       const parsed = _schema.safeParse(json);
       if (!parsed.success) {
         throw new DtoValidationError(
@@ -98,16 +107,16 @@ export class XxxDto extends BaseDto {
       }
       return new XxxDto(parsed.data);
     }
-    const parsed = _schema.parse(json);
-    return new XxxDto(parsed);
+    // Trust caller shape (e.g., DB read path with validate=false)
+    return new XxxDto(json as _State);
   }
 
-  // Friendly id
+  // Canonical DTO-space id (string). Never expose Mongo `_id` here.
   public get xxxId(): string | undefined {
-    return (this as unknown as { _internalId?: string })._internalId;
+    return this._xxxId;
   }
 
-  // Getters
+  // Business getters
   public get txtfield1(): string {
     return this._state.txtfield1;
   }
@@ -130,6 +139,7 @@ export class XxxDto extends BaseDto {
       numfield2: other._state.numfield2,
     });
   }
+
   public patchFrom(json: unknown): this {
     const parsed = _patchSchema.safeParse(json);
     if (!parsed.success) {
@@ -156,9 +166,11 @@ export class XxxDto extends BaseDto {
    * - set createdAt if missing
    * - always refresh updatedAt
    * - ensure updatedByUserId (default until auth arrives)
+   * - include `xxxId` (string) when present; NEVER `_id`
    */
   public toJson(): unknown {
     return this._finalizeToJson({
+      ...(this._xxxId ? { xxxId: this._xxxId } : {}),
       txtfield1: this._state.txtfield1,
       txtfield2: this._state.txtfield2,
       numfield1: this._state.numfield1,
@@ -176,7 +188,11 @@ export class XxxDto extends BaseDto {
       string,
       unknown
     >;
-    const composed = this._composeForValidation(nextCandidate);
+    // Recompose a full validation view using current meta + id (id is DTO-space)
+    const composed = this._composeForValidation({
+      ...(this._xxxId ? { xxxId: this._xxxId } : {}),
+      ...nextCandidate,
+    });
     const parsed = _schema.safeParse(composed);
     if (!parsed.success) {
       throw new DtoValidationError(
@@ -188,7 +204,9 @@ export class XxxDto extends BaseDto {
         }))
       );
     }
-    const rest = this._extractMetaAndId(parsed.data);
+    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } =
+      parsed.data;
+    this._xxxId = xxxId ?? this._xxxId;
     this._state = rest as typeof this._state;
     return this;
   }

@@ -7,11 +7,12 @@
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose:
- * - Abstract DTO base with single outbound JSON path.
+ * - Abstract DTO base with a single outbound JSON path.
  * - Meta stamping (createdAt/updatedAt/updatedByUserId) happens **inside toJson()** via helper.
  *
  * Notes:
  * - DTOs remain pure (no logging). Handlers log errors.
+ * - **No DB shape here**: this base never reads/writes `_id`. ID exposure (e.g., `xxxId`) is up to concrete DTOs.
  */
 
 type _DtoMeta = {
@@ -63,24 +64,15 @@ export abstract class BaseDto {
       BaseDto._defaults.updatedByUserId = opts.updatedByUserId;
   }
 
-  private _id?: string;
+  // Internal meta only — no internal DB id kept here.
   private _meta: _DtoMeta;
 
-  protected constructor(args?: { id?: string } & _DtoMeta) {
-    this._id = args?.id;
+  protected constructor(args?: _DtoMeta) {
     this._meta = {
       createdAt: args?.createdAt,
       updatedAt: args?.updatedAt,
       updatedByUserId: args?.updatedByUserId,
     };
-  }
-
-  // ---- Internal id accessors (subclasses may expose friendly alias) ----
-  protected get _internalId(): string | undefined {
-    return this._id;
-  }
-  protected _setInternalId(id?: string): void {
-    this._id = id;
   }
 
   // ---- Meta getters (read-only) ----
@@ -106,12 +98,14 @@ export abstract class BaseDto {
     return this;
   }
 
-  /** Helper: merge current meta/id into a body before schema validation. */
+  /**
+   * Helper: merge current meta into a body before schema validation.
+   * **Intentionally does NOT inject any id field** (no `_id` here).
+   */
   protected _composeForValidation<T extends Record<string, unknown>>(
     body: T
   ): T {
     const withMeta: Record<string, unknown> = { ...body };
-    if (this._id) withMeta._id = this._id;
     if (this._meta.createdAt) withMeta.createdAt = this._meta.createdAt;
     if (this._meta.updatedAt) withMeta.updatedAt = this._meta.updatedAt;
     if (this._meta.updatedByUserId)
@@ -119,13 +113,15 @@ export abstract class BaseDto {
     return withMeta as T;
   }
 
-  /** Helper: after validation, persist id/meta internally and keep domain state. */
+  /**
+   * Helper: after validation, persist meta internally and keep domain state.
+   * **Never reads `_id`** and returns the rest as the DTO’s domain data.
+   */
   protected _extractMetaAndId<T extends Record<string, unknown>>(
     validated: T
-  ): Omit<T, "_id" | "createdAt" | "updatedAt" | "updatedByUserId"> {
-    const { _id, createdAt, updatedAt, updatedByUserId, ...rest } =
+  ): Omit<T, "createdAt" | "updatedAt" | "updatedByUserId"> {
+    const { createdAt, updatedAt, updatedByUserId, ...rest } =
       validated as Record<string, unknown>;
-    this._setInternalId(typeof _id === "string" ? _id : undefined);
     this._meta = {
       createdAt:
         typeof createdAt === "string" ? createdAt : this._meta.createdAt,
@@ -136,15 +132,13 @@ export abstract class BaseDto {
           ? updatedByUserId
           : this._meta.updatedByUserId,
     };
-    return rest as Omit<
-      T,
-      "_id" | "createdAt" | "updatedAt" | "updatedByUserId"
-    >;
+    return rest as Omit<T, "createdAt" | "updatedAt" | "updatedByUserId">;
   }
 
   /**
    * Finalize outbound JSON (single path): ensure createdAt (if missing),
    * always refresh updatedAt, and ensure updatedByUserId (default if missing).
+   * **Never injects `_id`**; concrete DTOs control any id field (e.g., `xxxId`).
    * Called **inside** concrete DTO.toJson() implementations.
    */
   protected _finalizeToJson<T extends Record<string, unknown>>(body: T): T {
@@ -155,7 +149,7 @@ export abstract class BaseDto {
       this._meta.updatedByUserId = BaseDto._defaults.updatedByUserId;
 
     const out: Record<string, unknown> = { ...body };
-    if (this._id) out._id = this._id;
+    // NO `_id` here — DTOs are DB-agnostic at the edge.
     out.createdAt = this._meta.createdAt;
     out.updatedAt = this._meta.updatedAt;
     out.updatedByUserId = this._meta.updatedByUserId;

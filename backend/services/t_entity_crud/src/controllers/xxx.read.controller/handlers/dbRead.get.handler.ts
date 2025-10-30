@@ -1,85 +1,141 @@
 // backend/services/t_entity_crud/src/controllers/xxx.read.controller/handlers/dbRead.get.handler.ts
 /**
  * Docs:
- * - ADR-0040/41/42/43/44
+ * - ADR-0040/41/42/43/44/48
  *
  * Purpose:
- * - Execute the read for GET /api/xxx/v1/read.
- * - Pulls DbReader<XxxDto> from ctx (default key: "dbReader").
- * - Builds a simple equality filter from path param (:xxxId) or req.query (?id=...).
- * - On success: { ok: true, doc }  (doc is DTO.toJson() if available)
- * - On not found: 404 problem+json.
+ * - Execute a single-record read:
+ *   1) If an id is provided (path param or query), use DbReader.readById()
+ *   2) Else, build a safe single-record filter from known fields and use readOne(filter)
  *
- * Notes:
- * - Coerces 24-hex id strings to Mongo ObjectId for reliability.
+ * Behavior:
+ * - JSON only at the edge: dto.toJson() for success
+ * - 404 Not Found if no matching record
+ * - Provides Ops guidance in error details
+ *
+ * Invariants:
+ * - Handlers speak DTO-space only (xxxId:string). Mongo details are hidden in DbReader.
  */
 
+import { HandlerBase } from "@nv/shared/http/HandlerBase";
 import { HandlerContext } from "@nv/shared/http/HandlerContext";
-import { DbManagerHandler } from "@nv/shared/http/DbManagerHandler";
+import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { DbReader } from "@nv/shared/dto/persistence/DbReader";
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
-import { ObjectId } from "mongodb";
 
-function maybeObjectId(id: string): string | ObjectId {
-  const hex24 = /^[0-9a-fA-F]{24}$/;
-  return hex24.test(id) ? new ObjectId(id) : id;
-}
-
-function buildFilterFromCtx(ctx: HandlerContext): Record<string, unknown> {
-  const params: any = ctx.get("params") ?? {};
-  const q: any = ctx.get("query") ?? {};
-
-  // Prefer path param if present: /read/:xxxId
-  if (typeof params.xxxId === "string" && params.xxxId.trim() !== "") {
-    const raw = params.xxxId.trim();
-    return { _id: maybeObjectId(raw) };
-  }
-
-  // Fallback: ?id=... → filter by _id
-  if (typeof q.id === "string" && q.id.trim() !== "") {
-    const raw = q.id.trim();
-    return { _id: maybeObjectId(raw) };
-  }
-
-  // Otherwise treat other query kv as equality filters, minus control params
-  const filter: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(q)) {
-    if (v === undefined || v === null || v === "") continue;
-    if (k === "page" || k === "limit" || k === "sort" || k === "id") continue;
-    filter[k] = v;
-  }
-  return filter;
-}
-
-export class DbReadGetHandler extends DbManagerHandler<
-  DbReader<XxxDto>,
-  { doc?: XxxDto }
-> {
+export class DbReadGetHandler extends HandlerBase {
   constructor(ctx: HandlerContext) {
-    super(
-      ctx,
-      ctx.get<string>("read.dbReader.ctxKey") ?? "dbReader",
-      async (r) => {
-        const filter = buildFilterFromCtx(ctx);
-        const doc = await r.readOne(filter);
-        return { doc };
-      },
-      (c, { doc }) => {
-        if (!doc) {
-          c.set("handlerStatus", "error");
-          c.set("status", 404);
-          c.set("error", {
-            code: "NOT_FOUND",
-            message: "Document not found for supplied filter.",
-            hint: "Use /read/<_id> or /read?id=<_id>. If your _id is Mongo ObjectId, ensure it’s 24-hex.",
-          });
-          return;
-        }
-        const json = (doc as any)?.toJson
-          ? (doc as any).toJson()
-          : (doc as any);
-        c.set("result", { ok: true, doc: json });
+    super(ctx);
+  }
+
+  protected async execute(): Promise<void> {
+    const svcEnv = this.ctx.get<SvcEnvDto>("svcEnv");
+    const dtoCtor = this.ctx.get<any>("read.dtoCtor");
+
+    if (!svcEnv || !dtoCtor) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 500);
+      this.ctx.set("error", {
+        code: "READ_SETUP_MISSING",
+        title: "Internal Error",
+        detail:
+          "Required context missing (svcEnv or dtoCtor). Ops: verify ControllerBase.makeContext() and XxxReadController seeding.",
+      });
+      return;
+    }
+
+    const params = (this.ctx.get("params") as Record<string, unknown>) ?? {};
+    const query = (this.ctx.get("query") as Record<string, unknown>) ?? {};
+
+    // Accept id from either :xxxId or legacy :id (path wins), fall back to ?xxxId or ?id
+    const idFromPath =
+      (typeof params["xxxId"] === "string" && params["xxxId"].trim()) ||
+      (typeof params["id"] === "string" && params["id"].trim()) ||
+      "";
+    const idFromQuery =
+      (typeof query["xxxId"] === "string" &&
+        (query["xxxId"] as string).trim()) ||
+      (typeof query["id"] === "string" && (query["id"] as string).trim()) ||
+      "";
+    const id = idFromPath || idFromQuery;
+
+    const reader = new DbReader<any>({ dtoCtor, svcEnv, validateReads: false });
+
+    // Instrument the resolved read target (collection) once per request
+    try {
+      const t = await reader.targetInfo();
+      this.log.debug(
+        { event: "read_target", collection: t.collectionName, pk: "xxxId" },
+        "read will query collection"
+      );
+    } catch {
+      // ignore; failure to introspect target isn't fatal
+    }
+
+    // 1) Prefer read-by-id if supplied (DTO-space id)
+    if (id) {
+      const dto = await reader.readById(id);
+      if (!dto) {
+        this.ctx.set("handlerStatus", "warn");
+        this.ctx.set("status", 404);
+        this.ctx.set("error", {
+          code: "NOT_FOUND",
+          title: "Not Found",
+          detail: `No record with xxxId=${id}. Source=${
+            idFromPath ? "path:xxxId" : "query:xxxId"
+          }.`,
+        });
+        return;
       }
+      this.ctx.set("result", { ok: true, doc: dto.toJson() });
+      this.ctx.set("handlerStatus", "ok");
+      this.log.debug(
+        { event: "read_one_by_id", xxxId: id },
+        "read one by id complete"
+      );
+      return;
+    }
+
+    // 2) Optional single-record filter read (tight filter only on known fields)
+    const filter: Record<string, unknown> = {};
+    if (typeof query.txtfield1 === "string" && query.txtfield1.trim()) {
+      filter.txtfield1 = (query.txtfield1 as string).trim();
+    }
+    if (typeof query.txtfield2 === "string" && query.txtfield2.trim()) {
+      filter.txtfield2 = (query.txtfield2 as string).trim();
+    }
+    if (query.numfield1 !== undefined) {
+      const n =
+        typeof query.numfield1 === "string"
+          ? Number(query.numfield1)
+          : (query.numfield1 as number);
+      if (Number.isFinite(n)) filter.numfield1 = n;
+    }
+    if (query.numfield2 !== undefined) {
+      const n =
+        typeof query.numfield2 === "string"
+          ? Number(query.numfield2)
+          : (query.numfield2 as number);
+      if (Number.isFinite(n)) filter.numfield2 = n;
+    }
+
+    const dto = await reader.readOne(filter);
+    if (!dto) {
+      this.ctx.set("handlerStatus", "warn");
+      this.ctx.set("status", 404);
+      this.ctx.set("error", {
+        code: "NOT_FOUND",
+        title: "Not Found",
+        detail:
+          "Document not found for supplied filter. Ops: verify filter parameters and collection contents.",
+      });
+      return;
+    }
+
+    this.ctx.set("result", { ok: true, doc: dto.toJson() });
+    this.ctx.set("handlerStatus", "ok");
+    this.log.debug(
+      { event: "read_one_by_filter", filterKeys: Object.keys(filter) },
+      "read one by filter complete"
     );
   }
 }

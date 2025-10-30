@@ -19,6 +19,9 @@
  *
  * Context Outputs:
  * - "<ctxKey>": DbReader<TDto>
+ *
+ * Notes (SOP):
+ * - Keep this handler free of route/param concerns; it only constructs the reader.
  */
 
 import { HandlerBase } from "@nv/shared/http/HandlerBase";
@@ -71,11 +74,7 @@ export class DtoToDbReadHandler extends HandlerBase {
     const ctxKey = this.ctx.get<string>("read.dbReader.ctxKey") ?? "dbReader";
     const validateReads = this.ctx.get<boolean>("read.validateReads") ?? false;
 
-    const reader = new DbReader<any>({
-      dtoCtor,
-      svcEnv,
-      validateReads,
-    });
+    const reader = new DbReader<any>({ dtoCtor, svcEnv, validateReads });
 
     this.ctx.set(ctxKey, reader);
     this.ctx.set("handlerStatus", "ok");

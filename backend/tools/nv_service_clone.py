@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+backed/tools/nv_service_clone.py
+
 nv_service_clone.py — Dependency-free Python 3 CLI
 Zip in → case-aware rename (folders, files, contents) → zip out.
 

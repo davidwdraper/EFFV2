@@ -21,16 +21,6 @@ type _DtoMeta = {
   updatedByUserId?: string; // opaque principal
 };
 
-/** Thrown when a DTO does not support runtime mutation. Handlers should log as error. */
-export class DtoMutationUnsupportedError extends Error {
-  constructor(dtoName: string, method: "updateFrom" | "patchFrom") {
-    super(
-      `${dtoName} does not support ${method}(). Ops: this DTO is immutable; use the approved reload/replace flow instead.`
-    );
-    this.name = "DtoMutationUnsupportedError";
-  }
-}
-
 export class DtoValidationError extends Error {
   public readonly issues: Array<{
     path: string;
@@ -52,19 +42,66 @@ export class DtoValidationError extends Error {
   }
 }
 
-export abstract class BaseDto {
-  // Process-wide default principal (set once at boot; no env reads here)
-  private static _defaults = {
-    updatedByUserId: "system",
-  };
+export class DtoMutationUnsupportedError extends Error {
+  constructor(dtoName: string, method: "updateFrom" | "patchFrom") {
+    super(
+      `${dtoName} does not support ${method}(). Ops: this DTO is immutable; use the approved reload/replace flow instead.`
+    );
+    this.name = "DtoMutationUnsupportedError";
+  }
+}
 
-  /** Configure default principal once at service boot. */
+type _SvcEnvLike = { getEnvVar: (k: string) => string };
+
+export abstract class BaseDto {
+  // ---- Process-wide defaults/env (configured at boot) ----
+  private static _defaults = { updatedByUserId: "system" };
+  private static _svcEnv?: _SvcEnvLike;
+
+  /** Call once at service boot. */
   public static configureDefaults(opts: { updatedByUserId?: string }): void {
     if (opts.updatedByUserId)
       BaseDto._defaults.updatedByUserId = opts.updatedByUserId;
   }
 
-  // Internal meta only — no internal DB id kept here.
+  /** Call once at service boot with your SvcEnvDto (must expose getEnvVar). */
+  public static configureEnv(env: _SvcEnvLike): void {
+    BaseDto._svcEnv = env;
+  }
+
+  /**
+   * Minimal collection resolver:
+   * - Subclass must provide `static dbCollectionKey(): string`
+   * - We fetch via svcEnv.getEnvVar(key)
+   * - Empty/missing → throw with an Ops hint
+   */
+  public static dbCollectionName(this: unknown): string {
+    const ctor = this as { dbCollectionKey?: () => string; name?: string };
+    if (!BaseDto._svcEnv) {
+      throw new Error(
+        "SvcEnv not configured. Ops: wire BaseDto.configureEnv(svcEnvDto) during app boot before using DTOs."
+      );
+    }
+    if (typeof ctor.dbCollectionKey !== "function") {
+      throw new Error(
+        `DTO ${
+          ctor.name ?? "UnknownDto"
+        } is missing static dbCollectionKey(). ` +
+          `Ops: implement: 'static dbCollectionKey() { return \"NV_COLLECTION_XXX_VALUES\"; }'`
+      );
+    }
+    const key = ctor.dbCollectionKey();
+    const value = BaseDto._svcEnv.getEnvVar(key);
+    if (!value || !value.trim()) {
+      throw new Error(
+        `Missing env value for "${key}" required by ${ctor.name ?? "DTO"}. ` +
+          `Ops: ensure svcenv provides a non-empty collection name; Dev == Prod (no defaults).`
+      );
+    }
+    return value;
+  }
+
+  // ---- Meta (internal only; no DB ids here) ----
   private _meta: _DtoMeta;
 
   protected constructor(args?: _DtoMeta) {
@@ -75,7 +112,6 @@ export abstract class BaseDto {
     };
   }
 
-  // ---- Meta getters (read-only) ----
   get createdAt(): string | undefined {
     return this._meta.createdAt;
   }
@@ -86,10 +122,6 @@ export abstract class BaseDto {
     return this._meta.updatedByUserId;
   }
 
-  /**
-   * Explicit meta merge from callers (controllers/services).
-   * If only updatedByUserId is provided, auto-stamp updatedAt.
-   */
   public setMeta(meta: Partial<_DtoMeta> & { updatedByUserId?: string }): this {
     const next: _DtoMeta = { ...this._meta, ...meta };
     if (meta.updatedByUserId && !meta.updatedAt)
@@ -98,10 +130,6 @@ export abstract class BaseDto {
     return this;
   }
 
-  /**
-   * Helper: merge current meta into a body before schema validation.
-   * **Intentionally does NOT inject any id field** (no `_id` here).
-   */
   protected _composeForValidation<T extends Record<string, unknown>>(
     body: T
   ): T {
@@ -113,10 +141,6 @@ export abstract class BaseDto {
     return withMeta as T;
   }
 
-  /**
-   * Helper: after validation, persist meta internally and keep domain state.
-   * **Never reads `_id`** and returns the rest as the DTO’s domain data.
-   */
   protected _extractMetaAndId<T extends Record<string, unknown>>(
     validated: T
   ): Omit<T, "createdAt" | "updatedAt" | "updatedByUserId"> {
@@ -135,43 +159,29 @@ export abstract class BaseDto {
     return rest as Omit<T, "createdAt" | "updatedAt" | "updatedByUserId">;
   }
 
-  /**
-   * Finalize outbound JSON (single path): ensure createdAt (if missing),
-   * always refresh updatedAt, and ensure updatedByUserId (default if missing).
-   * **Never injects `_id`**; concrete DTOs control any id field (e.g., `xxxId`).
-   * Called **inside** concrete DTO.toJson() implementations.
-   */
   protected _finalizeToJson<T extends Record<string, unknown>>(body: T): T {
     const now = new Date().toISOString();
     if (!this._meta.createdAt) this._meta.createdAt = now;
     this._meta.updatedAt = now;
     if (!this._meta.updatedByUserId)
       this._meta.updatedByUserId = BaseDto._defaults.updatedByUserId;
-
     const out: Record<string, unknown> = { ...body };
-    // NO `_id` here — DTOs are DB-agnostic at the edge.
     out.createdAt = this._meta.createdAt;
     out.updatedAt = this._meta.updatedAt;
     out.updatedByUserId = this._meta.updatedByUserId;
     return out as T;
   }
 
-  /** Subclasses must implement the single outbound JSON path. */
   public abstract toJson(): unknown;
-
-  /** Subclasses must implement a static fromJson. */
   public static fromJson(_json: unknown): BaseDto {
     throw new Error(
       "BaseDto.fromJson must be implemented by subclass. Ops: verify the concrete DTO implements fromJson()."
     );
   }
 
-  // ---- Optional mutation API (immutable by default) ----
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   public updateFrom(_other: this): this {
     throw new DtoMutationUnsupportedError(this.constructor.name, "updateFrom");
   }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   public patchFrom(_json: unknown): this {
     throw new DtoMutationUnsupportedError(this.constructor.name, "patchFrom");
   }

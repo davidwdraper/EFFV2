@@ -1,17 +1,16 @@
-// backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
+// backend/services/shared/src/dto/env-service.dto.ts
 /**
  * Docs:
  * - SOP: DTO-only persistence; single toJson() exit
  * - ADRs:
  *   - ADR-0015 (DTO-First Development)
  *   - ADR-0040 (DTO-Only Persistence via Managers)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0047 (DtoBag — pk & filter shaping live in DTO space)
  *   - ADR-0048 (pk mapping at persistence edge)
  *
  * Policy:
- * - DTOs NEVER expose `_id`. Canonical id on the surface is `xxxId` (string).
- * - DbWriter/DbReader handle `_id<ObjectId>` ⇄ `xxxId<string>` mapping at the edge.
+ * - DTOs NEVER expose `_id`. Canonical id on the surface is `envServiceId` (string).
+ * - DbWriter/DbReader handle `_id<ObjectId>` ⇄ `envServiceId<string>` mapping at the edge.
  */
 
 import { z } from "zod";
@@ -19,11 +18,16 @@ import { BaseDto, DtoValidationError } from "../../DtoBase";
 import type { IndexHint } from "../../persistence/index-hints";
 
 const _schema = z.object({
-  xxxId: z.string().min(1).optional(),
+  // pk in DTO space (string). Optional on create; always present after read.
+  envServiceId: z.string().min(1).optional(),
+
+  // business fields
   txtfield1: z.string().min(1, "txtfield1 required"),
   txtfield2: z.string().min(1, "txtfield2 required"),
   numfield1: z.number(),
   numfield2: z.number(),
+
+  // meta (stamped by BaseDto during toJson())
   createdAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime().optional(),
   updatedByUserId: z.string().optional(),
@@ -41,11 +45,12 @@ const _patchSchema = z
 type _State = z.infer<typeof _schema>;
 type _Patch = z.infer<typeof _patchSchema>;
 
-export class XxxDto extends BaseDto {
-  /** Virtual by convention: cloner renames the value to service-specific key. */
-  public static dbCollectionKey(): string {
-    return "NV_COLLECTION_XXX_VALUES";
-  }
+export class EnvServiceDto extends BaseDto {
+  private _xxxId?: string;
+  private _state: Omit<
+    _State,
+    "envServiceId" | "createdAt" | "updatedAt" | "updatedByUserId"
+  >;
 
   static indexHints: ReadonlyArray<IndexHint> = [
     { kind: "lookup", fields: ["txtfield1"] },
@@ -57,28 +62,23 @@ export class XxxDto extends BaseDto {
     },
   ];
 
-  private _xxxId?: string;
-  private _state: Omit<
-    _State,
-    "xxxId" | "createdAt" | "updatedAt" | "updatedByUserId"
-  >;
-
   private constructor(validated: _State) {
+    // BaseDto now handles meta ONLY — no id here.
     super({
       createdAt: validated.createdAt,
       updatedAt: validated.updatedAt,
       updatedByUserId: validated.updatedByUserId,
     });
-    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
-    this._xxxId = xxxId;
+    const { envServiceId, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
+    this._xxxId = envServiceId;
     this._state = rest;
   }
 
-  public static create(input: unknown): XxxDto {
+  public static create(input: unknown): EnvServiceDto {
     const parsed = _schema.safeParse(input);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "Invalid Xxx payload. Ops: verify client/body mapper; all four fields required (two strings, two numbers).",
+        "Invalid env-service payload. Ops: verify client/body mapper; all four fields required (two strings, two numbers).",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
@@ -86,18 +86,18 @@ export class XxxDto extends BaseDto {
         }))
       );
     }
-    return new XxxDto(parsed.data);
+    return new EnvServiceDto(parsed.data);
   }
 
-  public static fromJson(json: unknown): XxxDto;
-  public static fromJson(json: unknown, opts: { validate: boolean }): XxxDto;
-  public static fromJson(json: unknown, opts?: { validate: boolean }): XxxDto {
-    const doValidate = opts?.validate !== false;
+  public static fromJson(json: unknown): EnvServiceDto;
+  public static fromJson(json: unknown, opts: { validate: boolean }): EnvServiceDto;
+  public static fromJson(json: unknown, opts?: { validate: boolean }): EnvServiceDto {
+    const doValidate = opts?.validate !== false; // default true
     if (doValidate) {
       const parsed = _schema.safeParse(json);
       if (!parsed.success) {
         throw new DtoValidationError(
-          "Invalid Xxx payload. Ops: validate client/body mapper; ensure required fields and types.",
+          "Invalid env-service payload. Ops: validate client/body mapper; ensure required fields and types.",
           parsed.error.issues.map((i) => ({
             path: i.path.join("."),
             code: i.code,
@@ -105,16 +105,18 @@ export class XxxDto extends BaseDto {
           }))
         );
       }
-      return new XxxDto(parsed.data);
+      return new EnvServiceDto(parsed.data);
     }
-    return new XxxDto(json as _State);
+    // Trust caller shape (e.g., DB read path with validate=false)
+    return new EnvServiceDto(json as _State);
   }
 
   // Canonical DTO-space id (string). Never expose Mongo `_id` here.
-  public get xxxId(): string | undefined {
+  public get envServiceId(): string | undefined {
     return this._xxxId;
   }
 
+  // Business getters
   public get txtfield1(): string {
     return this._state.txtfield1;
   }
@@ -128,6 +130,7 @@ export class XxxDto extends BaseDto {
     return this._state.numfield2;
   }
 
+  // Mutations
   public updateFrom(other: this): this {
     return this._mutate({
       txtfield1: other._state.txtfield1,
@@ -141,7 +144,7 @@ export class XxxDto extends BaseDto {
     const parsed = _patchSchema.safeParse(json);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "Xxx patch rejected. Ops: unknown field or type mismatch.",
+        "env-service patch rejected. Ops: unknown field or type mismatch.",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
@@ -158,9 +161,16 @@ export class XxxDto extends BaseDto {
     });
   }
 
+  /**
+   * Single outbound path — stamps meta **here**:
+   * - set createdAt if missing
+   * - always refresh updatedAt
+   * - ensure updatedByUserId (default until auth arrives)
+   * - include `envServiceId` (string) when present; NEVER `_id`
+   */
   public toJson(): unknown {
     return this._finalizeToJson({
-      ...(this._xxxId ? { xxxId: this._xxxId } : {}),
+      ...(this._xxxId ? { envServiceId: this._xxxId } : {}),
       txtfield1: this._state.txtfield1,
       txtfield2: this._state.txtfield2,
       numfield1: this._state.numfield1,
@@ -168,6 +178,7 @@ export class XxxDto extends BaseDto {
     });
   }
 
+  // Internals
   private _mutate(
     patch: Partial<
       Pick<_State, "txtfield1" | "txtfield2" | "numfield1" | "numfield2">
@@ -177,14 +188,15 @@ export class XxxDto extends BaseDto {
       string,
       unknown
     >;
+    // Recompose a full validation view using current meta + id (id is DTO-space)
     const composed = this._composeForValidation({
-      ...(this._xxxId ? { xxxId: this._xxxId } : {}),
+      ...(this._xxxId ? { envServiceId: this._xxxId } : {}),
       ...nextCandidate,
     });
     const parsed = _schema.safeParse(composed);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "Xxx mutation rejected. Ops: verify field types and constraints.",
+        "env-service mutation rejected. Ops: verify field types and constraints.",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
@@ -192,15 +204,10 @@ export class XxxDto extends BaseDto {
         }))
       );
     }
-    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } =
+    const { envServiceId, createdAt, updatedAt, updatedByUserId, ...rest } =
       parsed.data;
-    this._xxxId = xxxId ?? this._xxxId;
+    this._xxxId = envServiceId ?? this._xxxId;
     this._state = rest as typeof this._state;
     return this;
-  }
-
-  // Convenience for callers that want the collection at class level:
-  public static dbCollectionName(): string {
-    return BaseDto.dbCollectionName.call(this);
   }
 }

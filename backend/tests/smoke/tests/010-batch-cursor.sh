@@ -8,10 +8,11 @@ set -euo pipefail
 #   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
 #   - ADR-0048 (DbReader/DbWriter contracts)
 
-# Config
+# Config (parameterized)
+SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-4015}"
-BASE="http://${HOST}:${PORT}/api/xxx/v1"
+BASE="http://${HOST}:${PORT}/api/${SLUG}/v1"
 LIMIT="${LIMIT:-3}"
 
 say() { printf '%s\n' "$*" >&2; }
@@ -41,19 +42,23 @@ for i in $(seq 1 $((LIMIT + 3))); do
   create_one "t1_${i}" "t2_${i}" "${i}" "$((100 + i))"
 done
 
+# ID key is slug-aware (e.g., xxxId → env-serviceId)
+ID_KEY="${SLUG}Id"
+
 say "Fetching page 1…"
 P1_JSON="$(list_page "")"
 echo "${P1_JSON}" | jq -e '.ok == true' >/dev/null
-# Guard: DTO-only — every doc must have xxxId
-echo "${P1_JSON}" | jq -e 'all(.docs[]; has("xxxId"))' >/dev/null
-P1_IDS=($(echo "${P1_JSON}" | jq -r '.docs[].xxxId'))
+# Guard: DTO-only — every doc must have <slug>Id
+echo "${P1_JSON}" | jq -e --arg k "${ID_KEY}" 'all(.docs[]; has($k))' >/dev/null
+# Extract IDs via dynamic key
+read -r -a P1_IDS <<<"$(echo "${P1_JSON}" | jq -r --arg k "${ID_KEY}" '.docs[] | .[$k]')"
 P1_NEXT="$(echo "${P1_JSON}" | jq -r '.nextCursor // empty')"
 
 say "Fetching page 2…"
 P2_JSON="$(list_page "${P1_NEXT}")"
 echo "${P2_JSON}" | jq -e '.ok == true' >/dev/null
-echo "${P2_JSON}" | jq -e 'all(.docs[]; has("xxxId"))' >/dev/null
-P2_IDS=($(echo "${P2_JSON}" | jq -r '.docs[].xxxId'))
+echo "${P2_JSON}" | jq -e --arg k "${ID_KEY}" 'all(.docs[]; has($k))' >/dev/null
+read -r -a P2_IDS <<<"$(echo "${P2_JSON}" | jq -r --arg k "${ID_KEY}" '.docs[] | .[$k]')"
 P2_NEXT="$(echo "${P2_JSON}" | jq -r '.nextCursor // empty')"
 
 # Assertions: sizes and no overlap
@@ -68,7 +73,7 @@ fi
 for id1 in "${P1_IDS[@]}"; do
   for id2 in "${P2_IDS[@]}"; do
     if [[ "${id1}" == "${id2}" ]]; then
-      say "ERROR: overlap detected id=${id1}"; exit 1
+      say "ERROR: overlap detected id=${id1:-null}"; exit 1
     fi
   done
 done

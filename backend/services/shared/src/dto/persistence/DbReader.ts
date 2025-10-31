@@ -10,13 +10,15 @@
  *
  * Purpose:
  * - Read one/many records from Mongo and hydrate DTOs.
- * - Env-driven collection resolution (NV_MONGO_*).
+ * - Collection name is resolved explicitly from the DTO class (dbCollectionName()).
  * - One-step normalization: raw Mongo → DTO shape (no _id, yes xxxId).
  * - Deterministic keyset pagination for batched reads.
+ *
+ * Invariants:
+ * - No implicit fallbacks; Dev == Prod. Missing env/config → fail fast.
  */
 
 import type { SvcEnvDto } from "../svcenv.dto";
-import { getMongoCollectionFromSvcEnv } from "./adapters/mongo/connectFromSvcEnv";
 import { mongoNormalizeToDto } from "./adapters/mongo/mongoNormalizeToDto";
 
 import type { OrderSpec } from "@nv/shared/db/orderSpec";
@@ -29,13 +31,16 @@ import {
 } from "@nv/shared/db/cursor";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { coerceForMongoQuery } from "./adapters/mongo/queryHelper";
+import { MongoClient, Collection, Db } from "mongodb";
 
-type Ctor<T> = {
+type DtoCtorWithCollection<T> = {
   fromJson: (j: unknown, opts?: { validate?: boolean }) => T;
+  dbCollectionName: () => string; // static; typically BaseDto.dbCollectionName.call(this)
+  name?: string;
 };
 
 type DbReaderOptions<T> = {
-  dtoCtor: Ctor<T>;
+  dtoCtor: DtoCtorWithCollection<T>;
   svcEnv: SvcEnvDto;
   validateReads?: boolean; // default false
   /** Keep literal template default for cloners. */
@@ -55,8 +60,44 @@ export type ReadBatchResult<TDto> = {
   nextCursor?: string;
 };
 
+/* ----------------- minimal pooled client (per-process) ----------------- */
+let _client: MongoClient | null = null;
+let _db: Db | null = null;
+let _dbNamePinned: string | null = null;
+
+async function getExplicitCollection(
+  svcEnv: SvcEnvDto,
+  collectionName: string
+): Promise<Collection> {
+  const uri = svcEnv.getEnvVar("NV_MONGO_URI");
+  const dbName = svcEnv.getEnvVar("NV_MONGO_DB");
+
+  if (!uri || !dbName || !collectionName) {
+    throw new Error(
+      "DBREADER_MISCONFIG: NV_MONGO_URI/NV_MONGO_DB/collectionName required. " +
+        "Ops: verify svcenv configuration; no defaults permitted."
+    );
+  }
+
+  if (!_client) {
+    _client = new MongoClient(uri);
+    await _client.connect();
+    _db = _client.db(dbName);
+    _dbNamePinned = dbName;
+  } else if (_dbNamePinned !== dbName) {
+    throw new Error(
+      `DBREADER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${dbName}". ` +
+        "Ops: a single process must target one DB; restart with consistent env."
+    );
+  }
+
+  return (_db as Db).collection(collectionName);
+}
+
+/* ---------------------------------------------------------------------- */
+
 export class DbReader<TDto> {
-  private readonly dtoCtor: Ctor<TDto>;
+  private readonly dtoCtor: DtoCtorWithCollection<TDto>;
   private readonly svcEnv: SvcEnvDto;
   private readonly validateReads: boolean;
   private readonly idFieldName: string;
@@ -68,18 +109,22 @@ export class DbReader<TDto> {
     this.idFieldName = opts.idFieldName ?? "xxxId";
   }
 
-  private async collection(): Promise<any> {
-    return getMongoCollectionFromSvcEnv(this.svcEnv);
+  /** Resolve collection explicitly from the DTO class. */
+  private async collection(): Promise<Collection> {
+    const collectionName = this.dtoCtor.dbCollectionName();
+    if (!collectionName?.trim()) {
+      throw new Error(
+        `DBREADER_NO_COLLECTION: DTO ${
+          this.dtoCtor.name ?? "<anon>"
+        } returned empty dbCollectionName(). Ops: ensure BaseDto.configureEnv(...) was called at boot and dbCollectionKey() is mapped.`
+      );
+    }
+    return getExplicitCollection(this.svcEnv, collectionName);
   }
 
   /** Introspection hook for handlers to log target collection. */
   public async targetInfo(): Promise<{ collectionName: string }> {
-    const coll = await getMongoCollectionFromSvcEnv(this.svcEnv);
-    const collectionName =
-      typeof (coll as any)?.collectionName === "string"
-        ? (coll as any).collectionName
-        : "unknown";
-    return { collectionName };
+    return { collectionName: this.dtoCtor.dbCollectionName() };
   }
 
   /** Find by id (string in DTO-land) — helper coerces to ObjectId for Mongo. */

@@ -1,4 +1,4 @@
-// backend/services/t_entity_crud/src/app.ts
+// backend/services/env-service/src/app.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -15,11 +15,10 @@ import type { Express, Router } from "express";
 import express = require("express");
 import { AppBase } from "@nv/shared/base/AppBase";
 import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
-import { buildXxxRouter } from "./routes/xxx.route";
+import { buildEnvServiceRouter } from "./routes/env-service.route";
 import { ensureIndexesForDtos } from "@nv/shared/dto/persistence/indexes/ensureIndexes";
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
-import { BaseDto } from "@nv/shared/dto/DtoBase";
 
 type CreateAppOptions = {
   slug: string;
@@ -28,13 +27,10 @@ type CreateAppOptions = {
   envReloader: () => Promise<SvcEnvDto>;
 };
 
-class XxxApp extends AppBase {
+class EnvServiceApp extends AppBase {
   constructor(opts: CreateAppOptions) {
-    // Logger needs env first so logs don't explode.
+    // IMPORTANT: logger requires SvcEnv **before** any logging occurs
     setLoggerEnv(opts.envDto);
-
-    // Wire DTO env ONCE before any DTO static calls (indexes/readers/writers).
-    BaseDto.configureEnv(opts.envDto);
 
     super({
       service: opts.slug,
@@ -46,14 +42,8 @@ class XxxApp extends AppBase {
 
   /** Boot-time: ensure indexes deterministically; hints are burned after read. */
   protected override async onBoot(): Promise<void> {
-    // Sanity: confirm the DTO can resolve its collection (useful during bring-up).
-    this.log.debug(
-      { collection: XxxDto.dbCollectionName() },
-      "dto_collection_resolved"
-    );
-
     await ensureIndexesForDtos({
-      dtos: [XxxDto],
+      dtos: [EnvServiceDto],
       svcEnv: this.svcEnv, // ADR-0044 accessor
       log: this.log,
     });
@@ -66,7 +56,7 @@ class XxxApp extends AppBase {
       throw new Error("Base path missing — check AppBase.healthBasePath()");
     }
 
-    const r: Router = buildXxxRouter(this);
+    const r: Router = buildEnvServiceRouter(this);
     this.app.use(base, r);
     this.log.info({ base }, "routes mounted");
   }
@@ -75,7 +65,7 @@ class XxxApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new XxxApp(opts);
+  const app = new EnvServiceApp(opts);
   await app.boot();
   return { app: app.instance };
 }

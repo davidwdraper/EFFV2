@@ -10,9 +10,14 @@
 # - No args: list available tests with their explicit numeric IDs.
 # - --all : run all tests in ID order.
 # - <ID>  : run a single test by its numeric ID (e.g., 6 or 006 runs 006-*.sh).
+# Options (new):
+# - --slug <slug>   : service slug (default: xxx)
+# - --port <port>   : service port (default: 4015)
+# - --host <host>   : host (default: 127.0.0.1)
+#
 # Notes:
-# - Merges STDERR into STDOUT so per-request URL traces (from lib.sh) are visible
-#   even when tests pass. Exit codes are preserved via PIPESTATUS[0].
+# - Exports SLUG/PORT/HOST for child test scripts.
+# - Merges STDERR into STDOUT so per-request URL traces are visible.
 # ============================================================================
 set -Eeuo pipefail
 
@@ -26,17 +31,17 @@ LIB="$SMOKE_DIR/lib.sh"
 
 # --- Helpers ------------------------------------------------------------------
 has_cmd(){ command -v "$1" >/dev/null 2>&1; }
-get_env(){ local f="$1" k="$2"; [ -f "$f" ] || { echo ""; return 0; }; grep -E "^${k}=" "$f" | tail -n1 | cut -d'=' -f2- || true; }
-normalize_id(){ # strip leading zeros safely (bash arithmetic, base-10)
-  local s="$1"
-  echo $((10#$s))
-}
+normalize_id(){ local s="$1"; echo $((10#$s)); }
 
 usage() {
   echo "Usage:"
-  echo "  $(basename "$0")           # list tests"
-  echo "  $(basename "$0") --all     # run all tests"
-  echo "  $(basename "$0") <ID>      # run a single test by its numeric ID (e.g., 6 or 006)"
+  echo "  $(basename "$0")                 # list tests"
+  echo "  $(basename "$0") --all [opts]    # run all tests"
+  echo "  $(basename "$0") <ID> [opts]     # run a single test"
+  echo "Options:"
+  echo "  --slug <slug>    Service slug (default: xxx)"
+  echo "  --port <port>    Service port (default: 4015)"
+  echo "  --host <host>    Host (default: 127.0.0.1)"
 }
 
 # --- Dependencies -------------------------------------------------------------
@@ -44,17 +49,6 @@ for dep in curl jq; do has_cmd "$dep" || { echo "❌ Missing $dep" >&2; exit 2; 
 [ -f "$LIB" ] || { echo "❌ Missing lib: $LIB" >&2; exit 2; }
 # shellcheck disable=SC1090
 . "$LIB"
-
-# --- Resolve service base URLs (env override → service .env.dev → defaults) ---
-GW_ENV="$ROOT/backend/services/gateway/.env.dev"
-SF_ENV="$ROOT/backend/services/svcfacilitator/.env.dev"
-
-GW_PORT="${GATEWAY_PORT:-$(get_env "$GW_ENV" PORT)}"; GW_PORT="${GW_PORT:-4000}"
-SF_PORT="${SVCFAC_PORT:-$(get_env "$SF_ENV" PORT)}"; SF_PORT="${SF_PORT:-4015}"
-
-export GATEWAY_BASE_URL="${GATEWAY_BASE_URL:-http://127.0.0.1:${GW_PORT}}"
-export SVCFAC_BASE_URL="${SVCFAC_BASE_URL:-http://127.0.0.1:${SF_PORT}}"
-export TIMEOUT_MS="${TIMEOUT_MS:-3000}"
 
 # --- Discover tests (Bash 3.2 friendly) --------------------------------------
 mkdir -p "$TEST_DIR"
@@ -77,7 +71,12 @@ rm -f "$TESTS_FILE"
 
 COUNT="${#FILES[@]}"
 
-# --- No args: list tests and usage, exit -------------------------------------
+# --- Defaults for service under test -----------------------------------------
+SLUG="xxx"
+PORT="4015"
+HOST="127.0.0.1"
+
+# --- Arg parsing --------------------------------------------------------------
 if [ $# -eq 0 ]; then
   echo "▶ smoke: found ${COUNT} test(s)"
   for (( i=0; i<COUNT; i++ )); do
@@ -88,50 +87,56 @@ if [ $# -eq 0 ]; then
   exit 0
 fi
 
-# --- Arg parsing --------------------------------------------------------------
-if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
-  usage
-  exit 0
+RUN_MODE=""
+REQ_ID_RAW=""
+
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --help|-h) usage; exit 0 ;;
+    --all) RUN_MODE="all"; shift ;;
+    --slug) SLUG="${2:?}"; shift 2 ;;
+    --port) PORT="${2:?}"; shift 2 ;;
+    --host) HOST="${2:?}"; shift 2 ;;
+    *)
+      if echo "$1" | grep -Eq '^[0-9]+$'; then
+        REQ_ID_RAW="$1"; RUN_MODE="single"; shift
+      else
+        echo "❌ Unknown arg: $1" >&2; echo; usage; exit 2
+      fi
+      ;;
+  esac
+done
+
+# --- Validate / resolve selected test ----------------------------------------
+if [ -z "${RUN_MODE}" ]; then
+  echo "❌ Must specify --all or a numeric test ID." >&2
+  echo; usage; exit 2
 fi
 
-RUN_MODE="single"
 RUN_IDX=-1
-if [ "$1" = "--all" ]; then
-  RUN_MODE="all"
-else
-  REQ_ID_RAW="$1"
-  if ! echo "$REQ_ID_RAW" | grep -Eq '^[0-9]+$'; then
-    echo "❌ Invalid ID: $REQ_ID_RAW" >&2
-    echo
-    usage
-    exit 2
-  fi
+if [ "$RUN_MODE" = "single" ]; then
   req_n="$(normalize_id "$REQ_ID_RAW")"
   found=0
   for (( i=0; i<COUNT; i++ )); do
     cur_n="$(normalize_id "${IDS[$i]}")"
-    if [ "$cur_n" -eq "$req_n" ]; then
-      RUN_IDX="$i"
-      found=1
-      break
-    fi
+    if [ "$cur_n" -eq "$req_n" ]; then RUN_IDX="$i"; found=1; break; fi
   done
   if [ "$found" -ne 1 ]; then
     echo "❌ No test with ID: $REQ_ID_RAW" >&2
-    echo "Available tests:"
-    for (( i=0; i<COUNT; i++ )); do echo "  ${IDS[$i]}  $(basename "${FILES[$i]}")"; done
+    echo "Available tests:"; for (( i=0; i<COUNT; i++ )); do echo "  ${IDS[$i]}  $(basename "${FILES[$i]}")"; done
     exit 2
   fi
 fi
+
+# --- Export service vars for child tests -------------------------------------
+export SLUG PORT HOST
 
 # --- Runner helpers -----------------------------------------------------------
 run_test() {
   local tpath="$1"
   local name; name="$(basename "$tpath")"
-  echo "── running: $name"
-  # Merge STDERR→STDOUT so URL traces (printed to STDERR by lib.sh) are visible.
-  # Preserve the child script's exit code using PIPESTATUS[0].
-  set +e  # don't exit on failure until we capture rc
+  echo "── running: $name  (SLUG=${SLUG} PORT=${PORT} HOST=${HOST})"
+  set +e
   bash "$tpath" 2>&1 | cat
   local rc=${PIPESTATUS[0]}
   set -e
@@ -152,21 +157,11 @@ FAILED_LIST=()
 if [ "$RUN_MODE" = "all" ]; then
   for (( i=0; i<COUNT; i++ )); do
     echo
-    if run_test "${FILES[$i]}"; then
-      PASS=$((PASS+1))
-    else
-      FAIL=$((FAIL+1))
-      FAILED_LIST+=("$(basename "${FILES[$i]}")")
-    fi
+    if run_test "${FILES[$i]}"; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); FAILED_LIST+=("$(basename "${FILES[$i]}")"); fi
   done
 else
   echo
-  if run_test "${FILES[$RUN_IDX]}"; then
-    PASS=$((PASS+1))
-  else
-    FAIL=$((FAIL+1))
-    FAILED_LIST+=("$(basename "${FILES[$RUN_IDX]}")")
-  fi
+  if run_test "${FILES[$RUN_IDX]}"; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); FAILED_LIST+=("$(basename "${FILES[$RUN_IDX]}")"); fi
 fi
 
 echo

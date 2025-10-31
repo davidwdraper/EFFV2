@@ -132,6 +132,21 @@ export class DtoBag<T> {
     return this._items[i];
   }
 
+  /**
+   * Iterate DTOs in stable order without exposing the raw array.
+   * Compatible with DbWriter.writeMany() expecting bag.items().
+   */
+  public *items(): IterableIterator<T> {
+    for (let i = 0; i < this._items.length; i++) {
+      yield this._items[i];
+    }
+  }
+
+  /** Allow `for...of (const dto of bag)` syntax without leaking arrays. */
+  public [Symbol.iterator](): IterableIterator<T> {
+    return this.items();
+  }
+
   public viewAll(): DtoBagView<T> {
     const n = this._items.length;
     const indices = new Array<number>(n);

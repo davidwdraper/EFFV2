@@ -47,7 +47,7 @@ export class SvcEnvClient {
     // For local dev, align with what our Mongo adapter expects:
     // Prefer NV_MONGO_* (and keep SVCENV_DB_* for future svcenv service).
     const NV_HTTP_HOST = "127.0.0.1";
-    const NV_HTTP_PORT = slug === "xxx" ? "4015" : "4999";
+    const NV_HTTP_PORT = slug === "xxx" ? "4015" : "4015";
 
     // Mongo — pick sane local defaults; adapter will read NV_MONGO_* first.
     const NV_MONGO_URI = "mongodb://127.0.0.1:27017";
@@ -56,6 +56,8 @@ export class SvcEnvClient {
 
     // New: default log level for local dev
     const LOG_LEVEL = "debug";
+
+    const NV_COLLECTION_XXX_VALUES = "env-service-values";
 
     return SvcEnvDto.fromJson({
       key: `${env}@${slug}@${version}`,
@@ -74,6 +76,8 @@ export class SvcEnvClient {
         NV_MONGO_URI,
         NV_MONGO_DB,
         NV_MONGO_COLLECTION,
+
+        NV_COLLECTION_XXX_VALUES,
 
         // Legacy svcenv keys kept for forward/back compat (no harm)
         SVCENV_DB_URI: NV_MONGO_URI,

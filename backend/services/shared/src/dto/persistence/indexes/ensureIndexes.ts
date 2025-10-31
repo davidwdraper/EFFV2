@@ -7,122 +7,183 @@
  *
  * Purpose:
  * - Deterministically ensure Mongo indexes for a set of DTOs at service boot.
- * - Consumes index hints (burn-after-read) and applies them idempotently.
- * - Logs post-ensure index inventory for drift detection.
+ * - No fallbacks: misconfiguration = startup failure (dev == prod).
+ * - Collection names are resolved **by the DTO class** (BaseDto.dbCollectionName()),
+ *   not passed in from the caller.
  */
 
 import type { SvcEnvDto } from "../../svcenv.dto";
-import { consumeIndexHints } from "../index-hints"; // keep your existing export point
-import { mongoFromHints } from "./mongoFromHints";
-import { applyMongoIndexes } from "./applyMongoIndexes";
-import { getMongoCollectionFromSvcEnv } from "../adapters/mongo/connectFromSvcEnv";
+import type { IndexHint } from "../../persistence/index-hints";
+import type { ILogger } from "../../../logger/Logger";
+import { MongoClient } from "mongodb";
 
-type ILogger = {
-  info?: Function;
-  warn?: Function;
-  error?: Function;
-  debug?: Function;
+/**
+ * DTO class shape we require for index creation.
+ * Expect a CLASS (not an instance) with:
+ *  - static indexHints: ReadonlyArray<IndexHint>
+ *  - static dbCollectionName(): string  (delegates to BaseDto.dbCollectionName)
+ *  - optional .name for logging
+ */
+export type DtoCtorWithIndexes = {
+  name?: string;
+  indexHints: ReadonlyArray<IndexHint>;
+  dbCollectionName: () => string;
 };
 
-export async function ensureIndexesForDtos(opts: {
-  dtos: Function[];
+export interface EnsureIndexesOptions {
+  /** Array of DTO CLASSES that declare indexHints and can resolve their collection */
+  dtos: DtoCtorWithIndexes[];
   svcEnv: SvcEnvDto;
-  log?: ILogger;
-}): Promise<void> {
+  log: ILogger;
+}
+
+export async function ensureIndexesForDtos(
+  opts: EnsureIndexesOptions
+): Promise<void> {
   const { dtos, svcEnv, log } = opts;
 
-  const dtoNames = dtos.map((d) => (d as any)?.name ?? "UnknownDto");
-  log?.info?.(
-    { event: "index_ensure_enter", dtos: dtoNames, count: dtos.length },
-    "Boot index ensure: enter"
+  const uri = svcEnv.getEnvVar("NV_MONGO_URI") as string;
+  const dbName = svcEnv.getEnvVar("NV_MONGO_DB") as string;
+
+  if (!uri || !dbName) {
+    log.error(
+      { uri_present: !!uri, db_present: !!dbName },
+      "ensureIndexes: missing required env configuration"
+    );
+    throw new Error(
+      "ensureIndexes: required env values missing — aborting startup"
+    );
+  }
+
+  if (!Array.isArray(dtos) || dtos.length === 0) {
+    log.info("ensureIndexes: no DTOs provided — nothing to do");
+    return;
+  }
+
+  // Group DTOs by their resolved collection name.
+  // This avoids redundant createIndexes() calls for the same collection.
+  const grouped = new Map<string, DtoCtorWithIndexes[]>();
+
+  for (const dto of dtos) {
+    // This will throw loudly if BaseDto.configureEnv(...) wasn't called at boot,
+    // or if the env key is missing/empty — desired fail-fast behavior.
+    const collection = safeResolveCollection(dto, log);
+    const arr = grouped.get(collection) ?? [];
+    arr.push(dto);
+    grouped.set(collection, arr);
+  }
+
+  log.info(
+    {
+      db: dbName,
+      collections: Array.from(grouped.keys()),
+      dtos: dtos.map((d) => d.name ?? "<anon>"),
+    },
+    "ensureIndexes: begin deterministic index creation"
   );
 
-  // Resolve the target collection via env (ADR-0044). Single collection per service.
-  const collection = await getMongoCollectionFromSvcEnv(svcEnv);
+  const client = new MongoClient(uri);
+  await client.connect();
+  try {
+    const db = client.db(dbName);
 
-  for (const DtoCtor of dtos) {
-    const dtoName = (DtoCtor as any)?.name ?? "UnknownDto";
-    try {
-      const hints = consumeIndexHints(DtoCtor);
+    for (const [collection, dtoCtors] of grouped.entries()) {
+      const col = db.collection(collection);
+      const allHints = dtoCtors.flatMap((d) => d.indexHints);
+      const indexModels = buildIndexModels(allHints, log);
 
-      log?.info?.(
-        {
-          event: "index_hints_consumed",
-          dto: dtoName,
-          count: hints?.length ?? 0,
-          sample: hints && hints[0],
-        },
-        "Index hints read"
-      );
-
-      if (!hints || hints.length === 0) {
-        log?.debug?.(
-          { event: "index_no_hints", dto: dtoName },
-          "No index hints to apply"
+      if (indexModels.length === 0) {
+        log.info(
+          { collection },
+          "ensureIndexes: no indexHints found — skipping"
         );
         continue;
       }
 
-      const entity =
-        (DtoCtor as any)?.entitySlug ??
-        (DtoCtor as any)?.collectionName ??
-        dtoName.replace(/Dto$/, "").toLowerCase();
-
-      const specs = mongoFromHints(entity, hints);
-
-      await applyMongoIndexes(collection, specs, {
-        collectionName:
-          (svcEnv as any).tryEnvVar?.("NV_MONGO_COLLECTION") ??
-          (svcEnv as any).getEnvVar?.("NV_MONGO_COLLECTION") ??
-          entity,
-        log,
-      });
-
-      // Post-ensure inventory for observability
-      if (typeof (collection as any).indexes === "function") {
-        try {
-          const inv = await (collection as any).indexes();
-          log?.info?.(
-            {
-              event: "index_inventory",
-              dto: dtoName,
-              count: Array.isArray(inv) ? inv.length : undefined,
-              names: Array.isArray(inv) ? inv.map((i) => i.name) : undefined,
-            },
-            "Index inventory after ensure"
-          );
-        } catch (e) {
-          log?.warn?.(
-            {
-              event: "index_inventory_failed",
-              dto: dtoName,
-              error: (e as Error)?.message,
-            },
-            "Failed to list indexes after ensure"
-          );
-        }
-      }
-
-      log?.info?.(
-        {
-          event: "index_ensured",
-          dto: dtoName,
-          count: specs.length,
-        },
-        "Indexes ensured (idempotent)"
+      // NOTE: no commitQuorum — valid on both standalone and replica set.
+      const result = await col.createIndexes(indexModels);
+      log.info(
+        { collection, created: result },
+        "ensureIndexes: indexes created successfully"
       );
-    } catch (err) {
-      log?.error?.(
-        {
-          event: "index_ensure_failed",
-          dto: dtoName,
-          error: (err as Error)?.message ?? String(err),
-        },
-        "Failed to ensure indexes"
-      );
-      // Non-fatal by design
     }
+  } finally {
+    await client.close();
   }
+}
 
-  log?.info?.({ event: "index_ensure_exit" }, "Boot index ensure: exit");
+/** Resolve the collection name for a DTO class and log helpful context on failure. */
+function safeResolveCollection(dto: DtoCtorWithIndexes, log: ILogger): string {
+  try {
+    const name = dto.dbCollectionName();
+    if (!name || !name.trim()) {
+      throw new Error("empty collection name");
+    }
+    return name;
+  } catch (err: any) {
+    log.error(
+      { dto: dto.name ?? "<anon>", err: String(err?.message ?? err) },
+      "ensureIndexes: failed to resolve dbCollectionName() from DTO"
+    );
+    throw new Error(
+      `ensureIndexes: DTO ${
+        dto.name ?? "<anon>"
+      } cannot resolve db collection. ` +
+        `Ops: verify BaseDto.configureEnv(...) was called at boot and that the ` +
+        `DTO's dbCollectionKey() env var is present and non-empty.`
+    );
+  }
+}
+
+/**
+ * Map IndexHint union to Mongo index models.
+ */
+function buildIndexModels(hints: ReadonlyArray<IndexHint>, log: ILogger) {
+  return hints.map((h) => {
+    switch (h.kind) {
+      case "lookup": {
+        const key = Object.fromEntries(h.fields.map((f) => [f, 1]));
+        return { key, ...(h.options ?? {}), unique: false as const };
+      }
+      case "unique": {
+        const key = Object.fromEntries(h.fields.map((f) => [f, 1]));
+        return { key, ...(h.options ?? {}), unique: true as const };
+      }
+      case "text": {
+        const key = Object.fromEntries(
+          h.fields.map((f) => [f, "text" as const])
+        );
+        return { key, ...(h.options ?? {}), unique: false as const };
+      }
+      case "ttl": {
+        return {
+          key: { [h.field]: 1 },
+          expireAfterSeconds: h.seconds,
+          ...(h.options ?? {}),
+          unique: false as const,
+        };
+      }
+      case "hash": {
+        if (h.fields.length !== 1) {
+          log.error(
+            { fields: h.fields },
+            "ensureIndexes: hashed index must be single-field"
+          );
+          throw new Error("ensureIndexes: hashed index must be single-field");
+        }
+        const field = h.fields[0];
+        return {
+          key: { [field]: "hashed" as const },
+          ...(h.options ?? {}),
+          unique: false as const,
+        };
+      }
+      default: {
+        const _exhaustive: never = h as never;
+        throw new Error(
+          `ensureIndexes: unknown IndexHint kind ${(h as any)?.kind}`
+        );
+      }
+    }
+  });
 }

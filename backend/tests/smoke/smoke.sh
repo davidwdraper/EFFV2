@@ -2,26 +2,17 @@
 #!/usr/bin/env bash
 # ============================================================================
 # NowVibin — Smoke Test Runner (macOS Bash 3.2 compatible)
-# Docs:
-# - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
-# - ADRs: docs/adr/adr0001-gateway-embedded-svcconfig-and-svcfacilitator.md
-#
-# Behavior:
+# Behavior (unchanged from your working version):
 # - No args: list available tests with their explicit numeric IDs.
 # - --all : run all tests in ID order.
-# - <ID>  : run a single test by its numeric ID (e.g., 6 or 006 runs 006-*.sh).
-# Options (new):
+# - <ID>  : run a single test by its numeric ID.
+# Options:
 # - --slug <slug>   : service slug (default: xxx)
 # - --port <port>   : service port (default: 4015)
 # - --host <host>   : host (default: 127.0.0.1)
-#
-# Notes:
-# - Exports SLUG/PORT/HOST for child test scripts.
-# - Merges STDERR into STDOUT so per-request URL traces are visible.
 # ============================================================================
 set -Eeuo pipefail
 
-# --- Locate repo root ---------------------------------------------------------
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$(dirname "$0")/../../.." && pwd))"
 cd "$ROOT"
 
@@ -29,7 +20,6 @@ SMOKE_DIR="$ROOT/backend/tests/smoke"
 TEST_DIR="$SMOKE_DIR/tests"
 LIB="$SMOKE_DIR/lib.sh"
 
-# --- Helpers ------------------------------------------------------------------
 has_cmd(){ command -v "$1" >/dev/null 2>&1; }
 normalize_id(){ local s="$1"; echo $((10#$s)); }
 
@@ -41,7 +31,7 @@ usage() {
   echo "Options:"
   echo "  --slug <slug>    Service slug (default: xxx)"
   echo "  --port <port>    Service port (default: 4015)"
-  echo "  --host <host>    Host (default: 127.0.0.1)"
+  echo "  --host <host)    Host (default: 127.0.0.1)"
 }
 
 # --- Dependencies -------------------------------------------------------------
@@ -50,12 +40,11 @@ for dep in curl jq; do has_cmd "$dep" || { echo "❌ Missing $dep" >&2; exit 2; 
 # shellcheck disable=SC1090
 . "$LIB"
 
-# --- Discover tests (Bash 3.2 friendly) --------------------------------------
+# --- Discover tests (exactly as before: central tests dir only) --------------
 mkdir -p "$TEST_DIR"
 TESTS_FILE="$(mktemp -t nv_smoke_list.XXXXXX)"
 find "$TEST_DIR" -maxdepth 1 -type f -name "*.sh" | sort > "$TESTS_FILE"
 
-# Build parallel arrays: IDS[i], FILES[i]
 IDS=()
 FILES=()
 while IFS= read -r t; do
@@ -107,12 +96,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# --- Validate / resolve selected test ----------------------------------------
 if [ -z "${RUN_MODE}" ]; then
   echo "❌ Must specify --all or a numeric test ID." >&2
   echo; usage; exit 2
 fi
 
+# --- Export for children (same as before) ------------------------------------
+export SLUG PORT HOST
+
+# --- Resolve selected test ----------------------------------------------------
 RUN_IDX=-1
 if [ "$RUN_MODE" = "single" ]; then
   req_n="$(normalize_id "$REQ_ID_RAW")"
@@ -128,28 +120,16 @@ if [ "$RUN_MODE" = "single" ]; then
   fi
 fi
 
-# --- Export service vars for child tests -------------------------------------
-export SLUG PORT HOST
-
-# --- Runner helpers -----------------------------------------------------------
+# --- Runner (no pipes; hard guard path) ---------------------------------------
 run_test() {
   local tpath="$1"
+  [ -n "$tpath" ] && [ -f "$tpath" ] || { echo "❌ Internal error: empty/absent test path" >&2; return 3; }
   local name; name="$(basename "$tpath")"
   echo "── running: $name  (SLUG=${SLUG} PORT=${PORT} HOST=${HOST})"
-  set +e
-  bash "$tpath" 2>&1 | cat
-  local rc=${PIPESTATUS[0]}
-  set -e
-  if [ $rc -eq 0 ]; then
-    echo "✅ PASS: $name"
-    return 0
-  else
-    echo "❌ FAIL: $name"
-    return 1
-  fi
+  bash "$tpath"
+  return $?
 }
 
-# --- Execute ------------------------------------------------------------------
 PASS=0
 FAIL=0
 FAILED_LIST=()

@@ -1,5 +1,8 @@
 # backend/services/t_entity_crud/smokes/010-batch-cursor.sh
 #!/usr/bin/env bash
+# =============================================================================
+# 010 — Batch cursor pagination (no overlap, deterministic)
+# =============================================================================
 set -euo pipefail
 
 # Docs:
@@ -8,32 +11,41 @@ set -euo pipefail
 #   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
 #   - ADR-0048 (DbReader/DbWriter contracts)
 
-# Config (parameterized)
+# --- Locate repo root & lib ---------------------------------------------------
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$(dirname "$0")/../../../.." && pwd))"
+LIB="$ROOT/backend/tests/smoke/lib.sh"
+[ -f "$LIB" ] || { echo "❌ Missing smoke lib: $LIB" >&2; exit 2; }
+# shellcheck disable=SC1090
+. "$LIB"
+
+# --- Config (parameterized) ---------------------------------------------------
 SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-4015}"
-BASE="http://${HOST}:${PORT}/api/${SLUG}/v1"
+VERSION="${VERSION:-1}"
+BASE="${BASE:-http://${HOST}:${PORT}/api/${SLUG}/v${VERSION}}"
 LIMIT="${LIMIT:-3}"
 
-say() { printf '%s\n' "$*" >&2; }
+say(){ printf '%s\n' "$*" >&2; }
 
 # Unique per-run suffix to avoid uniq_txtfield2 collisions
 RUN_ID="$(date +%s%N)"
 
 create_one() {
   local t1="$1" t2="$2" n1="$3" n2="$4"
-  curl -sS -X PUT "${BASE}/create" \
-    -H "content-type: application/json" \
-    --data "{\"txtfield1\":\"${t1}\",\"txtfield2\":\"${t2}-${RUN_ID}\",\"numfield1\":${n1},\"numfield2\":${n2}}" \
-    | jq -e '.ok == true' >/dev/null
+  local url="${BASE}/create"
+  local body
+  body="$(printf '{"txtfield1":"%s","txtfield2":"%s-%s","numfield1":%s,"numfield2":%s}' \
+        "$t1" "$t2" "$RUN_ID" "$n1" "$n2")"
+  _put_json "$url" "$body" | jq -e '.ok == true' >/dev/null
 }
 
 list_page() {
   local cursor_q="$1"
   if [[ -z "${cursor_q}" ]]; then
-    curl -sS "${BASE}/list?limit=${LIMIT}"
+    _get_json "${BASE}/list?limit=${LIMIT}"
   else
-    curl -sS "${BASE}/list?limit=${LIMIT}&cursor=${cursor_q}"
+    _get_json "${BASE}/list?limit=${LIMIT}&cursor=${cursor_q}"
   fi
 }
 

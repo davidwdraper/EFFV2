@@ -52,7 +52,7 @@ export function decodeCursor(cursor: string): CursorPayload {
   try {
     const json = Buffer.from(cursor, "base64url").toString("utf8");
     obj = JSON.parse(json);
-  } catch (e) {
+  } catch {
     throw new Error(
       "CURSOR_DECODE_INVALID: Cursor is not valid base64-JSON. Ops: verify client is not double-encoding/decoding."
     );
@@ -107,6 +107,11 @@ export function compareKeysets(a: Keyset, b: Keyset, order: OrderSpec): number {
  * Use:
  *   const seek = toMongoSeekFilter(order, last, rev);
  *   collection.find({ ...filter, ...seek }).sort(toMongoSort(order)).limit(N)
+ *
+ * Implementation note:
+ * - Do NOT normalize values here. Pass raw keyset values through.
+ *   DbReader will run the final filter through `coerceForMongoQuery(...)`,
+ *   which converts `_id` payloads (e.g., {$oid:"…"} or 24-hex) into ObjectId.
  */
 export function toMongoSeekFilter(
   order: OrderSpec,
@@ -130,7 +135,7 @@ export function toMongoSeekFilter(
 
     // If rev=true, flip the sense (seeking "previous" page)
     const op = (rev ? dir : 1) === 1 ? "$gt" : "$lt";
-    ands[term.field] = { [op]: normalizeComparable(last[term.field]) };
+    ands[term.field] = { [op]: last[term.field] };
 
     ors.push(ands);
   }
@@ -164,7 +169,7 @@ function readPath(obj: Record<string, unknown>, path: string): unknown {
   return cur;
 }
 
-/** Normalize values so comparison and $gt/$lt behave consistently for common scalar types. */
+/** Normalize values so comparison works for common scalar types. */
 function normalizeComparable(
   v: unknown
 ): string | number | boolean | null | Date {
@@ -173,18 +178,16 @@ function normalizeComparable(
   const t = typeof v;
   if (t === "number" || t === "boolean") return v as number | boolean;
   if (t === "string") return v as string;
-  // Fallback: JSON-stable-ish string
+  // Fallback: JSON-stable-ish string (used in compareKeysets only)
   return JSON.stringify(v);
 }
 
 /** Basic tri-state compare for normalized scalars. */
 function basicCompare(a: unknown, b: unknown): -1 | 0 | 1 {
-  // Normalize both sides the same way
   const av = normalizeComparable(a) as any;
   const bv = normalizeComparable(b) as any;
 
   if (av === bv) return 0;
-  // Dates: compare by time value
   if (av instanceof Date && bv instanceof Date) {
     const at = av.getTime();
     const bt = bv.getTime();

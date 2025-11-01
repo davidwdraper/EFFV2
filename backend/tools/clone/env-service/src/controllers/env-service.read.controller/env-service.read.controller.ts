@@ -4,23 +4,17 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence; reads hydrate DTOs)
- *   - ADR-0041 (Controller & Handler Architecture — per-route controllers)
+ *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *
  * Purpose:
- * - Orchestrate GET /api/env-service/v1/read  (router mounts at /read)
- * - Zero business logic: seed ctx → run handlers → finalize.
+ * - Orchestrate GET /api/env-service/v1/read (router mounts at /read).
+ * - Zero business logic: seed ctx → one handler → finalize.
  *
- * Behavior:
- * - Uses DbReader via handler to read exactly one document:
- *   - If an id is provided (path or query), prefer readById(id)
- *   - Otherwise, optional single-record filter read (handler-owned)
- *
- * Notes:
- * - DTO-only inside the service; JSON only at the edge (finalize).
- * - Handlers remain unchanged: DtoToDbReadHandler → DbReadGetHandler.
+ * Invariants:
+ * - Handler constructs its own DbReader with idFieldName="envServiceId".
  */
 
 import { Request, Response } from "express";
@@ -29,7 +23,6 @@ import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import { HandlerContext } from "@nv/shared/http/HandlerContext";
 
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import { DtoToDbReadHandler } from "./handlers/dtoToDb.read.handler";
 import { DbReadGetHandler } from "./handlers/dbRead.get.handler";
 
 export class EnvServiceReadController extends ControllerBase {
@@ -40,17 +33,12 @@ export class EnvServiceReadController extends ControllerBase {
   public async get(req: Request, res: Response): Promise<void> {
     const ctx: HandlerContext = this.makeContext(req, res);
 
-    // Required: DTO ctor for the handlers/DbReader
+    // Required inputs for the single handler
     ctx.set("read.dtoCtor", EnvServiceDto);
+    ctx.set("read.idFieldName", "envServiceId");
 
-    // Optional knobs (handlers may default these if unset)
-    // ctx.set("read.dbReader.ctxKey", "dbReader");
-    // ctx.set("read.validateReads", false); // trust our own writes by default
-
-    const pipeline = [
-      new DtoToDbReadHandler(ctx), // builds DbReader and stores it in ctx (e.g., "dbReader")
-      new DbReadGetHandler(ctx), // executes the read: id → readById; else optional filter → readOne
-    ];
+    // Single, self-contained handler (constructs its own DbReader)
+    const pipeline = [new DbReadGetHandler(ctx)];
 
     for (const h of pipeline) await h.run();
     return super.finalize(ctx);

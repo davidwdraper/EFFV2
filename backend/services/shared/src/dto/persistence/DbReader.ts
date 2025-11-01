@@ -11,10 +11,11 @@
  * Purpose:
  * - Read one/many records from Mongo and hydrate DTOs.
  * - Collection name is resolved explicitly from the DTO class (dbCollectionName()).
- * - One-step normalization: raw Mongo → DTO shape (no _id, yes xxxId).
- * - Deterministic keyset pagination for batched reads.
+ * - One-step normalization: raw Mongo → DTO shape (no _id, yes <slug>Id).
  *
  * Invariants:
+ * - Service code only deals in **DTO ids (string)**.
+ * - Mongo/ObjectId conversion occurs **at the last possible moment** inside this class.
  * - No implicit fallbacks; Dev == Prod. Missing env/config → fail fast.
  */
 
@@ -31,7 +32,7 @@ import {
 } from "@nv/shared/db/cursor";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { coerceForMongoQuery } from "./adapters/mongo/queryHelper";
-import { MongoClient, Collection, Db } from "mongodb";
+import { MongoClient, Collection, Db, ObjectId } from "mongodb";
 
 type DtoCtorWithCollection<T> = {
   fromJson: (j: unknown, opts?: { validate?: boolean }) => T;
@@ -43,7 +44,7 @@ type DbReaderOptions<T> = {
   dtoCtor: DtoCtorWithCollection<T>;
   svcEnv: SvcEnvDto;
   validateReads?: boolean; // default false
-  /** Keep literal template default for cloners. */
+  /** Literal template default; cloners override via handler if desired. */
   idFieldName?: string; // default: "xxxId"
 };
 
@@ -127,12 +128,39 @@ export class DbReader<TDto> {
     return { collectionName: this.dtoCtor.dbCollectionName() };
   }
 
-  /** Find by id (string in DTO-land) — helper coerces to ObjectId for Mongo. */
-  public async readById(id: unknown): Promise<TDto | undefined> {
-    return this.readOne({ _id: id as any });
+  /**
+   * Read by **DTO id** (string). This is the ONLY "by id" API exposed to service code.
+   * Implementation detail:
+   *   - We treat the DTO id string as the canonical representation of the DB id.
+   *   - At the last moment, we coerce it to Mongo's ObjectId and query by `_id`.
+   *   - No DTO code ever sees ObjectId; normalization to `{ [idFieldName]: string }`
+   *     happens on the way back out.
+   */
+  public async readById(dtoId: string): Promise<TDto | undefined> {
+    const col = await this.collection();
+
+    if (!dtoId || typeof dtoId !== "string" || !dtoId.trim()) {
+      return undefined;
+    }
+
+    // Convert the DTO id string to a Mongo ObjectId only at the edge.
+    // If coercion fails, the id is invalid — return undefined (caller maps to 404).
+    let oid: ObjectId | null = null;
+    try {
+      const q = coerceForMongoQuery({ _id: dtoId }) as { _id: ObjectId };
+      oid = q._id;
+    } catch {
+      return undefined;
+    }
+
+    const raw = await col.findOne({ _id: oid });
+    if (!raw) return undefined;
+
+    const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
+    return this.dtoCtor.fromJson(dtoJson, { validate: this.validateReads });
   }
 
-  /** Read a single record, hydrate a DTO. */
+  /** Read a single record by filter, hydrate a DTO. */
   public async readOne(
     filter: Record<string, unknown>
   ): Promise<TDto | undefined> {

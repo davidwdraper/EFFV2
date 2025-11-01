@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/templates/env-service/env-service.dto.ts
+// backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
 /**
  * Docs:
  * - SOP: DTO-only persistence; single toJson() exit
@@ -10,16 +10,16 @@
  *   - ADR-0048 (pk mapping at persistence edge)
  *
  * Policy:
- * - DTOs NEVER expose `_id`. Canonical id on the surface is `envServiceId` (string).
- * - DbWriter/DbReader handle `_id<ObjectId>` ⇄ `envServiceId<string>` mapping at the edge.
+ * - DTOs NEVER expose `_id`. Canonical id on the surface is `xxxId` (string).
+ * - DbWriter/DbReader handle `_id<ObjectId>` ⇄ `xxxId<string>` mapping at the edge.
  */
 
 import { z } from "zod";
-import { BaseDto, DtoValidationError } from "./DtoBase";
-import type { IndexHint } from "./persistence/index-hints";
+import { BaseDto, DtoValidationError } from "../../DtoBase";
+import type { IndexHint } from "../../persistence/index-hints";
 
 const _schema = z.object({
-  envServiceId: z.string().min(1).optional(),
+  xxxId: z.string().min(1).optional(),
   txtfield1: z.string().min(1, "txtfield1 required"),
   txtfield2: z.string().min(1, "txtfield2 required"),
   numfield1: z.number(),
@@ -41,10 +41,10 @@ const _patchSchema = z
 type _State = z.infer<typeof _schema>;
 type _Patch = z.infer<typeof _patchSchema>;
 
-export class EnvServiceDto extends BaseDto {
+export class XxxDto extends BaseDto {
   /** Virtual by convention: cloner renames the value to service-specific key. */
   public static dbCollectionKey(): string {
-    return "NV_COLLECTION_ENV_SERVICE_VALUES";
+    return "NV_COLLECTION_XXX_VALUES";
   }
 
   static indexHints: ReadonlyArray<IndexHint> = [
@@ -60,7 +60,7 @@ export class EnvServiceDto extends BaseDto {
   private _xxxId?: string;
   private _state: Omit<
     _State,
-    "envServiceId" | "createdAt" | "updatedAt" | "updatedByUserId"
+    "xxxId" | "createdAt" | "updatedAt" | "updatedByUserId"
   >;
 
   private constructor(validated: _State) {
@@ -69,17 +69,16 @@ export class EnvServiceDto extends BaseDto {
       updatedAt: validated.updatedAt,
       updatedByUserId: validated.updatedByUserId,
     });
-    const { envServiceId, createdAt, updatedAt, updatedByUserId, ...rest } =
-      validated;
-    this._xxxId = envServiceId;
+    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
+    this._xxxId = xxxId;
     this._state = rest;
   }
 
-  public static create(input: unknown): EnvServiceDto {
+  public static create(input: unknown): XxxDto {
     const parsed = _schema.safeParse(input);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "Invalid env-service payload. Ops: verify client/body mapper; all four fields required (two strings, two numbers).",
+        "Invalid Xxx payload. Ops: verify client/body mapper; all four fields required (two strings, two numbers).",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
@@ -87,24 +86,18 @@ export class EnvServiceDto extends BaseDto {
         }))
       );
     }
-    return new EnvServiceDto(parsed.data);
+    return new XxxDto(parsed.data);
   }
 
-  public static fromJson(json: unknown): EnvServiceDto;
-  public static fromJson(
-    json: unknown,
-    opts: { validate: boolean }
-  ): EnvServiceDto;
-  public static fromJson(
-    json: unknown,
-    opts?: { validate: boolean }
-  ): EnvServiceDto {
+  public static fromJson(json: unknown): XxxDto;
+  public static fromJson(json: unknown, opts: { validate: boolean }): XxxDto;
+  public static fromJson(json: unknown, opts?: { validate: boolean }): XxxDto {
     const doValidate = opts?.validate !== false;
     if (doValidate) {
       const parsed = _schema.safeParse(json);
       if (!parsed.success) {
         throw new DtoValidationError(
-          "Invalid env-service payload. Ops: validate client/body mapper; ensure required fields and types.",
+          "Invalid Xxx payload. Ops: validate client/body mapper; ensure required fields and types.",
           parsed.error.issues.map((i) => ({
             path: i.path.join("."),
             code: i.code,
@@ -112,13 +105,13 @@ export class EnvServiceDto extends BaseDto {
           }))
         );
       }
-      return new EnvServiceDto(parsed.data);
+      return new XxxDto(parsed.data);
     }
-    return new EnvServiceDto(json as _State);
+    return new XxxDto(json as _State);
   }
 
   // Canonical DTO-space id (string). Never expose Mongo `_id` here.
-  public get envServiceId(): string | undefined {
+  public get xxxId(): string | undefined {
     return this._xxxId;
   }
 
@@ -148,7 +141,7 @@ export class EnvServiceDto extends BaseDto {
     const parsed = _patchSchema.safeParse(json);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "env-service patch rejected. Ops: unknown field or type mismatch.",
+        "Xxx patch rejected. Ops: unknown field or type mismatch.",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
@@ -167,7 +160,7 @@ export class EnvServiceDto extends BaseDto {
 
   public toJson(): unknown {
     return this._finalizeToJson({
-      ...(this._xxxId ? { envServiceId: this._xxxId } : {}),
+      ...(this._xxxId ? { xxxId: this._xxxId } : {}),
       txtfield1: this._state.txtfield1,
       txtfield2: this._state.txtfield2,
       numfield1: this._state.numfield1,
@@ -185,13 +178,13 @@ export class EnvServiceDto extends BaseDto {
       unknown
     >;
     const composed = this._composeForValidation({
-      ...(this._xxxId ? { envServiceId: this._xxxId } : {}),
+      ...(this._xxxId ? { xxxId: this._xxxId } : {}),
       ...nextCandidate,
     });
     const parsed = _schema.safeParse(composed);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "env-service mutation rejected. Ops: verify field types and constraints.",
+        "Xxx mutation rejected. Ops: verify field types and constraints.",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
@@ -199,9 +192,9 @@ export class EnvServiceDto extends BaseDto {
         }))
       );
     }
-    const { envServiceId, createdAt, updatedAt, updatedByUserId, ...rest } =
+    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } =
       parsed.data;
-    this._xxxId = envServiceId ?? this._xxxId;
+    this._xxxId = xxxId ?? this._xxxId;
     this._state = rest as typeof this._state;
     return this;
   }

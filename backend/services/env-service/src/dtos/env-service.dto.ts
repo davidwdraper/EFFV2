@@ -15,8 +15,8 @@
  */
 
 import { z } from "zod";
-import { BaseDto, DtoValidationError } from "./DtoBase";
-import type { IndexHint } from "./persistence/index-hints";
+import { BaseDto, DtoValidationError } from "../../DtoBase";
+import type { IndexHint } from "../../persistence/index-hints";
 
 const _schema = z.object({
   envServiceId: z.string().min(1).optional(),
@@ -69,8 +69,7 @@ export class EnvServiceDto extends BaseDto {
       updatedAt: validated.updatedAt,
       updatedByUserId: validated.updatedByUserId,
     });
-    const { envServiceId, createdAt, updatedAt, updatedByUserId, ...rest } =
-      validated;
+    const { envServiceId, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
     this._xxxId = envServiceId;
     this._state = rest;
   }
@@ -79,7 +78,7 @@ export class EnvServiceDto extends BaseDto {
     const parsed = _schema.safeParse(input);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "Invalid env-service payload. Ops: verify client/body mapper; all four fields required (two strings, two numbers).",
+        "Invalid EnvService payload. Ops: verify client/body mapper; all four fields required (two strings, two numbers).",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
@@ -91,20 +90,14 @@ export class EnvServiceDto extends BaseDto {
   }
 
   public static fromJson(json: unknown): EnvServiceDto;
-  public static fromJson(
-    json: unknown,
-    opts: { validate: boolean }
-  ): EnvServiceDto;
-  public static fromJson(
-    json: unknown,
-    opts?: { validate: boolean }
-  ): EnvServiceDto {
+  public static fromJson(json: unknown, opts: { validate: boolean }): EnvServiceDto;
+  public static fromJson(json: unknown, opts?: { validate: boolean }): EnvServiceDto {
     const doValidate = opts?.validate !== false;
     if (doValidate) {
       const parsed = _schema.safeParse(json);
       if (!parsed.success) {
         throw new DtoValidationError(
-          "Invalid env-service payload. Ops: validate client/body mapper; ensure required fields and types.",
+          "Invalid EnvService payload. Ops: validate client/body mapper; ensure required fields and types.",
           parsed.error.issues.map((i) => ({
             path: i.path.join("."),
             code: i.code,
@@ -148,7 +141,7 @@ export class EnvServiceDto extends BaseDto {
     const parsed = _patchSchema.safeParse(json);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "env-service patch rejected. Ops: unknown field or type mismatch.",
+        "EnvService patch rejected. Ops: unknown field or type mismatch.",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,
@@ -191,7 +184,7 @@ export class EnvServiceDto extends BaseDto {
     const parsed = _schema.safeParse(composed);
     if (!parsed.success) {
       throw new DtoValidationError(
-        "env-service mutation rejected. Ops: verify field types and constraints.",
+        "EnvService mutation rejected. Ops: verify field types and constraints.",
         parsed.error.issues.map((i) => ({
           path: i.path.join("."),
           code: i.code,

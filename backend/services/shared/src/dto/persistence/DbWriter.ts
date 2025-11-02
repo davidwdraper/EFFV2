@@ -4,13 +4,14 @@
  * - ADR-0040/0041/0042/0043/0048
  *
  * Purpose:
- * - Concrete writer: uses **SvcEnvDto** to connect and write dto.toJson().
+ * - Concrete writer: uses SvcEnvDto to connect and write dto.toJson().
  * - Collection name is resolved explicitly from the DTO class (dbCollectionName()).
  * - Normalizes DB response ids to strings on the way back.
  * - Centralizes duplicate-key mapping.
  *
  * Invariants:
- * - No implicit fallbacks; Dev == Prod. Missing env/config → fail fast.
+ * - DTO-land id stays a string; Mongo ObjectId exists only at the adapter edge.
+ * - No heuristics for "*Id" — we resolve a single canonical id key per DTO class.
  */
 
 import type { BaseDto } from "../DtoBase";
@@ -56,6 +57,41 @@ async function getExplicitCollection(
   }
 
   return (_db as Db).collection(collectionName);
+}
+
+/* ----------------------- id resolution helpers ----------------------------- */
+
+function derivePreferredIdKey(dto: BaseDto): string {
+  const ctor = (dto as any).constructor as { name?: string };
+  const name = (ctor?.name ?? "").trim(); // e.g., EnvServiceDto, XxxDto
+  const base = name.endsWith("Dto") ? name.slice(0, -3) : name;
+  if (!base) return "id";
+  // PascalCase → lowerCamel + "Id"
+  const lowerCamel = base[0].toLowerCase() + base.slice(1);
+  return `${lowerCamel}Id`;
+}
+
+function resolveDtoStringId(
+  dto: BaseDto,
+  json: Record<string, unknown>
+): string | undefined {
+  const key = derivePreferredIdKey(dto);
+
+  // 1) surface property on DTO instance
+  const fromDto = (dto as any)[key];
+  if (typeof fromDto === "string" && fromDto.trim() !== "") return fromDto;
+
+  // 2) serialized value in toJson()
+  const fromJson = json[key];
+  if (typeof fromJson === "string" && String(fromJson).trim() !== "") {
+    return String(fromJson);
+  }
+
+  // 3) very last resort: a plain 'id' property on the DTO (string)
+  const plainId = (dto as any).id;
+  if (typeof plainId === "string" && plainId.trim() !== "") return plainId;
+
+  return undefined;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -116,7 +152,7 @@ export class DbWriter<TDto extends BaseDto> extends DbManagerBase<TDto> {
 
   /**
    * Batch write: persists each DTO from the provided DtoBag.
-   * Collection is resolved **per DTO** via its constructor.dbCollectionName().
+   * Collection is resolved per DTO via its constructor.dbCollectionName().
    * Returns ids in the same order as input DTOs.
    */
   public async writeMany(bag: DtoBag<TDto>): Promise<{ ids: string[] }> {
@@ -175,20 +211,19 @@ export class DbWriter<TDto extends BaseDto> extends DbManagerBase<TDto> {
     const coll = await getExplicitCollection(this._svcEnv, collectionName);
 
     const json = this._dto.toJson() as Record<string, unknown>;
-    const rawId =
-      (json?._id as string | undefined) ??
-      ((this._dto as any).xxxId as string | undefined) ??
-      ((this._dto as any).id as string | undefined);
 
+    // —— DTO-anchored, deterministic id resolution ——
+    const rawId = resolveDtoStringId(this._dto, json);
     if (!rawId || String(rawId).trim() === "") {
+      const key = derivePreferredIdKey(this._dto);
       throw new Error(
-        "DbWriter.update() missing id. Ops: ensure DTO carries _id (or exposes an id getter) before update()."
+        `DbWriter.update() missing id. Ops: ensure DTO exposes "${key}" (string) before update().`
       );
     }
 
     const { _id, ...rest } = json;
 
-    // Coerce and type the Mongo _id as ObjectId for the driver.
+    // Coerce DTO-space id string to Mongo ObjectId (driver-friendly)
     const filter = coerceForMongoQuery({ _id: String(rawId) }) as {
       _id: ObjectId;
     };

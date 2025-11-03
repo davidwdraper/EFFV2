@@ -1,27 +1,28 @@
 // backend/services/t_entity_crud/src/controllers/xxx.read.controller/handlers/dbRead.get.handler.ts
 /**
  * Docs:
- * - ADR-0040/41/42/43/44/48
+ * - ADR-0040/41/42/43/44/48/50
  *
  * Purpose:
- * - Single-record read:
- *   1) If an id is present (path/query), read by canonical DTO id (string).
- *   2) Else, read-one by a tight filter of known fields.
+ * - Single-record read by **primary key only** ("id", string).
  *
  * Behavior:
- * - JSON only at the edge. Success payload:
- *     { ok: true, id: "<xxxId>", doc: <dtoJson> }
- * - 404 when not found, with Ops guidance.
+ * - Success (200): returns DtoBag envelope
+ *   { items: [dtoJson], meta: { cursor:null, limit:1, total:1, requestId } }
+ * - Missing id (400): { code:"BAD_REQUEST_MISSING_ID", detail:"..." }
+ * - Not found (404): { items: [], meta: { cursor:null, limit:1, total:0, requestId } }
  *
  * Invariants:
- * - Self-contained: constructs its own DbReader (no other handlers referenced).
- * - Explicit id mapping: idFieldName="xxxId".
+ * - Canonical id field is strictly "id". No fallbacks. No filter path.
+ * - Self-contained: constructs its own DbReader.
  */
 
-import { HandlerBase } from "@nv/shared/http/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+import type { IDto } from "@nv/shared/dto/IDto";
 import { DbReader } from "@nv/shared/dto/persistence/DbReader";
+import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 
 export class DbReadGetHandler extends HandlerBase {
   constructor(ctx: HandlerContext) {
@@ -31,13 +32,11 @@ export class DbReadGetHandler extends HandlerBase {
   protected async execute(): Promise<void> {
     const svcEnv = this.ctx.get<SvcEnvDto>("svcEnv");
     const dtoCtor = this.ctx.get<any>("read.dtoCtor");
-    const idFieldName =
-      (this.ctx.get<string>("read.idFieldName") as string) || "xxxId";
 
     if (!svcEnv || !dtoCtor) {
       this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
         code: "READ_SETUP_MISSING",
         title: "Internal Error",
         detail:
@@ -48,116 +47,73 @@ export class DbReadGetHandler extends HandlerBase {
 
     const params = (this.ctx.get("params") as Record<string, unknown>) ?? {};
     const query = (this.ctx.get("query") as Record<string, unknown>) ?? {};
-    const dtoId = resolveDtoId(params, query, idFieldName);
+    const requestId =
+      (this.ctx.get<string>("requestId") as string) || "unknown";
+
+    const id =
+      (typeof params["id"] === "string" && params["id"].trim()) ||
+      (typeof query["id"] === "string" && (query["id"] as string).trim()) ||
+      "";
+
+    if (!id) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 400);
+      this.ctx.set("response.body", {
+        code: "BAD_REQUEST_MISSING_ID",
+        title: "Bad Request",
+        detail:
+          "Route requires an 'id' path or query parameter. Example: GET /api/xxx/v1/read/<id>",
+        requestId,
+      });
+      return;
+    }
 
     const reader = new DbReader<any>({
       dtoCtor,
       svcEnv,
       validateReads: false,
-      idFieldName,
+      idFieldName: "id",
     });
 
     // Instrument target collection (best-effort)
     try {
       const t = await reader.targetInfo();
       this.log.debug(
-        { event: "read_target", collection: t.collectionName, pk: idFieldName },
+        { event: "read_target", collection: t.collectionName, pk: "id" },
         "read will query collection"
       );
     } catch {
       /* non-fatal */
     }
 
-    if (dtoId) {
-      const dto = await reader.readById(dtoId);
-      if (!dto) {
-        this.ctx.set("handlerStatus", "warn");
-        this.ctx.set("status", 404);
-        this.ctx.set("error", {
-          code: "NOT_FOUND",
-          title: "Not Found",
-          detail: `No record with ${idFieldName}=${dtoId}.`,
-        });
-        return;
-      }
-      const j = dto.toJson() as Record<string, unknown>;
-      const canonical = (j[idFieldName] as string) ?? (j["xxxId"] as string);
-      this.ctx.set("result", { ok: true, id: canonical, doc: j });
-      this.ctx.set("handlerStatus", "ok");
+    const dto = await reader.readById(id);
+    if (!dto) {
+      this.ctx.set("handlerStatus", "warn");
+      this.ctx.set("response.status", 404);
+      this.ctx.set("response.body", {
+        items: [],
+        meta: { cursor: null, limit: 1, total: 0, requestId },
+      });
       this.log.debug(
-        { event: "read_one_by_id", [idFieldName]: dtoId },
-        "read one by id complete"
+        { event: "read_one_by_id_not_found", id },
+        "no record by id"
       );
       return;
     }
 
-    const filter = buildSingleRecordFilter(query);
-    const dto = await reader.readOne(filter);
-    if (!dto) {
-      this.ctx.set("handlerStatus", "warn");
-      this.ctx.set("status", 404);
-      this.ctx.set("error", {
-        code: "NOT_FOUND",
-        title: "Not Found",
-        detail:
-          "Document not found for supplied filter. Ops: verify filter parameters and collection contents.",
-      });
-      return;
-    }
+    const { bag, meta } = BagBuilder.fromDtos([dto], {
+      requestId,
+      limit: 1,
+      total: 1,
+      cursor: null,
+    });
 
-    const j = dto.toJson() as Record<string, unknown>;
-    const canonical = (j[idFieldName] as string) ?? (j["xxxId"] as string);
-    this.ctx.set("result", { ok: true, id: canonical, doc: j });
+    // bag.items is an iterator method — invoke and materialize before map
+    const itemJson = Array.from(bag.items()).map((d: IDto) => d.toJson());
+
+    this.ctx.set("response.status", 200);
+    this.ctx.set("response.body", { items: itemJson, meta });
     this.ctx.set("handlerStatus", "ok");
-    this.log.debug(
-      { event: "read_one_by_filter", filterKeys: Object.keys(filter) },
-      "read one by filter complete"
-    );
+    this.log.debug({ event: "read_one_by_id", id }, "read one by id complete");
   }
-}
-
-/* -------------------- local pure helpers (no imports) -------------------- */
-
-function resolveDtoId(
-  params: Record<string, unknown>,
-  query: Record<string, unknown>,
-  idFieldName: string
-): string {
-  const fromPath =
-    (typeof params[idFieldName] === "string" && params[idFieldName].trim()) ||
-    (typeof params["id"] === "string" && params["id"].trim()) ||
-    "";
-  const fromQuery =
-    (typeof query[idFieldName] === "string" &&
-      (query[idFieldName] as string).trim()) ||
-    (typeof query["id"] === "string" && (query["id"] as string).trim()) ||
-    "";
-  return fromPath || fromQuery;
-}
-
-function buildSingleRecordFilter(
-  query: Record<string, unknown>
-): Record<string, unknown> {
-  const filter: Record<string, unknown> = {};
-  if (typeof query.txtfield1 === "string" && query.txtfield1.trim()) {
-    filter.txtfield1 = (query.txtfield1 as string).trim();
-  }
-  if (typeof query.txtfield2 === "string" && query.txtfield2.trim()) {
-    filter.txtfield2 = (query.txtfield2 as string).trim();
-  }
-  if (query.numfield1 !== undefined) {
-    const n1 =
-      typeof query.numfield1 === "string"
-        ? Number(query.numfield1)
-        : (query.numfield1 as number);
-    if (Number.isFinite(n1)) filter.numfield1 = n1;
-  }
-  if (query.numfield2 !== undefined) {
-    const n2 =
-      typeof query.numfield2 === "string"
-        ? Number(query.numfield2)
-        : (query.numfield2 as number);
-    if (Number.isFinite(n2)) filter.numfield2 = n2;
-  }
-  return filter;
 }

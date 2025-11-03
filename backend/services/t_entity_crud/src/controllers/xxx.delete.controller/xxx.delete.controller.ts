@@ -20,7 +20,7 @@
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 import { DbDeleteDeleteHandler } from "./handlers/dbDelete.delete.handler";
 // DTO ctor is required so the handler can resolve the correct collection name.

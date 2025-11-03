@@ -14,8 +14,8 @@
  * - Return { ok, docs, nextCursor } (docs via DTO.toJson()).
  */
 
-import { HandlerBase } from "@nv/shared/http/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { DbReader } from "@nv/shared/dto/persistence/DbReader";
 import { DtoBagView } from "@nv/shared/dto/DtoBagView";

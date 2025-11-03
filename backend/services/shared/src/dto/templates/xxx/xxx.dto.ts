@@ -8,18 +8,26 @@
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0047 (DtoBag — pk & filter shaping live in DTO space)
  *   - ADR-0048 (pk mapping at persistence edge)
+ *   - ADR-0049 (DTO Registry; canonical string id; wire vs db modes)
  *
- * Policy:
- * - DTOs NEVER expose `_id`. Canonical id on the surface is `xxxId` (string).
- * - DbWriter/DbReader handle `_id<ObjectId>` ⇄ `xxxId<string>` mapping at the edge.
+ * Policy (updated):
+ * - DTOs NEVER expose Mongo `_id`. Canonical id is `id: string`.
+ * - In mode:"wire", if `id` is absent, the DTO generates a canonical id.
+ * - In mode:"db", `id` is required (DbReader must supply it after mapping).
+ * - Patching occurs via schema-validated field setters; `id` is immutable.
  */
 
 import { z } from "zod";
 import { BaseDto, DtoValidationError } from "../../DtoBase";
 import type { IndexHint } from "../../persistence/index-hints";
+import type { IDto } from "../../IDto";
+import { newId as makeId } from "../../../id/IdFactory";
 
-const _schema = z.object({
-  xxxId: z.string().min(1).optional(),
+// ----- Wire & patch schemas -------------------------------------------------
+
+const _wireSchema = z.object({
+  id: z.string().min(1).optional(), // optional in mode:"wire" (will be synthesized)
+  type: z.literal("xxx").optional(), // normalized by DTO; tolerated inbound
   txtfield1: z.string().min(1, "txtfield1 required"),
   txtfield2: z.string().min(1, "txtfield2 required"),
   numfield1: z.number(),
@@ -38,10 +46,12 @@ const _patchSchema = z
   })
   .strict();
 
-type _State = z.infer<typeof _schema>;
+type _State = z.infer<typeof _wireSchema>;
 type _Patch = z.infer<typeof _patchSchema>;
 
-export class XxxDto extends BaseDto {
+// ----- DTO ------------------------------------------------------------------
+
+export class XxxDto extends BaseDto implements IDto {
   /** Virtual by convention: cloner renames the value to service-specific key. */
   public static dbCollectionKey(): string {
     return "NV_COLLECTION_XXX_VALUES";
@@ -57,10 +67,11 @@ export class XxxDto extends BaseDto {
     },
   ];
 
-  private _xxxId?: string;
+  // Canonical ID and internal state (no public fields)
+  private _id: string;
   private _state: Omit<
     _State,
-    "xxxId" | "createdAt" | "updatedAt" | "updatedByUserId"
+    "id" | "type" | "createdAt" | "updatedAt" | "updatedByUserId"
   >;
 
   private constructor(validated: _State) {
@@ -69,32 +80,68 @@ export class XxxDto extends BaseDto {
       updatedAt: validated.updatedAt,
       updatedByUserId: validated.updatedByUserId,
     });
-    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } = validated;
-    this._xxxId = xxxId;
+    const {
+      id,
+      createdAt,
+      updatedAt,
+      updatedByUserId,
+      type: _t,
+      ...rest
+    } = validated;
+    // id must be set by factory semantics prior to calling ctor
+    this._id = id as string;
     this._state = rest;
   }
 
-  public static create(input: unknown): XxxDto {
-    const parsed = _schema.safeParse(input);
-    if (!parsed.success) {
-      throw new DtoValidationError(
-        "Invalid Xxx payload. Ops: verify client/body mapper; all four fields required (two strings, two numbers).",
-        parsed.error.issues.map((i) => ({
-          path: i.path.join("."),
-          code: i.code,
-          message: i.message,
-        }))
-      );
-    }
-    return new XxxDto(parsed.data);
+  // ----- IDto surface -------------------------------------------------------
+
+  public getId(): string {
+    return this._id;
   }
 
+  /** Wire discriminator for registry/bag. */
+  public getType(): string {
+    return "xxx";
+  }
+
+  /**
+   * Defensive copy for rare _id collisions: clone with new id (or supplied one).
+   * Bypasses validation (source already valid) and resets meta timestamps.
+   */
+  public clone(newId?: string): this {
+    // Use the “one-liner” style you prefer: toJson → insert new id → fromJson(validate:false)
+    const json = this.toJson() as _State & { type?: string };
+    json.id = newId ?? makeId();
+    json.type = "xxx";
+    // validate:false path — we trust the current instance’s shape
+    return XxxDto.fromJson(json, { validate: false }) as this;
+  }
+
+  // ----- Factory / hydration ------------------------------------------------
+
+  /**
+   * Hydrate from JSON. Options:
+   * - mode:"wire"  → `id` optional; synthesized if missing
+   * - mode:"db"    → `id` required
+   * - validate     → default true
+   */
   public static fromJson(json: unknown): XxxDto;
-  public static fromJson(json: unknown, opts: { validate: boolean }): XxxDto;
-  public static fromJson(json: unknown, opts?: { validate: boolean }): XxxDto {
+  public static fromJson(
+    json: unknown,
+    opts: { mode?: "wire" | "db"; validate?: boolean }
+  ): XxxDto;
+  public static fromJson(
+    json: unknown,
+    opts?: { mode?: "wire" | "db"; validate?: boolean }
+  ): XxxDto {
+    const mode = opts?.mode ?? "wire";
     const doValidate = opts?.validate !== false;
+
+    // Accept unknown → normalize to object
+    const data = typeof json === "string" ? JSON.parse(json) : (json as object);
+
     if (doValidate) {
-      const parsed = _schema.safeParse(json);
+      const parsed = _wireSchema.safeParse(data);
       if (!parsed.success) {
         throw new DtoValidationError(
           "Invalid Xxx payload. Ops: validate client/body mapper; ensure required fields and types.",
@@ -105,15 +152,39 @@ export class XxxDto extends BaseDto {
           }))
         );
       }
-      return new XxxDto(parsed.data);
+      const wire = parsed.data;
+
+      // ID semantics by mode
+      if (mode === "db") {
+        if (!wire.id || wire.id.trim() === "") {
+          throw new DtoValidationError("Missing required id in db mode.", [
+            {
+              path: "id",
+              code: "custom",
+              message: "id is required in db mode",
+            },
+          ]);
+        }
+        return new XxxDto({ ...wire, id: wire.id, type: "xxx" });
+      } else {
+        // mode:"wire" → synthesize id if absent
+        const id = wire.id && wire.id.trim() !== "" ? wire.id : makeId();
+        return new XxxDto({ ...wire, id, type: "xxx" });
+      }
     }
-    return new XxxDto(json as _State);
+
+    // validate:false path (internal, used by clone)
+    const loose = data as _State;
+    const id =
+      mode === "db"
+        ? (loose.id as string)
+        : loose.id && loose.id.trim() !== ""
+        ? loose.id
+        : makeId();
+    return new XxxDto({ ...loose, id, type: "xxx" });
   }
 
-  // Canonical DTO-space id (string). Never expose Mongo `_id` here.
-  public get xxxId(): string | undefined {
-    return this._xxxId;
-  }
+  // ----- Accessors (no setters; patch via patchFrom) ------------------------
 
   public get txtfield1(): string {
     return this._state.txtfield1;
@@ -127,6 +198,8 @@ export class XxxDto extends BaseDto {
   public get numfield2(): number {
     return this._state.numfield2;
   }
+
+  // ----- Mutations (schema-validated; id is immutable) ----------------------
 
   public updateFrom(other: this): this {
     return this._mutate({
@@ -158,16 +231,6 @@ export class XxxDto extends BaseDto {
     });
   }
 
-  public toJson(): unknown {
-    return this._finalizeToJson({
-      ...(this._xxxId ? { xxxId: this._xxxId } : {}),
-      txtfield1: this._state.txtfield1,
-      txtfield2: this._state.txtfield2,
-      numfield1: this._state.numfield1,
-      numfield2: this._state.numfield2,
-    });
-  }
-
   private _mutate(
     patch: Partial<
       Pick<_State, "txtfield1" | "txtfield2" | "numfield1" | "numfield2">
@@ -178,10 +241,11 @@ export class XxxDto extends BaseDto {
       unknown
     >;
     const composed = this._composeForValidation({
-      ...(this._xxxId ? { xxxId: this._xxxId } : {}),
+      id: this._id,
+      type: "xxx",
       ...nextCandidate,
     });
-    const parsed = _schema.safeParse(composed);
+    const parsed = _wireSchema.safeParse(composed);
     if (!parsed.success) {
       throw new DtoValidationError(
         "Xxx mutation rejected. Ops: verify field types and constraints.",
@@ -192,11 +256,30 @@ export class XxxDto extends BaseDto {
         }))
       );
     }
-    const { xxxId, createdAt, updatedAt, updatedByUserId, ...rest } =
-      parsed.data;
-    this._xxxId = xxxId ?? this._xxxId;
+    const {
+      id,
+      createdAt,
+      updatedAt,
+      updatedByUserId,
+      type: _t,
+      ...rest
+    } = parsed.data;
+    // id is immutable; keep existing
     this._state = rest as typeof this._state;
     return this;
+  }
+
+  // ----- Serialization ------------------------------------------------------
+
+  public toJson(): unknown {
+    return this._finalizeToJson({
+      id: this._id,
+      type: "xxx",
+      txtfield1: this._state.txtfield1,
+      txtfield2: this._state.txtfield2,
+      numfield1: this._state.numfield1,
+      numfield2: this._state.numfield2,
+    });
   }
 
   // Convenience for callers that want the collection at class level:

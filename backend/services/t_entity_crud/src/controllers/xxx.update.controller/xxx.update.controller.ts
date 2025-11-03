@@ -13,7 +13,7 @@
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import { LoadExistingUpdateHandler } from "./handlers/loadExisting.update.handler";

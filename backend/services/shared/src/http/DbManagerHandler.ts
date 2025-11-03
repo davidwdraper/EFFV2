@@ -9,8 +9,8 @@
  *    - optional duplicate-key downgrader (if the op can duplicate)
  */
 
-import { HandlerBase } from "./HandlerBase";
-import { HandlerContext } from "./HandlerContext";
+import { HandlerBase } from "./handlers/HandlerBase";
+import { HandlerContext } from "./handlers/HandlerContext";
 import { DuplicateKeyError } from "../dto/persistence/adapters/mongo/dupeKeyError";
 
 type SuccessMapper<TRes> = (ctx: HandlerContext, res: TRes) => void;

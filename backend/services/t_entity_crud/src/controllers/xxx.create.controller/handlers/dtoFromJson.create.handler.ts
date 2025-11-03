@@ -12,8 +12,8 @@
  * - On failure: set handlerStatus="error", status=400, and an Ops-friendly error.
  */
 
-import { HandlerBase } from "@nv/shared/http/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 
 export class DtoFromJsonCreateHandler extends HandlerBase {

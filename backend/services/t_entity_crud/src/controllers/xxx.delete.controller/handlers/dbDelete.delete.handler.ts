@@ -21,8 +21,8 @@
  * - Handlers speak DTO-space ids (xxxId:string). Mongo details are hidden behind adapter helpers.
  */
 
-import { HandlerBase } from "@nv/shared/http/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { coerceForMongoQuery } from "@nv/shared/dto/persistence/adapters/mongo/queryHelper";
 import { MongoClient, Db, Collection, ObjectId } from "mongodb";

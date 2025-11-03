@@ -13,8 +13,8 @@
  * - "dto": XxxDto   <-- set for downstream handlers (DbWriter expects 'dto')
  */
 
-import { HandlerBase } from "@nv/shared/http/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 
 export class ApplyPatchUpdateHandler extends HandlerBase {

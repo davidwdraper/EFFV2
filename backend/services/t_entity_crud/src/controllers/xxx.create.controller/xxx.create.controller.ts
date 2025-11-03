@@ -9,7 +9,7 @@
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DtoFromJsonCreateHandler } from "./handlers/dtoFromJson.create.handler";
 import { DtoToDbCreateHandler } from "./handlers/dtoToDb.create.handler";
 import { DbWriteCreateHandler } from "./handlers/dbWrite.create.handler";

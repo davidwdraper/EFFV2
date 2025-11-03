@@ -15,7 +15,7 @@
  * - WARN  duplicate_key { index, key, detail }
  */
 
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DbManagerHandler } from "@nv/shared/http/DbManagerHandler";
 import { DbWriter } from "@nv/shared/dto/persistence/DbWriter";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";

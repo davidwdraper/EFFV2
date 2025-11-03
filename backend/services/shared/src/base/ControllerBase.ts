@@ -16,7 +16,7 @@
  */
 
 import type { Request, Response } from "express";
-import { HandlerContext } from "../http/HandlerContext";
+import { HandlerContext } from "../http/handlers/HandlerContext";
 import { getLogger, type IBoundLogger } from "../logger/Logger";
 import type { SvcEnvDto } from "../dto/svcenv.dto";
 

@@ -21,8 +21,8 @@
  * - This handler is single-purpose and relies on HandlerBase short-circuiting on prior failure.
  */
 
-import { HandlerBase } from "@nv/shared/http/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DbWriter } from "@nv/shared/dto/persistence/DbWriter";
 import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";

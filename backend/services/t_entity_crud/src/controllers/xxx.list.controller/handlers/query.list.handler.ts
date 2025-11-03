@@ -13,8 +13,8 @@
  * - "list.filter": Record<string, unknown>
  */
 
-import { HandlerBase } from "@nv/shared/http/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 export class QueryListHandler extends HandlerBase {
   constructor(ctx: HandlerContext) {

@@ -13,7 +13,7 @@
  *   • Seeds a bound logger back into HandlerContext under key "log"
  */
 
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { getLogger, type IBoundLogger } from "@nv/shared/logger/Logger";
 
 export abstract class HandlerBase {

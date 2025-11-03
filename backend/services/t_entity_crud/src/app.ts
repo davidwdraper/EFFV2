@@ -5,21 +5,23 @@
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
  * Purpose (template):
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Delegates heavy lifting to AppBase; mounts service routes as one-liners.
+ * - Owns the concrete DtoRegistry and exposes it to routers/controllers.
  */
 
 import type { Express, Router } from "express";
 import express = require("express");
 import { AppBase } from "@nv/shared/base/AppBase";
 import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
-import { buildXxxRouter } from "./routes/xxx.route";
-import { ensureIndexesForDtos } from "@nv/shared/dto/persistence/indexes/ensureIndexes";
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
 import { BaseDto } from "@nv/shared/dto/DtoBase";
+
+import { buildXxxRouter } from "./routes/xxx.route";
+import { Registry } from "./registry/Registry";
 
 type CreateAppOptions = {
   slug: string;
@@ -29,8 +31,11 @@ type CreateAppOptions = {
 };
 
 class XxxApp extends AppBase {
+  /** Concrete per-service DTO registry (explicit, no barrels). */
+  private readonly registry: Registry;
+
   constructor(opts: CreateAppOptions) {
-    // Logger needs env first so logs don't explode.
+    // Logger first so instrumentation is stable.
     setLoggerEnv(opts.envDto);
 
     // Wire DTO env ONCE before any DTO static calls (indexes/readers/writers).
@@ -42,18 +47,19 @@ class XxxApp extends AppBase {
       envDto: opts.envDto,
       envReloader: opts.envReloader,
     });
+
+    // Per-service registry is constructed at boot and retained on the app instance.
+    this.registry = new Registry();
   }
 
-  /** Boot-time: ensure indexes deterministically; hints are burned after read. */
-  protected override async onBoot(): Promise<void> {
-    // Sanity: confirm the DTO can resolve its collection (useful during bring-up).
-    this.log.debug(
-      { collection: XxxDto.dbCollectionName() },
-      "dto_collection_resolved"
-    );
+  /** Accessor so routers/controllers can retrieve the DtoRegistry. */
+  public getDtoRegistry(): Registry {
+    return this.registry;
+  }
 
-    await ensureIndexesForDtos({
-      dtos: [XxxDto],
+  /** Boot-time: delegate deterministic index ensure to the Registry. */
+  protected override async onBoot(): Promise<void> {
+    await this.registry.ensureIndexes({
       svcEnv: this.svcEnv, // ADR-0044 accessor
       log: this.log,
     });

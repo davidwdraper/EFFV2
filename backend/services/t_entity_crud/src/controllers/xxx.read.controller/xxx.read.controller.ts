@@ -8,19 +8,20 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - Orchestrate GET /api/xxx/v1/read (router mounts at /read).
- * - Zero business logic: seed ctx → one handler → finalize.
+ * - Orchestrate GET /api/xxx/v1/read/:id (router mounts at /read/:id).
+ * - Zero business logic: seed ctx → single handler → finalize.
  *
  * Invariants:
- * - Handler constructs its own DbReader with idFieldName="xxxId".
+ * - Primary-key only. Canonical id field is "id". No fallbacks, no filters.
  */
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/HandlerContext";
+import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import { DbReadGetHandler } from "./handlers/dbRead.get.handler";
@@ -35,12 +36,10 @@ export class XxxReadController extends ControllerBase {
 
     // Required inputs for the single handler
     ctx.set("read.dtoCtor", XxxDto);
-    ctx.set("read.idFieldName", "xxxId");
 
-    // Single, self-contained handler (constructs its own DbReader)
     const pipeline = [new DbReadGetHandler(ctx)];
-
     for (const h of pipeline) await h.run();
+
     return super.finalize(ctx);
   }
 }

@@ -1,4 +1,3 @@
-// backend/services/shared/src/base/ControllerBase.ts
 /**
  * Docs:
  * - ADR-0040 (DTO-Only Persistence via Managers)
@@ -6,17 +5,19 @@
  * - ADR-0042 (HandlerContext Bus)
  * - ADR-0043 (DTO Hydration & Failure Propagation)
  * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ * - ADR-0050 (Wire Bag Envelope; bag-only edges)
  *
  * Purpose:
  * - Shared abstract controller base for all services.
- * - Injects AppBase instance; seeds HandlerContext; finalizes responses.
+ * - Injects AppBase instance; seeds HandlerContext; preflights invariants; finalizes responses.
  *
  * Notes:
- * - NO index work here. Indexes are ensured at boot by the app (see ensureIndexes.ts).
+ * - Indexes are ensured at app boot (see ensureIndexes.ts) — never here.
  */
 
 import type { Request, Response } from "express";
 import { HandlerContext } from "../http/handlers/HandlerContext";
+import type { HandlerBase } from "../http/handlers/HandlerBase";
 import { getLogger, type IBoundLogger } from "../logger/Logger";
 import type { SvcEnvDto } from "../dto/svcenv.dto";
 
@@ -70,13 +71,15 @@ export abstract class ControllerBase {
     if (svcEnv) {
       ctx.set("svcEnv", svcEnv);
     } else {
+      // seed a hard error up front — preflight will honor handlerStatus
       ctx.set("handlerStatus", "error");
-      ctx.set("status", 500);
-      ctx.set("error", {
+      ctx.set("response.status", 500);
+      ctx.set("response.body", {
         code: "SVCENV_MISSING",
-        message:
-          "SvcEnvDto not available. Ops: ensure App exposes svcEnv or getter for env DTO.",
-        hint: "AppBase owns envDto; export via public getter.",
+        title: "Internal Error",
+        detail:
+          "SvcEnvDto not available. Ops: ensure App exposes svcEnv or a public getter.",
+        hint: "AppBase owns envDto; export via a public getter.",
       });
     }
 
@@ -87,6 +90,98 @@ export abstract class ControllerBase {
     return ctx;
   }
 
+  /**
+   * One-per-request invariant check.
+   * Derived controllers can opt-out of registry requirement by overriding needsRegistry() → false,
+   * or by passing { requireRegistry:false } to runPipeline(...).
+   */
+  protected preflight(
+    ctx: HandlerContext,
+    opts?: { requireRegistry?: boolean }
+  ): void {
+    const requireRegistry =
+      opts?.requireRegistry ?? this.needsRegistry() ?? true;
+
+    const requestId = ctx.get<string>("requestId") ?? "unknown";
+
+    // App presence
+    const app = ctx.get<any>("App");
+    if (!app) {
+      ctx.set("handlerStatus", "error");
+      ctx.set("response.status", 500);
+      ctx.set("response.body", {
+        code: "APP_MISSING",
+        title: "Internal Error",
+        detail:
+          "App missing from context. Ops: ControllerBase must seed ctx.set('App', app).",
+        requestId,
+      });
+      return;
+    }
+
+    // Env presence (makeContext already tried — reassert deterministically)
+    const svcEnv = ctx.get<SvcEnvDto>("svcEnv");
+    if (!svcEnv) {
+      ctx.set("handlerStatus", "error");
+      ctx.set("response.status", 500);
+      ctx.set("response.body", {
+        code: "SVCENV_MISSING",
+        title: "Internal Error",
+        detail:
+          "SvcEnv missing in context. Ops: App must expose the environment DTO; ControllerBase seeds it.",
+        requestId,
+      });
+      return;
+    }
+
+    // Registry presence (if required for this pipeline)
+    if (requireRegistry && !app.registry) {
+      ctx.set("handlerStatus", "error");
+      ctx.set("response.status", 500);
+      ctx.set("response.body", {
+        code: "REGISTRY_MISSING",
+        title: "Internal Error",
+        detail:
+          "DtoRegistry missing on App. Ops: wire App.registry at boot and expose a public accessor.",
+        requestId,
+      });
+      return;
+    }
+
+    this.log.debug(
+      {
+        event: "preflight_ok",
+        requestId,
+        requireRegistry,
+        hasRegistry: !!app.registry,
+      },
+      "Preflight passed"
+    );
+  }
+
+  /**
+   * Convenience: run preflight once, then execute handlers in order.
+   * If preflight or any handler marks an error, later handlers no-op via HandlerBase.
+   */
+  protected async runPipeline(
+    ctx: HandlerContext,
+    handlers: HandlerBase[],
+    opts?: { requireRegistry?: boolean }
+  ): Promise<void> {
+    // If makeContext already detected an error, skip preflight noise.
+    const priorError = ctx.get<string>("handlerStatus") === "error";
+    if (!priorError) this.preflight(ctx, opts);
+
+    if (ctx.get<string>("handlerStatus") === "error") return;
+
+    for (const h of handlers) {
+      // Each handler’s run() short-circuits on prior failure by design.
+      // We still await sequentially to keep logs deterministic.
+      // eslint-disable-next-line no-await-in-loop
+      await h.run();
+    }
+  }
+
   /** Controller finalization — maps context → HTTP per ADR-0043. */
   protected finalize(ctx: HandlerContext): void {
     const res = ctx.get<Response>("res")!;
@@ -94,8 +189,11 @@ export abstract class ControllerBase {
     const handlerStatus = (
       ctx.get<string>("handlerStatus") ?? "ok"
     ).toLowerCase();
-    const statusFromCtx = ctx.get<number>("status");
-    const error = ctx.get<any>("error");
+    const statusFromCtx =
+      ctx.get<number>("response.status") ?? ctx.get<number>("status");
+    const error = ctx.get<any>("response.body")?.code // prefer problem body if already set
+      ? ctx.get<any>("response.body")
+      : ctx.get<any>("error");
     const warnings = ctx.get<any[]>("warnings");
     const result = ctx.get<any>("result");
 
@@ -107,11 +205,25 @@ export abstract class ControllerBase {
     if (handlerStatus === "error" || (statusFromCtx && statusFromCtx >= 400)) {
       const status =
         statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
-      const body: ProblemJson = this.toProblemJson(error, status, requestId);
+
+      // If a problem-ish response body is already present, pass it through;
+      // otherwise synthesize a Problem JSON from `error`.
+      const body: ProblemJson =
+        error && error.title && error.code
+          ? {
+              type: "about:blank",
+              title: error.title,
+              detail: error.detail ?? error.message,
+              status,
+              code: error.code,
+              issues: error.issues,
+              requestId,
+            }
+          : this.toProblemJson(error, status, requestId);
 
       res.status(status).type("application/problem+json").json(body);
 
-      // Log level policy: 5xx = ERROR, 4xx = WARN (intentional/client/data issues).
+      // Log level policy
       if (status >= 500) {
         this.log.error(
           { event: "finalize_error", requestId, status, problem: body },
@@ -146,8 +258,20 @@ export abstract class ControllerBase {
       return;
     }
 
-    res.status(200).json(result ?? { ok: true });
+    // Success: if a handler already set a full response body/status, honor it.
+    const prebuiltStatus =
+      ctx.get<number>("response.status") ?? (result ? 200 : undefined);
+    const prebuiltBody = ctx.get<any>("response.body") ??
+      result ?? { ok: true };
+
+    res.status(prebuiltStatus ?? 200).json(prebuiltBody);
     this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
+  }
+
+  /** Default: creation/read/list pipelines typically need a registry. Override to loosen. */
+  // eslint-disable-next-line class-methods-use-this
+  protected needsRegistry(): boolean {
+    return true;
   }
 
   private toProblemJson(
@@ -156,7 +280,6 @@ export abstract class ControllerBase {
     requestId?: string
   ): ProblemJson {
     const code = err?.code ?? "UNSPECIFIED";
-    // Prefer detail over message to surface driver errors
     const detail = err?.detail ?? err?.message ?? "Unhandled error";
     const issues = Array.isArray(err?.issues) ? err.issues : undefined;
 

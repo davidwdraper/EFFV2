@@ -4,19 +4,18 @@
  * - SOP: DTO-only persistence; reads hydrate DTOs with validate=false by default
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *
  * Purpose:
  * - Read one/many records from Mongo and hydrate DTOs.
- * - Collection name is resolved explicitly from the DTO class (dbCollectionName()).
- * - One-step normalization: raw Mongo → DTO shape (no _id, yes <slug>Id).
+ * - Collection name is resolved from the DTO CLASS via dbCollectionName() (hard-wired per DTO, DB-agnostic).
+ * - After hydration, seed the instance with setCollectionName(...) for parity with writers.
  *
  * Invariants:
  * - Service code only deals in **DTO ids (string)**.
  * - Mongo/ObjectId conversion occurs **at the last possible moment** inside this class.
- * - No implicit fallbacks; Dev == Prod. Missing env/config → fail fast.
+ * - No implicit fallbacks; Dev == Prod. Missing config → fail fast.
  */
 
 import type { SvcEnvDto } from "../svcenv.dto";
@@ -36,7 +35,7 @@ import { MongoClient, Collection, Db, ObjectId } from "mongodb";
 
 type DtoCtorWithCollection<T> = {
   fromJson: (j: unknown, opts?: { validate?: boolean }) => T;
-  dbCollectionName: () => string; // static; typically BaseDto.dbCollectionName.call(this)
+  dbCollectionName: () => string; // hard-wired per DTO near indexHints
   name?: string;
 };
 
@@ -110,14 +109,22 @@ export class DbReader<TDto> {
     this.idFieldName = opts.idFieldName ?? "xxxId";
   }
 
-  /** Resolve collection explicitly from the DTO class. */
+  /** Resolve collection from the DTO class. */
   private async collection(): Promise<Collection> {
-    const collectionName = this.dtoCtor.dbCollectionName();
+    const fn = this.dtoCtor.dbCollectionName;
+    if (typeof fn !== "function") {
+      throw new Error(
+        `DBREADER_NO_COLLECTION_FN: DTO ${
+          this.dtoCtor.name ?? "<anon>"
+        } missing static dbCollectionName(). Dev: add it next to indexHints.`
+      );
+    }
+    const collectionName = fn.call(this.dtoCtor);
     if (!collectionName?.trim()) {
       throw new Error(
-        `DBREADER_NO_COLLECTION: DTO ${
+        `DBREADER_EMPTY_COLLECTION: DTO ${
           this.dtoCtor.name ?? "<anon>"
-        } returned empty dbCollectionName(). Ops: ensure BaseDto.configureEnv(...) was called at boot and dbCollectionKey() is mapped.`
+        } returned empty dbCollectionName(). Dev: hard-wire a non-empty string.`
       );
     }
     return getExplicitCollection(this.svcEnv, collectionName);
@@ -125,17 +132,19 @@ export class DbReader<TDto> {
 
   /** Introspection hook for handlers to log target collection. */
   public async targetInfo(): Promise<{ collectionName: string }> {
-    return { collectionName: this.dtoCtor.dbCollectionName() };
+    const collectionName = this.dtoCtor.dbCollectionName();
+    return { collectionName };
   }
 
-  /**
-   * Read by **DTO id** (string). This is the ONLY "by id" API exposed to service code.
-   * Implementation detail:
-   *   - We treat the DTO id string as the canonical representation of the DB id.
-   *   - At the last moment, we coerce it to Mongo's ObjectId and query by `_id`.
-   *   - No DTO code ever sees ObjectId; normalization to `{ [idFieldName]: string }`
-   *     happens on the way back out.
-   */
+  private _seedCollectionOn(dto: TDto): void {
+    const anyDto = dto as unknown as {
+      setCollectionName?: (n: string) => unknown;
+    };
+    if (typeof anyDto?.setCollectionName === "function") {
+      anyDto.setCollectionName(this.dtoCtor.dbCollectionName());
+    }
+  }
+
   public async readById(dtoId: string): Promise<TDto | undefined> {
     const col = await this.collection();
 
@@ -143,8 +152,6 @@ export class DbReader<TDto> {
       return undefined;
     }
 
-    // Convert the DTO id string to a Mongo ObjectId only at the edge.
-    // If coercion fails, the id is invalid — return undefined (caller maps to 404).
     let oid: ObjectId | null = null;
     try {
       const q = coerceForMongoQuery({ _id: dtoId }) as { _id: ObjectId };
@@ -157,10 +164,13 @@ export class DbReader<TDto> {
     if (!raw) return undefined;
 
     const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
-    return this.dtoCtor.fromJson(dtoJson, { validate: this.validateReads });
+    const dto = this.dtoCtor.fromJson(dtoJson, {
+      validate: this.validateReads,
+    });
+    this._seedCollectionOn(dto);
+    return dto;
   }
 
-  /** Read a single record by filter, hydrate a DTO. */
   public async readOne(
     filter: Record<string, unknown>
   ): Promise<TDto | undefined> {
@@ -169,10 +179,13 @@ export class DbReader<TDto> {
     const raw = await col.findOne(q);
     if (!raw) return undefined;
     const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
-    return this.dtoCtor.fromJson(dtoJson, { validate: this.validateReads });
+    const dto = this.dtoCtor.fromJson(dtoJson, {
+      validate: this.validateReads,
+    });
+    this._seedCollectionOn(dto);
+    return dto;
   }
 
-  /** Read many documents (non-paginated). */
   public async readMany(
     filter: Record<string, unknown>,
     limit = 100
@@ -183,14 +196,15 @@ export class DbReader<TDto> {
     const out: TDto[] = [];
     for await (const raw of cur) {
       const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
-      out.push(
-        this.dtoCtor.fromJson(dtoJson, { validate: this.validateReads })
-      );
+      const dto = this.dtoCtor.fromJson(dtoJson, {
+        validate: this.validateReads,
+      });
+      this._seedCollectionOn(dto);
+      out.push(dto);
     }
     return out;
   }
 
-  /** Read paginated batch (deterministic order). */
   public async readBatch(args: ReadBatchArgs): Promise<ReadBatchResult<TDto>> {
     const order = args.order ?? ORDER_STABLE_ID_ASC;
     const baseFilter = args.filter ?? {};
@@ -236,16 +250,18 @@ export class DbReader<TDto> {
       })());
 
     const slice = docs.slice(0, limit);
-    const dtos = slice.map((raw) =>
-      this.dtoCtor.fromJson(mongoNormalizeToDto(raw, this.idFieldName), {
-        validate: this.validateReads,
-      })
-    );
+    const dtos = slice.map((raw) => {
+      const dto = this.dtoCtor.fromJson(
+        mongoNormalizeToDto(raw, this.idFieldName),
+        { validate: this.validateReads }
+      );
+      this._seedCollectionOn(dto);
+      return dto;
+    });
     const bag = new DtoBag<TDto>(dtos as readonly TDto[]);
 
     let nextCursor: string | undefined;
     if (docs.length > limit && slice.length > 0) {
-      // Cursor math uses raw doc (_id intact) for stable ordering.
       const lastDocRaw = docs[slice.length - 1];
       const lastKeyset = keysetFromDoc(lastDocRaw, order);
       nextCursor = encodeCursor({ order, last: lastKeyset, rev });

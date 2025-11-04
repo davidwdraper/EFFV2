@@ -4,15 +4,16 @@
  * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)  [collection no longer sourced from env]
  *
  * Purpose:
  * - Abstract DTO base with a single outbound JSON path.
  * - Meta stamping (createdAt/updatedAt/updatedByUserId) happens **inside toJson()** via helper.
  *
  * Notes:
- * - DTOs remain pure (no logging). Handlers log errors.
- * - **No DB shape here**: this base never reads/writes `_id`. ID exposure (e.g., `xxxId`) is up to concrete DTOs.
+ * - DTOs remain pure (no business logging). Handlers/services log operational details.
+ * - **No DB shape here**: this base never reads/writes `_id`. Canonical id exposure is up to concrete DTOs.
+ * - New: instance-level collection seeding (set once by Registry); DB ops require it via requireCollectionName().
  */
 
 type _DtoMeta = {
@@ -51,12 +52,13 @@ export class DtoMutationUnsupportedError extends Error {
   }
 }
 
-type _SvcEnvLike = { getEnvVar: (k: string) => string };
+// Minimal warn hook to avoid hard dependency on a logger inside DTOs.
+type _WarnLike = (payload: Record<string, unknown>) => void;
 
 export abstract class BaseDto {
-  // ---- Process-wide defaults/env (configured at boot) ----
+  // ---- Process-wide defaults (configured at boot) ----
   private static _defaults = { updatedByUserId: "system" };
-  private static _svcEnv?: _SvcEnvLike;
+  private static _warn?: _WarnLike;
 
   /** Call once at service boot. */
   public static configureDefaults(opts: { updatedByUserId?: string }): void {
@@ -64,41 +66,64 @@ export abstract class BaseDto {
       BaseDto._defaults.updatedByUserId = opts.updatedByUserId;
   }
 
-  /** Call once at service boot with your SvcEnvDto (must expose getEnvVar). */
-  public static configureEnv(env: _SvcEnvLike): void {
-    BaseDto._svcEnv = env;
+  /**
+   * Optional: provide a warn sink (e.g., logger.warn) for soft violations.
+   * DTOs themselves remain logging-light; this hook avoids tight coupling.
+   */
+  public static configureWarn(warn: _WarnLike): void {
+    BaseDto._warn = warn;
   }
 
+  // ---- Instance-level collection (seeded once by Registry) ----
+  private _collectionName?: string;
+
   /**
-   * Minimal collection resolver:
-   * - Subclass must provide `static dbCollectionKey(): string`
-   * - We fetch via svcEnv.getEnvVar(key)
-   * - Empty/missing → throw with an Ops hint
+   * Set the instance collection name exactly once.
+   * - Empty name → throw (hard fail).
+   * - Same as existing → no-op.
+   * - Different than existing → WARN and keep original.
    */
-  public static dbCollectionName(this: unknown): string {
-    const ctor = this as { dbCollectionKey?: () => string; name?: string };
-    if (!BaseDto._svcEnv) {
+  public setCollectionName(name: string): this {
+    const ctor = (this as any).constructor as { name?: string };
+    const trimmed = (name ?? "").trim();
+    if (!trimmed) {
       throw new Error(
-        "SvcEnv not configured. Ops: wire BaseDto.configureEnv(svcEnvDto) during app boot before using DTOs."
+        `DTO_COLLECTION_EMPTY: ${
+          ctor.name ?? "DTO"
+        } received empty collection. ` +
+          "Ops: Registry must seed dto.setCollectionName(<hardwired>); handlers must not set/override."
       );
     }
-    if (typeof ctor.dbCollectionKey !== "function") {
-      throw new Error(
-        `DTO ${
-          ctor.name ?? "UnknownDto"
-        } is missing static dbCollectionKey(). ` +
-          `Ops: implement: 'static dbCollectionKey() { return \"NV_COLLECTION_XXX_VALUES\"; }'`
-      );
+    if (!this._collectionName) {
+      this._collectionName = trimmed;
+      return this;
     }
-    const key = ctor.dbCollectionKey();
-    const value = BaseDto._svcEnv.getEnvVar(key);
-    if (!value || !value.trim()) {
-      throw new Error(
-        `Missing env value for "${key}" required by ${ctor.name ?? "DTO"}. ` +
-          `Ops: ensure svcenv provides a non-empty collection name; Dev == Prod (no defaults).`
-      );
+    if (this._collectionName === trimmed) {
+      return this; // idempotent
     }
-    return value;
+    // Soft violation: log a warning and preserve original value.
+    BaseDto._warn?.({
+      component: "BaseDto",
+      event: "collection_name_already_set",
+      dto: ctor.name ?? "DTO",
+      existing: this._collectionName,
+      attempted: trimmed,
+      hint: "Registry seeds collection once; callers must not override.",
+    });
+    return this;
+  }
+
+  /** Require the instance to have a collection name; throw with Ops hint if missing. */
+  public requireCollectionName(): string {
+    if (this._collectionName && this._collectionName.trim())
+      return this._collectionName;
+    const ctor = (this as any).constructor as { name?: string };
+    throw new Error(
+      `DTO_COLLECTION_UNSET: ${
+        ctor.name ?? "DTO"
+      } missing instance collection. ` +
+        "Ops: ensure the service Registry calls dto.setCollectionName(<hardwired>) during instantiation."
+    );
   }
 
   // ---- Meta (internal only; no DB ids here) ----

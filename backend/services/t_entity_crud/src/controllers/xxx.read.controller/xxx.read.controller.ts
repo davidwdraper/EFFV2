@@ -1,4 +1,3 @@
-// backend/services/t_entity_crud/src/controllers/xxx.read.controller/xxx.read.controller.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -34,11 +33,12 @@ export class XxxReadController extends ControllerBase {
   public async get(req: Request, res: Response): Promise<void> {
     const ctx: HandlerContext = this.makeContext(req, res);
 
-    // Required inputs for the single handler
+    // Required inputs for the single handler — DTO ctor only (canonical id="id" is enforced in the handler).
     ctx.set("read.dtoCtor", XxxDto);
 
-    const pipeline = [new DbReadGetHandler(ctx)];
-    for (const h of pipeline) await h.run();
+    await this.runPipeline(ctx, [new DbReadGetHandler(ctx)], {
+      requireRegistry: false, // read-by-id path does not require the registry
+    });
 
     return super.finalize(ctx);
   }

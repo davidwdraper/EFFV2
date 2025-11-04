@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0015 (DTO-First Development)
  *   - ADR-0040 (DTO-Only Persistence via Managers)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)  // collection no longer from env
  *   - ADR-0047 (DtoBag — pk & filter shaping live in DTO space)
  *   - ADR-0048 (pk mapping at persistence edge)
  *   - ADR-0049 (DTO Registry; canonical string id; wire vs db modes)
@@ -15,6 +15,7 @@
  * - In mode:"wire", if `id` is absent, the DTO generates a canonical id.
  * - In mode:"db", `id` is required (DbReader must supply it after mapping).
  * - Patching occurs via schema-validated field setters; `id` is immutable.
+ * - Collection name is hard-wired per DTO class (DB-agnostic), lives beside indexHints.
  */
 
 import { z } from "zod";
@@ -52,9 +53,9 @@ type _Patch = z.infer<typeof _patchSchema>;
 // ----- DTO ------------------------------------------------------------------
 
 export class XxxDto extends BaseDto implements IDto {
-  /** Virtual by convention: cloner renames the value to service-specific key. */
-  public static dbCollectionKey(): string {
-    return "NV_COLLECTION_XXX_VALUES";
+  /** DB-agnostic, class-level collection binding (cloner replaces "xxx-values"). */
+  public static dbCollectionName(): string {
+    return "xxx-values";
   }
 
   static indexHints: ReadonlyArray<IndexHint> = [
@@ -109,11 +110,9 @@ export class XxxDto extends BaseDto implements IDto {
    * Bypasses validation (source already valid) and resets meta timestamps.
    */
   public clone(newId?: string): this {
-    // Use the “one-liner” style you prefer: toJson → insert new id → fromJson(validate:false)
     const json = this.toJson() as _State & { type?: string };
     json.id = newId ?? makeId();
     json.type = "xxx";
-    // validate:false path — we trust the current instance’s shape
     return XxxDto.fromJson(json, { validate: false }) as this;
   }
 
@@ -137,7 +136,6 @@ export class XxxDto extends BaseDto implements IDto {
     const mode = opts?.mode ?? "wire";
     const doValidate = opts?.validate !== false;
 
-    // Accept unknown → normalize to object
     const data = typeof json === "string" ? JSON.parse(json) : (json as object);
 
     if (doValidate) {
@@ -154,7 +152,6 @@ export class XxxDto extends BaseDto implements IDto {
       }
       const wire = parsed.data;
 
-      // ID semantics by mode
       if (mode === "db") {
         if (!wire.id || wire.id.trim() === "") {
           throw new DtoValidationError("Missing required id in db mode.", [
@@ -167,7 +164,6 @@ export class XxxDto extends BaseDto implements IDto {
         }
         return new XxxDto({ ...wire, id: wire.id, type: "xxx" });
       } else {
-        // mode:"wire" → synthesize id if absent
         const id = wire.id && wire.id.trim() !== "" ? wire.id : makeId();
         return new XxxDto({ ...wire, id, type: "xxx" });
       }
@@ -280,10 +276,5 @@ export class XxxDto extends BaseDto implements IDto {
       numfield1: this._state.numfield1,
       numfield2: this._state.numfield2,
     });
-  }
-
-  // Convenience for callers that want the collection at class level:
-  public static dbCollectionName(): string {
-    return BaseDto.dbCollectionName.call(this);
   }
 }

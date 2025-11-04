@@ -11,13 +11,10 @@
  * - Single source of truth for:
  *   • Hydration (instantiate/build)
  *   • Boot-time index ensure for all DTOs in this service
+ * - Seeds per-instance collection via dto.setCollectionName(<DtoClass>.dbCollectionName()) exactly once.
  *
- * How to add another DTO after cloning:
- *   1) import { MySpecialDto } from "@nv/shared/dto/xxx/my-special.dto";
- *   2) add: public newMySpecial(json, opts) { return this.build(MySpecialDto, json, opts); }
- *   3) add an overload: public instantiate(type: "my-special", json: unknown, opts?): MySpecialDto;
- *   4) extend the switch to call this.newMySpecial(json, opts);
- *   5) append the CLASS to allDtos(): return [XxxDto, MySpecialDto];
+ * Cloner note:
+ * - Each DTO provides its own static dbCollectionName() next to indexHints.
  */
 
 import {
@@ -39,9 +36,25 @@ import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 type BuildOpts = { mode?: "wire" | "db"; validate?: boolean };
 
 export class Registry extends RegistryBase implements IServiceRegistry {
+  /** Helper to seed collection name exactly once on a new DTO instance. */
+  private _seed<T extends IDto>(
+    dto: T,
+    ctor: { dbCollectionName: () => string }
+  ): T {
+    const anyDto = dto as unknown as {
+      setCollectionName?: (n: string) => unknown;
+    };
+    if (typeof anyDto?.setCollectionName === "function") {
+      anyDto.setCollectionName(ctor.dbCollectionName());
+    }
+    return dto;
+  }
+
   /** Explicit constructor for XxxDto (compile-time obvious, easy to extend). */
   public newXxx(json: unknown, opts?: BuildOpts): XxxDto {
-    return this.build<XxxDto>(XxxDto, json, opts);
+    const dto = this.build<XxxDto>(XxxDto, json, opts);
+    // Seed from the DTO's class-level hard-wired name
+    return this._seed(dto, XxxDto);
   }
 
   // ---------- Typed overloads to avoid generic cast warnings ----------
@@ -80,12 +93,33 @@ export class Registry extends RegistryBase implements IServiceRegistry {
 
   /**
    * Boot-time index ensure for all DTOs in this registry.
-   * Keeps App.ts free of concrete DTO imports and prevents drift.
+   * Uses each DTO's own class-level dbCollectionName().
    */
   public async ensureIndexes(opts: {
-    svcEnv: SvcEnvDto;
+    svcEnv: SvcEnvDto; // URI/DB only
     log: ILogger;
   }): Promise<void> {
+    // Validate DTOs expose a collection name (fail fast if any don't).
+    for (const ctor of this.allDtos() as Array<
+      DtoCtorWithIndexes & { dbCollectionName?: () => string; name?: string }
+    >) {
+      if (typeof ctor.dbCollectionName !== "function") {
+        throw new Error(
+          `INDEX_ENSURE_NO_COLLECTION: DTO ${
+            ctor.name ?? "<anon>"
+          } missing static dbCollectionName(). Dev: define it next to indexHints.`
+        );
+      }
+      const n = ctor.dbCollectionName();
+      if (!n?.trim()) {
+        throw new Error(
+          `INDEX_ENSURE_EMPTY_COLLECTION: DTO ${
+            ctor.name ?? "<anon>"
+          } returned empty dbCollectionName(). Dev: hard-wire a non-empty string.`
+        );
+      }
+    }
+
     await ensureIndexesForDtos({
       dtos: this.allDtos(),
       svcEnv: opts.svcEnv,

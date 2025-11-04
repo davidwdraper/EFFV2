@@ -5,7 +5,7 @@
  *
  * Purpose:
  * - Concrete writer: uses SvcEnvDto to connect and write dto.toJson().
- * - Collection name is resolved explicitly from the DTO class (dbCollectionName()).
+ * - Collection name now comes ONLY from the DTO instance (requireCollectionName()), seeded by Registry.
  * - Normalizes DB response ids to strings on the way back.
  * - Centralizes duplicate-key mapping.
  *
@@ -63,10 +63,9 @@ async function getExplicitCollection(
 
 function derivePreferredIdKey(dto: BaseDto): string {
   const ctor = (dto as any).constructor as { name?: string };
-  const name = (ctor?.name ?? "").trim(); // e.g., EnvServiceDto, XxxDto
+  const name = (ctor?.name ?? "").trim();
   const base = name.endsWith("Dto") ? name.slice(0, -3) : name;
   if (!base) return "id";
-  // PascalCase → lowerCamel + "Id"
   const lowerCamel = base[0].toLowerCase() + base.slice(1);
   return `${lowerCamel}Id`;
 }
@@ -77,17 +76,14 @@ function resolveDtoStringId(
 ): string | undefined {
   const key = derivePreferredIdKey(dto);
 
-  // 1) surface property on DTO instance
   const fromDto = (dto as any)[key];
   if (typeof fromDto === "string" && fromDto.trim() !== "") return fromDto;
 
-  // 2) serialized value in toJson()
   const fromJson = json[key];
   if (typeof fromJson === "string" && String(fromJson).trim() !== "") {
     return String(fromJson);
   }
 
-  // 3) very last resort: a plain 'id' property on the DTO (string)
   const plainId = (dto as any).id;
   if (typeof plainId === "string" && plainId.trim() !== "") return plainId;
 
@@ -103,35 +99,13 @@ export class DbWriter<TDto extends BaseDto> extends DbManagerBase<TDto> {
 
   /** Introspection hook for handlers to log target collection. */
   public async targetInfo(): Promise<{ collectionName: string }> {
-    const dtoCtor = this._dto.constructor as unknown as {
-      dbCollectionName: () => string;
-      name?: string;
-    };
-    const collectionName = dtoCtor.dbCollectionName();
-    if (!collectionName?.trim()) {
-      throw new Error(
-        `DBWRITER_NO_COLLECTION: DTO ${
-          dtoCtor.name ?? "<anon>"
-        } returned empty dbCollectionName(). Ops: ensure BaseDto.configureEnv(...) was called at boot and dbCollectionKey() is mapped.`
-      );
-    }
+    const collectionName = this._dto.requireCollectionName();
     return { collectionName };
   }
 
   /** Persist the injected DTO using env-provided connection info. */
   public async write(): Promise<{ id: string }> {
-    const dtoCtor = this._dto.constructor as unknown as {
-      dbCollectionName: () => string;
-      name?: string;
-    };
-    const collectionName = dtoCtor.dbCollectionName();
-    if (!collectionName?.trim()) {
-      throw new Error(
-        `DBWRITER_NO_COLLECTION: DTO ${
-          dtoCtor.name ?? "<anon>"
-        } returned empty dbCollectionName().`
-      );
-    }
+    const collectionName = this._dto.requireCollectionName();
     const coll = await getExplicitCollection(this._svcEnv, collectionName);
 
     try {
@@ -152,25 +126,14 @@ export class DbWriter<TDto extends BaseDto> extends DbManagerBase<TDto> {
 
   /**
    * Batch write: persists each DTO from the provided DtoBag.
-   * Collection is resolved per DTO via its constructor.dbCollectionName().
+   * Collection is resolved per DTO instance via requireCollectionName().
    * Returns ids in the same order as input DTOs.
    */
   public async writeMany(bag: DtoBag<TDto>): Promise<{ ids: string[] }> {
     const ids: string[] = [];
 
     for (const dto of bag.items()) {
-      const dtoCtor = (dto as any).constructor as {
-        dbCollectionName: () => string;
-        name?: string;
-      };
-      const collectionName = dtoCtor.dbCollectionName();
-      if (!collectionName?.trim()) {
-        throw new Error(
-          `DBWRITER_NO_COLLECTION: DTO ${
-            dtoCtor.name ?? "<anon>"
-          } returned empty dbCollectionName() during writeMany().`
-        );
-      }
+      const collectionName = (dto as BaseDto).requireCollectionName();
       const coll = await getExplicitCollection(this._svcEnv, collectionName);
       try {
         const res = await coll.insertOne((dto as BaseDto).toJson() as any);
@@ -196,18 +159,7 @@ export class DbWriter<TDto extends BaseDto> extends DbManagerBase<TDto> {
    * Returns the id on success; throws on 0 matches.
    */
   public async update(): Promise<{ id: string }> {
-    const dtoCtor = this._dto.constructor as unknown as {
-      dbCollectionName: () => string;
-      name?: string;
-    };
-    const collectionName = dtoCtor.dbCollectionName();
-    if (!collectionName?.trim()) {
-      throw new Error(
-        `DBWRITER_NO_COLLECTION: DTO ${
-          dtoCtor.name ?? "<anon>"
-        } returned empty dbCollectionName().`
-      );
-    }
+    const collectionName = this._dto.requireCollectionName();
     const coll = await getExplicitCollection(this._svcEnv, collectionName);
 
     const json = this._dto.toJson() as Record<string, unknown>;
@@ -223,7 +175,6 @@ export class DbWriter<TDto extends BaseDto> extends DbManagerBase<TDto> {
 
     const { _id, ...rest } = json;
 
-    // Coerce DTO-space id string to Mongo ObjectId (driver-friendly)
     const filter = coerceForMongoQuery({ _id: String(rawId) }) as {
       _id: ObjectId;
     };

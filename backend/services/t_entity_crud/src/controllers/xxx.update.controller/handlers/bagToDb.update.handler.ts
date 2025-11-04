@@ -1,104 +1,87 @@
-// backend/services/t_entity_crud/src/controllers/xxx.create.controller/handlers/bagToDb.create.handler.ts
+// backend/services/t_entity_crud/src/controllers/xxx.update.controller/handlers/bagToDb.update.handler.ts
 /**
  * Docs:
  * - ADR-0040 (DTO-Only Persistence via Managers)
- * - ADR-0041 (Per-route controllers; single-purpose handlers)
- * - ADR-0042 (HandlerContext Bus — KISS)
- * - ADR-0043 (Hydration & Failure Propagation)
- * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
- * - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
+ * - ADR-0041/42/43/44
  *
  * Purpose:
- * - For PUT /api/xxx/v1/create:
- *   • Read the singleton DTO from the bag (seeded by BagPopulateGetHandler).
- *   • Build a DbWriter({ dto, svcEnv }) and execute write().
- *   • Map duplicate-key → HTTP 409 with WARN.
+ * - Build a DbWriter from the UPDATED singleton bag and execute update().
+ * - Duplicate key → WARN + HTTP 409 (matches create behavior).
  *
  * Inputs (ctx):
- * - "bag": DtoBag<IDto>       (ALWAYS set by BagPopulateGetHandler)
- * - "dto": IDto               (set in singleton mode by BagPopulateGetHandler)
- * - "svcEnv": SvcEnvDto       (seeded by ControllerBase/App)
+ * - "bag": DtoBag<XxxDto>   (singleton, UPDATED; from ApplyPatchUpdateHandler)
+ * - "dto": XxxDto           (convenience; if missing we’ll read from bag)
+ * - "svcEnv": SvcEnvDto
  *
  * Outputs (ctx):
- * - "result": { ok: true, id }  on success
- * - "status": 200               on success
- * - On error: "status", "error", "handlerStatus" set appropriately
+ * - "result": { ok: true, id }
+ * - "status": 200
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { IDto } from "@nv/shared/dto/IDto";
-import type { BaseDto } from "@nv/shared/dto/DtoBase";
+import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import {
   DbWriter,
   DuplicateKeyError,
 } from "@nv/shared/dto/persistence/DbWriter";
 
-export class BagToDbCreateHandler extends HandlerBase {
+export class BagToDbUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext) {
     super(ctx);
   }
 
   protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_enter" }, "BagToDbCreateHandler enter");
+    this.log.debug({ event: "execute_enter" }, "BagToDbUpdateHandler enter");
 
-    // 1) Inputs
-    const bag = this.ctx.get<DtoBag<IDto>>("bag");
+    const bag = this.ctx.get<DtoBag<XxxDto>>("bag");
     if (!bag) {
-      this._badRequest(
+      return this._badRequest(
         "BAG_MISSING",
-        'Missing items. Provide JSON body { items:[{ type:"xxx", ... }] }.'
+        "Updated DtoBag missing. Ensure ApplyPatchUpdateHandler ran."
       );
-      return;
     }
 
-    // Prefer the dto surfaced by the shared preflight (singleton mode).
-    let dto = this.ctx.get<IDto>("dto") as unknown as BaseDto | undefined;
-
-    // Tiny guard in case upstream regresses: enforce exactly one item.
+    let dto = (this.ctx.get("dto") as XxxDto) ?? undefined;
     if (!dto) {
       const items = [...bag.items()];
       if (items.length !== 1) {
-        this._badRequest(
+        return this._badRequest(
           items.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
           items.length === 0
-            ? "Create requires exactly one item; received 0."
-            : "Create requires exactly one item; received more than 1."
+            ? "Update requires exactly one item; received 0."
+            : "Update requires exactly one item; received more than 1."
         );
-        return;
       }
-      dto = items[0] as unknown as BaseDto;
+      dto = items[0];
     }
 
     const svcEnv = this.ctx.get<SvcEnvDto>("svcEnv");
     if (!svcEnv) {
-      this._internalError(
+      return this._internalError(
         "SVCENV_MISSING",
         "SvcEnvDto not found in context. Ops: ControllerBase must seed 'svcEnv' from App."
       );
-      return;
     }
 
-    // 2) Build writer (no globals, no factories)
-    const writer = new DbWriter<BaseDto>({ dto, svcEnv });
+    const writer = new DbWriter<XxxDto>({ dto, svcEnv });
 
     try {
       const { collectionName } = await writer.targetInfo();
       this.log.debug(
-        { event: "create_target", collection: collectionName },
-        "create will write to collection"
+        { event: "update_target", collection: collectionName },
+        "update will write to collection"
       );
 
-      // 3) Execute write
-      const { id } = await writer.write();
+      const { id } = await writer.update();
       this.log.debug(
-        { event: "insert_one_complete", id, collection: collectionName },
-        "create complete"
+        { event: "update_complete", id, collection: collectionName },
+        "update complete"
       );
 
-      this.ctx.set("insertedId", id);
+      this.ctx.set("updatedId", id);
       this.ctx.set("result", { ok: true, id });
       this.ctx.set("status", 200);
       this.ctx.set("handlerStatus", "ok");
@@ -124,7 +107,7 @@ export class BagToDbCreateHandler extends HandlerBase {
             detail: err.message,
             dto: (dto as any)?.constructor?.name ?? "DTO",
           },
-          "create duplicate — returning 409"
+          "update duplicate — returning 409"
         );
 
         this.ctx.set("status", 409);
@@ -146,30 +129,28 @@ export class BagToDbCreateHandler extends HandlerBase {
       } else {
         this.log.error(
           {
-            event: "db_write_failed",
+            event: "db_update_failed",
             error: (err as Error).message,
             dto: (dto as any)?.constructor?.name ?? "DTO",
           },
-          "create failed unexpectedly"
+          "update failed unexpectedly"
         );
         throw err;
       }
     }
 
-    this.log.debug({ event: "execute_exit" }, "BagToDbCreateHandler exit");
+    this.log.debug({ event: "execute_exit" }, "BagToDbUpdateHandler exit");
   }
 
   private _badRequest(code: string, detail: string): void {
     this.ctx.set("handlerStatus", "error");
     this.ctx.set("status", 400);
     this.ctx.set("error", { code, title: "Bad Request", detail });
-    this.log.debug({ event: "bad_request", code }, "BagToDbCreateHandler");
   }
 
   private _internalError(code: string, detail: string): void {
     this.ctx.set("handlerStatus", "error");
     this.ctx.set("status", 500);
     this.ctx.set("error", { code, title: "Internal Error", detail });
-    this.log.debug({ event: "internal_error", code }, "BagToDbCreateHandler");
   }
 }

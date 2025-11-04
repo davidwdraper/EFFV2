@@ -23,9 +23,7 @@ import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get.handler";
-import { BagRequireSingletonCreateHandler } from "./handlers/bagRequireSingleton.create.handler";
-import { DtoToDbCreateHandler } from "./handlers/bagToDb.create.handler";
-import { DbWriteCreateHandler } from "./handlers/dbWrite.create.handler";
+import { BagToDbCreateHandler } from "./handlers/bagToDb.create.handler";
 
 export class XxxCreateController extends ControllerBase {
   constructor(app: AppBase) {
@@ -41,11 +39,7 @@ export class XxxCreateController extends ControllerBase {
         // 1) Hydrate a DtoBag<IDto> from the JSON body (shared handler)
         new BagPopulateGetHandler(ctx),
         // 2) Enforce single-item create and expose ctx.set("dto", <XxxDto>)
-        new BagRequireSingletonCreateHandler(ctx),
-        // 3) Prepare DbWriter with svcEnv + dto (no write yet)
-        new DtoToDbCreateHandler(ctx),
-        // 4) Perform the insert; map dup-key → 409
-        new DbWriteCreateHandler(ctx),
+        new BagToDbCreateHandler(ctx),
       ],
       {
         // Create needs the registry (BagPopulateGetHandler consumes it from App)

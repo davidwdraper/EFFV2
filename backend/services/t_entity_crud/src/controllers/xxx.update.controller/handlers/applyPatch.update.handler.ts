@@ -2,21 +2,23 @@
 /**
  * Docs:
  * - ADR-0041/0042 (Handlers, Context Bus)
+ * - ADR-0048 (Revised — all reads return DtoBag)
  * - ADR-0050 (Wire Bag Envelope; singleton inbound)
  * - ADR-0053 (Bag Purity; bag-centric processing)
  *
  * Purpose:
- * - Apply the inbound singleton DTO (from ctx["bag"]) onto the loaded "existing" DTO.
- * - Enforce DtoBag wrapper: output a **singleton bag** containing the UPDATED DTO.
+ * - Patch the **existing** entity (from ctx["existingBag"]) using the client **patch**
+ *   payload (from ctx["bag"]) — both are **singleton DtoBags**.
+ * - Output a **singleton DtoBag** containing the UPDATED DTO and replace ctx["bag"] with it.
  *
  * Inputs (ctx):
- * - "existing": XxxDto            (from LoadExistingUpdateHandler)
- * - "bag": DtoBag<IDto>           (singleton; from BagPopulateGetHandler)
+ * - "existingBag": DtoBag<XxxDto>   (singleton; from LoadExistingUpdateHandler)
+ * - "bag": DtoBag<IDto>             (singleton; from BagPopulateGetHandler — the patch)
  *
  * Outputs (ctx):
- * - "dto": XxxDto                 (convenience)
- * - "updated": XxxDto             (alias of dto)
- * - "bag": DtoBag<XxxDto>         (REPLACED with updated singleton bag)
+ * - "bag": DtoBag<XxxDto>           (REPLACED with updated singleton bag)
+ * - "handlerStatus": "ok" | "error"
+ * - "status": number
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -32,50 +34,57 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
   }
 
   protected async execute(): Promise<void> {
-    const existing = this.ctx.get<XxxDto>("existing");
-    if (!existing) {
+    // ---- Fetch bags ---------------------------------------------------------
+    const existingBag = this.ctx.get<DtoBag<IDto>>("existingBag");
+    const patchBag = this.ctx.get<DtoBag<IDto>>("bag");
+
+    if (!existingBag || !patchBag) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 500);
       this.ctx.set("error", {
-        code: "MISSING_EXISTING",
-        message: "Existing DTO missing from context.",
-        hint: "Ensure LoadExistingUpdateHandler ran and succeeded.",
-      });
-      return;
-    }
-
-    const inboundBag = this.ctx.get<DtoBag<IDto>>("bag");
-    if (!inboundBag) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 400);
-      this.ctx.set("error", {
-        code: "BAG_MISSING",
-        message: "Inbound DtoBag missing. Did BagPopulateGetHandler run?",
-      });
-      return;
-    }
-
-    // Must be singleton (policy enforced earlier). Guard anyway.
-    const items = [...inboundBag.items()];
-    if (items.length !== 1) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 400);
-      this.ctx.set("error", {
-        code: items.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
+        code: "BAGS_MISSING",
         message:
-          items.length === 0
-            ? "Update requires exactly one item; received 0."
-            : "Update requires exactly one item; received more than 1.",
+          "Required bags not found on context. Ops: ensure LoadExistingUpdateHandler set 'existingBag' and BagPopulateGetHandler set 'bag'.",
       });
       return;
     }
 
-    const patchDto = items[0] as XxxDto;
+    const existingItems = Array.from(existingBag.items());
+    const patchItems = Array.from(patchBag.items());
 
+    // ---- Enforce singleton semantics on both inputs -------------------------
+    if (existingItems.length !== 1) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", existingItems.length === 0 ? 404 : 500);
+      this.ctx.set("error", {
+        code: existingItems.length === 0 ? "NOT_FOUND" : "MULTIPLE_MATCHES",
+        message:
+          existingItems.length === 0
+            ? "No existing record found for supplied id."
+            : "Invariant breach: multiple records matched primary key lookup.",
+      });
+      return;
+    }
+
+    if (patchItems.length !== 1) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 400);
+      this.ctx.set("error", {
+        code: patchItems.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
+        message:
+          patchItems.length === 0
+            ? "Update requires exactly one patch item; received 0."
+            : "Update requires exactly one patch item; received more than 1.",
+      });
+      return;
+    }
+
+    const existing = existingItems[0] as XxxDto;
+    const patchDto = patchItems[0] as XxxDto;
+
+    // ---- Apply patch via DTO authority -------------------------------------
     try {
-      // Call toJson() directly (no pointless conditional).
       const patchJson = patchDto.toJson() as Record<string, unknown>;
-      // Delegate patch rules to the DTO (immutability checks live there).
       existing.patchFrom(patchJson);
     } catch (e) {
       this.ctx.set("handlerStatus", "error");
@@ -88,21 +97,21 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
       return;
     }
 
-    // Re-wrap UPDATED DTO into a singleton bag (bag-centric invariant)
+    // ---- Re-bag the UPDATED DTO; replace ctx["bag"] -------------------------
     const { bag: updatedBag } = BagBuilder.fromDtos([existing], {
       requestId: this.ctx.get("requestId") ?? "unknown",
+      limit: 1,
+      cursor: null,
+      total: 1,
     });
-    // Optional: lock as singleton if available
-    (updatedBag as any)?.sealSingleton?.();
+    (updatedBag as any)?.sealSingleton?.(); // no harm if not implemented
 
     this.ctx.set("bag", updatedBag);
-    this.ctx.set("updated", existing);
-    this.ctx.set("dto", existing);
     this.ctx.set("handlerStatus", "ok");
 
     this.log.debug(
       { event: "patched", singleton: true },
-      "DTO patched and re-bagged (singleton)"
+      "Existing DTO patched from patch bag and re-bagged"
     );
   }
 }

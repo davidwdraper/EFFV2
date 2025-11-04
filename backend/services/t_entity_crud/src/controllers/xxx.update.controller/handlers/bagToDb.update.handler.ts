@@ -1,16 +1,19 @@
 // backend/services/t_entity_crud/src/controllers/xxx.update.controller/handlers/bagToDb.update.handler.ts
 /**
  * Docs:
- * - ADR-0040 (DTO-Only Persistence via Managers)
- * - ADR-0041/42/43/44
+ * - SOP: DTO-first; bag-centric processing
+ * - ADRs:
+ *   - ADR-0040 (DTO-Only Persistence via Managers)
+ *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
+ *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
+ *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
  *
  * Purpose:
- * - Build a DbWriter from the UPDATED singleton bag and execute update().
- * - Duplicate key → WARN + HTTP 409 (matches create behavior).
+ * - Consume the UPDATED **singleton DtoBag** from ctx["bag"] and execute an update().
+ * - Duplicate key → WARN + HTTP 409 (mirrors create).
  *
  * Inputs (ctx):
- * - "bag": DtoBag<XxxDto>   (singleton, UPDATED; from ApplyPatchUpdateHandler)
- * - "dto": XxxDto           (convenience; if missing we’ll read from bag)
+ * - "bag": DtoBag<XxxDto>   (UPDATED singleton; from ApplyPatchUpdateHandler)
  * - "svcEnv": SvcEnvDto
  *
  * Outputs (ctx):
@@ -21,8 +24,8 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import {
   DbWriter,
   DuplicateKeyError,
@@ -34,8 +37,9 @@ export class BagToDbUpdateHandler extends HandlerBase {
   }
 
   protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_enter" }, "BagToDbUpdateHandler enter");
+    this.log.debug({ event: "execute_enter" }, "bagToDb.update enter");
 
+    // --- Required context ----------------------------------------------------
     const bag = this.ctx.get<DtoBag<XxxDto>>("bag");
     if (!bag) {
       return this._badRequest(
@@ -44,18 +48,14 @@ export class BagToDbUpdateHandler extends HandlerBase {
       );
     }
 
-    let dto = (this.ctx.get("dto") as XxxDto) ?? undefined;
-    if (!dto) {
-      const items = [...bag.items()];
-      if (items.length !== 1) {
-        return this._badRequest(
-          items.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
-          items.length === 0
-            ? "Update requires exactly one item; received 0."
-            : "Update requires exactly one item; received more than 1."
-        );
-      }
-      dto = items[0];
+    const items = Array.from(bag.items());
+    if (items.length !== 1) {
+      return this._badRequest(
+        items.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
+        items.length === 0
+          ? "Update requires exactly one item; received 0."
+          : "Update requires exactly one item; received more than 1."
+      );
     }
 
     const svcEnv = this.ctx.get<SvcEnvDto>("svcEnv");
@@ -66,16 +66,21 @@ export class BagToDbUpdateHandler extends HandlerBase {
       );
     }
 
-    const writer = new DbWriter<XxxDto>({ dto, svcEnv });
+    // --- Writer (bag-centric) -----------------------------------------------
+    const writer = new DbWriter<XxxDto>({ bag, svcEnv });
 
     try {
-      const { collectionName } = await writer.targetInfo();
+      const { collectionName } = (await writer.targetInfo?.()) ?? {
+        collectionName: "<unknown>",
+      };
       this.log.debug(
         { event: "update_target", collection: collectionName },
         "update will write to collection"
       );
 
+      // Bag-centric update; writer determines the id from the DTO inside the bag.
       const { id } = await writer.update();
+
       this.log.debug(
         { event: "update_complete", id, collection: collectionName },
         "update complete"
@@ -87,12 +92,16 @@ export class BagToDbUpdateHandler extends HandlerBase {
       this.ctx.set("handlerStatus", "ok");
     } catch (err) {
       if (err instanceof DuplicateKeyError) {
+        // TS-safe: err.key may be undefined; never pass undefined to Object.keys
+        const keyObj = (err as DuplicateKeyError).key ?? {};
+        const keyPath = Object.keys(keyObj).join(",");
+
         const warning = {
           code: "DUPLICATE",
           message: "Unique constraint violation (duplicate key).",
-          detail: err.message,
-          index: err.index,
-          key: err.key,
+          detail: (err as Error).message,
+          index: (err as DuplicateKeyError).index,
+          key: (err as DuplicateKeyError).key,
         };
         this.ctx.set("warnings", [
           ...(this.ctx.get<any[]>("warnings") ?? []),
@@ -102,10 +111,9 @@ export class BagToDbUpdateHandler extends HandlerBase {
         this.log.warn(
           {
             event: "duplicate_key",
-            index: err.index,
-            key: err.key,
-            detail: err.message,
-            dto: (dto as any)?.constructor?.name ?? "DTO",
+            index: (err as DuplicateKeyError).index,
+            key: (err as DuplicateKeyError).key,
+            detail: (err as Error).message,
           },
           "update duplicate — returning 409"
         );
@@ -115,11 +123,11 @@ export class BagToDbUpdateHandler extends HandlerBase {
         this.ctx.set("error", {
           code: "DUPLICATE",
           title: "Conflict",
-          detail: err.message,
-          issues: err.key
+          detail: (err as Error).message,
+          issues: keyPath
             ? [
                 {
-                  path: Object.keys(err.key).join(","),
+                  path: keyPath,
                   code: "unique",
                   message: "duplicate value",
                 },
@@ -131,7 +139,6 @@ export class BagToDbUpdateHandler extends HandlerBase {
           {
             event: "db_update_failed",
             error: (err as Error).message,
-            dto: (dto as any)?.constructor?.name ?? "DTO",
           },
           "update failed unexpectedly"
         );
@@ -139,7 +146,7 @@ export class BagToDbUpdateHandler extends HandlerBase {
       }
     }
 
-    this.log.debug({ event: "execute_exit" }, "BagToDbUpdateHandler exit");
+    this.log.debug({ event: "execute_exit" }, "bagToDb.update exit");
   }
 
   private _badRequest(code: string, detail: string): void {

@@ -4,10 +4,11 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence; reads hydrate DTOs)
- *   - ADR-0041 (Controller & Handler Architecture — per-route controllers)
+ *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *
  * Purpose:
  * - Use DbReader<XxxDto> to fetch a deterministic batch with cursor pagination.
@@ -36,8 +37,12 @@ export class DbReadListHandler extends HandlerBase {
         code: "LIST_SETUP_MISSING",
         title: "Internal Error",
         detail:
-          "Required context missing (svcEnv or dtoCtor). Ops: verify ControllerBase.makeContext() and controller seeding.",
+          "Required context missing (svcEnv or list.dtoCtor). Ops: verify ControllerBase.makeContext() and controller seeding.",
       });
+      this.log.error(
+        { event: "setup_missing", hasSvcEnv: !!svcEnv, hasDtoCtor: !!dtoCtor },
+        "List setup missing"
+      );
       return;
     }
 
@@ -64,10 +69,9 @@ export class DbReadListHandler extends HandlerBase {
       filter,
       limit,
       cursor,
-      // order?: default (_id asc) inside DbReader
+      // order?: default inside DbReader (_id asc or whatever your adapter enforces)
     });
 
-    // ✅ Use the factory; do NOT pass {}.
     const docs = DtoBagView.fromBag(bag).toJsonArray();
 
     this.ctx.set("result", { ok: true, docs, nextCursor });

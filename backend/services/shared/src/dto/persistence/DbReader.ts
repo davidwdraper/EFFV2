@@ -5,17 +5,19 @@
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
- *   - ADR-0048 (DbReader/DbWriter contracts)
+ *   - ADR-0048 (Revised) — **All reads return DtoBag** (singleton or empty)
+ *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
  *
  * Purpose:
  * - Read one/many records from Mongo and hydrate DTOs.
+ * - **Bag-centric contract**: every read returns a DtoBag (0..N). No naked DTOs cross this boundary.
  * - Collection name is resolved from the DTO CLASS via dbCollectionName() (hard-wired per DTO, DB-agnostic).
- * - After hydration, seed the instance with setCollectionName(...) for parity with writers.
  *
  * Invariants:
- * - Service code only deals in **DTO ids (string)**.
+ * - Service code only deals in **DTO ids (string)**. Canonical id field name is **"id"**.
  * - Mongo/ObjectId conversion occurs **at the last possible moment** inside this class.
  * - No implicit fallbacks; Dev == Prod. Missing config → fail fast.
+ * - DTOs persist their collection identity as class data; reader does not mutate instances post-hydration.
  */
 
 import type { SvcEnvDto } from "../svcenv.dto";
@@ -43,8 +45,8 @@ type DbReaderOptions<T> = {
   dtoCtor: DtoCtorWithCollection<T>;
   svcEnv: SvcEnvDto;
   validateReads?: boolean; // default false
-  /** Literal template default; cloners override via handler if desired. */
-  idFieldName?: string; // default: "xxxId"
+  /** Canonical id field on DTO JSON. Default: "id" */
+  idFieldName?: string; // default: "id"
 };
 
 export type ReadBatchArgs = {
@@ -106,7 +108,7 @@ export class DbReader<TDto> {
     this.dtoCtor = opts.dtoCtor;
     this.svcEnv = opts.svcEnv;
     this.validateReads = opts.validateReads ?? false;
-    this.idFieldName = opts.idFieldName ?? "xxxId";
+    this.idFieldName = opts.idFieldName ?? "id"; // canonical
   }
 
   /** Resolve collection from the DTO class. */
@@ -136,75 +138,78 @@ export class DbReader<TDto> {
     return { collectionName };
   }
 
-  private _seedCollectionOn(dto: TDto): void {
-    const anyDto = dto as unknown as {
-      setCollectionName?: (n: string) => unknown;
-    };
-    if (typeof anyDto?.setCollectionName === "function") {
-      anyDto.setCollectionName(this.dtoCtor.dbCollectionName());
-    }
+  private _hydrateDto(raw: any): TDto {
+    const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
+    return this.dtoCtor.fromJson(dtoJson, {
+      validate: this.validateReads,
+    });
   }
 
-  public async readById(dtoId: string): Promise<TDto | undefined> {
+  /* ======================= BAG-CENTRIC READS ======================= */
+
+  /** Read a single record by primary key; returns a **bag** (size 0 or 1). */
+  public async readOneBagById(opts: { id: string }): Promise<DtoBag<TDto>> {
     const col = await this.collection();
 
+    const dtoId = opts?.id;
     if (!dtoId || typeof dtoId !== "string" || !dtoId.trim()) {
-      return undefined;
+      return new DtoBag<TDto>([]);
     }
 
-    let oid: ObjectId | null = null;
+    let oid: ObjectId;
     try {
       const q = coerceForMongoQuery({ _id: dtoId }) as { _id: ObjectId };
       oid = q._id;
     } catch {
-      return undefined;
+      return new DtoBag<TDto>([]);
     }
 
     const raw = await col.findOne({ _id: oid });
-    if (!raw) return undefined;
-
-    const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
-    const dto = this.dtoCtor.fromJson(dtoJson, {
-      validate: this.validateReads,
-    });
-    this._seedCollectionOn(dto);
-    return dto;
+    if (!raw) return new DtoBag<TDto>([]);
+    const dto = this._hydrateDto(raw);
+    return new DtoBag<TDto>([dto] as readonly TDto[]);
   }
 
-  public async readOne(
-    filter: Record<string, unknown>
-  ): Promise<TDto | undefined> {
+  /** Read the first record that matches a filter; returns a **bag** (size 0 or 1). */
+  public async readOneBag(opts: {
+    filter: Record<string, unknown>;
+  }): Promise<DtoBag<TDto>> {
     const col = await this.collection();
-    const q = coerceForMongoQuery(filter) as Record<string, unknown>;
+    const q = coerceForMongoQuery(opts?.filter ?? {}) as Record<
+      string,
+      unknown
+    >;
     const raw = await col.findOne(q);
-    if (!raw) return undefined;
-    const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
-    const dto = this.dtoCtor.fromJson(dtoJson, {
-      validate: this.validateReads,
-    });
-    this._seedCollectionOn(dto);
-    return dto;
+    if (!raw) return new DtoBag<TDto>([]);
+    const dto = this._hydrateDto(raw);
+    return new DtoBag<TDto>([dto] as readonly TDto[]);
   }
 
-  public async readMany(
-    filter: Record<string, unknown>,
-    limit = 100
-  ): Promise<TDto[]> {
+  /** Read many by filter with a simple limit; returns a **bag** (0..N). */
+  public async readManyBag(opts: {
+    filter: Record<string, unknown>;
+    limit?: number;
+    order?: OrderSpec;
+  }): Promise<DtoBag<TDto>> {
     const col = await this.collection();
-    const q = coerceForMongoQuery(filter) as Record<string, unknown>;
-    const cur = col.find(q).limit(limit);
-    const out: TDto[] = [];
+    const q = coerceForMongoQuery(opts?.filter ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const limit =
+      Number.isFinite(opts?.limit as number) && (opts!.limit as number) > 0
+        ? (opts!.limit as number)
+        : 100;
+    const sort = toMongoSort(opts?.order ?? ORDER_STABLE_ID_ASC);
+    const cur = col.find(q).sort(sort).limit(limit);
+    const dtos: TDto[] = [];
     for await (const raw of cur) {
-      const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
-      const dto = this.dtoCtor.fromJson(dtoJson, {
-        validate: this.validateReads,
-      });
-      this._seedCollectionOn(dto);
-      out.push(dto);
+      dtos.push(this._hydrateDto(raw));
     }
-    return out;
+    return new DtoBag<TDto>(dtos as readonly TDto[]);
   }
 
+  /** Batch read with keyset pagination; returns a **bag** (0..N) plus optional nextCursor. */
   public async readBatch(args: ReadBatchArgs): Promise<ReadBatchResult<TDto>> {
     const order = args.order ?? ORDER_STABLE_ID_ASC;
     const baseFilter = args.filter ?? {};
@@ -231,7 +236,6 @@ export class DbReader<TDto> {
     const rawFilter = seekFilter
       ? { $and: [baseFilter, seekFilter] }
       : baseFilter;
-
     const filter = coerceForMongoQuery(rawFilter) as Record<string, unknown>;
     const col = await this.collection();
 
@@ -250,14 +254,7 @@ export class DbReader<TDto> {
       })());
 
     const slice = docs.slice(0, limit);
-    const dtos = slice.map((raw) => {
-      const dto = this.dtoCtor.fromJson(
-        mongoNormalizeToDto(raw, this.idFieldName),
-        { validate: this.validateReads }
-      );
-      this._seedCollectionOn(dto);
-      return dto;
-    });
+    const dtos = slice.map((raw) => this._hydrateDto(raw));
     const bag = new DtoBag<TDto>(dtos as readonly TDto[]);
 
     let nextCursor: string | undefined;

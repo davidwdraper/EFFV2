@@ -3,17 +3,21 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0041 (Controller & Handler Architecture — per-route controllers)
- *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0040 (DTO-Only Persistence; reads hydrate DTOs)
+ *   - ADR-0041 (Per-route controllers; single-purpose handlers)
+ *   - ADR-0042 (HandlerContext Bus — KISS)
+ *   - ADR-0043 (Finalize mapping)
+ *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
+ *   - ADR-0048 (DbReader/DbWriter contracts)
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *
  * Purpose:
- * - Orchestrate GET /api/xxx/v1/list
- * - Pipeline: parse query → db read many → finalize
+ * - Orchestrate GET /api/xxx/v1/list (template: single DTO).
+ * - Pipeline: parse query → db read batch → finalize.
  *
  * Notes:
- * - No pagination yet (by design). We return the full filtered set.
- * - The DTO remains the only source of truth; serialization via toJson() (stamps meta).
+ * - Cursor pagination supported via ?limit=&cursor=.
+ * - DTO remains the single source of truth; serialization via toJson() (stamps meta).
  */
 
 import { Request, Response } from "express";
@@ -33,15 +37,15 @@ export class XxxListController extends ControllerBase {
   public async get(req: Request, res: Response): Promise<void> {
     const ctx: HandlerContext = this.makeContext(req, res);
 
-    // Seed DTO ctor used by handlers
+    // Seed DTO ctor used by handlers (template service: single DTO).
     ctx.set("list.dtoCtor", XxxDto);
 
-    const handlers = [
-      new QueryListHandler(ctx), // builds "list.filter"
-      new DbReadListHandler(ctx), // reader.readMany → ctx.result
-    ];
+    await this.runPipeline(
+      ctx,
+      [new QueryListHandler(ctx), new DbReadListHandler(ctx)],
+      { requireRegistry: false }
+    );
 
-    for (const h of handlers) await h.run();
     return super.finalize(ctx);
   }
 }

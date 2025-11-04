@@ -4,14 +4,15 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0049 (DTO Registry & Wire Discrimination; DTO-only validation)
+ *   - ADR-0056 (DELETE path uses <DtoTypeKey> for deterministic collection)
  *
  * Purpose:
  * - Base class for per-service DTO registries.
- * - Provides a construction secret and a typed helper to call a DTO's fromJson().
+ * - Provides guarded construction helper and public collection-resolution API.
  *
  * Notes:
- * - KISS: no runtime maps here. Concrete registries stay explicit.
- * - The 'instantiate' method is intentionally abstract-ish; services override it with a switch.
+ * - Concrete registries stay explicit (no magic maps).
+ * - `dbCollectionNameByType` must be implemented by the concrete registry.
  */
 
 import type { IDto } from "@nv/shared/dto/IDto";
@@ -28,13 +29,20 @@ export type FromJsonCtor<T extends IDto> = {
   ): T;
 };
 
-/** Interface exposed to generic callers (e.g., BagBuilder). */
+/** Interface exposed to generic callers (e.g., BagBuilder, controllers). */
 export interface IServiceRegistry {
   instantiate<T extends IDto = IDto>(
     type: string,
     json: unknown,
     opts?: { mode?: "wire" | "db"; validate?: boolean }
   ): T;
+
+  /**
+   * Resolve the DB collection name for a given DTO type key.
+   * - Must be deterministic and side-effect free.
+   * - Implemented explicitly by each service registry via a switch over DTOs.
+   */
+  dbCollectionNameByType(type: string): string;
 }
 
 export abstract class RegistryBase implements IServiceRegistry {
@@ -69,6 +77,14 @@ export abstract class RegistryBase implements IServiceRegistry {
   ): T {
     throw new Error(
       "RegistryBase.instantiate not implemented. Dev: override in your service registry using a switch on 'type'."
+    );
+  }
+
+  /** Concrete registries must override with a type-switch returning dbCollectionName(). */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public dbCollectionNameByType(_type: string): string {
+    throw new Error(
+      "RegistryBase.dbCollectionNameByType not implemented. Dev: override in your service registry with a switch that returns <DtoClass>.dbCollectionName()."
     );
   }
 }

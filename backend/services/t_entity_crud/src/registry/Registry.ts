@@ -5,13 +5,14 @@
  * - ADRs:
  *   - ADR-0049 (DTO Registry & Wire Discrimination; DTO-only validation)
  *   - ADR-0045 (Index Hints — boot ensure owned by Registry)
+ *   - ADR-0056 (DELETE path uses <DtoTypeKey> for deterministic collection)
  *
  * Purpose:
  * - Service-specific DTO registry for the t_entity_crud template.
  * - Single source of truth for:
  *   • Hydration (instantiate/build)
  *   • Boot-time index ensure for all DTOs in this service
- * - Seeds per-instance collection via dto.setCollectionName(<DtoClass>.dbCollectionName()) exactly once.
+ *   • Public collection-name resolution by DTO type key
  *
  * Cloner note:
  * - Each DTO provides its own static dbCollectionName() next to indexHints.
@@ -53,7 +54,6 @@ export class Registry extends RegistryBase implements IServiceRegistry {
   /** Explicit constructor for XxxDto (compile-time obvious, easy to extend). */
   public newXxx(json: unknown, opts?: BuildOpts): XxxDto {
     const dto = this.build<XxxDto>(XxxDto, json, opts);
-    // Seed from the DTO's class-level hard-wired name
     return this._seed(dto, XxxDto);
   }
 
@@ -79,6 +79,29 @@ export class Registry extends RegistryBase implements IServiceRegistry {
         throw new Error(
           `Unknown DTO type "${type}" in ${this.constructor.name}. ` +
             `Dev: add a factory, overload, switch case, and list it in allDtos().`
+        );
+    }
+  }
+
+  /**
+   * Public: resolve the DB collection name for a DTO type key.
+   * - No DTO instantiation or I/O; pure switch over known DTO classes.
+   */
+  public dbCollectionNameByType(type: string): string {
+    switch (type) {
+      case "xxx":
+      case "XxxDto": // allow the class-ish key too, if your clients prefer it
+        return XxxDto.dbCollectionName();
+
+      // Add future DTOs here, e.g.:
+      // case "env-service-values":
+      // case "EnvServiceDto":
+      //   return EnvServiceDto.dbCollectionName();
+
+      default:
+        throw new Error(
+          `UNKNOWN_DTO_TYPE: No collection mapping for "${type}". ` +
+            `Ops: client must use a registered DTO type key; Dev: add to Registry.dbCollectionNameByType().`
         );
     }
   }

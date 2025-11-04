@@ -3,17 +3,20 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0041 (Controller & Handler Architecture — per-route controllers)
- *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0040 (DTO-Only Persistence; WAL-first writes)
+ *   - ADR-0041 (Per-route controllers; single-purpose handlers)
+ *   - ADR-0042 (HandlerContext Bus — KISS)
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0056 (DELETE path uses <DtoTypeKey>)
  *
  * Purpose:
- * - Build a router bound to this App instance, passing the App into controllers.
- * - Paths are **relative** to the versioned base mounted by App (e.g., /api/xxx/v1).
+ * - Wire RESTful, versioned CRUD endpoints with explicit DTO type on DELETE.
+ * - Paths are relative to /api/xxx/v1 (mounted in app.ts).
  *
  * Invariants:
- * - Controller instances are constructed once (no per-request `new`).
- * - Router wires one-liners only; no business logic here.
+ * - Controllers constructed once per router.
+ * - Router stays one-liner thin; no logic here.
+ * - Canonical id param is `:id`.
  */
 
 import { Router } from "express";
@@ -34,23 +37,20 @@ export function buildXxxRouter(app: AppBase): ReturnType<typeof Router> {
   const deleteCtl = new XxxDeleteController(app);
   const listCtl = new XxxListController(app);
 
-  // LIST
-  r.get("/list", (req, res) => listCtl.get(req, res));
+  // CREATE (PUT /)
+  r.put("/", (req, res) => createCtl.put(req, res));
 
-  // CREATE
-  r.put("/create", (req, res) => createCtl.put(req, res));
+  // UPDATE (PATCH /:id)
+  r.patch("/:id", (req, res) => updateCtl.patch(req, res));
 
-  // UPDATE — canonical path-param form
-  r.patch("/:xxxId", (req, res) => updateCtl.patch(req, res));
+  // READ (GET /:id) — template service has a single DTO today
+  r.get("/:id", (req, res) => readCtl.get(req, res));
 
-  // READ — support query + param
-  r.get("/read", (req, res) => readCtl.get(req, res));
-  r.get("/read/:xxxId", (req, res) => readCtl.get(req, res));
+  // DELETE (DELETE /:typeKey/:id) — multi-DTO safe; typeKey is a DtoRegistry key
+  r.delete("/:typeKey/:id", (req, res) => deleteCtl.delete(req, res));
 
-  // DELETE — support query + param + bare /:xxxId (smoke #8 uses the bare form)
-  r.delete("/delete", (req, res) => deleteCtl.delete(req, res));
-  r.delete("/delete/:xxxId", (req, res) => deleteCtl.delete(req, res));
-  r.delete("/:xxxId", (req, res) => deleteCtl.delete(req, res));
+  // LIST (GET /) — pagination via query (?limit=&cursor=…)
+  r.get("/", (req, res) => listCtl.get(req, res));
 
   return r;
 }

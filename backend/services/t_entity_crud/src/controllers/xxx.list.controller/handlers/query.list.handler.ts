@@ -38,14 +38,14 @@ export class QueryListHandler extends HandlerBase {
         typeof q.numfield1 === "string"
           ? Number(q.numfield1)
           : (q.numfield1 as number);
-      if (Number.isFinite(n)) filter.numfield1 = n;
+      if (Number.isFinite(n)) filter.numfield1 = Math.trunc(n);
     }
     if (q.numfield2 !== undefined) {
       const n =
         typeof q.numfield2 === "string"
           ? Number(q.numfield2)
           : (q.numfield2 as number);
-      if (Number.isFinite(n)) filter.numfield2 = n;
+      if (Number.isFinite(n)) filter.numfield2 = Math.trunc(n);
     }
 
     this.ctx.set("list.filter", filter);

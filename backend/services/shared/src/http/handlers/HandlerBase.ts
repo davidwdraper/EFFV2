@@ -1,33 +1,62 @@
 // backend/services/shared/src/http/HandlerBase.ts
 /**
  * Docs:
- * - ADR-0041 (Controller & Handler Architecture)
- * - ADR-0042 (HandlerContext Bus)
+ * - ADR-0041 (Per-route controllers; single-purpose handlers)
+ * - ADR-0042 (HandlerContext Bus — KISS)
  * - ADR-0043 (Hydration + Failure Propagation)
+ * - ADR-0049 (DTO Registry & Wire Discrimination)
  *
  * Purpose:
  * - Abstract base for handlers:
- *   • DI of HandlerContext
+ *   • DI of HandlerContext + ControllerBase (required)
+ *   • Access to App, Registry, Logger via controller getters
  *   • Short-circuit on prior failure
  *   • Standardized instrumentation via bound logger
- *   • Seeds a bound logger back into HandlerContext under key "log"
+ *
+ * Invariants:
+ * - Controllers MUST pass `this` into handler constructors.
+ * - No reading plumbing from ctx (no ctx.get('app'), etc).
  */
 
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { getLogger, type IBoundLogger } from "@nv/shared/logger/Logger";
+import { HandlerContext } from "./HandlerContext";
+import { getLogger, type IBoundLogger } from "../../logger/Logger";
+import type { AppBase } from "../../base/AppBase";
+import type { IDtoRegistry } from "../../registry/RegistryBase";
+import type { ControllerBase } from "../../base/ControllerBase";
 
 export abstract class HandlerBase {
   protected readonly ctx: HandlerContext;
   protected readonly log: IBoundLogger;
 
-  constructor(ctx: HandlerContext) {
+  /** Available to all derived handlers */
+  protected readonly controller: ControllerBase;
+  protected readonly app: AppBase;
+  protected readonly registry: IDtoRegistry;
+
+  constructor(ctx: HandlerContext, controller: ControllerBase) {
     this.ctx = ctx;
+    if (!controller) {
+      throw new Error(
+        "ControllerBase is required: new HandlerX(ctx, this). No legacy ctx plumbing."
+      );
+    }
+    this.controller = controller;
 
-    // Prefer service App logger if available; fall back to shared root
-    const App = this.ctx.get<any>("App");
-    const appLog: IBoundLogger | undefined = App?.log;
+    const app = controller.getApp?.();
+    if (!app)
+      throw new Error("ControllerBase.getApp() returned null/undefined.");
+    this.app = app;
 
-    const base =
+    const registry = controller.getDtoRegistry?.();
+    if (!registry)
+      throw new Error(
+        "ControllerBase.getDtoRegistry() returned null/undefined."
+      );
+    this.registry = registry;
+
+    // Logger: prefer app logger, fall back to shared
+    const appLog: IBoundLogger | undefined = (app as any)?.log;
+    this.log =
       appLog?.bind?.({
         component: "HandlerBase",
         handler: this.constructor.name,
@@ -38,15 +67,14 @@ export abstract class HandlerBase {
         handler: this.constructor.name,
       });
 
-    this.log = base;
-
-    // Expose a request-scoped logger to downstream handlers/services via context
+    // Expose request-scoped logger back into context (optional convenience)
     this.ctx.set("log", this.log);
 
     this.log.debug(
       {
         event: "construct",
         handlerStatus: this.ctx.get<string>("handlerStatus") ?? "ok",
+        strict: true,
       },
       "HandlerBase ctor"
     );
@@ -57,7 +85,6 @@ export abstract class HandlerBase {
     const status = this.ctx.get<number>("status");
     const handlerStatus = this.ctx.get<string>("handlerStatus");
 
-    // Short-circuit if prior handler failed
     if ((status && status >= 400) || handlerStatus === "error") {
       this.log.debug(
         { event: "short_circuit", reason: "prior_failure" },
@@ -69,7 +96,7 @@ export abstract class HandlerBase {
     this.log.debug({ event: "execute_start" }, "Handler execute() start");
 
     try {
-      await this.execute(); // Derived handler’s one job
+      await this.execute();
     } catch (err) {
       this.log.debug(
         {
@@ -78,7 +105,6 @@ export abstract class HandlerBase {
         },
         "Handler threw"
       );
-      // Standardize error mapping for finalize(ctx)
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 400);
       this.ctx.set("error", {
@@ -90,6 +116,5 @@ export abstract class HandlerBase {
     this.log.debug({ event: "execute_end" }, "Handler execute() end");
   }
 
-  /** Implement in derived class — the actual handler logic */
   protected abstract execute(): Promise<void>;
 }

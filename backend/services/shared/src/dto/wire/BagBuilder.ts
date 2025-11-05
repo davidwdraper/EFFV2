@@ -17,10 +17,10 @@
 import { DtoBag } from "../DtoBag";
 import type { IDto } from "../IDto";
 import type { BagMeta } from "./BagMeta";
-import type { IServiceRegistry } from "../../registry/RegistryBase";
+import type { IDtoRegistry } from "../../registry/RegistryBase";
 
 export type FromWireOptions = {
-  registry: IServiceRegistry;
+  registry: IDtoRegistry;
   maxItems?: number; // default 1000
   maxBytes?: number; // default 2_000_000
   requireSingleton?: boolean;
@@ -123,10 +123,10 @@ export class BagBuilder {
           }`
         );
       }
-      const dto = registry.instantiate<IDto>(t, item, {
-        mode: "wire",
-        validate: true,
-      });
+      // NEW
+      const Ctor = registry.resolveCtorByType(t); // throws if unknown
+      const dto = Ctor.fromJson(item, { mode: "wire", validate: true });
+
       items.push(dto);
     }
 

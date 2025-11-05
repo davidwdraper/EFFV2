@@ -14,7 +14,6 @@
  *
  * Inputs (ctx):
  * - "bag": DtoBag<XxxDto>   (UPDATED singleton; from ApplyPatchUpdateHandler)
- * - "svcEnv": SvcEnvDto
  *
  * Outputs (ctx):
  * - "result": { ok: true, id }
@@ -22,9 +21,8 @@
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import {
   DbWriter,
@@ -32,8 +30,8 @@ import {
 } from "@nv/shared/dto/persistence/DbWriter";
 
 export class BagToDbUpdateHandler extends HandlerBase {
-  constructor(ctx: HandlerContext) {
-    super(ctx);
+  constructor(ctx: HandlerContext, controller: any) {
+    super(ctx, controller);
   }
 
   protected async execute(): Promise<void> {
@@ -58,13 +56,8 @@ export class BagToDbUpdateHandler extends HandlerBase {
       );
     }
 
-    const svcEnv = this.ctx.get<SvcEnvDto>("svcEnv");
-    if (!svcEnv) {
-      return this._internalError(
-        "SVCENV_MISSING",
-        "SvcEnvDto not found in context. Ops: ControllerBase must seed 'svcEnv' from App."
-      );
-    }
+    // Pull SvcEnv directly from Controller/App (no ctx plumbing)
+    const svcEnv = this.controller.getSvcEnv();
 
     // --- Writer (bag-centric) -----------------------------------------------
     const writer = new DbWriter<XxxDto>({ bag, svcEnv });
@@ -92,7 +85,6 @@ export class BagToDbUpdateHandler extends HandlerBase {
       this.ctx.set("handlerStatus", "ok");
     } catch (err) {
       if (err instanceof DuplicateKeyError) {
-        // TS-safe: err.key may be undefined; never pass undefined to Object.keys
         const keyObj = (err as DuplicateKeyError).key ?? {};
         const keyPath = Object.keys(keyObj).join(",");
 
@@ -153,11 +145,5 @@ export class BagToDbUpdateHandler extends HandlerBase {
     this.ctx.set("handlerStatus", "error");
     this.ctx.set("status", 400);
     this.ctx.set("error", { code, title: "Bad Request", detail });
-  }
-
-  private _internalError(code: string, detail: string): void {
-    this.ctx.set("handlerStatus", "error");
-    this.ctx.set("status", 500);
-    this.ctx.set("error", { code, title: "Internal Error", detail });
   }
 }

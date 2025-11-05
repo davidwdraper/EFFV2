@@ -7,30 +7,26 @@
  *
  * Purpose:
  * - Build DbReader<XxxDto> and load existing doc by canonical ctx["id"].
- * - Returns a **DtoBag** (0..1). For pipeline convenience, also surfaces the DTO
- *   as ctx["existing"] when exactly one item is present.
+ * - Returns a **DtoBag** (0..1) as ctx["existingBag"] (does NOT overwrite ctx["bag"]).
  *
  * Inputs (ctx):
  * - "id": string (required; controller sets from :id or :xxxId)
- * - "svcEnv": SvcEnvDto (required)
  * - "update.dtoCtor": DTO class (required)
  *
  * Outputs (ctx):
- * - "bag": DtoBag<XxxDto>        (always set; size 0 or 1 here)
- * - "existing": XxxDto           (only when bag has exactly 1 item)
+ * - "existingBag": DtoBag<XxxDto>  (size 0 or 1)
  * - "dbReader": DbReader<XxxDto>
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DbReader } from "@nv/shared/dto/persistence/DbReader";
-import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
+import type { IDto } from "@nv/shared/dto/IDto";
 
 export class LoadExistingUpdateHandler extends HandlerBase {
-  constructor(ctx: HandlerContext) {
-    super(ctx);
+  constructor(ctx: HandlerContext, controller: any) {
+    super(ctx, controller);
   }
 
   protected async execute(): Promise<void> {
@@ -43,7 +39,8 @@ export class LoadExistingUpdateHandler extends HandlerBase {
       this.ctx.set("status", 400);
       this.ctx.set("error", {
         code: "MISSING_ID",
-        message: "Path param :id is required.",
+        title: "Bad Request",
+        detail: "Path param :id is required.",
         hint: "PATCH /api/xxx/v1/<id> with JSON body of fields to update.",
       });
       this.log.debug(
@@ -53,30 +50,15 @@ export class LoadExistingUpdateHandler extends HandlerBase {
       return;
     }
 
-    // --- Required context (svcEnv + dtoCtor) --------------------------------
-    const svcEnv = this.ctx.get<SvcEnvDto>("svcEnv");
-    if (!svcEnv) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "SVCENV_MISSING",
-        message:
-          "SvcEnvDto missing. Ops: ControllerBase must seed 'svcEnv' from App.",
-      });
-      this.log.debug(
-        { event: "execute_exit", reason: "svcenv_missing" },
-        "loadExisting.update exit"
-      );
-      return;
-    }
-
+    // --- Required dtoCtor; svcEnv via controller (no ctx plumbing) ----------
     const dtoCtor = this.ctx.get<any>("update.dtoCtor");
     if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 500);
       this.ctx.set("error", {
         code: "DTO_CTOR_MISSING",
-        message:
+        title: "Internal Error",
+        detail:
           "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromJson().",
       });
       this.log.debug(
@@ -86,23 +68,25 @@ export class LoadExistingUpdateHandler extends HandlerBase {
       return;
     }
 
-    // --- Reader + fetch as BAG ----------------------------------------------
+    const svcEnv = this.controller.getSvcEnv();
+
+    // --- Reader + fetch as **BAG** ------------------------------------------
     const validateReads =
       this.ctx.get<boolean>("update.validateReads") ?? false;
     const reader = new DbReader<any>({ dtoCtor, svcEnv, validateReads });
     this.ctx.set("dbReader", reader);
 
-    // readOneBagById expects an object: { id }
-    const bag = await reader.readOneBagById({ id });
-    this.ctx.set("bag", bag as DtoBag<IDto>);
+    const existingBag = await reader.readOneBagById({ id });
+    this.ctx.set("existingBag", existingBag as DtoBag<IDto>);
 
-    const items = Array.from(bag.items());
-    if (items.length === 0) {
+    const size = Array.from(existingBag.items()).length;
+    if (size === 0) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 404);
       this.ctx.set("error", {
         code: "NOT_FOUND",
-        message: "No document found for supplied :id.",
+        title: "Not Found",
+        detail: "No document found for supplied :id.",
         hint: "Confirm the id from create/read response; ensure same collection.",
       });
       this.log.debug(
@@ -111,24 +95,23 @@ export class LoadExistingUpdateHandler extends HandlerBase {
       );
       return;
     }
-    if (items.length > 1) {
+    if (size > 1) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 500);
       this.ctx.set("error", {
         code: "MULTIPLE_MATCHES",
-        message:
+        title: "Internal Error",
+        detail:
           "Invariant breach: multiple records matched primary key lookup.",
         hint: "Check unique index on _id and upstream normalization.",
       });
       this.log.warn(
-        { event: "pk_multiple_matches", id, count: items.length },
+        { event: "pk_multiple_matches", id, count: size },
         "expected singleton bag for id read"
       );
       return;
     }
 
-    // Singleton happy path: expose the DTO for downstream patch handler
-    this.ctx.set("existing", items);
     this.ctx.set("handlerStatus", "ok");
     this.log.debug({ event: "execute_exit", id }, "loadExisting.update exit");
   }

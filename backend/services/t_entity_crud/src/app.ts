@@ -10,7 +10,7 @@
  * Purpose (template):
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Delegates heavy lifting to AppBase; mounts service routes as one-liners.
- * - Owns the concrete DtoRegistry and exposes it to routers/controllers.
+ * - Owns the concrete DtoRegistry and exposes it via AppBase.getDtoRegistry().
  */
 
 import type { Express, Router } from "express";
@@ -20,6 +20,7 @@ import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
 import { BaseDto } from "@nv/shared/dto/DtoBase";
 
+import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { buildXxxRouter } from "./routes/xxx.route";
 import { Registry } from "./registry/Registry";
 
@@ -38,9 +39,6 @@ class XxxApp extends AppBase {
     // Logger first so instrumentation is stable.
     setLoggerEnv(opts.envDto);
 
-    // Wire DTO env ONCE before any DTO static calls (indexes/readers/writers).
-    BaseDto.configureEnv(opts.envDto);
-
     super({
       service: opts.slug,
       version: opts.version,
@@ -52,8 +50,8 @@ class XxxApp extends AppBase {
     this.registry = new Registry();
   }
 
-  /** Accessor so routers/controllers can retrieve the DtoRegistry. */
-  public getDtoRegistry(): Registry {
+  /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
+  public override getDtoRegistry(): IDtoRegistry {
     return this.registry;
   }
 

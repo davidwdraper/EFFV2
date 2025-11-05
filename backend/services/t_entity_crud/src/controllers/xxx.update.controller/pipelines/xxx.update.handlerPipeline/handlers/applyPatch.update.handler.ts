@@ -22,15 +22,15 @@
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 
 export class ApplyPatchUpdateHandler extends HandlerBase {
-  constructor(ctx: HandlerContext) {
-    super(ctx);
+  constructor(ctx: HandlerContext, controller: any) {
+    super(ctx, controller);
   }
 
   protected async execute(): Promise<void> {
@@ -43,7 +43,8 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
       this.ctx.set("status", 500);
       this.ctx.set("error", {
         code: "BAGS_MISSING",
-        message:
+        title: "Internal Error",
+        detail:
           "Required bags not found on context. Ops: ensure LoadExistingUpdateHandler set 'existingBag' and BagPopulateGetHandler set 'bag'.",
       });
       return;
@@ -58,7 +59,8 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
       this.ctx.set("status", existingItems.length === 0 ? 404 : 500);
       this.ctx.set("error", {
         code: existingItems.length === 0 ? "NOT_FOUND" : "MULTIPLE_MATCHES",
-        message:
+        title: existingItems.length === 0 ? "Not Found" : "Internal Error",
+        detail:
           existingItems.length === 0
             ? "No existing record found for supplied id."
             : "Invariant breach: multiple records matched primary key lookup.",
@@ -71,7 +73,8 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
       this.ctx.set("status", 400);
       this.ctx.set("error", {
         code: patchItems.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
-        message:
+        title: "Bad Request",
+        detail:
           patchItems.length === 0
             ? "Update requires exactly one patch item; received 0."
             : "Update requires exactly one patch item; received more than 1.",
@@ -91,7 +94,7 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
       this.ctx.set("status", 400);
       this.ctx.set("error", {
         code: "DTO_VALIDATION_FAILED",
-        message: "Patch rejected by DTO validation.",
+        title: "Bad Request",
         detail: (e as Error).message,
       });
       return;
@@ -104,7 +107,7 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
       cursor: null,
       total: 1,
     });
-    (updatedBag as any)?.sealSingleton?.(); // no harm if not implemented
+    (updatedBag as any)?.sealSingleton?.(); // harmless if not implemented
 
     this.ctx.set("bag", updatedBag);
     this.ctx.set("handlerStatus", "ok");

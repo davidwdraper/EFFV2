@@ -22,16 +22,31 @@ if [ -z "${BASE:-}" ]; then
   fi
 fi
 
-URL="${BASE}/create"
+# Template service mounts create at the base path (PUT /)
+URL="${BASE}/"
+
+# Unique suffix for repeatable runs
 SUF="$(date +%s)$$"
 
-# Single payload used for ALL subsequent tests (dup/read/delete/notfound)
+# --- Bag-only payload (ADR-0050) --------------------------------------------
+# Edges are bag-only. Provide a single DTO item with the registry type key.
+# NOTE: 'type' must match the DtoRegistry key for this DTO ("xxx" in template).
 BODY="$(cat <<JSON
-{"txtfield1":"alpha-${SUF}","txtfield2":"bravo-${SUF}","numfield1":1,"numfield2":2}
+{
+  "items": [
+    {
+      "type": "${SLUG}",
+      "txtfield1": "alpha-${SUF}",
+      "txtfield2": "bravo-${SUF}",
+      "numfield1": 1,
+      "numfield2": 2
+    }
+  ]
+}
 JSON
 )"
 
-# --- Create -------------------------------------------------------------------
+# --- Create ------------------------------------------------------------------
 RESP="$(_put_json "${URL}" "${BODY}")"
 
 # Must be JSON
@@ -44,7 +59,7 @@ echo "${RESP}" | jq -e . >/dev/null
   exit 1
 }
 
-# --- Extract id (slug-aware, with fallbacks) ----------------------------------
+# --- Extract id (slug-aware, with fallbacks) ---------------------------------
 ID="$(echo "${RESP}" | jq -er \
       --arg k "${SLUG}Id" \
       '.id

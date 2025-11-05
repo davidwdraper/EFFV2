@@ -14,11 +14,11 @@
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 export class QueryListHandler extends HandlerBase {
-  constructor(ctx: HandlerContext) {
-    super(ctx);
+  constructor(ctx: HandlerContext, controller: any) {
+    super(ctx, controller);
   }
 
   protected async execute(): Promise<void> {

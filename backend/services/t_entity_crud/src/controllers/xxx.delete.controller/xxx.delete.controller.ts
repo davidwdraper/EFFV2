@@ -3,28 +3,26 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0041 (Controller & Handler Architecture — per-route controllers)
+ *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0056 (DELETE path uses <DtoTypeKey>) — generalized: :dtoType on every route
  *
  * Purpose:
- * - Orchestrate DELETE /api/xxx/v1/delete/:xxxId
- * - Zero business logic: seed ctx, run handler, finalize.
- *
- * Invariants:
- * - Controllers seed all handler prerequisites via HandlerContext.
- * - Handlers operate strictly in DTO-space; no DB shapes leak here.
+ * - Orchestrate DELETE /api/xxx/v1/:dtoType/delete/:id
+ * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  */
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-import { DbDeleteDeleteHandler } from "./handlers/dbDelete.delete.handler";
-// DTO ctor is required so the handler can resolve the correct collection name.
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+// Pipelines (one folder per dtoType)
+import * as XxxDeletePipeline from "./pipelines/xxx.delete.handlerPipeline";
+// Future dtoType example (uncomment when adding a new type):
+// import * as MyNewDtoDeletePipeline from "./pipelines/myNewDto.delete.handlerPipeline";
 
 export class XxxDeleteController extends ControllerBase {
   constructor(app: AppBase) {
@@ -32,15 +30,56 @@ export class XxxDeleteController extends ControllerBase {
   }
 
   public async delete(req: Request, res: Response): Promise<void> {
+    const dtoType = req.params.dtoType;
+
     const ctx: HandlerContext = this.makeContext(req, res);
+    ctx.set("dtoType", dtoType);
+    ctx.set("op", "delete");
 
-    // Seed the DTO ctor for delete handlers (symmetry with read controller).
-    // Handlers will use dtoCtor.dbCollectionName() to select the correct collection.
-    ctx.set("delete.dtoCtor", XxxDto);
+    this.log.debug(
+      {
+        event: "pipeline_select",
+        op: "delete",
+        dtoType,
+        requestId: ctx.get("requestId"),
+      },
+      "selecting delete pipeline"
+    );
 
-    // Single-purpose handler executes the delete and sets result/status.
-    const handler = new DbDeleteDeleteHandler(ctx);
-    await handler.run();
+    switch (dtoType) {
+      case "xxx": {
+        const steps = XxxDeletePipeline.getSteps(ctx, this);
+        await this.runPipeline(ctx, steps, { requireRegistry: true });
+        break;
+      }
+
+      // Future dtoType example:
+      // case "myNewDto": {
+      //   const steps = MyNewDtoDeletePipeline.getSteps(ctx, this);
+      //   await this.runPipeline(ctx, steps, { requireRegistry: true });
+      //   break;
+      // }
+
+      default: {
+        ctx.set("handlerStatus", "error");
+        ctx.set("response.status", 501);
+        ctx.set("response.body", {
+          code: "NOT_IMPLEMENTED",
+          title: "Not Implemented",
+          detail: `No delete pipeline for dtoType='${dtoType}'`,
+          requestId: ctx.get("requestId"),
+        });
+        this.log.warn(
+          {
+            event: "pipeline_missing",
+            op: "delete",
+            dtoType,
+            requestId: ctx.get("requestId"),
+          },
+          "no delete pipeline registered for dtoType"
+        );
+      }
+    }
 
     return super.finalize(ctx);
   }

@@ -11,33 +11,23 @@
  *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
  *
  * Purpose:
- * - Orchestrate PATCH /api/xxx/v1/:id
- * - Pipeline (bag-first; mirrors create after consolidation):
- *     1) BagPopulateGetHandler (hydrate bag from body; requireSingleton; enforce meta.limit)
- *     2) LoadExistingUpdateHandler (read existing by ctx["id"] → ctx["existing"])
- *     3) ApplyPatchUpdateHandler (apply inbound DTO → produce UPDATED singleton bag)
- *     4) BagToDbUpdateHandler (build writer + update() + map dup-key → 409)
+ * - Orchestrate PATCH /api/xxx/v1/:dtoType/update/:id
+ * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  *
- * Notes:
- * - Canonical path param is "id" (legacy :xxxId tolerated → normalized to ctx["id"]).
+ * Invariants:
+ * - Canonical path param is "id" (legacy :xxxId normalized to ctx["id"]).
  * - DtoBag wrapper is enforced end-to-end; handlers read/write via ctx["bag"].
  */
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-// Shared preflight
-import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get.handler";
-
-// DTO ctor for downstream
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
-
-// Update-specific handlers
-import { LoadExistingUpdateHandler } from "./handlers/loadExisting.update.handler";
-import { ApplyPatchUpdateHandler } from "./handlers/applyPatch.update.handler";
-import { BagToDbUpdateHandler } from "./handlers/bagToDb.update.handler";
+// Pipelines (one folder per dtoType)
+import * as XxxUpdatePipeline from "./pipelines/xxx.update.handlerPipeline";
+// Future dtoType example (uncomment when adding a new type):
+// import * as MyNewDtoUpdatePipeline from "./pipelines/myNewDto.update.handlerPipeline";
 
 export class XxxUpdateController extends ControllerBase {
   constructor(app: AppBase) {
@@ -45,38 +35,64 @@ export class XxxUpdateController extends ControllerBase {
   }
 
   public async patch(req: Request, res: Response): Promise<void> {
-    const ctx: HandlerContext = this.makeContext(req, res);
+    const dtoType = req.params.dtoType;
 
-    // Seed DTO ctor for downstream handlers
-    ctx.set("update.dtoCtor", XxxDto);
+    const ctx: HandlerContext = this.makeContext(req, res);
+    ctx.set("dtoType", dtoType);
+    ctx.set("op", "update");
 
     // Normalize param to canonical "id" (stop xxxId drift)
     const idParam =
       (req.params as any)?.id ?? (req.params as any)?.xxxId ?? null;
     ctx.set("id", idParam);
 
-    // Enforce singleton update and bind to meta.limit if present
-    ctx.set("bagPolicy", {
-      requireSingleton: true,
-      enforceLimitFromMeta: true,
-    });
+    // Bind to meta.limit if present (singleton is enforced later in handlers)
+    ctx.set("bagPolicy", { enforceLimitFromMeta: true });
 
-    await this.runPipeline(
-      ctx,
-      [
-        // 1) Hydrate DtoBag<IDto> from JSON body; enforce singleton; expose ctx["dto"]
-        new BagPopulateGetHandler(ctx),
-        // 2) Load the existing DTO that is to be patched
-        new LoadExistingUpdateHandler(ctx),
-        // 3) Apply patch using the inbound singleton bag; output UPDATED singleton bag
-        new ApplyPatchUpdateHandler(ctx),
-        // 4) Build writer + update() + 409 mapping
-        new BagToDbUpdateHandler(ctx),
-      ],
+    this.log.debug(
       {
-        requireRegistry: true, // for BagPopulateGetHandler
-      }
+        event: "pipeline_select",
+        op: "update",
+        dtoType,
+        requestId: ctx.get("requestId"),
+      },
+      "selecting update pipeline"
     );
+
+    switch (dtoType) {
+      case "xxx": {
+        const steps = XxxUpdatePipeline.getSteps(ctx, this);
+        await this.runPipeline(ctx, steps, { requireRegistry: true });
+        break;
+      }
+
+      // Future dtoType example:
+      // case "myNewDto": {
+      //   const steps = MyNewDtoUpdatePipeline.getSteps(ctx, this);
+      //   await this.runPipeline(ctx, steps, { requireRegistry: true });
+      //   break;
+      // }
+
+      default: {
+        ctx.set("handlerStatus", "error");
+        ctx.set("response.status", 501);
+        ctx.set("response.body", {
+          code: "NOT_IMPLEMENTED",
+          title: "Not Implemented",
+          detail: `No update pipeline for dtoType='${dtoType}'`,
+          requestId: ctx.get("requestId"),
+        });
+        this.log.warn(
+          {
+            event: "pipeline_missing",
+            op: "update",
+            dtoType,
+            requestId: ctx.get("requestId"),
+          },
+          "no update pipeline registered for dtoType"
+        );
+      }
+    }
 
     return super.finalize(ctx);
   }

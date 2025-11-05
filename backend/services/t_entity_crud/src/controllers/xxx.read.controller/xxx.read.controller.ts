@@ -1,3 +1,4 @@
+// backend/services/t_entity_crud/src/controllers/xxx.read.controller/xxx.read.controller.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -10,20 +11,22 @@
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - Orchestrate GET /api/xxx/v1/read/:id (router mounts at /read/:id).
- * - Zero business logic: seed ctx → single handler → finalize.
+ * - Orchestrate GET /api/xxx/v1/:dtoType/read/:id
+ * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  *
  * Invariants:
- * - Primary-key only. Canonical id field is "id". No fallbacks, no filters.
+ * - Primary-key only. Canonical id is "id". No fallbacks, no filters.
  */
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
-import { DbReadGetHandler } from "./handlers/dbRead.get.handler";
+// Pipelines (one folder per dtoType)
+import * as XxxReadPipeline from "./pipelines/xxx.read.handlerPipeline";
+// Future dtoType example (uncomment when adding a new type):
+// import * as MyNewDtoReadPipeline from "./pipelines/myNewDto.read.handlerPipeline";
 
 export class XxxReadController extends ControllerBase {
   constructor(app: AppBase) {
@@ -31,14 +34,56 @@ export class XxxReadController extends ControllerBase {
   }
 
   public async get(req: Request, res: Response): Promise<void> {
+    const dtoType = req.params.dtoType;
+
     const ctx: HandlerContext = this.makeContext(req, res);
+    ctx.set("dtoType", dtoType);
+    ctx.set("op", "read");
 
-    // Required inputs for the single handler — DTO ctor only (canonical id="id" is enforced in the handler).
-    ctx.set("read.dtoCtor", XxxDto);
+    this.log.debug(
+      {
+        event: "pipeline_select",
+        op: "read",
+        dtoType,
+        requestId: ctx.get("requestId"),
+      },
+      "selecting read pipeline"
+    );
 
-    await this.runPipeline(ctx, [new DbReadGetHandler(ctx)], {
-      requireRegistry: false, // read-by-id path does not require the registry
-    });
+    switch (dtoType) {
+      case "xxx": {
+        const steps = XxxReadPipeline.getSteps(ctx, this);
+        await this.runPipeline(ctx, steps, { requireRegistry: false }); // read-by-id doesn’t need registry
+        break;
+      }
+
+      // Future dtoType example:
+      // case "myNewDto": {
+      //   const steps = MyNewDtoReadPipeline.getSteps(ctx, this);
+      //   await this.runPipeline(ctx, steps, { requireRegistry: false });
+      //   break;
+      // }
+
+      default: {
+        ctx.set("handlerStatus", "error");
+        ctx.set("response.status", 501);
+        ctx.set("response.body", {
+          code: "NOT_IMPLEMENTED",
+          title: "Not Implemented",
+          detail: `No read pipeline for dtoType='${dtoType}'`,
+          requestId: ctx.get("requestId"),
+        });
+        this.log.warn(
+          {
+            event: "pipeline_missing",
+            op: "read",
+            dtoType,
+            requestId: ctx.get("requestId"),
+          },
+          "no read pipeline registered for dtoType"
+        );
+      }
+    }
 
     return super.finalize(ctx);
   }

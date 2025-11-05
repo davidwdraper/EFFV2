@@ -18,10 +18,7 @@
  * - Each DTO provides its own static dbCollectionName() next to indexHints.
  */
 
-import {
-  RegistryBase,
-  IServiceRegistry,
-} from "@nv/shared/registry/RegistryBase";
+import { RegistryBase, IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 
 import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
@@ -36,7 +33,7 @@ import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 
 type BuildOpts = { mode?: "wire" | "db"; validate?: boolean };
 
-export class Registry extends RegistryBase implements IServiceRegistry {
+export class Registry extends RegistryBase implements IDtoRegistry {
   /** Helper to seed collection name exactly once on a new DTO instance. */
   private _seed<T extends IDto>(
     dto: T,

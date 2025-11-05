@@ -1,3 +1,4 @@
+// backend/services/t_entity_crud/src/controllers/xxx.create.controller/xxx.create.controller.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -6,24 +7,27 @@
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
+ *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - Orchestrate PUT /api/xxx/v1/create (mounted at /create relative to base).
- * - No business logic; seeds ctx → shared bag-populate → bag→dto require-singleton → writer prep → write → finalize.
+ * - Orchestrate PUT /api/xxx/v1/:dtoType/create
+ * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  *
  * Invariants:
- * - Edges are bag-only (payload { items:[{type:"xxx", ...}] } ).
- * - Create requires exactly 1 DTO item; fail fast otherwise.
+ * - Edges are bag-only (payload { items:[{ type:"<dtoType>", ...}] } ).
+ * - Create requires exactly 1 DTO item; enforced in pipeline handlers.
  */
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get.handler";
-import { BagToDbCreateHandler } from "./handlers/bagToDb.create.handler";
+// Pipelines (one folder per dtoType)
+import * as XxxCreatePipeline from "./pipelines/xxx.create.handlerPipeline";
+// Future dtoType example (uncomment when adding a new type):
+// import * as MyNewDtoCreatePipeline from "./pipelines/myNewDto.create.handlerPipeline";
 
 export class XxxCreateController extends ControllerBase {
   constructor(app: AppBase) {
@@ -31,21 +35,58 @@ export class XxxCreateController extends ControllerBase {
   }
 
   public async put(req: Request, res: Response): Promise<void> {
-    const ctx: HandlerContext = this.makeContext(req, res);
+    const dtoType = req.params.dtoType;
 
-    await this.runPipeline(
-      ctx,
-      [
-        // 1) Hydrate a DtoBag<IDto> from the JSON body (shared handler)
-        new BagPopulateGetHandler(ctx),
-        // 2) Enforce single-item create and expose ctx.set("dto", <XxxDto>)
-        new BagToDbCreateHandler(ctx),
-      ],
+    const ctx: HandlerContext = this.makeContext(req, res);
+    ctx.set("dtoType", dtoType);
+    ctx.set("op", "create");
+
+    this.log.debug(
       {
-        // Create needs the registry (BagPopulateGetHandler consumes it from App)
-        requireRegistry: true,
-      }
+        event: "pipeline_select",
+        op: "create",
+        dtoType,
+        requestId: ctx.get("requestId"),
+      },
+      "selecting create pipeline"
     );
+
+    switch (dtoType) {
+      case "xxx": {
+        const steps = XxxCreatePipeline.getSteps(ctx, this);
+        await this.runPipeline(ctx, steps, { requireRegistry: true });
+        break;
+      }
+
+      // Future dtoType example:
+      // case "myNewDto": {
+      //   const steps = MyNewDtoCreatePipeline.getSteps(ctx, this);
+      //   await this.runPipeline(ctx, steps, { requireRegistry: true });
+      //   break;
+      // }
+
+      default: {
+        // Seed a clear 501 problem into the context (ControllerBase.finalize will serialize)
+        ctx.set("handlerStatus", "error");
+        ctx.set("response.status", 501);
+        ctx.set("response.body", {
+          code: "NOT_IMPLEMENTED",
+          title: "Not Implemented",
+          detail: `No create pipeline for dtoType='${dtoType}'`,
+          requestId: ctx.get("requestId"),
+        });
+
+        this.log.warn(
+          {
+            event: "pipeline_missing",
+            op: "create",
+            dtoType,
+            requestId: ctx.get("requestId"),
+          },
+          "no create pipeline registered for dtoType"
+        );
+      }
+    }
 
     return super.finalize(ctx);
   }

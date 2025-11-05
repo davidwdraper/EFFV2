@@ -7,6 +7,7 @@
  *   - ADR-0032 (RoutePolicyGate — version-agnostic enforcement; health bypass)
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
  * Purpose (generic):
  * - Canonical Express composition for ALL services.
@@ -29,6 +30,7 @@ import {
 } from "@nv/shared/middleware/policy/routePolicyGate";
 import { ServiceBase } from "@nv/shared/base/ServiceBase";
 import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 
 export type AppBaseCtor = {
   service: string;
@@ -73,6 +75,13 @@ export abstract class AppBase extends ServiceBase {
   public get svcEnv(): SvcEnvDto {
     return this._envDto;
   }
+
+  /**
+   * ADR-0049: Abstract accessor for the DTO Registry so handlers/controllers can
+   * depend on the base type instead of concrete app classes.
+   * Concrete services MUST override and return their registry instance.
+   */
+  public abstract getDtoRegistry(): IDtoRegistry;
 
   /**
    * Public async lifecycle entry.

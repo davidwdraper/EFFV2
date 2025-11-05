@@ -6,18 +6,17 @@
  * - ADR-0042 (HandlerContext Bus — KISS)
  * - ADR-0043 (Hydration & Failure Propagation)
  * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ * - ADR-0049 (DTO Registry & Wire Discrimination)
  * - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - For PUT /api/xxx/v1/create:
- *   • Read the singleton DTO from the bag (seeded by BagPopulateGetHandler).
- *   • Build a DbWriter({ dto, svcEnv }) and execute write().
+ * - For PUT /api/xxx/v1/:
+ *   • Read bag (seeded by BagPopulateGetHandler) and enforce exactly one item.
+ *   • Build a DbWriter({ bag, svcEnv }) and execute write().
  *   • Map duplicate-key → HTTP 409 with WARN.
  *
  * Inputs (ctx):
  * - "bag": DtoBag<IDto>       (ALWAYS set by BagPopulateGetHandler)
- * - "dto": IDto               (set in singleton mode by BagPopulateGetHandler)
- * - "svcEnv": SvcEnvDto       (seeded by ControllerBase/App)
  *
  * Outputs (ctx):
  * - "result": { ok: true, id }  on success
@@ -25,8 +24,8 @@
  * - On error: "status", "error", "handlerStatus" set appropriately
  */
 
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { BaseDto } from "@nv/shared/dto/DtoBase";
@@ -37,14 +36,14 @@ import {
 } from "@nv/shared/dto/persistence/DbWriter";
 
 export class BagToDbCreateHandler extends HandlerBase {
-  constructor(ctx: HandlerContext) {
-    super(ctx);
+  constructor(ctx: HandlerContext, controller: any) {
+    super(ctx, controller);
   }
 
   protected async execute(): Promise<void> {
     this.log.debug({ event: "execute_enter" }, "BagToDbCreateHandler enter");
 
-    // 1) Inputs
+    // 1) Inputs from pipeline
     const bag = this.ctx.get<DtoBag<IDto>>("bag");
     if (!bag) {
       this._badRequest(
@@ -54,35 +53,24 @@ export class BagToDbCreateHandler extends HandlerBase {
       return;
     }
 
-    // Prefer the dto surfaced by the shared preflight (singleton mode).
-    let dto = this.ctx.get<IDto>("dto") as unknown as BaseDto | undefined;
-
-    // Tiny guard in case upstream regresses: enforce exactly one item.
-    if (!dto) {
-      const items = [...bag.items()];
-      if (items.length !== 1) {
-        this._badRequest(
-          items.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
-          items.length === 0
-            ? "Create requires exactly one item; received 0."
-            : "Create requires exactly one item; received more than 1."
-        );
-        return;
-      }
-      dto = items[0] as unknown as BaseDto;
-    }
-
-    const svcEnv = this.ctx.get<SvcEnvDto>("svcEnv");
-    if (!svcEnv) {
-      this._internalError(
-        "SVCENV_MISSING",
-        "SvcEnvDto not found in context. Ops: ControllerBase must seed 'svcEnv' from App."
+    // Framework rule: exactly one item for create (no singleton DTO leaks).
+    const items = [...bag.items()];
+    if (items.length !== 1) {
+      this._badRequest(
+        items.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
+        items.length === 0
+          ? "Create requires exactly one item; received 0."
+          : "Create requires exactly one item; received more than 1."
       );
       return;
     }
 
-    // 2) Build writer (no globals, no factories)
-    const writer = new DbWriter<BaseDto>({ dto, svcEnv });
+    // Pull SvcEnv directly from Controller/App (no ctx plumbing)
+    const svcEnv: SvcEnvDto = this.controller.getSvcEnv();
+
+    // 2) Build writer with **bag**, not a naked DTO (bags across all interfaces)
+    const baseBag = bag as unknown as DtoBag<BaseDto>;
+    const writer = new DbWriter<BaseDto>({ bag: baseBag, svcEnv });
 
     try {
       const { collectionName } = await writer.targetInfo();
@@ -122,7 +110,6 @@ export class BagToDbCreateHandler extends HandlerBase {
             index: err.index,
             key: err.key,
             detail: err.message,
-            dto: (dto as any)?.constructor?.name ?? "DTO",
           },
           "create duplicate — returning 409"
         );
@@ -148,7 +135,6 @@ export class BagToDbCreateHandler extends HandlerBase {
           {
             event: "db_write_failed",
             error: (err as Error).message,
-            dto: (dto as any)?.constructor?.name ?? "DTO",
           },
           "create failed unexpectedly"
         );
@@ -164,12 +150,5 @@ export class BagToDbCreateHandler extends HandlerBase {
     this.ctx.set("status", 400);
     this.ctx.set("error", { code, title: "Bad Request", detail });
     this.log.debug({ event: "bad_request", code }, "BagToDbCreateHandler");
-  }
-
-  private _internalError(code: string, detail: string): void {
-    this.ctx.set("handlerStatus", "error");
-    this.ctx.set("status", 500);
-    this.ctx.set("error", { code, title: "Internal Error", detail });
-    this.log.debug({ event: "internal_error", code }, "BagToDbCreateHandler");
   }
 }

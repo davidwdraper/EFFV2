@@ -12,22 +12,23 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *
  * Purpose:
- * - Orchestrate GET /api/xxx/v1/list (template: single DTO).
- * - Pipeline: parse query → db read batch → finalize.
+ * - Orchestrate GET /api/xxx/v1/:dtoType/list
+ * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  *
  * Notes:
- * - Cursor pagination supported via ?limit=&cursor=.
- * - DTO remains the single source of truth; serialization via toJson() (stamps meta).
+ * - Cursor pagination via ?limit=&cursor=.
+ * - DTO is the source of truth; serialization via toJson() (stamps meta).
  */
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
 import { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
-import { QueryListHandler } from "./handlers/query.list.handler";
-import { DbReadListHandler } from "./handlers/dbRead.list.handler";
+// Pipelines (one folder per dtoType)
+import * as XxxListPipeline from "./pipelines/xxx.list.handlerPipeline";
+// Future dtoType example (uncomment when adding a new type):
+// import * as MyNewDtoListPipeline from "./pipelines/myNewDto.list.handlerPipeline";
 
 export class XxxListController extends ControllerBase {
   constructor(app: AppBase) {
@@ -35,16 +36,56 @@ export class XxxListController extends ControllerBase {
   }
 
   public async get(req: Request, res: Response): Promise<void> {
+    const dtoType = req.params.dtoType;
+
     const ctx: HandlerContext = this.makeContext(req, res);
+    ctx.set("dtoType", dtoType);
+    ctx.set("op", "list");
 
-    // Seed DTO ctor used by handlers (template service: single DTO).
-    ctx.set("list.dtoCtor", XxxDto);
-
-    await this.runPipeline(
-      ctx,
-      [new QueryListHandler(ctx), new DbReadListHandler(ctx)],
-      { requireRegistry: false }
+    this.log.debug(
+      {
+        event: "pipeline_select",
+        op: "list",
+        dtoType,
+        requestId: ctx.get("requestId"),
+      },
+      "selecting list pipeline"
     );
+
+    switch (dtoType) {
+      case "xxx": {
+        const steps = XxxListPipeline.getSteps(ctx, this);
+        await this.runPipeline(ctx, steps, { requireRegistry: false });
+        break;
+      }
+
+      // Future dtoType example:
+      // case "myNewDto": {
+      //   const steps = MyNewDtoListPipeline.getSteps(ctx, this);
+      //   await this.runPipeline(ctx, steps, { requireRegistry: false });
+      //   break;
+      // }
+
+      default: {
+        ctx.set("handlerStatus", "error");
+        ctx.set("response.status", 501);
+        ctx.set("response.body", {
+          code: "NOT_IMPLEMENTED",
+          title: "Not Implemented",
+          detail: `No list pipeline for dtoType='${dtoType}'`,
+          requestId: ctx.get("requestId"),
+        });
+        this.log.warn(
+          {
+            event: "pipeline_missing",
+            op: "list",
+            dtoType,
+            requestId: ctx.get("requestId"),
+          },
+          "no list pipeline registered for dtoType"
+        );
+      }
+    }
 
     return super.finalize(ctx);
   }

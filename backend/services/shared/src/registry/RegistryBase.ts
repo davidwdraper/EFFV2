@@ -3,88 +3,116 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0049 (DTO Registry & Wire Discrimination; DTO-only validation)
- *   - ADR-0056 (DELETE path uses <DtoTypeKey> for deterministic collection)
+ *   - ADR-0049 (DTO Registry & canonical id)
+ *   - ADR-0050 (Wire Bag Envelope)
+ *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
  *
  * Purpose:
- * - Base class for per-service DTO registries.
- * - Provides guarded construction helper and public collection-resolution API.
- *
- * Notes:
- * - Concrete registries stay explicit (no magic maps).
- * - `dbCollectionNameByType` must be implemented by the concrete registry.
+ * - Shared DTO Registry base + helpers.
+ * - Guarantees DTO instances created through the registry have their instance-level
+ *   collection name set from the DTO class's dbCollectionName() (root-cause fix).
  */
 
-import type { IDto } from "@nv/shared/dto/IDto";
+import type { IDto } from "../dto/IDto";
 
-/** Shared secret for guarded DTO construction (optional use inside DTOs). */
-export const DTO_SECRET: unique symbol = Symbol("NV_DTO_SECRET");
-
-/** Static fromJson signature each DTO class must expose. */
-export type FromJsonCtor<T extends IDto> = {
+/** Minimal structural type a DTO ctor must satisfy. */
+export type DtoCtor<T extends IDto = IDto> = {
   fromJson(
     json: unknown,
-    opts?: { mode?: "wire" | "db"; validate?: boolean },
-    _secret?: typeof DTO_SECRET
+    opts?: { mode?: "wire" | "db"; validate?: boolean }
   ): T;
+  dbCollectionName(): string;
 };
 
-/** Interface exposed to generic callers (e.g., BagBuilder, controllers). */
-export interface IServiceRegistry {
-  instantiate<T extends IDto = IDto>(
-    type: string,
-    json: unknown,
-    opts?: { mode?: "wire" | "db"; validate?: boolean }
-  ): T;
+/** Minimal wire item shape (ADR-0050). */
+export type BagItemWire = {
+  type: string; // Registry type key, e.g., "xxx"
+  item?: unknown; // DTO JSON payload (optional if callers pass the whole BagItemWire)
+};
 
-  /**
-   * Resolve the DB collection name for a given DTO type key.
-   * - Must be deterministic and side-effect free.
-   * - Implemented explicitly by each service registry via a switch over DTOs.
-   */
+export interface IDtoRegistry {
+  getCtorByType(type: string): DtoCtor<IDto> | undefined;
+  resolveCtorByType(type: string): DtoCtor<IDto>;
   dbCollectionNameByType(type: string): string;
+  fromWireItem(item: BagItemWire, opts?: { validate?: boolean }): IDto;
 }
 
-export abstract class RegistryBase implements IServiceRegistry {
-  /** Provide the shared secret to DTOs for guarded construction. */
-  protected secret(): typeof DTO_SECRET {
-    return DTO_SECRET;
+export abstract class RegistryBase implements IDtoRegistry {
+  /** Override to provide the map from type key → DTO ctor. */
+  protected abstract ctorByType(): Record<string, DtoCtor<IDto>>;
+
+  public getCtorByType(type: string): DtoCtor<IDto> | undefined {
+    return this.ctorByType()[type];
   }
 
-  /**
-   * Typed helper to hydrate a DTO via its static fromJson.
-   * - Defaults to mode:"wire", validate:true (safe at edges).
-   * - Concrete registries should call this with the concrete DTO class.
-   */
-  protected build<T extends IDto>(
-    ctor: FromJsonCtor<T>,
-    json: unknown,
-    opts?: { mode?: "wire" | "db"; validate?: boolean }
-  ): T {
-    return ctor.fromJson(
-      json,
-      { mode: "wire", validate: true, ...opts },
-      this.secret()
-    );
+  public resolveCtorByType(type: string): DtoCtor<IDto> {
+    const ctor = this.getCtorByType(type);
+    if (!ctor || typeof ctor.fromJson !== "function") {
+      throw new Error(
+        `REGISTRY_UNKNOWN_TYPE: no ctor registered for type "${type}".`
+      );
+    }
+    return ctor;
   }
 
-  /** Concrete registries must override with a type-switch. */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  public instantiate<T extends IDto = IDto>(
-    _type: string,
-    _json: unknown,
-    _opts?: { mode?: "wire" | "db"; validate?: boolean }
-  ): T {
-    throw new Error(
-      "RegistryBase.instantiate not implemented. Dev: override in your service registry using a switch on 'type'."
-    );
+  public dbCollectionNameByType(type: string): string {
+    const ctor = this.resolveCtorByType(type);
+
+    // Safely derive a display name without requiring it in the type
+    const typeName = (ctor as any)?.name ?? "<anon>";
+
+    const fn = (ctor as any).dbCollectionName;
+    if (typeof fn !== "function") {
+      throw new Error(
+        `REGISTRY_CTOR_NO_COLLECTION_FN: ${typeName} missing static dbCollectionName().`
+      );
+    }
+    const coll = fn.call(ctor);
+    if (!coll || typeof coll !== "string" || !coll.trim()) {
+      throw new Error(
+        `REGISTRY_EMPTY_COLLECTION: ${typeName} returned empty collection name.`
+      );
+    }
+    return coll;
   }
 
-  /** Concrete registries must override with a type-switch returning dbCollectionName(). */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  public dbCollectionNameByType(_type: string): string {
-    throw new Error(
-      "RegistryBase.dbCollectionNameByType not implemented. Dev: override in your service registry with a switch that returns <DtoClass>.dbCollectionName()."
-    );
+  public fromWireItem(item: BagItemWire, opts?: { validate?: boolean }): IDto {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      typeof (item as any).type !== "string"
+    ) {
+      throw new Error("REGISTRY_BAD_WIRE_ITEM: missing 'type' on wire item.");
+    }
+
+    const typeKey = (item as any).type as string;
+    const ctor = this.resolveCtorByType(typeKey);
+    const typeName = (ctor as any)?.name ?? "<anon>";
+
+    // Accept either the full BagItemWire or just the DTO JSON; prefer item.item if present.
+    const json =
+      (item as any).item !== undefined ? (item as any).item : (item as unknown);
+
+    const dto = ctor.fromJson(json, {
+      mode: "wire",
+      validate: opts?.validate === true,
+    });
+
+    // Ensure instance has its collection set (once) from the ctor’s static
+    const have = (dto as any).getCollectionName?.();
+    if (!have) {
+      const coll = this.dbCollectionNameByType(typeKey);
+      if (
+        !(dto as any).setCollectionName ||
+        typeof (dto as any).setCollectionName !== "function"
+      ) {
+        throw new Error(
+          `REGISTRY_INSTANCE_NO_SETTER: ${typeName} instance missing setCollectionName().`
+        );
+      }
+      (dto as any).setCollectionName(coll);
+    }
+
+    return dto;
   }
 }

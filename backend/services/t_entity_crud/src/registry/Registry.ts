@@ -5,25 +5,44 @@
  * - ADRs:
  *   - ADR-0049 (DTO Registry & canonical id)
  *   - ADR-0053 (Instantiation Discipline via Registry Secret)
+ *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *
  * Purpose:
- * - Centralized DTO instantiation and wiring for this service.
- * - Each service maintains exactly one Registry.
- * - Registry enforces that DTOs are created through it, not directly.
+ * - Per-service DTO Registry that **extends ServiceRegistryBase**:
+ *   • single source of truth for DTO constructors (ctorByType)
+ *   • inherits hydratorFor(), ensureIndexes(), listRegistered()
  *
- * Notes:
- * - Keeps to KISS: no dynamic maps, no type reflection.
- * - After cloning, simply add any new DTO types here.
+ * Invariants:
+ * - One registry per service.
+ * - No reflection or dynamic imports — explicit ctor map only.
+ * - Instance collection name is seeded from each DTO class's dbCollectionName().
  */
 
 import { BaseDto } from "@nv/shared/dto/DtoBase";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
+import type { IDto } from "@nv/shared/dto/IDto";
+import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
 
-export class Registry {
-  /** Shared secret passed into DTO constructors */
+export class Registry extends ServiceRegistryBase {
+  /** Shared secret used by DTO constructors that enforce instantiation discipline. */
   private readonly secret = BaseDto.getSecret();
 
-  // ─────────────── Primary DTO (template default) ───────────────
+  /**
+   * Explicit map of registry type keys → DTO constructors.
+   * Keys are the stable wire/type identifiers (e.g., "xxx").
+   */
+  protected ctorByType(): Record<string, DtoCtor<IDto>> {
+    return {
+      // template default DTO
+      xxx: XxxDto as unknown as DtoCtor<IDto>,
+      // add new DTOs here as you grow the service:
+      // "my-type": MyDto as unknown as DtoCtor<IDto>,
+    };
+  }
+
+  // ─────────────── Convenience constructors (optional) ───────────────
+
   /** Create a new XxxDto instance with a seeded collection. */
   public newXxxDto(): XxxDto {
     const dto = new XxxDto(this.secret);
@@ -31,44 +50,10 @@ export class Registry {
     return dto;
   }
 
-  /** Hydrate an XxxDto from JSON (bypasses constructor enforcement). */
+  /** Hydrate an XxxDto from JSON (validates if requested) and seed collection. */
   public fromJsonXxx(json: unknown, opts?: { validate?: boolean }): XxxDto {
-    const dto = XxxDto.fromJson(json, opts);
+    const dto = XxxDto.fromJson(json, { validate: !!opts?.validate });
     dto.setCollectionName(XxxDto.dbCollectionName());
     return dto;
-  }
-
-  public hydratorFor(dtoType: string, opts?: { validate?: boolean }) {
-    switch (dtoType) {
-      case "xxx":
-        return (j: unknown) =>
-          this.fromJsonXxx(j, { validate: !!opts?.validate });
-      // case "another":
-      //   return (j: unknown) => this.fromJsonAnother(j, { validate: !!opts?.validate });
-      default:
-        throw new Error(`Unknown dtoType "${dtoType}"`);
-    }
-  }
-
-  // ─────────────── Future DTOs (example placeholder) ───────────────
-  // Uncomment and adapt when adding new DTO types.
-  //
-  // import { MyNewDto } from "@nv/shared/dto/templates/my-new/my-new.dto";
-  //
-  // public newMyNewDto(): MyNewDto {
-  //   const dto = new MyNewDto(this.secret);
-  //   dto.setCollectionName(MyNewDto.dbCollectionName());
-  //   return dto;
-  // }
-  //
-  // public fromJsonMyNew(json: unknown, opts?: { validate?: boolean }): MyNewDto {
-  //   const dto = MyNewDto.fromJson(json, opts);
-  //   dto.setCollectionName(MyNewDto.dbCollectionName());
-  //   return dto;
-  // }
-
-  // ─────────────── Diagnostic Helpers ───────────────
-  public listRegistered(): string[] {
-    return ["XxxDto" /*, "MyNewDto" */];
   }
 }

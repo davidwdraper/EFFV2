@@ -5,12 +5,13 @@
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
  * Purpose (template):
  * - Orchestration-only app. Defines order; no business logic or helpers here.
- * - Delegates heavy lifting to AppBase; mounts service routes as one-liners.
- * - Owns the concrete DtoRegistry and exposes it via AppBase.getDtoRegistry().
+ * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
+ * - Ensures Mongo indexes are created at boot (before any routes are mounted).
  */
 
 import type { Express, Router } from "express";
@@ -18,11 +19,10 @@ import express = require("express");
 import { AppBase } from "@nv/shared/base/AppBase";
 import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
-import { BaseDto } from "@nv/shared/dto/DtoBase";
 
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
-import { buildXxxRouter } from "./routes/xxx.route";
 import { Registry } from "./registry/Registry";
+import { buildXxxRouter } from "./routes/xxx.route";
 
 type CreateAppOptions = {
   slug: string;
@@ -36,7 +36,7 @@ class XxxApp extends AppBase {
   private readonly registry: Registry;
 
   constructor(opts: CreateAppOptions) {
-    // Logger first so instrumentation is stable.
+    // Initialize logger first so all subsequent boot logs have proper context.
     setLoggerEnv(opts.envDto);
 
     super({
@@ -46,23 +46,25 @@ class XxxApp extends AppBase {
       envReloader: opts.envReloader,
     });
 
-    // Per-service registry is constructed at boot and retained on the app instance.
     this.registry = new Registry();
   }
 
-  /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
+  /** ADR-0049: Base-typed accessor so controllers/handlers stay decoupled. */
   public override getDtoRegistry(): IDtoRegistry {
     return this.registry;
   }
 
-  /** Boot-time: delegate deterministic index ensure to the Registry. */
+  /**
+   * Boot sequence (awaited by AppBase.boot()):
+   * 1) Ensure indexes for all registered DTO classes via Registry (single source of truth).
+   *    Must complete before routes mount.
+   */
   protected override async onBoot(): Promise<void> {
-    await this.registry.ensureIndexes({
-      svcEnv: this.svcEnv, // ADR-0044 accessor
-      log: this.log,
-    });
+    // Deterministic index creation using DTO-declared indexHints.
+    await this.registry.ensureIndexes(this.svcEnv, this.log);
   }
 
+  /** Mount service routes as one-liners under the versioned base. */
   protected override mountRoutes(): void {
     const base = this.healthBasePath(); // `/api/<slug>/v<version>`
     if (!base) {
@@ -76,10 +78,11 @@ class XxxApp extends AppBase {
   }
 }
 
+/** Public factory: constructs, boots, and returns the Express instance holder. */
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
   const app = new XxxApp(opts);
-  await app.boot();
+  await app.boot(); // ensures onBoot (indexes) completes BEFORE routes mount/serve
   return { app: app.instance };
 }

@@ -81,6 +81,20 @@ export abstract class ControllerBase {
     return this.log;
   }
 
+  protected seedHydrator(
+    ctx: HandlerContext,
+    dtoType: string,
+    opts?: { validate?: boolean }
+  ): void {
+    const reg: any = this.getDtoRegistry();
+    const hydrate = reg.hydratorFor(dtoType, { validate: !!opts?.validate });
+    ctx.set("hydrate.fromJson", hydrate);
+    this.log.debug(
+      { event: "seed_hydrator", dtoType, validate: !!opts?.validate },
+      "ControllerBase"
+    );
+  }
+
   // ─────────────── Context build / pipeline / finalize ───────────────────────
 
   /** Create and seed HandlerContext per ADR-0042. */

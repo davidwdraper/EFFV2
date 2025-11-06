@@ -11,6 +11,10 @@
  * - Shared DTO Registry base + helpers.
  * - Guarantees DTO instances created through the registry have their instance-level
  *   collection name set from the DTO class's dbCollectionName() (root-cause fix).
+ *
+ * Invariants:
+ * - No fallbacks, no legacy modes. One canonical contract:
+ *     protected ctorByType(): Record<string, DtoCtor<IDto>>;
  */
 
 import type { IDto } from "../dto/IDto";
@@ -27,7 +31,7 @@ export type DtoCtor<T extends IDto = IDto> = {
 /** Minimal wire item shape (ADR-0050). */
 export type BagItemWire = {
   type: string; // Registry type key, e.g., "xxx"
-  item?: unknown; // DTO JSON payload (optional if callers pass the whole BagItemWire)
+  item?: unknown; // DTO JSON payload (optional if callers pass the DTO JSON directly)
 };
 
 export interface IDtoRegistry {
@@ -38,11 +42,12 @@ export interface IDtoRegistry {
 }
 
 export abstract class RegistryBase implements IDtoRegistry {
-  /** Override to provide the map from type key → DTO ctor. */
+  /** Subclasses MUST return the ctor map. No properties, no shims. */
   protected abstract ctorByType(): Record<string, DtoCtor<IDto>>;
 
   public getCtorByType(type: string): DtoCtor<IDto> | undefined {
-    return this.ctorByType()[type];
+    const map = this.ctorByType();
+    return map[type];
   }
 
   public resolveCtorByType(type: string): DtoCtor<IDto> {
@@ -57,20 +62,16 @@ export abstract class RegistryBase implements IDtoRegistry {
 
   public dbCollectionNameByType(type: string): string {
     const ctor = this.resolveCtorByType(type);
-
-    // Safely derive a display name without requiring it in the type
-    const typeName = (ctor as any)?.name ?? "<anon>";
-
     const fn = (ctor as any).dbCollectionName;
     if (typeof fn !== "function") {
       throw new Error(
-        `REGISTRY_CTOR_NO_COLLECTION_FN: ${typeName} missing static dbCollectionName().`
+        `REGISTRY_CTOR_NO_COLLECTION_FN: registered ctor for "${type}" missing static dbCollectionName().`
       );
     }
     const coll = fn.call(ctor);
-    if (!coll || typeof coll !== "string" || !coll.trim()) {
+    if (typeof coll !== "string" || !coll.trim()) {
       throw new Error(
-        `REGISTRY_EMPTY_COLLECTION: ${typeName} returned empty collection name.`
+        `REGISTRY_EMPTY_COLLECTION: ctor for "${type}" returned empty collection name.`
       );
     }
     return coll;
@@ -87,9 +88,8 @@ export abstract class RegistryBase implements IDtoRegistry {
 
     const typeKey = (item as any).type as string;
     const ctor = this.resolveCtorByType(typeKey);
-    const typeName = (ctor as any)?.name ?? "<anon>";
 
-    // Accept either the full BagItemWire or just the DTO JSON; prefer item.item if present.
+    // Accept either BagItemWire or raw DTO JSON; prefer item.item if present.
     const json =
       (item as any).item !== undefined ? (item as any).item : (item as unknown);
 
@@ -98,16 +98,13 @@ export abstract class RegistryBase implements IDtoRegistry {
       validate: opts?.validate === true,
     });
 
-    // Ensure instance has its collection set (once) from the ctor’s static
+    // Ensure instance has its collection set (once) from the ctor’s static.
     const have = (dto as any).getCollectionName?.();
     if (!have) {
       const coll = this.dbCollectionNameByType(typeKey);
-      if (
-        !(dto as any).setCollectionName ||
-        typeof (dto as any).setCollectionName !== "function"
-      ) {
+      if (typeof (dto as any).setCollectionName !== "function") {
         throw new Error(
-          `REGISTRY_INSTANCE_NO_SETTER: ${typeName} instance missing setCollectionName().`
+          `REGISTRY_INSTANCE_NO_SETTER: DTO for "${typeKey}" missing setCollectionName().`
         );
       }
       (dto as any).setCollectionName(coll);

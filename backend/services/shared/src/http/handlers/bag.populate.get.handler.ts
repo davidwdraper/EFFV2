@@ -1,48 +1,28 @@
 // backend/services/shared/src/http/handlers/bag.populate.get.handler.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0041 (Per-route controllers; single-purpose handlers)
- *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0049 (DTO Registry & canonical id)
- *   - ADR-0050 (Wire Bag Envelope — items[] + meta)
- *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
+ * - ADR-0042 (HandlerContext Bus — KISS)
+ * - ADR-0049 (DTO Registry & wire discrimination)
+ * - ADR-0050 (Wire Bag Envelope — bag-only edges)
+ * - ADR-0053 (Bag Purity — no naked DTOs on the bus)
  *
  * Purpose:
- * - Shared preflight for controllers that accept client JSON.
- * - Hydrates a DtoBag from body { items: [...] } and surfaces BagMeta separately.
- *
- * Contract:
- * - ALWAYS sets ctx.set("bag", DtoBag).
- * - ALSO sets ctx.set("bagMeta", BagMeta) when body has meta; meta never lives on the bag.
- * - No DTO singletons: the framework uses DtoBag at all interfaces (no ctx.set("dto")).
- *
- * Policy (ctx):
- *   this.ctx.set("bagPolicy", {
- *     enforceLimitFromMeta?: boolean     // opt-in: treat meta.limit as binding (fail-fast)
- *   })
+ * - Parse request.body as a wire bag envelope and hydrate a DtoBag<IDto>.
+ * - Validates basic shape and uses the Registry to build DTO instances.
  *
  * Inputs (ctx):
- * - "requestId" | CtxKeys.RequestId: string (optional)
- * - "body" | CtxKeys.Body: any (optional)
+ * - "body": { items: Array<{ type: string, ...dtoJson }> , meta?: {...} }
  *
  * Outputs (ctx):
- * - "bag": DtoBag
- * - "bagMeta": BagMeta (if provided in body)
- * - On violation: "handlerStatus"="error", "status"=400, "error"={ code,title,detail }
+ * - "bag": DtoBag<IDto>
+ * - "handlerStatus": "ok" | "error"
+ * - "response.status"/"response.body" on error
  */
 
 import { HandlerBase } from "./HandlerBase";
-import { HandlerContext, CtxKeys } from "./HandlerContext";
-import { BagBuilder } from "../../dto/wire/BagBuilder";
+import type { HandlerContext } from "./HandlerContext";
 import type { IDto } from "../../dto/IDto";
-import type { DtoBag } from "../../dto/DtoBag";
-import type { BagMeta } from "../../dto/wire/BagMeta";
-
-type BagPolicy = {
-  enforceLimitFromMeta?: boolean;
-};
+import { BagBuilder } from "../../dto/wire/BagBuilder";
 
 export class BagPopulateGetHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -50,78 +30,99 @@ export class BagPopulateGetHandler extends HandlerBase {
   }
 
   protected async execute(): Promise<void> {
-    const registry = this.registry;
+    const body = (this.ctx.get("body") as any) ?? {};
+
+    // Shape check
+    if (!body || typeof body !== "object" || !Array.isArray(body.items)) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 400);
+      this.ctx.set("response.body", {
+        code: "BAD_REQUEST_BODY",
+        title: "Bad Request",
+        detail:
+          "Body must be a bag envelope: { items: [ { type: string, ... } ], meta?: {...} }",
+      });
+      return;
+    }
+
+    // Registry from controller (strict)
+    const registry = this.controller.getDtoRegistry();
+    if (!registry || typeof registry.resolveCtorByType !== "function") {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
+        code: "REGISTRY_MISSING",
+        title: "Internal Error",
+        detail:
+          "DtoRegistry missing or does not implement resolveCtorByType().",
+      });
+      return;
+    }
 
     const requestId =
-      this.ctx.get<string>(CtxKeys.RequestId) ??
-      this.ctx.get<string>("requestId") ??
-      "unknown";
+      (this.ctx.get<string>("requestId") as string) || "unknown";
+    const itemsWire = body.items as any[];
 
-    const body = (this.ctx.get<any>(CtxKeys.Body) ??
-      this.ctx.get<any>("body") ??
-      {}) as any;
-
-    const policy: BagPolicy =
-      this.ctx.get<BagPolicy>("bagPolicy") ?? ({} as BagPolicy);
-    const enforceLimitFromMeta = Boolean(policy.enforceLimitFromMeta ?? false);
-
-    const hasItems =
-      body && typeof body === "object" && Array.isArray(body.items);
-
-    let bag: DtoBag<IDto>;
-    let meta: BagMeta | undefined;
-    let size = 0;
-
-    if (hasItems) {
-      const built = BagBuilder.fromWire(body, { registry, requestId });
-      bag = built.bag as unknown as DtoBag<IDto>;
-      meta = built.meta as BagMeta | undefined;
-      size = (bag as any).items?.length ?? 0;
-      this.ctx.set("bag", bag);
-      if (meta) this.ctx.set("bagMeta", meta);
-    } else {
-      const built = BagBuilder.fromDtos([], { requestId });
-      bag = built.bag as unknown as DtoBag<IDto>;
-      size = 0;
-      this.ctx.set("bag", bag);
-      // no meta on empty build; keep ctx clean
-    }
-
-    // Optional: enforce capacity from meta.limit (NEVER trim; fail fast).
-    if (enforceLimitFromMeta && meta && Number.isFinite(meta.limit)) {
-      const cap = Math.max(0, Math.floor(meta.limit));
-      if (size > cap) {
-        return this._badRequest(
-          "BAG_OVER_LIMIT",
-          `Items exceed declared meta.limit (${cap}). Remove extras or increase limit.`
-        );
+    // Hydrate via registry.fromWireItem (sets collection on instances)
+    const dtos: IDto[] = [];
+    try {
+      for (const w of itemsWire) {
+        if (
+          !w ||
+          typeof w !== "object" ||
+          typeof (w as any).type !== "string"
+        ) {
+          throw new Error("wire item missing 'type'");
+        }
+        // Accept either {type, item:{...}} or {type, ...dtoJson}
+        const wire = Object.prototype.hasOwnProperty.call(w, "item")
+          ? w
+          : { type: w.type, item: w };
+        const dto = registry.fromWireItem(wire as any, { validate: true });
+        dtos.push(dto);
       }
+    } catch (e: any) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 400);
+      this.ctx.set("response.body", {
+        code: "WIRE_PARSE_FAILED",
+        title: "Bad Request",
+        detail: e?.message ?? String(e),
+      });
+      return;
     }
 
-    // No singleton shortcuts: we do NOT set ctx.set("dto", …) here.
-    this.log.debug(
-      {
-        event: "bag_populated",
-        size,
-        limit: meta?.limit ?? null,
-        hasMeta: Boolean(meta),
-        requestId,
-      },
-      "BagPopulateGetHandler"
-    );
-  }
-
-  private _badRequest(code: string, detail: string): void {
-    this.ctx.set("handlerStatus", "error");
-    this.ctx.set("status", 400);
-    this.ctx.set("error", {
-      code,
-      title: "Bad Request",
-      detail,
+    // Build DtoBag + meta (no naked DTOs on the bus)
+    const limit =
+      typeof body?.meta?.limit === "number"
+        ? body.meta.limit
+        : dtos.length || 1;
+    const { bag, meta } = BagBuilder.fromDtos(dtos, {
+      requestId,
+      limit,
+      total: dtos.length,
+      cursor: null,
     });
+
+    // Optional policy: enforce limit from meta
+    const policy = (this.ctx.get("bagPolicy") as any) ?? {};
+    if (policy?.enforceLimitFromMeta === true && dtos.length > limit) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 400);
+      this.ctx.set("response.body", {
+        code: "LIMIT_EXCEEDED",
+        title: "Bad Request",
+        detail: `Item count ${dtos.length} exceeds meta.limit ${limit}.`,
+      });
+      return;
+    }
+
+    this.ctx.set("bag", bag);
+    this.ctx.set("handlerStatus", "ok");
+
     this.log.debug(
-      { event: "bag_policy_violation", code },
-      "BagPopulateGetHandler"
+      { event: "bag_populated", items: dtos.length, limit: meta.limit },
+      "Bag populated from wire envelope"
     );
   }
 }

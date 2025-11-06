@@ -1,280 +1,122 @@
 // backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
 /**
  * Docs:
- * - SOP: DTO-only persistence; single toJson() exit
+ * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
- *   - ADR-0015 (DTO-First Development)
- *   - ADR-0040 (DTO-Only Persistence via Managers)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)  // collection no longer from env
- *   - ADR-0047 (DtoBag — pk & filter shaping live in DTO space)
- *   - ADR-0048 (pk mapping at persistence edge)
- *   - ADR-0049 (DTO Registry; canonical string id; wire vs db modes)
+ *   - ADR-0040 (DTO-Only Persistence)
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0053 (Instantiation discipline via BaseDto secret)
  *
- * Policy (updated):
- * - DTOs NEVER expose Mongo `_id`. Canonical id is `id: string`.
- * - In mode:"wire", if `id` is absent, the DTO generates a canonical id.
- * - In mode:"db", `id` is required (DbReader must supply it after mapping).
- * - Patching occurs via schema-validated field setters; `id` is immutable.
- * - Collection name is hard-wired per DTO class (DB-agnostic), lives beside indexHints.
+ * Purpose:
+ * - Concrete DTO for the template service ("xxx").
+ * - Constructor accepts the same union as BaseDto: (secret | meta), so the Registry
+ *   can pass the instantiation secret, and fromJson() can pass meta when hydrating.
+ *
+ * Notes:
+ * - Instance collection must be seeded by the Registry via setCollectionName().
+ * - dbCollectionName() returns the hardwired collection for this DTO.
  */
 
-import { z } from "zod";
-import { BaseDto, DtoValidationError } from "../../DtoBase";
-import type { IndexHint } from "../../persistence/index-hints";
-import type { IDto } from "../../IDto";
-import { newId as makeId } from "../../../id/IdFactory";
+import { BaseDto } from "../../DtoBase";
 
-// ----- Wire & patch schemas -------------------------------------------------
+// Keep the wire-friendly shape nearby for clarity (not exported if you prefer)
+type XxxJson = {
+  id?: string; // canonical id (wire)
+  type?: "xxx"; // dtoType (wire)
+  txtfield1: string;
+  txtfield2: string;
+  numfield1: number;
+  numfield2: number;
+  createdAt?: string;
+  updatedAt?: string;
+  updatedByUserId?: string;
+};
 
-const _wireSchema = z.object({
-  id: z.string().min(1).optional(), // optional in mode:"wire" (will be synthesized)
-  type: z.literal("xxx").optional(), // normalized by DTO; tolerated inbound
-  txtfield1: z.string().min(1, "txtfield1 required"),
-  txtfield2: z.string().min(1, "txtfield2 required"),
-  numfield1: z.number(),
-  numfield2: z.number(),
-  createdAt: z.string().datetime().optional(),
-  updatedAt: z.string().datetime().optional(),
-  updatedByUserId: z.string().optional(),
-});
+export class XxxDto extends BaseDto {
+  // domain fields (init with safe defaults)
+  public id?: string;
+  public txtfield1 = "";
+  public txtfield2 = "";
+  public numfield1 = 0;
+  public numfield2 = 0;
 
-const _patchSchema = z
-  .object({
-    txtfield1: z.string().optional(),
-    txtfield2: z.string().optional(),
-    numfield1: z.number().optional(),
-    numfield2: z.number().optional(),
-  })
-  .strict();
+  /**
+   * Accepts either the BaseDto secret (Registry path) OR meta (fromJson path).
+   * This matches BaseDto’s `(secretOrArgs?: symbol | _DtoMeta)` contract.
+   */
+  public constructor(
+    secretOrMeta?:
+      | symbol
+      | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
+  ) {
+    super(secretOrMeta);
+  }
 
-type _State = z.infer<typeof _wireSchema>;
-type _Patch = z.infer<typeof _patchSchema>;
-
-// ----- DTO ------------------------------------------------------------------
-
-export class XxxDto extends BaseDto implements IDto {
-  /** DB-agnostic, class-level collection binding (cloner replaces "xxx-values"). */
+  /** Hardwired collection for this DTO. Registry seeds instances with this once. */
   public static dbCollectionName(): string {
-    return "xxx-values";
-  }
-
-  static indexHints: ReadonlyArray<IndexHint> = [
-    { kind: "lookup", fields: ["txtfield1"] },
-    { kind: "lookup", fields: ["numfield1", "numfield2"] },
-    {
-      kind: "unique",
-      fields: ["txtfield2"],
-      options: { name: "uniq_txtfield2" },
-    },
-  ];
-
-  // Canonical ID and internal state (no public fields)
-  private _id: string;
-  private _state: Omit<
-    _State,
-    "id" | "type" | "createdAt" | "updatedAt" | "updatedByUserId"
-  >;
-
-  private constructor(validated: _State) {
-    super({
-      createdAt: validated.createdAt,
-      updatedAt: validated.updatedAt,
-      updatedByUserId: validated.updatedByUserId,
-    });
-    const {
-      id,
-      createdAt,
-      updatedAt,
-      updatedByUserId,
-      type: _t,
-      ...rest
-    } = validated;
-    // id must be set by factory semantics prior to calling ctor
-    this._id = id as string;
-    this._state = rest;
-  }
-
-  // ----- IDto surface -------------------------------------------------------
-
-  public getId(): string {
-    return this._id;
-  }
-
-  /** Wire discriminator for registry/bag. */
-  public getType(): string {
     return "xxx";
   }
 
-  /**
-   * Defensive copy for rare _id collisions: clone with new id (or supplied one).
-   * Bypasses validation (source already valid) and resets meta timestamps.
-   */
-  public clone(newId?: string): this {
-    const json = this.toJson() as _State & { type?: string };
-    json.id = newId ?? makeId();
-    json.type = "xxx";
-    return XxxDto.fromJson(json, { validate: false }) as this;
-  }
+  /** Wire hydration (validation hook lives here if you enable it). */
+  public static fromJson(json: unknown, opts?: { validate?: boolean }): XxxDto {
+    const dto = new XxxDto(BaseDto.getSecret());
 
-  // ----- Factory / hydration ------------------------------------------------
+    // Minimal parse/assign; plug Zod here if opts?.validate is true
+    const j = (json ?? {}) as Partial<XxxJson>;
+    if (typeof j.id === "string" && j.id.trim()) dto.id = j.id.trim();
+    if (typeof j.txtfield1 === "string") dto.txtfield1 = j.txtfield1;
+    if (typeof j.txtfield2 === "string") dto.txtfield2 = j.txtfield2;
+    if (typeof j.numfield1 === "number")
+      dto.numfield1 = Math.trunc(j.numfield1);
+    if (typeof j.numfield2 === "number")
+      dto.numfield2 = Math.trunc(j.numfield2);
 
-  /**
-   * Hydrate from JSON. Options:
-   * - mode:"wire"  → `id` optional; synthesized if missing
-   * - mode:"db"    → `id` required
-   * - validate     → default true
-   */
-  public static fromJson(json: unknown): XxxDto;
-  public static fromJson(
-    json: unknown,
-    opts: { mode?: "wire" | "db"; validate?: boolean }
-  ): XxxDto;
-  public static fromJson(
-    json: unknown,
-    opts?: { mode?: "wire" | "db"; validate?: boolean }
-  ): XxxDto {
-    const mode = opts?.mode ?? "wire";
-    const doValidate = opts?.validate !== false;
-
-    const data = typeof json === "string" ? JSON.parse(json) : (json as object);
-
-    if (doValidate) {
-      const parsed = _wireSchema.safeParse(data);
-      if (!parsed.success) {
-        throw new DtoValidationError(
-          "Invalid Xxx payload. Ops: validate client/body mapper; ensure required fields and types.",
-          parsed.error.issues.map((i) => ({
-            path: i.path.join("."),
-            code: i.code,
-            message: i.message,
-          }))
-        );
-      }
-      const wire = parsed.data;
-
-      if (mode === "db") {
-        if (!wire.id || wire.id.trim() === "") {
-          throw new DtoValidationError("Missing required id in db mode.", [
-            {
-              path: "id",
-              code: "custom",
-              message: "id is required in db mode",
-            },
-          ]);
-        }
-        return new XxxDto({ ...wire, id: wire.id, type: "xxx" });
-      } else {
-        const id = wire.id && wire.id.trim() !== "" ? wire.id : makeId();
-        return new XxxDto({ ...wire, id, type: "xxx" });
-      }
-    }
-
-    // validate:false path (internal, used by clone)
-    const loose = data as _State;
-    const id =
-      mode === "db"
-        ? (loose.id as string)
-        : loose.id && loose.id.trim() !== ""
-        ? loose.id
-        : makeId();
-    return new XxxDto({ ...loose, id, type: "xxx" });
-  }
-
-  // ----- Accessors (no setters; patch via patchFrom) ------------------------
-
-  public get txtfield1(): string {
-    return this._state.txtfield1;
-  }
-  public get txtfield2(): string {
-    return this._state.txtfield2;
-  }
-  public get numfield1(): number {
-    return this._state.numfield1;
-  }
-  public get numfield2(): number {
-    return this._state.numfield2;
-  }
-
-  // ----- Mutations (schema-validated; id is immutable) ----------------------
-
-  public updateFrom(other: this): this {
-    return this._mutate({
-      txtfield1: other._state.txtfield1,
-      txtfield2: other._state.txtfield2,
-      numfield1: other._state.numfield1,
-      numfield2: other._state.numfield2,
+    // If meta is present on wire, capture it (BaseDto will normalize on toJson)
+    dto.setMeta({
+      createdAt: j.createdAt,
+      updatedAt: j.updatedAt,
+      updatedByUserId: j.updatedByUserId,
     });
+
+    return dto;
   }
 
-  public patchFrom(json: unknown): this {
-    const parsed = _patchSchema.safeParse(json);
-    if (!parsed.success) {
-      throw new DtoValidationError(
-        "Xxx patch rejected. Ops: unknown field or type mismatch.",
-        parsed.error.issues.map((i) => ({
-          path: i.path.join("."),
-          code: i.code,
-          message: i.message,
-        }))
-      );
-    }
-    const p: _Patch = parsed.data;
-    return this._mutate({
-      ...(p.txtfield1 !== undefined && { txtfield1: p.txtfield1 }),
-      ...(p.txtfield2 !== undefined && { txtfield2: p.txtfield2 }),
-      ...(p.numfield1 !== undefined && { numfield1: p.numfield1 }),
-      ...(p.numfield2 !== undefined && { numfield2: p.numfield2 }),
-    });
+  /** Canonical outbound wire shape; BaseDto stamps meta here. */
+  public toJson(): XxxJson {
+    const body = {
+      id: this.id,
+      type: "xxx" as const, // wire type (matches slug)
+      txtfield1: this.txtfield1,
+      txtfield2: this.txtfield2,
+      numfield1: this.numfield1,
+      numfield2: this.numfield2,
+    };
+    // Let BaseDto finalize meta stamping
+    return this._finalizeToJson(body);
   }
 
-  private _mutate(
-    patch: Partial<
-      Pick<_State, "txtfield1" | "txtfield2" | "numfield1" | "numfield2">
-    >
-  ): this {
-    const nextCandidate = { ...this._state, ...patch } as Record<
-      string,
-      unknown
-    >;
-    const composed = this._composeForValidation({
-      id: this._id,
-      type: "xxx",
-      ...nextCandidate,
-    });
-    const parsed = _wireSchema.safeParse(composed);
-    if (!parsed.success) {
-      throw new DtoValidationError(
-        "Xxx mutation rejected. Ops: verify field types and constraints.",
-        parsed.error.issues.map((i) => ({
-          path: i.path.join("."),
-          code: i.code,
-          message: i.message,
-        }))
-      );
+  /** Optional patch helper used by update pipelines. */
+  public patchFrom(json: Partial<XxxJson>): this {
+    if (json.txtfield1 !== undefined && typeof json.txtfield1 === "string") {
+      this.txtfield1 = json.txtfield1;
     }
-    const {
-      id,
-      createdAt,
-      updatedAt,
-      updatedByUserId,
-      type: _t,
-      ...rest
-    } = parsed.data;
-    // id is immutable; keep existing
-    this._state = rest as typeof this._state;
+    if (json.txtfield2 !== undefined && typeof json.txtfield2 === "string") {
+      this.txtfield2 = json.txtfield2;
+    }
+    if (json.numfield1 !== undefined) {
+      const n =
+        typeof json.numfield1 === "string"
+          ? Number(json.numfield1)
+          : json.numfield1;
+      if (Number.isFinite(n)) this.numfield1 = Math.trunc(n as number);
+    }
+    if (json.numfield2 !== undefined) {
+      const n =
+        typeof json.numfield2 === "string"
+          ? Number(json.numfield2)
+          : json.numfield2;
+      if (Number.isFinite(n)) this.numfield2 = Math.trunc(n as number);
+    }
     return this;
-  }
-
-  // ----- Serialization ------------------------------------------------------
-
-  public toJson(): unknown {
-    return this._finalizeToJson({
-      id: this._id,
-      type: "xxx",
-      txtfield1: this._state.txtfield1,
-      txtfield2: this._state.txtfield2,
-      numfield1: this._state.numfield1,
-      numfield2: this._state.numfield2,
-    });
   }
 }

@@ -5,22 +5,23 @@
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)  [collection no longer sourced from env]
+ *   - ADR-0053 (Instantiation Discipline via Registry Secret)
  *
  * Purpose:
  * - Abstract DTO base with a single outbound JSON path.
  * - Meta stamping (createdAt/updatedAt/updatedByUserId) happens **inside toJson()** via helper.
+ * - Adds optional instantiation secret enforcement (Registry-only construction).
  *
  * Notes:
  * - DTOs remain pure (no business logging). Handlers/services log operational details.
  * - **No DB shape here**: this base never reads/writes `_id`. Canonical id exposure is up to concrete DTOs.
- * - New: instance-level collection seeding (set once by Registry); DB ops require it via requireCollectionName().
+ * - Instance-level collection seeding (set once by Registry); DB ops require it via requireCollectionName().
  */
 
-type _DtoMeta = {
-  createdAt?: string; // ISO-8601
-  updatedAt?: string; // ISO-8601
-  updatedByUserId?: string; // opaque principal
-};
+// ─────────────────────────── Secret Key ───────────────────────────
+// Shared across all DTOs; only the Registry should use it.
+// Not a cryptographic secret — architectural discipline only.
+const DTO_SECRET = Symbol("DTO_SECRET");
 
 export class DtoValidationError extends Error {
   public readonly issues: Array<{
@@ -54,11 +55,24 @@ export class DtoMutationUnsupportedError extends Error {
 
 // Minimal warn hook to avoid hard dependency on a logger inside DTOs.
 type _WarnLike = (payload: Record<string, unknown>) => void;
+type _DtoMeta = {
+  createdAt?: string;
+  updatedAt?: string;
+  updatedByUserId?: string;
+};
 
 export abstract class BaseDto {
   // ---- Process-wide defaults (configured at boot) ----
   private static _defaults = { updatedByUserId: "system" };
   private static _warn?: _WarnLike;
+
+  /** Expose the secret to Registry and subclasses */
+  public static getSecret(): symbol {
+    return DTO_SECRET;
+  }
+
+  /** Optional enforcement toggle for constructor discipline */
+  protected static _requireSecret = false;
 
   /** Call once at service boot. */
   public static configureDefaults(opts: { updatedByUserId?: string }): void {
@@ -77,12 +91,6 @@ export abstract class BaseDto {
   // ---- Instance-level collection (seeded once by Registry) ----
   private _collectionName?: string;
 
-  /**
-   * Set the instance collection name exactly once.
-   * - Empty name → throw (hard fail).
-   * - Same as existing → no-op.
-   * - Different than existing → WARN and keep original.
-   */
   public setCollectionName(name: string): this {
     const ctor = (this as any).constructor as { name?: string };
     const trimmed = (name ?? "").trim();
@@ -90,18 +98,14 @@ export abstract class BaseDto {
       throw new Error(
         `DTO_COLLECTION_EMPTY: ${
           ctor.name ?? "DTO"
-        } received empty collection. ` +
-          "Ops: Registry must seed dto.setCollectionName(<hardwired>); handlers must not set/override."
+        } received empty collection. Ops: Registry must seed dto.setCollectionName(<hardwired>); handlers must not set/override.`
       );
     }
     if (!this._collectionName) {
       this._collectionName = trimmed;
       return this;
     }
-    if (this._collectionName === trimmed) {
-      return this; // idempotent
-    }
-    // Soft violation: log a warning and preserve original value.
+    if (this._collectionName === trimmed) return this;
     BaseDto._warn?.({
       component: "BaseDto",
       event: "collection_name_already_set",
@@ -113,7 +117,6 @@ export abstract class BaseDto {
     return this;
   }
 
-  /** Require the instance to have a collection name; throw with Ops hint if missing. */
   public requireCollectionName(): string {
     if (this._collectionName && this._collectionName.trim())
       return this._collectionName;
@@ -121,15 +124,24 @@ export abstract class BaseDto {
     throw new Error(
       `DTO_COLLECTION_UNSET: ${
         ctor.name ?? "DTO"
-      } missing instance collection. ` +
-        "Ops: ensure the service Registry calls dto.setCollectionName(<hardwired>) during instantiation."
+      } missing instance collection. Ops: ensure the service Registry calls dto.setCollectionName(<hardwired>) during instantiation.`
     );
   }
 
-  // ---- Meta (internal only; no DB ids here) ----
+  // ---- Meta ----
   private _meta: _DtoMeta;
 
-  protected constructor(args?: _DtoMeta) {
+  protected constructor(secretOrArgs?: symbol | _DtoMeta) {
+    // Enforce instantiation only via Registry if required
+    if (BaseDto._requireSecret && secretOrArgs !== DTO_SECRET) {
+      throw new Error(
+        "Direct instantiation of DTOs is not allowed. Use the Registry to construct DTOs."
+      );
+    }
+
+    const args =
+      typeof secretOrArgs === "symbol" ? undefined : (secretOrArgs as _DtoMeta);
+
     this._meta = {
       createdAt: args?.createdAt,
       updatedAt: args?.updatedAt,

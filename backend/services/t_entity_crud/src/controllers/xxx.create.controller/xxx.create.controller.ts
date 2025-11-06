@@ -53,6 +53,7 @@ export class XxxCreateController extends ControllerBase {
 
     switch (dtoType) {
       case "xxx": {
+        this.seedHydrator(ctx, "xxx", { validate: true });
         const steps = XxxCreatePipeline.getSteps(ctx, this);
         await this.runPipeline(ctx, steps, { requireRegistry: true });
         break;
@@ -60,6 +61,7 @@ export class XxxCreateController extends ControllerBase {
 
       // Future dtoType example:
       // case "myNewDto": {
+      //   this.seedHydrator(ctx, "MyNewDto", { validate: true });
       //   const steps = MyNewDtoCreatePipeline.getSteps(ctx, this);
       //   await this.runPipeline(ctx, steps, { requireRegistry: true });
       //   break;

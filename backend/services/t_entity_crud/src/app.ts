@@ -49,19 +49,47 @@ class XxxApp extends AppBase {
     this.registry = new Registry();
   }
 
-  /** ADR-0049: Base-typed accessor so controllers/handlers stay decoupled. */
+  /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
   public override getDtoRegistry(): IDtoRegistry {
     return this.registry;
   }
 
   /**
    * Boot sequence (awaited by AppBase.boot()):
-   * 1) Ensure indexes for all registered DTO classes via Registry (single source of truth).
-   *    Must complete before routes mount.
+   * 1) Best-effort registry snapshot (non-fatal).
+   * 2) Ensure indexes via Registry. On failure: log rich context, then rethrow (fail-fast).
    */
   protected override async onBoot(): Promise<void> {
-    // Deterministic index creation using DTO-declared indexHints.
-    await this.registry.ensureIndexes(this.svcEnv, this.log);
+    // 1) Best-effort diagnostics
+    try {
+      const listed = this.registry.listRegistered(); // [{ type, collection }]
+      this.log.info(
+        { registry: listed },
+        "boot: registry listRegistered() — types & collections"
+      );
+    } catch (err) {
+      this.log.warn(
+        { err: (err as Error)?.message },
+        "boot: registry.listRegistered() failed — continuing to index ensure"
+      );
+    }
+
+    // 2) Deterministic index creation using DTO-declared indexHints.
+    this.log.info("boot: ensuring indexes via registry.ensureIndexes()");
+    try {
+      await this.registry.ensureIndexes(this.svcEnv, this.log);
+      this.log.info("boot: ensureIndexes complete");
+    } catch (err) {
+      // Add operator guidance, keep the original stack, then bubble.
+      this.log.warn(
+        {
+          err: (err as Error)?.message,
+          hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in svcenv, DTO.indexHints[], and connectivity. Service will not start without indexes.",
+        },
+        "boot: ensureIndexes threw — aborting boot (fail-fast)"
+      );
+      throw err; // bubble per SOP
+    }
   }
 
   /** Mount service routes as one-liners under the versioned base. */

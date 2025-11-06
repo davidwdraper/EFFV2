@@ -4,6 +4,7 @@
  * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
+ *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *   - ADR-0053 (Instantiation discipline via BaseDto secret)
  *
@@ -13,15 +14,24 @@
  *   can pass the instantiation secret, and fromJson() can pass meta when hydrating.
  *
  * Notes:
- * - Instance collection must be seeded by the Registry via setCollectionName().
+ * - Instance collection is seeded by the Registry via setCollectionName().
  * - dbCollectionName() returns the hardwired collection for this DTO.
+ * - indexHints declare deterministic indexes to be ensured at boot.
+ *
+ * Index Hint kinds supported (examples in comments below):
+ * - "unique"  → unique compound or single-field index (e.g., { kind:"unique", fields:["id"] })
+ * - "lookup"  → non-unique ascending fields (e.g., { kind:"lookup", fields:["txtfield1","numfield1"] })
+ * - "text"    → MongoDB text index over fields (e.g., { kind:"text", fields:["txtfield1","txtfield2"] })
+ * - "ttl"     → time-to-live on a single field (e.g., { kind:"ttl", field:"expiresAt", seconds:3600 })
+ * - "hash"    → hashed index on exactly one field (e.g., { kind:"hash", fields:["id"] })
  */
 
 import { BaseDto } from "../../DtoBase";
+import type { IndexHint } from "../../persistence/index-hints";
 
 // Keep the wire-friendly shape nearby for clarity (not exported if you prefer)
 type XxxJson = {
-  id?: string; // canonical id (wire)
+  id?: string; // canonical id (wire, ADR-0050)
   type?: "xxx"; // dtoType (wire)
   txtfield1: string;
   txtfield2: string;
@@ -33,7 +43,32 @@ type XxxJson = {
 };
 
 export class XxxDto extends BaseDto {
-  // domain fields (init with safe defaults)
+  // ─────────────── Static: Collection & Index Hints ───────────────
+
+  /** Hardwired collection for this DTO. Registry seeds instances with this once. */
+  public static dbCollectionName(): string {
+    return "xxx";
+  }
+
+  /**
+   * Deterministic index hints consumed at boot by ensureIndexesForDtos().
+   * - Unique on canonical wire id ("id") so duplicates return 409.
+   * - Lookup indexes on txtfield1 (string) and numfield1 (number).
+   * - Additional examples of supported kinds are shown below as commented hints.
+   */
+  public static readonly indexHints: ReadonlyArray<IndexHint> = [
+    // Fast non-unique lookups
+    { kind: "lookup", fields: ["txtfield1"] },
+    { kind: "lookup", fields: ["numfield1"] },
+
+    // ——— Examples (uncomment if/when needed) ———
+    // { kind: "text", fields: ["txtfield1", "txtfield2"] },
+    // { kind: "ttl", field: "expiresAt", seconds: 3600 },
+    // { kind: "hash", fields: ["id"] }, // exactly one field required
+  ];
+
+  // ─────────────── Instance: Domain Fields ───────────────
+
   public id?: string;
   public txtfield1 = "";
   public txtfield2 = "";
@@ -50,11 +85,6 @@ export class XxxDto extends BaseDto {
       | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
   ) {
     super(secretOrMeta);
-  }
-
-  /** Hardwired collection for this DTO. Registry seeds instances with this once. */
-  public static dbCollectionName(): string {
-    return "xxx";
   }
 
   /** Wire hydration (validation hook lives here if you enable it). */

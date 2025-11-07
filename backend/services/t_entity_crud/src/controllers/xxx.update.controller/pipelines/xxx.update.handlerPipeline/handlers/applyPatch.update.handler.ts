@@ -2,18 +2,18 @@
 /**
  * Docs:
  * - ADR-0041/0042 (Handlers, Context Bus)
- * - ADR-0048 (Revised — all reads return DtoBag)
+ * - ADR-0048 (All reads return DtoBag)
  * - ADR-0050 (Wire Bag Envelope; singleton inbound)
  * - ADR-0053 (Bag Purity; bag-centric processing)
  *
  * Purpose:
  * - Patch the **existing** entity (from ctx["existingBag"]) using the client **patch**
- *   payload (from ctx["bag"]) — both are **singleton DtoBags**.
- * - Output a **singleton DtoBag** containing the UPDATED DTO and replace ctx["bag"] with it.
+ *   payload (from ctx["bag"]) — both are **singleton DtoBags<XxxDto>**.
+ * - Output a **singleton DtoBag<XxxDto>** with the UPDATED DTO and replace ctx["bag"] with it.
  *
  * Inputs (ctx):
  * - "existingBag": DtoBag<XxxDto>   (singleton; from LoadExistingUpdateHandler)
- * - "bag": DtoBag<IDto>             (singleton; from BagPopulateGetHandler — the patch)
+ * - "bag": DtoBag<XxxDto>           (singleton; from BagPopulateGetHandler — the patch)
  *
  * Outputs (ctx):
  * - "bag": DtoBag<XxxDto>           (REPLACED with updated singleton bag)
@@ -23,10 +23,10 @@
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
+import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 
 export class ApplyPatchUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -34,9 +34,9 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
   }
 
   protected async execute(): Promise<void> {
-    // ---- Fetch bags ---------------------------------------------------------
-    const existingBag = this.ctx.get<DtoBag<IDto>>("existingBag");
-    const patchBag = this.ctx.get<DtoBag<IDto>>("bag");
+    // ---- Fetch typed bags ---------------------------------------------------
+    const existingBag = this.ctx.get<DtoBag<XxxDto>>("existingBag");
+    const patchBag = this.ctx.get<DtoBag<XxxDto>>("bag");
 
     if (!existingBag || !patchBag) {
       this.ctx.set("handlerStatus", "error");
@@ -82,13 +82,26 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
       return;
     }
 
-    const existing = existingItems[0] as XxxDto;
-    const patchDto = patchItems[0] as XxxDto;
+    const existing = existingItems[0];
+    const patchDto = patchItems[0];
+
+    // ---- Runtime type sanity (hard fail if pipeline wiring is wrong) -------
+    if (!(existing instanceof XxxDto) || !(patchDto instanceof XxxDto)) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 400);
+      this.ctx.set("error", {
+        code: "TYPE_MISMATCH",
+        title: "Bad Request",
+        detail:
+          "DtoBag type mismatch: expected XxxDto for both existing and patch items.",
+      });
+      return;
+    }
 
     // ---- Apply patch via DTO authority -------------------------------------
     try {
       const patchJson = patchDto.toJson() as Record<string, unknown>;
-      existing.patchFrom(patchJson);
+      existing.patchFrom(patchJson); // no options object
     } catch (e) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 400);
@@ -98,6 +111,23 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
         detail: (e as Error).message,
       });
       return;
+    }
+
+    // ---- Re-assert instance collection (prevents DTO_COLLECTION_UNSET) -----
+    try {
+      const dtoType = this.ctx.get<string>("dtoType"); // "xxx" on this route
+      if (
+        dtoType &&
+        typeof (this.controller as any).getDtoRegistry === "function"
+      ) {
+        const reg: IDtoRegistry = (this.controller as any).getDtoRegistry();
+        const coll = reg.dbCollectionNameByType(dtoType);
+        if (coll && typeof (existing as any).setCollectionName === "function") {
+          (existing as any).setCollectionName(coll);
+        }
+      }
+    } catch {
+      // non-fatal; DbWriter will enforce collection presence
     }
 
     // ---- Re-bag the UPDATED DTO; replace ctx["bag"] -------------------------

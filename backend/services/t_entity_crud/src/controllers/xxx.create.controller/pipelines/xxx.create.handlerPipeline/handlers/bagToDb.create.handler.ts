@@ -149,6 +149,6 @@ export class BagToDbCreateHandler extends HandlerBase {
     this.ctx.set("handlerStatus", "error");
     this.ctx.set("status", 400);
     this.ctx.set("error", { code, title: "Bad Request", detail });
-    this.log.debug({ event: "bad_request", code }, "BagToDbCreateHandler");
+    this.log.warn({ event: "bad_request", code }, "BagToDbCreateHandler");
   }
 }

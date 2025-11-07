@@ -1,19 +1,26 @@
 # backend/services/t_entity_crud/smokes/012-cursor-invalid.sh
 #!/usr/bin/env bash
 # =============================================================================
-# Smoke 012 — cursor invalid (rejects bad base64 cursor with 4xx problem+json)
-# Parametrized: SLUG, HOST, PORT, VERSION, SVCFAC_BASE_URL, BASE
+# Smoke 012 — cursor invalid
+# Expectation: reject bad base64-ish cursor with a 4xx problem+json OR a clear
+# error code (INVALID_CURSOR/BAD_CURSOR). Bag-first + dtoType-aware routes.
+#
+# Params (env-override friendly):
+#   SLUG=xxx HOST=127.0.0.1 PORT=4015 VERSION=1 TYPE=xxx
+#   BASE (optional) or SVCFAC_BASE_URL (optional)
+#
 # macOS Bash 3.2 compatible.
 # =============================================================================
 set -euo pipefail
 
-# --- Config (env override friendly) ------------------------------------------
+# --- Config ---------------------------------------------------------------
 SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-4015}"
 VERSION="${VERSION:-1}"
+TYPE="${TYPE:-xxx}"
 
-# Precedence: BASE (if provided) > SVCFAC_BASE_URL > computed from HOST/PORT
+# Precedence: explicit BASE > SVCFAC_BASE_URL > http://HOST:PORT
 if [ -z "${BASE:-}" ]; then
   if [ -n "${SVCFAC_BASE_URL:-}" ]; then
     BASE="${SVCFAC_BASE_URL}/api/${SLUG}/v${VERSION}"
@@ -24,19 +31,21 @@ fi
 
 say(){ printf '%s\n' "$*" >&2; }
 
+# deliberately garbage cursor
 BAD="not-a-valid-base64-cursor"
-URL="${BASE}/list?limit=3&cursor=${BAD}"
+
+URL="${BASE}/${TYPE}/list?limit=3&cursor=${BAD}"
 
 say "→ GET  ${URL}"
 RESP="$(curl -sS "${URL}")"
 
-# Must be JSON (problem+json or normal JSON)
+# Must be JSON (either problem+json or any JSON error envelope)
 echo "${RESP}" | jq -e . >/dev/null || {
   say "ERROR: expected JSON body for invalid cursor response"; echo "${RESP}"; exit 1;
 }
 
-STATUS="$(echo "${RESP}" | jq -r '.status // empty')"
 OK="$(echo "${RESP}" | jq -r '.ok // empty')"
+STATUS="$(echo "${RESP}" | jq -r '.status // empty')"
 CODE_UP="$(echo "${RESP}" | jq -r '.code // empty' | tr 'a-z' 'A-Z')"
 
 if [ "${OK}" = "true" ]; then
@@ -44,10 +53,10 @@ if [ "${OK}" = "true" ]; then
   exit 1
 fi
 
-# Accept any 4xx OR a specific problem code like INVALID_CURSOR/BAD_CURSOR
+# Accept: any 4xx status OR known codes (INVALID_CURSOR / BAD_CURSOR)
 if { [ -n "${STATUS}" ] && echo "${STATUS}" | grep -Eq '^4[0-9][0-9]$'; } || \
    [ "${CODE_UP}" = "INVALID_CURSOR" ] || [ "${CODE_UP}" = "BAD_CURSOR" ]; then
-  say "OK: invalid cursor correctly rejected with client error. (slug=${SLUG} port=${PORT})"
+  say "OK: invalid cursor correctly rejected with client error. (slug=${SLUG} type=${TYPE} port=${PORT})"
   exit 0
 fi
 

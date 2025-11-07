@@ -1,137 +1,85 @@
 # backend/tests/smoke/tests/005-xxx-delete-4015.sh
 #!/usr/bin/env bash
-# NowVibin Smoke — delete by saved id (slug/port aware)
+# NowVibin Smoke — create then delete (slug/port aware, fully independent)
 # Strategy:
-#   1) Load the saved ID from state (written by test 002).
-#   2) READ the record by that ID to confirm it exists and to discover the canonical DTO id.
-#   3) DELETE using the canonical DTO id (never DB _id).
+#   1) CREATE a record (DtoBag) with a caller-provided UUID.
+#   2) DELETE by that same public DTO id (never DB _id).
+# Contract notes:
+#   - CREATE returns: { ok: true, id: "<uuid>" }
+#   - DELETE returns: { ok: true, deleted: 1 }
+#   - READ is not required here; id is canonical and round-trips unchanged.
+
 set -euo pipefail
 
-# shellcheck disable=SC1090
-. "$(cd "$(dirname "$0")" && pwd)/../lib.sh"
+need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 97; }; }
+need curl; need jq; need date
 
-# --- Config (env override friendly) ------------------------------------------
+# --- Config (env override friendly) -------------------------------------------
 SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-4015}"
 VERSION="${VERSION:-1}"
+DTO_TYPE="${DTO_TYPE:-xxx}"
 
-# Precedence: BASE (if provided) > SVCFAC_BASE_URL > computed from HOST/PORT
+# Precedence: BASE env (if set) > computed from HOST/PORT
 if [ -z "${BASE:-}" ]; then
-  if [ -n "${SVCFAC_BASE_URL:-}" ]; then
-    BASE="${SVCFAC_BASE_URL}/api/${SLUG}/v${VERSION}"
-  else
-    BASE="http://${HOST}:${PORT}/api/${SLUG}/v${VERSION}"
-  fi
+  BASE="http://${HOST}:${PORT}/api/${SLUG}/v${VERSION}"
 fi
 
 say() { printf '%s\n' "$*" >&2; }
 
-curl_json() {
-  # usage: curl_json METHOD URL [DATA]
-  # prints two blocks to stdout:
-  #   HTTP <code>
-  #   <body-json or raw body>
-  local method="$1"; shift
-  local url="$1"; shift
-  local data="${1-}"
-
-  if [ -n "$data" ]; then
-    # shellcheck disable=SC2086
-    resp="$(curl -sS -X "$method" -H 'content-type: application/json' \
-      -w $'\nHTTP %{http_code}\n' \
-      --data "$data" "$url")"
-  else
-    resp="$(curl -sS -X "$method" \
-      -w $'\nHTTP %{http_code}\n' \
-      "$url")"
-  fi
-
-  printf '%s' "$resp"
-}
-
-extract_http_code() {
-  awk 'END{ if ($1=="HTTP") print $2; }'
-}
-
-extract_body() {
-  # everything except the final "HTTP <code>" line
-  awk 'NR==1, /HTTP [0-9]{3}$/ { if ($1=="HTTP" && NF==2 && $2 ~ /^[0-9]{3}$/) next; print }'
-}
-
-print_block() {
-  # usage: print_block "→ GET <url>" "<HTTP nnn>" "<body>"
-  local title="$1"
-  local code="$2"
-  local body="$3"
-  say "$title"
-  say "HTTP $code"
-  if command -v jq >/dev/null 2>&1; then
-    printf '%s\n' "$body" | jq . 2>/dev/null || printf '%s\n' "$body"
-  else
-    printf '%s\n' "$body"
-  fi
-}
-
-# --- Load id from prior create ------------------------------------------------
-SAVED_ID="$(require_last_id)"
-
-# --- Step 1: READ (to confirm existence and normalize id) ---------------------
-READ_URL="${BASE}/read/${SAVED_ID}"
-read_raw="$(curl_json GET "$READ_URL")"
-read_code="$(printf '%s\n' "$read_raw" | extract_http_code)"
-read_body="$(printf '%s\n' "$read_raw" | extract_body)"
-
-print_block "→ GET ${READ_URL}" "$read_code" "$read_body"
-
-# Must be JSON
-if ! printf '%s' "$read_body" | jq -e . >/dev/null 2>&1; then
-  say "ERROR: read response is not valid JSON"
-  exit 2
+# Make a stable id; prefer uuidgen
+RUN_ID="$(date +%s%N)"
+if command -v uuidgen >/dev/null 2>&1; then
+  NEW_ID="$(uuidgen | tr 'A-Z' 'a-z')"
+else
+  NEW_ID="$(printf "%s-%06d" "${RUN_ID}" "$RANDOM")"
 fi
 
-# ok must be true; if not, bail with clear hint to rerun 002
-ok="$(printf '%s' "$read_body" | jq -r '.ok // empty')"
-if [ "$ok" != "true" ] || [ "$read_code" != "200" ]; then
-  say "ERROR: read-by-saved-id not ok (HTTP=$read_code). Re-run test 002 to seed a fresh record."
-  exit 2
-fi
+# --- Step 1: CREATE (DtoBag) --------------------------------------------------
+CREATE_URL="${BASE}/${DTO_TYPE}/create"
+say "→ PUT  ${CREATE_URL}"
 
-# Extract the canonical DTO id from the READ response:
-# Prefer .id, then .doc.<slug>Id, then .<slug>Id; fall back to historical xxxId shapes; never DB _id.
-CANON_ID="$(printf '%s' "$read_body" | jq -er \
-  --arg k "${SLUG}Id" \
-  '.id // .doc[$k] // .[$k] // .xxxId // .doc.xxxId // empty')"
+CREATE_BODY="$(jq -n --arg id "$NEW_ID" --arg type "$DTO_TYPE" --arg k "${SLUG}Id" '
+  {
+    items: [
+      {
+        type: $type,
+        doc: {
+          id: $id,
+          txtfield1: "probe",
+          txtfield2: ("probe_" + $id),
+          numfield1: 1,
+          numfield2: 1
+        }
+      }
+    ]
+  }
+  | (.items[0].doc[$k] = $id)
+')"
 
-if [ -z "${CANON_ID}" ]; then
-  say "ERROR: could not determine canonical DTO id from read response (.id / .doc.${SLUG}Id / .${SLUG}Id / .xxxId)"
-  exit 3
-fi
+printf '%s\n' "$CREATE_BODY" | jq . >&2 || true
 
-# --- Step 2: DELETE using the canonical DTO id --------------------------------
-DEL_URL="${BASE}/delete/${CANON_ID}"
-del_raw="$(curl_json DELETE "$DEL_URL")"
-del_code="$(printf '%s\n' "$del_raw" | extract_http_code)"
-del_body="$(printf '%s\n' "$del_raw" | extract_body)"
+CREATE_JSON="$(curl -fsS -X PUT "$CREATE_URL" -H 'content-type: application/json' --data "$CREATE_BODY")"
+printf '%s\n' "$CREATE_JSON" | jq . || true
 
-print_block "→ DELETE ${DEL_URL}" "$del_code" "$del_body"
+# Validate create contract
+[ "$(jq -r '.ok // empty' <<<"$CREATE_JSON")" = "true" ] || { say "ERROR: create.ok != true"; exit 2; }
+CREATED_ID="$(jq -r '.id // empty' <<<"$CREATE_JSON")"
+[ -n "$CREATED_ID" ] || { say "ERROR: create missing .id"; exit 2; }
+[ "$CREATED_ID" = "$NEW_ID" ] || { say "ERROR: create echoed different id ($CREATED_ID != $NEW_ID)"; exit 2; }
 
-# Must be JSON
-if ! printf '%s' "$del_body" | jq -e . >/dev/null 2>&1; then
-  say "ERROR: delete response is not valid JSON"
-  exit 4
-fi
+say "created id=${NEW_ID}"
 
-# ok must be true
-if [ "$(printf '%s' "$del_body" | jq -r '.ok // empty')" != "true" ] || [ "$del_code" != "200" ]; then
-  say "ERROR: delete not ok (HTTP=$del_code, tried canonical id: ${CANON_ID})"
-  exit 4
-fi
+# --- Step 2: DELETE by the canonical id --------------------------------------
+DEL_URL="${BASE}/${DTO_TYPE}/delete/${NEW_ID}"
+say "→ DELETE ${DEL_URL}"
 
-# deleted == 1 (accept number or string)
-jq -e '(.deleted|tostring) == "1"' >/dev/null <<<"$del_body" || {
-  say "ERROR: deleted != 1"
-  exit 5
-}
+DEL_JSON="$(curl -fsS -X DELETE "$DEL_URL")"
+printf '%s\n' "$DEL_JSON" | jq . || true
 
-say "OK: deleted id=${CANON_ID} for ${SLUG}:${PORT}"
+# Validate delete contract
+[ "$(jq -r '.ok // empty' <<<"$DEL_JSON")" = "true" ] || { say "ERROR: delete.ok != true"; exit 3; }
+jq -e '(.deleted|tostring) == "1"' >/dev/null <<<"$DEL_JSON" || { say "ERROR: deleted != 1"; exit 3; }
+
+say "✅ PASS: created and deleted id=${NEW_ID} (slug=${SLUG}, dtoType=${DTO_TYPE}, port=${PORT})"

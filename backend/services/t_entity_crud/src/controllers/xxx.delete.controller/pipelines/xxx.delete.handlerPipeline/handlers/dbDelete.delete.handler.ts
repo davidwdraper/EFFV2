@@ -8,16 +8,16 @@
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0048 (Reader/Writer/Deleter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
- *   - ADR-0056 (DELETE path uses <DtoTypeKey>; handler resolves collection via Registry)
+ *   - ADR-0056 (Typed routes use :dtoType; handler resolves collection via Registry)
  *
  * Purpose:
- * - DELETE /:typeKey/:id — delete a single record by canonical id, resolving
- *   the collection name from the DTO Registry using :typeKey.
+ * - DELETE /:dtoType/delete/:id — delete a single record by canonical id,
+ *   resolving the collection name from the DTO Registry using :dtoType.
  *
  * Behavior:
  * - 200 { ok:true, deleted:1, id } on success
  * - 404 problem+json if no document deleted
- * - 400 problem+json on missing/empty :id or :typeKey
+ * - 400 problem+json on missing/empty :id or :dtoType
  * - 500 problem+json on missing env/registry or DB errors
  */
 
@@ -33,24 +33,23 @@ export class DbDeleteDeleteHandler extends HandlerBase {
   protected async execute(): Promise<void> {
     this.log.debug({ event: "execute_start" }, "dbDelete.delete enter");
 
-    // Pull params
+    // Pull required params
     const params: any = this.ctx.get("params") ?? {};
     const id = typeof params.id === "string" ? params.id.trim() : "";
-    const typeKey =
-      typeof params.typeKey === "string" ? params.typeKey.trim() : "";
+    const dtoType = this.ctx.get<string>("dtoType");
 
-    if (!typeKey) {
+    if (!dtoType) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 400);
       this.ctx.set("error", {
         code: "BAD_REQUEST",
         title: "Bad Request",
-        detail: "Missing required path parameter ':typeKey'.",
-        hint: "Call DELETE /api/xxx/v1/<DtoTypeKey>/<id>.",
+        detail: "Missing required path parameter ':dtoType'.",
+        hint: "Call DELETE /api/:slug/v:version/:dtoType/delete/:id",
       });
       this.log.warn(
-        { event: "bad_request", reason: "no_typeKey" },
-        "Missing :typeKey"
+        { event: "bad_request", reason: "no_dtoType" },
+        "Missing :dtoType"
       );
       return;
     }
@@ -62,7 +61,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
         code: "BAD_REQUEST",
         title: "Bad Request",
         detail: "Missing required path parameter ':id'.",
-        hint: "Call DELETE /api/xxx/v1/<DtoTypeKey>/<id>.",
+        hint: "Call DELETE /api/:slug/v:version/:dtoType/delete/:id",
       });
       this.log.warn({ event: "bad_request", reason: "no_id" }, "Missing :id");
       return;
@@ -70,8 +69,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
 
     // svcEnv + Registry via Controller (no ctx plumbing)
     const svcEnv = this.controller.getSvcEnv();
-    const registry =
-      this.controller.getDtoRegistry?.() ?? this.controller.getDtoRegistry?.();
+    const registry = this.controller.getDtoRegistry?.();
 
     if (!svcEnv || !registry) {
       this.ctx.set("handlerStatus", "error");
@@ -94,30 +92,30 @@ export class DbDeleteDeleteHandler extends HandlerBase {
       return;
     }
 
-    // Resolve collection from typeKey
+    // Resolve collection from dtoType
     let collectionName = "";
     try {
       if (typeof registry.dbCollectionNameByType !== "function") {
         throw new Error("Registry missing dbCollectionNameByType()");
       }
-      collectionName = registry.dbCollectionNameByType(typeKey);
+      collectionName = registry.dbCollectionNameByType(dtoType);
       if (!collectionName || !collectionName.trim()) {
-        throw new Error(`No collection mapped for typeKey="${typeKey}"`);
+        throw new Error(`No collection mapped for dtoType="${dtoType}"`);
       }
     } catch (e: any) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 400);
       this.ctx.set("error", {
-        code: "UNKNOWN_TYPE_KEY",
+        code: "UNKNOWN_DTO_TYPE",
         title: "Bad Request",
         detail:
           e?.message ??
-          `Unable to resolve collection for typeKey "${typeKey}".`,
-        hint: "Verify the DtoRegistry contains this type key and exposes a collection.",
+          `Unable to resolve collection for dtoType "${dtoType}".`,
+        hint: "Verify the DtoRegistry contains this dtoType and exposes a collection.",
       });
       this.log.warn(
-        { event: "type_key_resolve_failed", typeKey, err: e?.message },
-        "Failed to resolve collection from typeKey"
+        { event: "dto_type_resolve_failed", dtoType, err: e?.message },
+        "Failed to resolve collection from dtoType"
       );
       return;
     }
@@ -132,7 +130,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
           event: "delete_target",
           collection: tgt.collectionName,
           id,
-          typeKey,
+          dtoType,
         },
         "delete will target collection"
       );

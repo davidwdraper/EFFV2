@@ -7,6 +7,7 @@
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *   - ADR-0053 (Instantiation discipline via BaseDto secret)
+ *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *
  * Purpose:
  * - Concrete DTO for the template service ("xxx").
@@ -17,21 +18,20 @@
  * - Instance collection is seeded by the Registry via setCollectionName().
  * - dbCollectionName() returns the hardwired collection for this DTO.
  * - indexHints declare deterministic indexes to be ensured at boot.
- *
- * Index Hint kinds supported (examples in comments below):
- * - "unique"  → unique compound or single-field index (e.g., { kind:"unique", fields:["id"] })
- * - "lookup"  → non-unique ascending fields (e.g., { kind:"lookup", fields:["txtfield1","numfield1"] })
- * - "text"    → MongoDB text index over fields (e.g., { kind:"text", fields:["txtfield1","txtfield2"] })
- * - "ttl"     → time-to-live on a single field (e.g., { kind:"ttl", field:"expiresAt", seconds:3600 })
- * - "hash"    → hashed index on exactly one field (e.g., { kind:"hash", fields:["id"] })
+ * - ID lifecycle:
+ *     • If wire provides id → BaseDto setter validates UUIDv4 and stores lowercase.
+ *     • If absent → DbWriter will generate **before** calling toJson().
+ *     • toJson() never invents or mutates id (no ID insertion during/after toJson).
  */
 
 import { BaseDto } from "../../DtoBase";
 import type { IndexHint } from "../../persistence/index-hints";
+import type { IDto } from "../../IDto"; // ← added
+import { randomUUID } from "crypto";
 
-// Keep the wire-friendly shape nearby for clarity (not exported if you prefer)
+// Wire-friendly shape (for clarity)
 type XxxJson = {
-  id?: string; // canonical id (wire, ADR-0050)
+  id?: string; // canonical id (wire, ADR-0050); stored as Mongo _id (string) by adapter
   type?: "xxx"; // dtoType (wire)
   txtfield1: string;
   txtfield2: string;
@@ -42,7 +42,8 @@ type XxxJson = {
   updatedByUserId?: string;
 };
 
-export class XxxDto extends BaseDto {
+export class XxxDto extends BaseDto implements IDto {
+  // ← implements IDto
   // ─────────────── Static: Collection & Index Hints ───────────────
 
   /** Hardwired collection for this DTO. Registry seeds instances with this once. */
@@ -52,24 +53,20 @@ export class XxxDto extends BaseDto {
 
   /**
    * Deterministic index hints consumed at boot by ensureIndexesForDtos().
-   * - Unique on canonical wire id ("id") so duplicates return 409.
-   * - Lookup indexes on txtfield1 (string) and numfield1 (number).
-   * - Additional examples of supported kinds are shown below as commented hints.
+   * NOTE: We do NOT index "id" here because the Mongo adapter maps { id → _id } and
+   * Mongo guarantees uniqueness on _id by default.
    */
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
-    // Fast non-unique lookups
     { kind: "lookup", fields: ["txtfield1"] },
     { kind: "lookup", fields: ["numfield1"] },
-
-    // ——— Examples (uncomment if/when needed) ———
+    // Examples:
     // { kind: "text", fields: ["txtfield1", "txtfield2"] },
     // { kind: "ttl", field: "expiresAt", seconds: 3600 },
-    // { kind: "hash", fields: ["id"] }, // exactly one field required
+    // { kind: "hash", fields: ["txtfield1"] },
   ];
 
   // ─────────────── Instance: Domain Fields ───────────────
-
-  public id?: string;
+  // IMPORTANT: Do NOT declare a public `id` field here — it would shadow BaseDto.id.
   public txtfield1 = "";
   public txtfield2 = "";
   public numfield1 = 0;
@@ -87,13 +84,16 @@ export class XxxDto extends BaseDto {
     super(secretOrMeta);
   }
 
-  /** Wire hydration (validation hook lives here if you enable it). */
+  /** Wire hydration (plug Zod here when opts?.validate is true). */
   public static fromJson(json: unknown, opts?: { validate?: boolean }): XxxDto {
     const dto = new XxxDto(BaseDto.getSecret());
 
-    // Minimal parse/assign; plug Zod here if opts?.validate is true
+    // Minimal parse/assign
     const j = (json ?? {}) as Partial<XxxJson>;
-    if (typeof j.id === "string" && j.id.trim()) dto.id = j.id.trim();
+    if (typeof j.id === "string" && j.id.trim()) {
+      // BaseDto setter validates UUIDv4 & lowercases; immutable after first set.
+      dto.id = j.id.trim();
+    }
     if (typeof j.txtfield1 === "string") dto.txtfield1 = j.txtfield1;
     if (typeof j.txtfield2 === "string") dto.txtfield2 = j.txtfield2;
     if (typeof j.numfield1 === "number")
@@ -113,15 +113,15 @@ export class XxxDto extends BaseDto {
 
   /** Canonical outbound wire shape; BaseDto stamps meta here. */
   public toJson(): XxxJson {
+    // NO id generation here — DbWriter ensures id BEFORE calling toJson().
     const body = {
-      id: this.id,
+      id: this.id, // getter throws if not set; DbWriter guarantees presence on create
       type: "xxx" as const, // wire type (matches slug)
       txtfield1: this.txtfield1,
       txtfield2: this.txtfield2,
       numfield1: this.numfield1,
       numfield2: this.numfield2,
     };
-    // Let BaseDto finalize meta stamping
     return this._finalizeToJson(body);
   }
 
@@ -148,5 +148,43 @@ export class XxxDto extends BaseDto {
       if (Number.isFinite(n)) this.numfield2 = Math.trunc(n as number);
     }
     return this;
+  }
+
+  // ─────────────── IDto contract (added) ───────────────
+  /** Canonical DTO type key (registry key). */
+  public getType(): string {
+    return "xxx";
+  }
+
+  /** Canonical DTO id. */
+  public getId(): string {
+    return this.id;
+  }
+
+  // inside backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
+
+  /**
+   * Deep clone as a new instance with a NEW UUIDv4 id (ADR-0057).
+   * - Preserves current DTO fields and meta.
+   * - Re-seeds the instance collection to match the source.
+   */
+  // inside backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
+  public clone(newId?: string): this {
+    // Use the concrete class constructor type (not an inline `this` type)
+    const Ctor = this.constructor as typeof XxxDto;
+
+    // Rehydrate from current wire state (no revalidation)
+    const next = Ctor.fromJson(this.toJson(), { validate: false }) as this;
+
+    // Assign NEW id (or supplied override)
+    (next as any).id = newId ?? randomUUID();
+
+    // Preserve instance collection to avoid DTO_COLLECTION_UNSET
+    const coll = (this as any).getCollectionName?.() ?? Ctor.dbCollectionName();
+    if (coll && typeof (next as any).setCollectionName === "function") {
+      (next as any).setCollectionName(coll);
+    }
+
+    return next;
   }
 }

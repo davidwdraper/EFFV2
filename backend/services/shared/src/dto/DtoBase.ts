@@ -6,11 +6,13 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)  [collection no longer sourced from env]
  *   - ADR-0053 (Instantiation Discipline via Registry Secret)
+ *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *
  * Purpose:
  * - Abstract DTO base with a single outbound JSON path.
  * - Meta stamping (createdAt/updatedAt/updatedByUserId) happens **inside toJson()** via helper.
  * - Adds optional instantiation secret enforcement (Registry-only construction).
+ * - Adds canonical ID lifecycle: immutable once set, UUIDv4 validation, WARN on overwrite attempts.
  *
  * Notes:
  * - DTOs remain pure (no business logging). Handlers/services log operational details.
@@ -18,9 +20,9 @@
  * - Instance-level collection seeding (set once by Registry); DB ops require it via requireCollectionName().
  */
 
+import { isValidUuidV4, newUuid } from "../utils/uuid";
+
 // ─────────────────────────── Secret Key ───────────────────────────
-// Shared across all DTOs; only the Registry should use it.
-// Not a cryptographic secret — architectural discipline only.
 const DTO_SECRET = Symbol("DTO_SECRET");
 
 export class DtoValidationError extends Error {
@@ -86,6 +88,59 @@ export abstract class BaseDto {
    */
   public static configureWarn(warn: _WarnLike): void {
     BaseDto._warn = warn;
+  }
+
+  // ---- Canonical ID (UUIDv4; immutable once set) ----
+  private _id?: string;
+
+  /** True if an id has been set on this instance. */
+  public hasId(): boolean {
+    return typeof this._id === "string" && this._id.length > 0;
+  }
+
+  /** Getter exposes the canonical string id (throws if unset to avoid silent misuse). */
+  public get id(): string {
+    if (!this._id) {
+      throw new Error(
+        "DTO_ID_UNSET: id requested before assignment. Ops: ensure controller/DbWriter sets id prior to persistence; readers should hydrate from stored value."
+      );
+    }
+    return this._id;
+  }
+
+  /**
+   * One-shot setter:
+   * - First assignment must be UUIDv4 (case-insensitive); stored lowercase.
+   * - Subsequent attempts are a no-op and emit WARN (investigate call site).
+   */
+  public set id(value: string) {
+    const ctorName = (this as any)?.constructor?.name ?? "DTO";
+    if (this._id) {
+      BaseDto._warn?.({
+        component: "BaseDto",
+        event: "id_overwrite_ignored",
+        dto: ctorName,
+        existing: this._id,
+        attempted: value,
+        hint: "ID is immutable; investigate caller attempting to replace it.",
+      });
+      return; // no-op per ADR-0057
+    }
+    if (!isValidUuidV4(value)) {
+      const detail = "id must be a UUIDv4";
+      throw new DtoValidationError("INVALID_ID_FORMAT", [
+        { path: "id", code: "invalid_uuid_v4", message: detail },
+      ]);
+    }
+    this._id = value.toLowerCase();
+  }
+
+  /** Ensure an id exists (UUIDv4 auto-generation path); returns the id. */
+  public ensureId(): string {
+    if (!this._id) {
+      this._id = newUuid();
+    }
+    return this._id;
   }
 
   // ---- Instance-level collection (seeded once by Registry) ----

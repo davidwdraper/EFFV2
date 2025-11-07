@@ -1,23 +1,27 @@
-# backend/tests/smoke/tests/003-xxx-create-duplicate-4015.sh
+# backend/services/t_entity_crud/smokes/003-xxx-create-duplicate-4015.sh
 #!/usr/bin/env bash
-# NowVibin Smoke — create duplicate (independent test)
-# Purpose:
-#   1) Generate a valid 24-hex ObjectId string
-#   2) Create a record with that id
-#   3) Attempt to create the SAME record again
-# Expect:
-#   1st PUT → 200/201 OK with created id
-#   2nd PUT → 409 Conflict (duplicate key)
+# =============================================================================
+# Smoke 003 — strict duplicate create
+# First create uses an explicit id and must echo it back.
+# Second create with the SAME id must return HTTP 409 (strict duplicate).
+#
+# Contract:
+#   PUT /api/{slug}/v{version}/{type}/create
+#     body: { items:[{ type, doc:{ id, ...fields } }] }
+#     resp: { ok:true, id:"<echoed id>" }
+#
+# macOS Bash 3.2 compatible.
+# =============================================================================
 set -euo pipefail
 
-# shellcheck disable=SC1090
-. "$(cd "$(dirname "$0")" && pwd)/../lib.sh"
+say(){ printf '%s\n' "$*" >&2; }
 
 # --- Config (env override friendly) ------------------------------------------
 SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-4015}"
 VERSION="${VERSION:-1}"
+TYPE="${TYPE:-xxx}"
 
 # Precedence: BASE (if provided) > SVCFAC_BASE_URL > computed from HOST/PORT
 if [ -z "${BASE:-}" ]; then
@@ -28,33 +32,33 @@ if [ -z "${BASE:-}" ]; then
   fi
 fi
 
-# Route shape requires dtoType in the path
-URL_CREATE="${BASE}/${SLUG}/create"
+CREATE_URL="${BASE}/${TYPE}/create"
 
-# --- Helpers -----------------------------------------------------------------
-gen_objectid () {
-  # Prefer openssl; fallback to /dev/urandom + hexdump
-  if command -v openssl >/dev/null 2>&1; then
-    openssl rand -hex 12
+# --- UUIDv4 (portable) -------------------------------------------------------
+gen_uuid4() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr 'A-Z' 'a-z'
+  elif [ -r /proc/sys/kernel/random/uuid ]; then
+    cat /proc/sys/kernel/random/uuid
   else
-    # POSIX-ish fallback: 12 bytes (24 hex chars)
-    dd if=/dev/urandom bs=12 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+    python3 - <<'PY' 2>/dev/null | tr -d '\n' || { echo "ERROR: need uuidgen or python3"; exit 2; }
+import uuid; print(str(uuid.uuid4()))
+PY
   fi
 }
+FIXED_ID="$(gen_uuid4)"
+SUF="$(date +%s)$$"
 
-mk_body () {
-  local OID="$1"
-  # Bag-only wire envelope (ADR-0050); dtoType matches :dtoType
+BODY_JSON() {
   cat <<JSON
 {
   "items": [
     {
-      "type": "${SLUG}",
-      "item": {
-        "id": "${OID}",
-        "type": "${SLUG}",
-        "txtfield1": "dup-probe",
-        "txtfield2": "dup-probe",
+      "type": "${TYPE}",
+      "doc": {
+        "id": "${1}",
+        "txtfield1": "dup-test-${SUF}",
+        "txtfield2": "dup-test-${SUF}",
         "numfield1": 1,
         "numfield2": 2
       }
@@ -64,43 +68,36 @@ mk_body () {
 JSON
 }
 
-# --- 1) Create with fixed ObjectId -------------------------------------------
-OID="$(gen_objectid)"
-BODY1="$(mk_body "${OID}")"
-
-RESP1="$(_put_json "${URL_CREATE}" "${BODY1}")"
+# --- First create -------------------------------------------------------------
+say "→ PUT  ${CREATE_URL} (first create, explicit id)"
+RESP1="$(curl -sS -X PUT "${CREATE_URL}" -H "content-type: application/json" --data "$(BODY_JSON "${FIXED_ID}")")"
 echo "${RESP1}" | jq -e . >/dev/null
 
-STATUS1="$(echo "${RESP1}" | jq -r '.status // empty')"
-CREATED_ID="$(echo "${RESP1}" | jq -r '.id // .created?.id // empty')"
-
-if [ -z "${CREATED_ID}" ] || ! printf '%s' "${CREATED_ID}" | grep -Eq '^[0-9a-fA-F]{24}$'; then
-  echo "ERROR: could not locate created id in first response"
-  echo "Response was:"
+echo "${RESP1}" | jq -e '.ok == true' >/dev/null
+ID1="$(echo "${RESP1}" | jq -r '.id // empty')"
+if [ -z "${ID1}" ] || [ "${ID1}" != "${FIXED_ID}" ]; then
+  say "ERROR: first create id mismatch (resp:${ID1:-<none>} != expected:${FIXED_ID})"
   echo "${RESP1}" | jq .
   exit 1
 fi
+say "First create ok: id=${ID1}"
 
-if [ -n "${STATUS1}" ] && [ "${STATUS1}" != "200" ] && [ "${STATUS1}" != "201" ]; then
-  echo "ERROR: unexpected status on first create: ${STATUS1}"
-  echo "${RESP1}" | jq .
+# --- Second create (must be 409 strict duplicate) ----------------------------
+say "→ PUT  ${CREATE_URL} (second create, same id → expect 409)"
+RESP2="$(curl -sS -w '\n%{http_code}' -X PUT "${CREATE_URL}" -H "content-type: application/json" --data "$(BODY_JSON "${FIXED_ID}")")"
+
+# Split body and status (portable in macOS bash)
+HTTP_BODY="$(printf '%s' "${RESP2}" | sed '$d')"
+HTTP_CODE="$(printf '%s' "${RESP2}" | tail -n1)"
+
+# Must be JSON body
+echo "${HTTP_BODY}" | jq -e . >/dev/null || { say "ERROR: non-JSON second response"; echo "${HTTP_BODY}"; exit 1; }
+
+if [ "${HTTP_CODE}" != "409" ]; then
+  say "ERROR: expected HTTP 409 on duplicate; got ${HTTP_CODE}"
+  echo "${HTTP_BODY}" | jq .
   exit 1
 fi
 
-echo "OK: first create accepted with id=${CREATED_ID}"
-
-# --- 2) Attempt duplicate with the SAME id -----------------------------------
-BODY2="$(mk_body "${OID}")"
-RESP2="$(_put_json "${URL_CREATE}" "${BODY2}")"
-echo "${RESP2}" | jq -e . >/dev/null
-
-STATUS2="$(echo "${RESP2}" | jq -r '.status // empty')"
-CODE2="$(echo "${RESP2}" | jq -r '.code // empty' | tr 'A-Z' 'a-z')"
-
-if [ "${STATUS2}" != "409" ] && [ "${CODE2}" != "duplicate" ] && [ "${CODE2}" != "duplicate_key" ]; then
-  echo "ERROR: expected 409 duplicate; got:"
-  echo "${RESP2}" | jq .
-  exit 1
-fi
-
-echo "OK: duplicate correctly returned conflict for ${SLUG}:${PORT}"
+say "OK: strict duplicate correctly rejected (409). (slug=${SLUG} type=${TYPE} port=${PORT})"
+exit 0

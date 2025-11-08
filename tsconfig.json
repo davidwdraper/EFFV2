@@ -9,7 +9,8 @@
   "include": [
     "backend/services/**/*",
     "scripts/**/*",
-    "docs/**/*"
+    "docs/**/*",
+    "backend/shelved_services/user"
   ],
   "exclude": ["node_modules", "**/dist"]
 }

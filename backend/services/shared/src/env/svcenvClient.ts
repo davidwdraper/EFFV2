@@ -57,8 +57,8 @@ export class SvcEnvClient {
     // New: default log level for local dev
     const LOG_LEVEL = "debug";
 
-    const NV_COLLECTION_XXX_VALUES = "xxx-values";
-    //const NV_COLLECTION_ENV_SERVICE_VALUES = "env-service-values";
+    //const NV_COLLECTION_XXX_VALUES = "xxx-values";
+    const NV_COLLECTION_ENV_SERVICE_VALUES = "env-service-values";
 
     return SvcEnvDto.fromJson({
       key: `${env}@${slug}@${version}`,
@@ -78,8 +78,8 @@ export class SvcEnvClient {
         NV_MONGO_DB,
         NV_MONGO_COLLECTION,
 
-        NV_COLLECTION_XXX_VALUES,
-        //NV_COLLECTION_ENV_SERVICE_VALUES,
+        //NV_COLLECTION_XXX_VALUES,
+        NV_COLLECTION_ENV_SERVICE_VALUES,
 
         // Legacy svcenv keys kept for forward/back compat (no harm)
         SVCENV_DB_URI: NV_MONGO_URI,

@@ -25,7 +25,7 @@
  *   Only the id can change; class and collection must remain identical — enforced below.
  */
 
-import type { BaseDto } from "../DtoBase";
+import type { DtoBase } from "../DtoBase";
 import type { SvcEnvDto } from "../svcenv.dto";
 import type { ILogger } from "../../logger/Logger";
 import { MongoClient, Collection, Db } from "mongodb";
@@ -100,7 +100,7 @@ async function getExplicitCollection(
 
 const MAX_DUP_RETRIES = 3;
 
-function requireSingleton<TDto extends BaseDto>(
+function requireSingleton<TDto extends DtoBase>(
   bag: DtoBag<TDto>,
   op: "write" | "update"
 ): TDto {
@@ -116,7 +116,7 @@ function requireSingleton<TDto extends BaseDto>(
 }
 
 /** Enforce clone invariants: same class, same collection; only id may differ. */
-function assertCloneInvariants(before: BaseDto, after: BaseDto): void {
+function assertCloneInvariants(before: DtoBase, after: DtoBase): void {
   const beforeCtor = (before as any)?.constructor;
   const afterCtor = (after as any)?.constructor;
   if (beforeCtor !== afterCtor) {
@@ -161,7 +161,7 @@ function mapWireIdToMongoDoc(json: Record<string, unknown>): {
 
 /* ---------------------------------------------------------------------- */
 
-export class DbWriter<TDto extends BaseDto> {
+export class DbWriter<TDto extends DtoBase> {
   private readonly _bag: DtoBag<TDto>;
   private readonly _svcEnv: SvcEnvDto;
   private readonly log: ILogger;
@@ -175,7 +175,7 @@ export class DbWriter<TDto extends BaseDto> {
   /** Introspection hook for handlers to log target collection. */
   public async targetInfo(): Promise<{ collectionName: string }> {
     const dto = requireSingleton(this._bag, "write");
-    const collectionName = (dto as BaseDto).requireCollectionName();
+    const collectionName = (dto as DtoBase).requireCollectionName();
     return { collectionName };
   }
 
@@ -190,7 +190,7 @@ export class DbWriter<TDto extends BaseDto> {
    */
   public async write(): Promise<{ id: string }> {
     let dto = requireSingleton(this._bag, "write");
-    let collectionName = (dto as BaseDto).requireCollectionName();
+    let collectionName = (dto as DtoBase).requireCollectionName();
     let coll = await getExplicitCollection(this._svcEnv, collectionName);
 
     for (let attempt = 1; attempt <= MAX_DUP_RETRIES; attempt++) {
@@ -199,28 +199,28 @@ export class DbWriter<TDto extends BaseDto> {
         this.log.debug(
           {
             op: "pre_hasId() test",
-            haveId: (dto as BaseDto).hasId(),
-            id: (dto as BaseDto).hasId() ? (dto as BaseDto).id : undefined,
+            haveId: (dto as DtoBase).hasId(),
+            id: (dto as DtoBase).hasId() ? (dto as DtoBase).id : undefined,
           },
           "dbwriter: id status before toJson"
         );
 
         if (!dto.hasId()) {
           // setter validates UUIDv4 and lowercases
-          (dto as BaseDto).id = newUuid();
+          (dto as DtoBase).id = newUuid();
         }
-        const dtoId = (dto as BaseDto).id;
+        const dtoId = (dto as DtoBase).id;
 
         this.log.debug(
           {
             op: "pre_toJson",
-            haveId: (dto as BaseDto).hasId(),
-            id: (dto as BaseDto).hasId() ? (dto as BaseDto).id : undefined,
+            haveId: (dto as DtoBase).hasId(),
+            id: (dto as DtoBase).hasId() ? (dto as DtoBase).id : undefined,
           },
           "dbwriter: id status before toJson"
         );
 
-        const json = (dto as BaseDto).toJson() as Record<string, unknown>;
+        const json = (dto as DtoBase).toJson() as Record<string, unknown>;
         const mapped = mapWireIdToMongoDoc(json); // strips id → _id (string)
 
         this.log.debug(
@@ -291,12 +291,12 @@ export class DbWriter<TDto extends BaseDto> {
             );
             throw new DuplicateKeyError(dup, err as Error);
           }
-          const cloned = (dto as any).clone() as BaseDto;
-          assertCloneInvariants(dto as BaseDto, cloned as BaseDto);
+          const cloned = (dto as any).clone() as DtoBase;
+          assertCloneInvariants(dto as DtoBase, cloned as DtoBase);
           dto = cloned as TDto;
 
           // Sanity: collection should remain identical
-          const nextCollection = (dto as BaseDto).requireCollectionName();
+          const nextCollection = (dto as DtoBase).requireCollectionName();
           if (nextCollection !== collectionName) {
             this.log.warn(
               {
@@ -334,7 +334,7 @@ export class DbWriter<TDto extends BaseDto> {
 
     for (const _item of source.items()) {
       let dto = _item as TDto;
-      let collectionName = (dto as BaseDto).requireCollectionName();
+      let collectionName = (dto as DtoBase).requireCollectionName();
       let coll = await getExplicitCollection(this._svcEnv, collectionName);
 
       let inserted = false;
@@ -344,12 +344,12 @@ export class DbWriter<TDto extends BaseDto> {
         attempt++
       ) {
         try {
-          if (!(dto as BaseDto).hasId()) {
-            (dto as BaseDto).id = newUuid();
+          if (!(dto as DtoBase).hasId()) {
+            (dto as DtoBase).id = newUuid();
           }
-          const dtoId = (dto as BaseDto).id;
+          const dtoId = (dto as DtoBase).id;
 
-          const json = (dto as BaseDto).toJson() as Record<string, unknown>;
+          const json = (dto as DtoBase).toJson() as Record<string, unknown>;
           const mapped = mapWireIdToMongoDoc(json);
 
           this.log.debug(
@@ -418,11 +418,11 @@ export class DbWriter<TDto extends BaseDto> {
               );
               throw new DuplicateKeyError(dup, err as Error);
             }
-            const cloned = (dto as any).clone() as BaseDto;
-            assertCloneInvariants(dto as BaseDto, cloned as BaseDto);
+            const cloned = (dto as any).clone() as DtoBase;
+            assertCloneInvariants(dto as DtoBase, cloned as DtoBase);
             dto = cloned as TDto;
 
-            const nextCollection = (dto as BaseDto).requireCollectionName();
+            const nextCollection = (dto as DtoBase).requireCollectionName();
             if (nextCollection !== collectionName) {
               this.log.warn(
                 { from: collectionName, to: nextCollection },
@@ -449,13 +449,13 @@ export class DbWriter<TDto extends BaseDto> {
    */
   public async update(): Promise<{ id: string }> {
     const dto = requireSingleton(this._bag, "update");
-    const collectionName = (dto as BaseDto).requireCollectionName();
+    const collectionName = (dto as DtoBase).requireCollectionName();
     const coll = await getExplicitCollection(this._svcEnv, collectionName);
 
     // Require the id prior to serialization; do NOT generate on update.
-    const rawId = (dto as BaseDto).id;
+    const rawId = (dto as DtoBase).id;
 
-    const json = (dto as BaseDto).toJson() as Record<string, unknown>;
+    const json = (dto as DtoBase).toJson() as Record<string, unknown>;
     const { _id, id: _wireId, ...rest } = json as Record<string, unknown>; // strip any leakage defensively
 
     const filter = { _id: String(rawId) };

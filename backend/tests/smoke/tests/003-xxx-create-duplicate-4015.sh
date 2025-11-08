@@ -21,7 +21,9 @@ SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-4015}"
 VERSION="${VERSION:-1}"
-TYPE="${TYPE:-xxx}"
+# TYPE now tracks DTO_TYPE (which itself defaults to SLUG)
+DTO_TYPE="${DTO_TYPE:-$SLUG}"
+TYPE="${TYPE:-$DTO_TYPE}"
 
 # Precedence: BASE (if provided) > SVCFAC_BASE_URL > computed from HOST/PORT
 if [ -z "${BASE:-}" ]; then

@@ -24,7 +24,7 @@
  *     • toJson() never invents or mutates id (no ID insertion during/after toJson).
  */
 
-import { BaseDto } from "../../DtoBase";
+import { DtoBase } from "../../DtoBase";
 import type { IndexHint } from "../../persistence/index-hints";
 import type { IDto } from "../../IDto"; // ← added
 import { randomUUID } from "crypto";
@@ -42,7 +42,7 @@ type XxxJson = {
   updatedByUserId?: string;
 };
 
-export class XxxDto extends BaseDto implements IDto {
+export class XxxDto extends DtoBase implements IDto {
   // ← implements IDto
   // ─────────────── Static: Collection & Index Hints ───────────────
 
@@ -86,7 +86,7 @@ export class XxxDto extends BaseDto implements IDto {
 
   /** Wire hydration (plug Zod here when opts?.validate is true). */
   public static fromJson(json: unknown, opts?: { validate?: boolean }): XxxDto {
-    const dto = new XxxDto(BaseDto.getSecret());
+    const dto = new XxxDto(DtoBase.getSecret());
 
     // Minimal parse/assign
     const j = (json ?? {}) as Partial<XxxJson>;

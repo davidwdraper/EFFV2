@@ -63,7 +63,7 @@ type _DtoMeta = {
   updatedByUserId?: string;
 };
 
-export abstract class BaseDto {
+export abstract class DtoBase {
   // ---- Process-wide defaults (configured at boot) ----
   private static _defaults = { updatedByUserId: "system" };
   private static _warn?: _WarnLike;
@@ -79,7 +79,7 @@ export abstract class BaseDto {
   /** Call once at service boot. */
   public static configureDefaults(opts: { updatedByUserId?: string }): void {
     if (opts.updatedByUserId)
-      BaseDto._defaults.updatedByUserId = opts.updatedByUserId;
+      DtoBase._defaults.updatedByUserId = opts.updatedByUserId;
   }
 
   /**
@@ -87,7 +87,7 @@ export abstract class BaseDto {
    * DTOs themselves remain logging-light; this hook avoids tight coupling.
    */
   public static configureWarn(warn: _WarnLike): void {
-    BaseDto._warn = warn;
+    DtoBase._warn = warn;
   }
 
   // ---- Canonical ID (UUIDv4; immutable once set) ----
@@ -116,7 +116,7 @@ export abstract class BaseDto {
   public set id(value: string) {
     const ctorName = (this as any)?.constructor?.name ?? "DTO";
     if (this._id) {
-      BaseDto._warn?.({
+      DtoBase._warn?.({
         component: "BaseDto",
         event: "id_overwrite_ignored",
         dto: ctorName,
@@ -161,7 +161,7 @@ export abstract class BaseDto {
       return this;
     }
     if (this._collectionName === trimmed) return this;
-    BaseDto._warn?.({
+    DtoBase._warn?.({
       component: "BaseDto",
       event: "collection_name_already_set",
       dto: ctor.name ?? "DTO",
@@ -188,7 +188,7 @@ export abstract class BaseDto {
 
   protected constructor(secretOrArgs?: symbol | _DtoMeta) {
     // Enforce instantiation only via Registry if required
-    if (BaseDto._requireSecret && secretOrArgs !== DTO_SECRET) {
+    if (DtoBase._requireSecret && secretOrArgs !== DTO_SECRET) {
       throw new Error(
         "Direct instantiation of DTOs is not allowed. Use the Registry to construct DTOs."
       );
@@ -256,7 +256,7 @@ export abstract class BaseDto {
     if (!this._meta.createdAt) this._meta.createdAt = now;
     this._meta.updatedAt = now;
     if (!this._meta.updatedByUserId)
-      this._meta.updatedByUserId = BaseDto._defaults.updatedByUserId;
+      this._meta.updatedByUserId = DtoBase._defaults.updatedByUserId;
     const out: Record<string, unknown> = { ...body };
     out.createdAt = this._meta.createdAt;
     out.updatedAt = this._meta.updatedAt;
@@ -265,7 +265,7 @@ export abstract class BaseDto {
   }
 
   public abstract toJson(): unknown;
-  public static fromJson(_json: unknown): BaseDto {
+  public static fromJson(_json: unknown): DtoBase {
     throw new Error(
       "BaseDto.fromJson must be implemented by subclass. Ops: verify the concrete DTO implements fromJson()."
     );

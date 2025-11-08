@@ -7,6 +7,7 @@
 # - Adds per-test headers/footers with ✅/❌ result and duration.
 # - Captures LAST_HTTP_CODE for every request and prints "HTTP <code>".
 # - Zero changes required in existing tests; this file is sourced at top.
+# - NEW: DTO_TYPE exported from smoke.sh; defaults to SLUG when not set.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -20,7 +21,8 @@ _req_time(){ echo "$(( (TIMEOUT_MS+999)/1000 ))"; }
 _now_secs(){ date +%s; }
 # Duration (sec) from START_TS to now
 _duration(){
-  local start="${1:-0}" end; end="$(_now_secs)"
+  local start="${1:-0}" end
+  end="$(_now_secs)"
   echo "$(( end - start ))s"
 }
 
@@ -35,6 +37,7 @@ STATE_DIR="$SMOKE_DIR/.state"; mkdir -p "$STATE_DIR"
 # Namespacing for state files (slug + port)
 SLUG="${SLUG:-xxx}"
 PORT="${PORT:-4015}"
+DTO_TYPE="${DTO_TYPE:-$SLUG}"
 : "${SMOKE_KEY:=${SLUG}-${PORT}}"
 
 STATE_ID_FILE="$STATE_DIR/${SMOKE_KEY}.id"
@@ -58,13 +61,14 @@ _smoke_header(){
   [ "$SMOKE_QUIET_HEADERS" = "1" ] && return 0
   echo "" >&2
   echo "==============================================================================" >&2
-  echo "TEST: ${TEST_NAME}  (SLUG=${SLUG} PORT=${PORT} HOST=${HOST:-127.0.0.1})" >&2
+  echo "TEST: ${TEST_NAME}  (SLUG=${SLUG} DTO_TYPE=${DTO_TYPE} PORT=${PORT} HOST=${HOST:-127.0.0.1})" >&2
   echo "==============================================================================" >&2
 }
 
 _smoke_footer(){
   [ "$SMOKE_QUIET_HEADERS" = "1" ] && return 0
-  local status="$1" dur; dur="$(_duration "$_SMOKE_START_TS")"
+  local status="$1" dur
+  dur="$(_duration "$_SMOKE_START_TS")"
   if [ "$status" -eq 0 ]; then
     echo "${CHECK} PASS: ${TEST_NAME}  [${dur}]" >&2
   else
@@ -159,8 +163,12 @@ save_last_id(){
 }
 load_last_id(){ [ -f "$STATE_ID_FILE" ] && cat "$STATE_ID_FILE" || echo ""; }
 require_last_id(){
-  local id; id="$(load_last_id)"
-  [ -n "$id" ] || { echo "ERROR: no saved id in $STATE_ID_FILE (run create test 002 first)" >&2; exit 2; }
+  local id
+  id="$(load_last_id)"
+  [ -n "$id" ] || {
+    echo "ERROR: no saved id in $STATE_ID_FILE (run create test 002 first)" >&2
+    exit 2
+  }
   printf "%s" "$id"
 }
 
@@ -172,13 +180,26 @@ save_create_payload(){
 }
 load_create_payload(){ [ -f "$STATE_PAYLOAD_FILE" ] && cat "$STATE_PAYLOAD_FILE" || echo ""; }
 require_create_payload(){
-  local j; j="$(load_create_payload)"
-  [ -n "$j" ] || { echo "ERROR: no saved payload in $STATE_PAYLOAD_FILE (run create test 002 first)" >&2; exit 2; }
+  local j
+  j="$(load_create_payload)"
+  [ -n "$j" ] || {
+    echo "ERROR: no saved payload in $STATE_PAYLOAD_FILE (run create test 002 first)" >&2
+    exit 2
+  }
   printf "%s" "$j"
 }
 
 # ------------------------------ conveniences ----------------------------------
+# Legacy helper: base path up to /api/<slug>/v1
+# Existing tests that append "/xxx/..." can keep using this until we migrate
 svc_base_for_xxx(){
   local base="${SVCFAC_BASE_URL:-http://${HOST:-127.0.0.1}:${PORT:-4015}}"
   printf "%s/api/%s/v1" "$base" "${SLUG:-xxx}"
+}
+
+# New helper (for migrated tests): full base including dtoType:
+#   /api/<slug>/v1/<dtoType>
+svc_base_for_type(){
+  local base="${SVCFAC_BASE_URL:-http://${HOST:-127.0.0.1}:${PORT:-4015}}"
+  printf "%s/api/%s/v1/%s" "$base" "${SLUG:-xxx}" "${DTO_TYPE:-${SLUG:-xxx}}"
 }

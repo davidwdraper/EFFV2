@@ -18,7 +18,7 @@
  */
 
 import { z } from "zod";
-import { BaseDto, DtoValidationError } from "./DtoBase";
+import { DtoBase, DtoValidationError } from "./DtoBase";
 
 /** Internal validation schema (not exported). */
 const SvcEnvWireSchema = z.object({
@@ -39,7 +39,7 @@ const SvcEnvWireSchema = z.object({
 /** Exported type for serialization only. */
 export type SvcEnvWire = z.infer<typeof SvcEnvWireSchema>;
 
-export class SvcEnvDto extends BaseDto {
+export class SvcEnvDto extends DtoBase {
   private readonly _key: string;
   private readonly _varsObj: Record<string, string>;
   private readonly _varsMap: Map<string, string>;

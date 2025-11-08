@@ -183,6 +183,65 @@ export abstract class DtoBase {
     );
   }
 
+  // ---- Cloning (ADR-0057: new UUIDv4 id, preserved collection) ----
+
+  /**
+   * Deep clone as a new instance with a NEW UUIDv4 id (ADR-0057).
+   *
+   * Invariants:
+   * - Subclasses MUST implement: static fromJson(json, opts?) and (optionally) dbCollectionName().
+   * - Cloning:
+   *    • Rehydrates from current wire state (this.toJson()) without revalidation.
+   *    • Assigns a brand-new UUIDv4 id (or the supplied override).
+   *    • Preserves the instance collection name on the clone, falling back to dbCollectionName().
+   *
+   * Ops:
+   * - If this throws DTO_CLONE_UNSUPPORTED, fix the concrete DTO so it implements fromJson().
+   */
+  public clone<T extends DtoBase>(this: T, newId?: string): T {
+    const ctor = this.constructor as any;
+
+    if (typeof ctor.fromJson !== "function") {
+      const name = ctor?.name ?? "DTO";
+      throw new Error(
+        `DTO_CLONE_UNSUPPORTED: ${name} is missing static fromJson(). ` +
+          "Ops: ensure this DTO implements fromJson(json, opts?) per ADR-0057 so clone() remains consistent."
+      );
+    }
+
+    // Rehydrate from current wire state (no revalidation).
+    const next = ctor.fromJson(this.toJson(), { validate: false }) as T;
+
+    // Assign NEW id (or supplied override) — bypass previous id while still
+    // using the canonical setter for validation & normalization.
+    const idToUse = newId ?? newUuid();
+    if (!isValidUuidV4(idToUse)) {
+      throw new DtoValidationError("INVALID_ID_FORMAT", [
+        {
+          path: "id",
+          code: "invalid_uuid_v4",
+          message:
+            "clone() received an invalid id override; must be a UUIDv4 string.",
+        },
+      ]);
+    }
+    (next as any)._id = undefined;
+    (next as any).id = idToUse;
+
+    // Preserve instance collection to avoid DTO_COLLECTION_UNSET.
+    const coll =
+      (this as any)._collectionName ??
+      (typeof ctor.dbCollectionName === "function"
+        ? ctor.dbCollectionName()
+        : undefined);
+
+    if (coll && typeof (next as any).setCollectionName === "function") {
+      (next as any).setCollectionName(coll);
+    }
+
+    return next;
+  }
+
   // ---- Meta ----
   private _meta: _DtoMeta;
 

@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/templates/env-service/env-service.dto.ts
+// backend/services/shared/src/dto/env-service.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -6,12 +6,12 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
- *   - ADR-0053 (Instantiation discipline via BaseDto secret)
+ *   - ADR-0053 (Instantiation discipline via DtoBase secret)
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *
  * Purpose:
  * - Concrete DTO for the template service ("env-service").
- * - Constructor accepts the same union as BaseDto: (secret | meta), so the Registry
+ * - Constructor accepts the same union as DtoBase: (secret | meta), so the Registry
  *   can pass the instantiation secret, and fromJson() can pass meta when hydrating.
  *
  * Notes:
@@ -19,15 +19,14 @@
  * - dbCollectionName() returns the hardwired collection for this DTO.
  * - indexHints declare deterministic indexes to be ensured at boot.
  * - ID lifecycle:
- *     • If wire provides id → BaseDto setter validates UUIDv4 and stores lowercase.
+ *     • If wire provides id → DtoBase setter validates UUIDv4 and stores lowercase.
  *     • If absent → DbWriter will generate **before** calling toJson().
  *     • toJson() never invents or mutates id (no ID insertion during/after toJson).
  */
 
 import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
-import type { IDto } from "./IDto"; // ← added
-import { randomUUID } from "crypto";
+import type { IDto } from "./IDto";
 
 // Wire-friendly shape (for clarity)
 type EnvServiceJson = {
@@ -66,15 +65,15 @@ export class EnvServiceDto extends DtoBase implements IDto {
   ];
 
   // ─────────────── Instance: Domain Fields ───────────────
-  // IMPORTANT: Do NOT declare a public `id` field here — it would shadow BaseDto.id.
+  // IMPORTANT: Do NOT declare a public `id` field here — it would shadow DtoBase.id.
   public txtfield1 = "";
   public txtfield2 = "";
   public numfield1 = 0;
   public numfield2 = 0;
 
   /**
-   * Accepts either the BaseDto secret (Registry path) OR meta (fromJson path).
-   * This matches BaseDto’s `(secretOrArgs?: symbol | _DtoMeta)` contract.
+   * Accepts either the DtoBase secret (Registry path) OR meta (fromJson path).
+   * This matches DtoBase’s `(secretOrArgs?: symbol | _DtoMeta)` contract.
    */
   public constructor(
     secretOrMeta?:
@@ -94,7 +93,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
     // Minimal parse/assign
     const j = (json ?? {}) as Partial<EnvServiceJson>;
     if (typeof j.id === "string" && j.id.trim()) {
-      // BaseDto setter validates UUIDv4 & lowercases; immutable after first set.
+      // DtoBase setter validates UUIDv4 & lowercases; immutable after first set.
       dto.id = j.id.trim();
     }
     if (typeof j.txtfield1 === "string") dto.txtfield1 = j.txtfield1;
@@ -104,7 +103,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
     if (typeof j.numfield2 === "number")
       dto.numfield2 = Math.trunc(j.numfield2);
 
-    // If meta is present on wire, capture it (BaseDto will normalize on toJson)
+    // If meta is present on wire, capture it (DtoBase will normalize on toJson)
     dto.setMeta({
       createdAt: j.createdAt,
       updatedAt: j.updatedAt,
@@ -114,7 +113,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return dto;
   }
 
-  /** Canonical outbound wire shape; BaseDto stamps meta here. */
+  /** Canonical outbound wire shape; DtoBase stamps meta here. */
   public toJson(): EnvServiceJson {
     // NO id generation here — DbWriter ensures id BEFORE calling toJson().
     const body = {
@@ -162,32 +161,5 @@ export class EnvServiceDto extends DtoBase implements IDto {
   /** Canonical DTO id. */
   public getId(): string {
     return this.id;
-  }
-
-  // inside backend/services/shared/src/dto/templates/env-service/env-service.dto.ts
-
-  /**
-   * Deep clone as a new instance with a NEW UUIDv4 id (ADR-0057).
-   * - Preserves current DTO fields and meta.
-   * - Re-seeds the instance collection to match the source.
-   */
-  // inside backend/services/shared/src/dto/templates/env-service/env-service.dto.ts
-  public clone(newId?: string): this {
-    // Use the concrete class constructor type (not an inline `this` type)
-    const Ctor = this.constructor as typeof EnvServiceDto;
-
-    // Rehydrate from current wire state (no revalidation)
-    const next = Ctor.fromJson(this.toJson(), { validate: false }) as this;
-
-    // Assign NEW id (or supplied override)
-    (next as any).id = newId ?? randomUUID();
-
-    // Preserve instance collection to avoid DTO_COLLECTION_UNSET
-    const coll = (this as any).getCollectionName?.() ?? Ctor.dbCollectionName();
-    if (coll && typeof (next as any).setCollectionName === "function") {
-      (next as any).setCollectionName(coll);
-    }
-
-    return next;
   }
 }

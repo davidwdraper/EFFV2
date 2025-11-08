@@ -27,7 +27,6 @@
 import { DtoBase } from "../../DtoBase";
 import type { IndexHint } from "../../persistence/index-hints";
 import type { IDto } from "../../IDto"; // ← added
-import { randomUUID } from "crypto";
 
 // Wire-friendly shape (for clarity)
 type XxxJson = {
@@ -159,32 +158,5 @@ export class XxxDto extends DtoBase implements IDto {
   /** Canonical DTO id. */
   public getId(): string {
     return this.id;
-  }
-
-  // inside backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
-
-  /**
-   * Deep clone as a new instance with a NEW UUIDv4 id (ADR-0057).
-   * - Preserves current DTO fields and meta.
-   * - Re-seeds the instance collection to match the source.
-   */
-  // inside backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
-  public clone(newId?: string): this {
-    // Use the concrete class constructor type (not an inline `this` type)
-    const Ctor = this.constructor as typeof XxxDto;
-
-    // Rehydrate from current wire state (no revalidation)
-    const next = Ctor.fromJson(this.toJson(), { validate: false }) as this;
-
-    // Assign NEW id (or supplied override)
-    (next as any).id = newId ?? randomUUID();
-
-    // Preserve instance collection to avoid DTO_COLLECTION_UNSET
-    const coll = (this as any).getCollectionName?.() ?? Ctor.dbCollectionName();
-    if (coll && typeof (next as any).setCollectionName === "function") {
-      (next as any).setCollectionName(coll);
-    }
-
-    return next;
   }
 }

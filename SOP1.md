@@ -212,10 +212,10 @@ No models, no schemas, no leaked shapes. The DTO is the only source of truth, an
 
 Always provide ADR docs as downloadable .md files
 
-As we work our way through building out the backend, there may be time that refactoring is required. We never build shims, or fallbacks, or worry about back-combat. We're greenfield and in total control of all interfaces - everything needs to tight. If a A needs a function in B that doesn't exist, we don't add it to A, we put it in B where it belongs.
+As we work our way through building out the backend, there may be time that refactoring is required. We never build shims, or fallbacks, or worry about back-combat. We're greenfield and in total control of all interfaces - everything needs to tight. If entity A needs a function in B that doesn't exist, we don't add it to A, we put it in B where it belongs.
 
 No helper methods to narrow TS type guards. All typing must be designed and implemented correctly.
 
-When fixing issues or bugs, never offer two or more solutions when one is clearly the preferred. We are never doing quick fixes and always require the best long term production solution.
+When fixing issues or bugs, never offer two or more solutions when one is clearly the preferred. We are never doing quick fixes and always require the best long term production solution. dev == prod.
 
 Your previous session notes follow:

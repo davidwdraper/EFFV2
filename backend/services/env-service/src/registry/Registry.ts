@@ -1,4 +1,4 @@
-// backend/services/t_entity_crud/src/registry/Registry.ts
+// backend/services/env-service/src/registry/Registry.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -34,7 +34,8 @@ export class Registry extends ServiceRegistryBase {
    */
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
-      "env-service": EnvServiceDto as unknown as DtoCtor<IDto>,
+      // template default DTO
+      ["env-service"]: EnvServiceDto as unknown as DtoCtor<IDto>,
       // add new DTOs here as you grow the service:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,
     };
@@ -50,10 +51,7 @@ export class Registry extends ServiceRegistryBase {
   }
 
   /** Hydrate an EnvServiceDto from JSON (validates if requested) and seed collection. */
-  public fromJsonEnvService(
-    json: unknown,
-    opts?: { validate?: boolean }
-  ): EnvServiceDto {
+  public fromJsonEnvService(json: unknown, opts?: { validate?: boolean }): EnvServiceDto {
     const dto = EnvServiceDto.fromJson(json, { validate: !!opts?.validate });
     dto.setCollectionName(EnvServiceDto.dbCollectionName());
     return dto;

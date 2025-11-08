@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
+// backend/services/shared/src/dto/templates/env-service/env-service.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -10,7 +10,7 @@
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *
  * Purpose:
- * - Concrete DTO for the template service ("xxx").
+ * - Concrete DTO for the template service ("env-service").
  * - Constructor accepts the same union as BaseDto: (secret | meta), so the Registry
  *   can pass the instantiation secret, and fromJson() can pass meta when hydrating.
  *
@@ -30,9 +30,9 @@ import type { IDto } from "../../IDto"; // ← added
 import { randomUUID } from "crypto";
 
 // Wire-friendly shape (for clarity)
-type XxxJson = {
+type EnvServiceJson = {
   id?: string; // canonical id (wire, ADR-0050); stored as Mongo _id (string) by adapter
-  type?: "xxx"; // dtoType (wire)
+  type?: "env-service"; // dtoType (wire)
   txtfield1: string;
   txtfield2: string;
   numfield1: number;
@@ -42,13 +42,13 @@ type XxxJson = {
   updatedByUserId?: string;
 };
 
-export class XxxDto extends BaseDto implements IDto {
+export class EnvServiceDto extends BaseDto implements IDto {
   // ← implements IDto
   // ─────────────── Static: Collection & Index Hints ───────────────
 
   /** Hardwired collection for this DTO. Registry seeds instances with this once. */
   public static dbCollectionName(): string {
-    return "xxx";
+    return "env-service";
   }
 
   /**
@@ -85,11 +85,11 @@ export class XxxDto extends BaseDto implements IDto {
   }
 
   /** Wire hydration (plug Zod here when opts?.validate is true). */
-  public static fromJson(json: unknown, opts?: { validate?: boolean }): XxxDto {
-    const dto = new XxxDto(BaseDto.getSecret());
+  public static fromJson(json: unknown, opts?: { validate?: boolean }): EnvServiceDto {
+    const dto = new EnvServiceDto(BaseDto.getSecret());
 
     // Minimal parse/assign
-    const j = (json ?? {}) as Partial<XxxJson>;
+    const j = (json ?? {}) as Partial<EnvServiceJson>;
     if (typeof j.id === "string" && j.id.trim()) {
       // BaseDto setter validates UUIDv4 & lowercases; immutable after first set.
       dto.id = j.id.trim();
@@ -112,11 +112,11 @@ export class XxxDto extends BaseDto implements IDto {
   }
 
   /** Canonical outbound wire shape; BaseDto stamps meta here. */
-  public toJson(): XxxJson {
+  public toJson(): EnvServiceJson {
     // NO id generation here — DbWriter ensures id BEFORE calling toJson().
     const body = {
       id: this.id, // getter throws if not set; DbWriter guarantees presence on create
-      type: "xxx" as const, // wire type (matches slug)
+      type: "env-service" as const, // wire type (matches slug)
       txtfield1: this.txtfield1,
       txtfield2: this.txtfield2,
       numfield1: this.numfield1,
@@ -126,7 +126,7 @@ export class XxxDto extends BaseDto implements IDto {
   }
 
   /** Optional patch helper used by update pipelines. */
-  public patchFrom(json: Partial<XxxJson>): this {
+  public patchFrom(json: Partial<EnvServiceJson>): this {
     if (json.txtfield1 !== undefined && typeof json.txtfield1 === "string") {
       this.txtfield1 = json.txtfield1;
     }
@@ -153,7 +153,7 @@ export class XxxDto extends BaseDto implements IDto {
   // ─────────────── IDto contract (added) ───────────────
   /** Canonical DTO type key (registry key). */
   public getType(): string {
-    return "xxx";
+    return "env-service";
   }
 
   /** Canonical DTO id. */
@@ -161,17 +161,17 @@ export class XxxDto extends BaseDto implements IDto {
     return this.id;
   }
 
-  // inside backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
+  // inside backend/services/shared/src/dto/templates/env-service/env-service.dto.ts
 
   /**
    * Deep clone as a new instance with a NEW UUIDv4 id (ADR-0057).
    * - Preserves current DTO fields and meta.
    * - Re-seeds the instance collection to match the source.
    */
-  // inside backend/services/shared/src/dto/templates/xxx/xxx.dto.ts
+  // inside backend/services/shared/src/dto/templates/env-service/env-service.dto.ts
   public clone(newId?: string): this {
     // Use the concrete class constructor type (not an inline `this` type)
-    const Ctor = this.constructor as typeof XxxDto;
+    const Ctor = this.constructor as typeof EnvServiceDto;
 
     // Rehydrate from current wire state (no revalidation)
     const next = Ctor.fromJson(this.toJson(), { validate: false }) as this;

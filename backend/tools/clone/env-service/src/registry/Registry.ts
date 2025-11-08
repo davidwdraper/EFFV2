@@ -35,7 +35,7 @@ export class Registry extends ServiceRegistryBase {
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
       // template default DTO
-      env-service: EnvServiceDto as unknown as DtoCtor<IDto>,
+      ["env-service"]: EnvServiceDto as unknown as DtoCtor<IDto>,
       // add new DTOs here as you grow the service:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,
     };

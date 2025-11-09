@@ -44,14 +44,19 @@ export function buildEnvServiceRouter(app: AppBase): ReturnType<typeof Router> {
   // UPDATE (PATCH /:dtoType/update/:id)
   r.patch("/:dtoType/update/:id", (req, res) => updateCtl.patch(req, res));
 
-  // READ (GET /:dtoType/read/:id)
-  r.get("/:dtoType/read/:id", (req, res) => readCtl.get(req, res));
-
   // DELETE (DELETE /:dtoType/delete/:id)
   r.delete("/:dtoType/delete/:id", (req, res) => deleteCtl.delete(req, res));
 
   // LIST (GET /:dtoType/list) — pagination via query (?limit=&cursor=…)
+  // NOTE: must be registered before the generic :op route so "list" is not captured as :op.
   r.get("/:dtoType/list", (req, res) => listCtl.get(req, res));
+
+  // READ / CONFIG / future ops:
+  // - Read by id:  GET /:dtoType/read/:id
+  // - Config by key: GET /:dtoType/config  (query: slug, version, env?, level?)
+  //
+  // Controller will inspect req.params.op and pick the correct handler pipeline.
+  r.get("/:dtoType/:op/:id?", (req, res) => readCtl.get(req, res));
 
   return r;
 }

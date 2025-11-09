@@ -2,26 +2,24 @@
 /**
  * Docs:
  * - SOP: DTO-only persistence (reads hydrate with validate=false)
- * - ADRs: ADR-0040 (DTO-Only Persistence)
- *         ADR-0047 (DtoBag/DtoBagView + DB-level batching)
- *         ADR-0048 (DbReader/DbWriter contracts)
+ * - ADRs:
+ *   - ADR-0040 (DTO-Only Persistence)
+ *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
+ *   - ADR-0048 (DbReader/DbWriter contracts — canonical id field is "id")
  *
  * Purpose:
  * - Convert a raw Mongo document directly into a DTO-friendly shape:
  *   • Remove Mongo-only keys like `_id`, `__v`, etc.
- *   • Inject `xxxId:string` (template literal for cloners).
+ *   • Inject a canonical `id:string` (or overridable `idFieldName`) derived from `_id`.
  *   • Leave all other fields intact.
  *
  * Notes:
- * - Keeps literal template name `xxxId`.
- * - Shallow clone avoids mutating driver-owned cursor buffers.
  * - This is the **only** step between raw Mongo and DTO instantiation.
+ * - DbReader passes `idFieldName = "id"` for all DTOs.
+ * - Cloners/templates MAY override idFieldName if they truly need a different name.
  */
 
-export function mongoNormalizeToDto(
-  raw: unknown,
-  idFieldName = "xxxId"
-): unknown {
+export function mongoNormalizeToDto(raw: unknown, idFieldName = "id"): unknown {
   if (raw === null || typeof raw !== "object") return raw;
 
   const src = raw as Record<string, unknown>;
@@ -29,7 +27,7 @@ export function mongoNormalizeToDto(
 
   // --- Hardcoded blacklist of Mongo baggage NV never uses ---
   const disallowed = new Set([
-    "_id", // replaced by xxxId
+    "_id", // replaced by idFieldName (canonical "id")
     "__v", // Mongoose-style version key (unused)
     "$clusterTime", // internal replication metadata
     "$db", // command metadata
@@ -38,7 +36,7 @@ export function mongoNormalizeToDto(
     "$timestamp", // internal diagnostic timestamp
   ]);
 
-  // 1) Convert Mongo _id → xxxId
+  // 1) Convert Mongo _id → idFieldName (canonical "id")
   if (Object.prototype.hasOwnProperty.call(src, "_id")) {
     const v = (src as any)["_id"];
     const idStr = typeof v === "string" ? v : v != null ? String(v) : "";

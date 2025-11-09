@@ -24,12 +24,11 @@ import type { IDto } from "../dto/IDto";
 import type { DtoCtor } from "./RegistryBase";
 import { RegistryBase } from "./RegistryBase";
 
-// Explicit relative paths (no @nv/shared alias within shared/)
-import type { SvcEnvDto } from "../dto/svcenv.dto";
 import type { ILogger } from "../logger/Logger";
 import {
   ensureIndexesForDtos,
   type DtoCtorWithIndexes,
+  type EnvLike,
 } from "../dto/persistence/indexes/ensureIndexes";
 
 type Hydrator<T extends IDto = IDto> = (json: unknown) => T;
@@ -72,8 +71,10 @@ export abstract class ServiceRegistryBase extends RegistryBase {
   /**
    * Delegate: collect registered DTO CLASSES that declare indexHints and
    * pass them to the shared ensureIndexes routine. No index logic lives here.
+   *
+   * `env` is typically an EnvServiceDto instance implementing getEnvVar(name: string): string.
    */
-  public async ensureIndexes(svcEnv: SvcEnvDto, log: ILogger): Promise<void> {
+  public async ensureIndexes(env: EnvLike, log: ILogger): Promise<void> {
     const map = this.ctorByType();
 
     const dtos: DtoCtorWithIndexes[] = [];
@@ -92,7 +93,7 @@ export abstract class ServiceRegistryBase extends RegistryBase {
       }
     }
 
-    await ensureIndexesForDtos({ dtos, svcEnv, log });
+    await ensureIndexesForDtos({ dtos, env, log });
   }
 
   /**

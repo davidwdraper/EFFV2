@@ -14,11 +14,11 @@
  *
  * Invariants:
  * - Canonical id name is strictly "id".
- * - No defaults: NV_MONGO_URI/NV_MONGO_DB must come from SvcEnvDto.
+ * - No defaults: mongoUri/mongoDb must be provided explicitly by the caller
+ *   (typically via EnvServiceDto.getEnvVar()).
  * - No DTO/Bag requirement; callers provide the explicit collection name.
  */
 
-import type { SvcEnvDto } from "../svcenv.dto";
 import { MongoClient, Collection, Db, ObjectId } from "mongodb";
 import { coerceForMongoQuery } from "./adapters/mongo/queryHelper";
 
@@ -26,31 +26,39 @@ import { coerceForMongoQuery } from "./adapters/mongo/queryHelper";
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
+let _uriPinned: string | null = null;
 
 async function getExplicitCollection(
-  svcEnv: SvcEnvDto,
+  mongoUri: string,
+  mongoDbName: string,
   collectionName: string
 ): Promise<Collection> {
-  const uri = svcEnv.getEnvVar("NV_MONGO_URI");
-  const dbName = svcEnv.getEnvVar("NV_MONGO_DB");
-
-  if (!uri || !dbName || !collectionName?.trim()) {
+  if (!mongoUri || !mongoDbName || !collectionName?.trim()) {
     throw new Error(
-      "DBDELETER_MISCONFIG: NV_MONGO_URI/NV_MONGO_DB/collectionName required. " +
-        "Ops: verify svcenv configuration; no defaults permitted."
+      "DBDELETER_MISCONFIG: mongoUri/mongoDb/collectionName required. " +
+        "Ops: verify env-service configuration for this service; no defaults are permitted."
     );
   }
 
   if (!_client) {
-    _client = new MongoClient(uri);
+    _client = new MongoClient(mongoUri);
     await _client.connect();
-    _db = _client.db(dbName);
-    _dbNamePinned = dbName;
-  } else if (_dbNamePinned !== dbName) {
-    throw new Error(
-      `DBDELETER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${dbName}". ` +
-        "Ops: a single process must target one DB; restart with consistent env."
-    );
+    _db = _client.db(mongoDbName);
+    _dbNamePinned = mongoDbName;
+    _uriPinned = mongoUri;
+  } else {
+    if (_uriPinned !== mongoUri) {
+      throw new Error(
+        `DBDELETER_URI_MISMATCH: Previously pinned URI="${_uriPinned}", new URI="${mongoUri}". ` +
+          "Ops: a single process must target one DB URI; restart with consistent configuration."
+      );
+    }
+    if (_dbNamePinned !== mongoDbName) {
+      throw new Error(
+        `DBDELETER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${mongoDbName}". ` +
+          "Ops: a single process must target one DB; restart with consistent configuration."
+      );
+    }
   }
 
   return (_db as Db).collection(collectionName);
@@ -59,15 +67,23 @@ async function getExplicitCollection(
 /* --------------------------- Deleter ----------------------------------- */
 
 export class DbDeleter {
-  private readonly _svcEnv: SvcEnvDto;
+  private readonly _mongoUri: string;
+  private readonly _mongoDb: string;
   private readonly _collectionName: string;
 
   /**
    * Construct a deleter bound to a specific collection.
-   * Callers pass the collection name resolved upstream (e.g., Registry.dbCollectionNameByType()).
+   * Callers pass:
+   *  - mongoUri / mongoDb (usually sourced from EnvServiceDto.getEnvVar)
+   *  - collectionName (resolved upstream e.g. via Registry.dbCollectionNameByType()).
    */
-  constructor(params: { svcEnv: SvcEnvDto; collectionName: string }) {
-    this._svcEnv = params.svcEnv;
+  constructor(params: {
+    mongoUri: string;
+    mongoDb: string;
+    collectionName: string;
+  }) {
+    this._mongoUri = params.mongoUri;
+    this._mongoDb = params.mongoDb;
     this._collectionName = params.collectionName;
   }
 
@@ -91,7 +107,8 @@ export class DbDeleter {
     }
 
     const coll = await getExplicitCollection(
-      this._svcEnv,
+      this._mongoUri,
+      this._mongoDb,
       this._collectionName
     );
 
@@ -112,17 +129,25 @@ export class DbDeleter {
    * Exactly mirrors deleteById() semantics.
    */
   public static async deleteOne(params: {
-    svcEnv: SvcEnvDto;
+    mongoUri: string;
+    mongoDb: string;
     collectionName: string;
     id: string;
   }): Promise<{ deleted: number; id: string }> {
-    const { svcEnv, collectionName, id } = params;
+    const { mongoUri, mongoDb, collectionName, id } = params;
     if (!collectionName?.trim()) {
       throw new Error(
         "DBDELETER_NO_COLLECTION: deleteOne requires a non-empty collectionName."
       );
     }
-    const coll = await getExplicitCollection(svcEnv, collectionName);
+    if (typeof id !== "string" || id.trim() === "") {
+      throw new Error(
+        "DBDELETER_BAD_ID: deleteOne requires a non-empty string id. " +
+          "Caller: validate inputs before persistence."
+      );
+    }
+
+    const coll = await getExplicitCollection(mongoUri, mongoDb, collectionName);
     const filter = coerceForMongoQuery({ _id: String(id) }) as {
       _id: ObjectId;
     };

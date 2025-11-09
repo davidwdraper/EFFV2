@@ -20,7 +20,6 @@
  * - DTOs persist their collection identity as class data; reader does not mutate instances post-hydration.
  */
 
-import type { SvcEnvDto } from "../svcenv.dto";
 import { mongoNormalizeToDto } from "./adapters/mongo/mongoNormalizeToDto";
 
 import type { OrderSpec } from "@nv/shared/db/orderSpec";
@@ -43,7 +42,8 @@ type DtoCtorWithCollection<T> = {
 
 type DbReaderOptions<T> = {
   dtoCtor: DtoCtorWithCollection<T>;
-  svcEnv: SvcEnvDto;
+  mongoUri: string;
+  mongoDb: string;
   validateReads?: boolean; // default false
   /** Canonical id field on DTO JSON. Default: "id" */
   idFieldName?: string; // default: "id"
@@ -66,31 +66,39 @@ export type ReadBatchResult<TDto> = {
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
+let _uriPinned: string | null = null;
 
 async function getExplicitCollection(
-  svcEnv: SvcEnvDto,
+  mongoUri: string,
+  mongoDbName: string,
   collectionName: string
 ): Promise<Collection> {
-  const uri = svcEnv.getEnvVar("NV_MONGO_URI");
-  const dbName = svcEnv.getEnvVar("NV_MONGO_DB");
-
-  if (!uri || !dbName || !collectionName) {
+  if (!mongoUri || !mongoDbName || !collectionName) {
     throw new Error(
-      "DBREADER_MISCONFIG: NV_MONGO_URI/NV_MONGO_DB/collectionName required. " +
-        "Ops: verify svcenv configuration; no defaults permitted."
+      "DBREADER_MISCONFIG: mongoUri/mongoDb/collectionName required. " +
+        "Ops: verify service bootstrap configuration; no defaults are permitted."
     );
   }
 
   if (!_client) {
-    _client = new MongoClient(uri);
+    _client = new MongoClient(mongoUri);
     await _client.connect();
-    _db = _client.db(dbName);
-    _dbNamePinned = dbName;
-  } else if (_dbNamePinned !== dbName) {
-    throw new Error(
-      `DBREADER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${dbName}". ` +
-        "Ops: a single process must target one DB; restart with consistent env."
-    );
+    _db = _client.db(mongoDbName);
+    _dbNamePinned = mongoDbName;
+    _uriPinned = mongoUri;
+  } else {
+    if (_uriPinned !== mongoUri) {
+      throw new Error(
+        `DBREADER_URI_MISMATCH: Previously pinned URI="${_uriPinned}", new URI="${mongoUri}". ` +
+          "Ops: a single process must target one DB URI; restart with consistent configuration."
+      );
+    }
+    if (_dbNamePinned !== mongoDbName) {
+      throw new Error(
+        `DBREADER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${mongoDbName}". ` +
+          "Ops: a single process must target one DB; restart with consistent configuration."
+      );
+    }
   }
 
   return (_db as Db).collection(collectionName);
@@ -100,13 +108,15 @@ async function getExplicitCollection(
 
 export class DbReader<TDto> {
   private readonly dtoCtor: DtoCtorWithCollection<TDto>;
-  private readonly svcEnv: SvcEnvDto;
+  private readonly mongoUri: string;
+  private readonly mongoDb: string;
   private readonly validateReads: boolean;
   private readonly idFieldName: string;
 
   constructor(opts: DbReaderOptions<TDto>) {
     this.dtoCtor = opts.dtoCtor;
-    this.svcEnv = opts.svcEnv;
+    this.mongoUri = opts.mongoUri;
+    this.mongoDb = opts.mongoDb;
     this.validateReads = opts.validateReads ?? false;
     this.idFieldName = opts.idFieldName ?? "id"; // canonical
   }
@@ -129,7 +139,7 @@ export class DbReader<TDto> {
         } returned empty dbCollectionName(). Dev: hard-wire a non-empty string.`
       );
     }
-    return getExplicitCollection(this.svcEnv, collectionName);
+    return getExplicitCollection(this.mongoUri, this.mongoDb, collectionName);
   }
 
   /** Introspection hook for handlers to log target collection. */

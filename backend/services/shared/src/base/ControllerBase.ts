@@ -5,7 +5,7 @@
  * - ADR-0041 (Controller & Handler Architecture)
  * - ADR-0042 (HandlerContext Bus)
  * - ADR-0043 (DTO Hydration & Failure Propagation)
- * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ * - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  * - ADR-0049 (DTO Registry & Wire Discrimination)
  * - ADR-0050 (Wire Bag Envelope; bag-only edges)
  *
@@ -21,7 +21,7 @@ import type { Request, Response } from "express";
 import { HandlerContext } from "../http/handlers/HandlerContext";
 import type { HandlerBase } from "../http/handlers/HandlerBase";
 import { getLogger, type IBoundLogger } from "../logger/Logger";
-import type { SvcEnvDto } from "../dto/svcenv.dto";
+import type { EnvServiceDto } from "../dto/env-service.dto";
 import type { AppBase } from "../base/AppBase";
 import type { IDtoRegistry } from "../registry/RegistryBase";
 
@@ -69,11 +69,14 @@ export abstract class ControllerBase {
     return reg as IDtoRegistry;
   }
 
-  /** Current service environment DTO (ADR-0044). */
-  public getSvcEnv(): SvcEnvDto {
+  /**
+   * Current service environment DTO (EnvServiceDto).
+   * This is the non-secret config DTO owned by AppBase.
+   */
+  public getSvcEnv(): EnvServiceDto {
     const env = (this.app as any)?.svcEnv;
-    if (!env) throw new Error("SvcEnvDto not available from AppBase.");
-    return env as SvcEnvDto;
+    if (!env) throw new Error("EnvServiceDto not available from AppBase.");
+    return env as EnvServiceDto;
   }
 
   /** Controller-bound logger (already scoped per service). */
@@ -109,19 +112,19 @@ export abstract class ControllerBase {
     ctx.set("body", req.body);
     ctx.set("res", res);
 
-    // Seed SvcEnv directly from controller/app (no plumbing objects shoved into ctx)
-    const svcEnv: SvcEnvDto | undefined = this.getSvcEnv();
+    // Seed EnvServiceDto directly from controller/app (no plumbing objects shoved into ctx)
+    const svcEnv: EnvServiceDto | undefined = this.getSvcEnv();
     if (svcEnv) {
       ctx.set("svcEnv", svcEnv);
     } else {
       ctx.set("handlerStatus", "error");
       ctx.set("response.status", 500);
       ctx.set("response.body", {
-        code: "SVCENV_MISSING",
+        code: "ENV_DTO_MISSING",
         title: "Internal Error",
         detail:
-          "SvcEnvDto not available. Ops: ensure App exposes svcEnv or a public getter.",
-        hint: "AppBase owns envDto; export via a public getter.",
+          "EnvServiceDto not available. Ops: ensure AppBase exposes svcEnv via a public getter.",
+        hint: "AppBase owns envDto; export via a public getter returning EnvServiceDto.",
       });
     }
 
@@ -147,15 +150,15 @@ export abstract class ControllerBase {
     const requestId = ctx.get<string>("requestId") ?? "unknown";
 
     // Env presence (makeContext already tried — reassert deterministically)
-    const svcEnv = ctx.get<SvcEnvDto>("svcEnv");
+    const svcEnv = ctx.get<EnvServiceDto>("svcEnv");
     if (!svcEnv) {
       ctx.set("handlerStatus", "error");
       ctx.set("response.status", 500);
       ctx.set("response.body", {
-        code: "SVCENV_MISSING",
+        code: "ENV_DTO_MISSING",
         title: "Internal Error",
         detail:
-          "SvcEnv missing in context. Ops: App must expose the environment DTO; ControllerBase seeds it.",
+          "EnvServiceDto missing in context. Ops: AppBase must expose the environment DTO; ControllerBase seeds it into HandlerContext.",
         requestId,
       });
       return;
@@ -172,7 +175,7 @@ export abstract class ControllerBase {
           code: "REGISTRY_MISSING",
           title: "Internal Error",
           detail:
-            "DtoRegistry missing on App. Ops: wire App.getDtoRegistry() to return a concrete registry.",
+            "DtoRegistry missing on AppBase. Ops: wire AppBase.getDtoRegistry() to return a concrete registry instance.",
           requestId,
         });
         return;
@@ -285,8 +288,10 @@ export abstract class ControllerBase {
 
     const prebuiltStatus =
       ctx.get<number>("response.status") ?? (result ? 200 : undefined);
-    const prebuiltBody = ctx.get<any>("response.body") ??
-      result ?? { ok: true };
+    const prebuiltBody =
+      ctx.get<any>("response.body") ??
+      result ??
+      ({ ok: true } as Record<string, unknown>);
 
     res.status(prebuiltStatus ?? 200).json(prebuiltBody);
     this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");

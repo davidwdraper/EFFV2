@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
@@ -17,7 +17,7 @@
 import type { Express, Router } from "express";
 import express = require("express");
 import { AppBase } from "@nv/shared/base/AppBase";
-import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
@@ -27,8 +27,8 @@ import { buildEnvServiceRouter } from "./routes/env-service.route";
 type CreateAppOptions = {
   slug: string;
   version: number;
-  envDto: SvcEnvDto;
-  envReloader: () => Promise<SvcEnvDto>;
+  envDto: EnvServiceDto;
+  envReloader: () => Promise<EnvServiceDto>;
 };
 
 class EnvServiceApp extends AppBase {
@@ -84,7 +84,7 @@ class EnvServiceApp extends AppBase {
       this.log.warn(
         {
           err: (err as Error)?.message,
-          hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in svcenv, DTO.indexHints[], and connectivity. Service will not start without indexes.",
+          hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in env-service config, DTO.indexHints[], and connectivity. Service will not start without indexes.",
         },
         "boot: ensureIndexes threw — aborting boot (fail-fast)"
       );

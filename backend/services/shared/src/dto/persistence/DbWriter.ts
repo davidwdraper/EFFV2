@@ -11,7 +11,8 @@
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; assign BEFORE toJson; return id)
  *
  * Purpose:
- * - Persist DTOs from a **DtoBag** using SvcEnvDto for connectivity.
+ * - Persist DTOs from a **DtoBag** using explicit Mongo connectivity
+ *   (mongoUri/mongoDb), typically sourced from EnvServiceDto.getEnvVar().
  * - Create (write) and update are **singleton-bag** operations in current controllers.
  * - Batch insert supported via writeMany(bag) with per-item duplicate handling.
  *
@@ -26,7 +27,6 @@
  */
 
 import type { DtoBase } from "../DtoBase";
-import type { SvcEnvDto } from "../svcenv.dto";
 import type { ILogger } from "../../logger/Logger";
 import { MongoClient, Collection, Db } from "mongodb";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
@@ -40,6 +40,7 @@ import { newUuid } from "../../utils/uuid";
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
+let _uriPinned: string | null = null;
 
 /** internal: tiny console-backed logger if none is provided */
 function consoleLogger(ctx: Record<string, unknown> = {}): ILogger {
@@ -68,29 +69,36 @@ function consoleLogger(ctx: Record<string, unknown> = {}): ILogger {
 }
 
 async function getExplicitCollection(
-  svcEnv: SvcEnvDto,
+  mongoUri: string,
+  mongoDbName: string,
   collectionName: string
 ): Promise<Collection> {
-  const uri = svcEnv.getEnvVar("NV_MONGO_URI");
-  const dbName = svcEnv.getEnvVar("NV_MONGO_DB");
-
-  if (!uri || !dbName || !collectionName) {
+  if (!mongoUri || !mongoDbName || !collectionName) {
     throw new Error(
-      "DBWRITER_MISCONFIG: NV_MONGO_URI/NV_MONGO_DB/collectionName required. " +
-        "Ops: verify svcenv configuration; no defaults permitted."
+      "DBWRITER_MISCONFIG: mongoUri/mongoDb/collectionName required. " +
+        "Ops: verify env-service configuration for this service; no defaults permitted."
     );
   }
 
   if (!_client) {
-    _client = new MongoClient(uri);
+    _client = new MongoClient(mongoUri);
     await _client.connect();
-    _db = _client.db(dbName);
-    _dbNamePinned = dbName;
-  } else if (_dbNamePinned !== dbName) {
-    throw new Error(
-      `DBWRITER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${dbName}". ` +
-        "Ops: a single process must target one DB; restart with consistent env."
-    );
+    _db = _client.db(mongoDbName);
+    _dbNamePinned = mongoDbName;
+    _uriPinned = mongoUri;
+  } else {
+    if (_uriPinned !== mongoUri) {
+      throw new Error(
+        `DBWRITER_URI_MISMATCH: Previously pinned URI="${_uriPinned}", new URI="${mongoUri}". ` +
+          "Ops: a single process must target one DB URI; restart with consistent configuration."
+      );
+    }
+    if (_dbNamePinned !== mongoDbName) {
+      throw new Error(
+        `DBWRITER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${mongoDbName}". ` +
+          "Ops: a single process must target one DB; restart with consistent configuration."
+      );
+    }
   }
 
   return (_db as Db).collection(collectionName);
@@ -163,12 +171,19 @@ function mapWireIdToMongoDoc(json: Record<string, unknown>): {
 
 export class DbWriter<TDto extends DtoBase> {
   private readonly _bag: DtoBag<TDto>;
-  private readonly _svcEnv: SvcEnvDto;
+  private readonly _mongoUri: string;
+  private readonly _mongoDb: string;
   private readonly log: ILogger;
 
-  constructor(params: { bag: DtoBag<TDto>; svcEnv: SvcEnvDto; log?: ILogger }) {
+  constructor(params: {
+    bag: DtoBag<TDto>;
+    mongoUri: string;
+    mongoDb: string;
+    log?: ILogger;
+  }) {
     this._bag = params.bag;
-    this._svcEnv = params.svcEnv;
+    this._mongoUri = params.mongoUri;
+    this._mongoDb = params.mongoDb;
     this.log = params.log ?? consoleLogger({ component: "DbWriter" });
   }
 
@@ -191,7 +206,11 @@ export class DbWriter<TDto extends DtoBase> {
   public async write(): Promise<{ id: string }> {
     let dto = requireSingleton(this._bag, "write");
     let collectionName = (dto as DtoBase).requireCollectionName();
-    let coll = await getExplicitCollection(this._svcEnv, collectionName);
+    let coll = await getExplicitCollection(
+      this._mongoUri,
+      this._mongoDb,
+      collectionName
+    );
 
     for (let attempt = 1; attempt <= MAX_DUP_RETRIES; attempt++) {
       try {
@@ -306,7 +325,11 @@ export class DbWriter<TDto extends DtoBase> {
               "dbwriter: collection changed across clone (unexpected)"
             );
             collectionName = nextCollection;
-            coll = await getExplicitCollection(this._svcEnv, collectionName);
+            coll = await getExplicitCollection(
+              this._mongoUri,
+              this._mongoDb,
+              collectionName
+            );
           }
 
           continue; // retry
@@ -335,7 +358,11 @@ export class DbWriter<TDto extends DtoBase> {
     for (const _item of source.items()) {
       let dto = _item as TDto;
       let collectionName = (dto as DtoBase).requireCollectionName();
-      let coll = await getExplicitCollection(this._svcEnv, collectionName);
+      let coll = await getExplicitCollection(
+        this._mongoUri,
+        this._mongoDb,
+        collectionName
+      );
 
       let inserted = false;
       for (
@@ -429,7 +456,11 @@ export class DbWriter<TDto extends DtoBase> {
                 "dbwriter: collection changed across clone (many, unexpected)"
               );
               collectionName = nextCollection;
-              coll = await getExplicitCollection(this._svcEnv, collectionName);
+              coll = await getExplicitCollection(
+                this._mongoUri,
+                this._mongoDb,
+                collectionName
+              );
             }
             continue;
           }
@@ -450,7 +481,11 @@ export class DbWriter<TDto extends DtoBase> {
   public async update(): Promise<{ id: string }> {
     const dto = requireSingleton(this._bag, "update");
     const collectionName = (dto as DtoBase).requireCollectionName();
-    const coll = await getExplicitCollection(this._svcEnv, collectionName);
+    const coll = await getExplicitCollection(
+      this._mongoUri,
+      this._mongoDb,
+      collectionName
+    );
 
     // Require the id prior to serialization; do NOT generate on update.
     const rawId = (dto as DtoBase).id;

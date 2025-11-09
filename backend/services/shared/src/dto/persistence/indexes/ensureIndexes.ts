@@ -2,26 +2,37 @@
 /**
  * Docs:
  * - ADR-0040/41 (DTO-only persistence)
- * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ * - ADR-0044 (Env DTO as Key/Value Contract)
  * - ADR-0045 (Index Hints — burn-after-read & boot ensure)
  *
  * Purpose:
  * - Deterministically ensure Mongo indexes for a set of DTOs at service boot.
  * - No fallbacks: misconfiguration = startup failure (dev == prod).
- * - Collection names are resolved **by the DTO class** (BaseDto.dbCollectionName()),
+ * - Collection names are resolved **by the DTO class** (dbCollectionName()),
  *   not passed in from the caller.
+ *
+ * Notes:
+ * - Historically this used SvcEnvDto; the dependency is now a generic env-like
+ *   object exposing getEnvVar(name: string): string (e.g. EnvServiceDto).
  */
 
-import type { SvcEnvDto } from "../../svcenv.dto";
 import type { IndexHint } from "../../persistence/index-hints";
 import type { ILogger } from "../../../logger/Logger";
 import { MongoClient } from "mongodb";
 
 /**
+ * Minimal contract for env DTOs used here.
+ * Any DTO that can supply Mongo connection strings via getEnvVar is acceptable.
+ */
+export type EnvLike = {
+  getEnvVar: (name: string) => string;
+};
+
+/**
  * DTO class shape we require for index creation.
  * Expect a CLASS (not an instance) with:
  *  - static indexHints: ReadonlyArray<IndexHint>
- *  - static dbCollectionName(): string  (delegates to BaseDto.dbCollectionName)
+ *  - static dbCollectionName(): string
  *  - optional .name for logging
  */
 export type DtoCtorWithIndexes = {
@@ -33,17 +44,37 @@ export type DtoCtorWithIndexes = {
 export interface EnsureIndexesOptions {
   /** Array of DTO CLASSES that declare indexHints and can resolve their collection */
   dtos: DtoCtorWithIndexes[];
-  svcEnv: SvcEnvDto;
+  /**
+   * Env-like config carrier (typically EnvServiceDto) that can supply:
+   *  - NV_MONGO_URI
+   *  - NV_MONGO_DB
+   */
+  env: EnvLike;
   log: ILogger;
 }
 
 export async function ensureIndexesForDtos(
   opts: EnsureIndexesOptions
 ): Promise<void> {
-  const { dtos, svcEnv, log } = opts;
+  const { dtos, env, log } = opts;
 
-  const uri = svcEnv.getEnvVar("NV_MONGO_URI") as string;
-  const dbName = svcEnv.getEnvVar("NV_MONGO_DB") as string;
+  let uri: string;
+  let dbName: string;
+  try {
+    uri = env.getEnvVar("NV_MONGO_URI");
+    dbName = env.getEnvVar("NV_MONGO_DB");
+  } catch (e) {
+    const msg =
+      (e as Error)?.message ??
+      "Missing required Mongo env vars NV_MONGO_URI/NV_MONGO_DB.";
+    log.error(
+      { err: msg },
+      "ensureIndexes: failed to read NV_MONGO_URI/NV_MONGO_DB from env DTO"
+    );
+    throw new Error(
+      `${msg} Ops: ensure env-service configuration document for this service includes NV_MONGO_URI and NV_MONGO_DB as non-empty strings.`
+    );
+  }
 
   if (!uri || !dbName) {
     log.error(
@@ -51,7 +82,8 @@ export async function ensureIndexesForDtos(
       "ensureIndexes: missing required env configuration"
     );
     throw new Error(
-      "ensureIndexes: required env values missing — aborting startup"
+      "ensureIndexes: required env values missing — aborting startup. " +
+        "Ops: verify NV_MONGO_URI and NV_MONGO_DB in env-service for this service/version."
     );
   }
 
@@ -65,8 +97,8 @@ export async function ensureIndexesForDtos(
   const grouped = new Map<string, DtoCtorWithIndexes[]>();
 
   for (const dto of dtos) {
-    // This will throw loudly if BaseDto.configureEnv(...) wasn't called at boot,
-    // or if the env key is missing/empty — desired fail-fast behavior.
+    // This will throw loudly if dbCollectionName() is miswired or empty —
+    // desired fail-fast behavior.
     const collection = safeResolveCollection(dto, log);
     const arr = grouped.get(collection) ?? [];
     arr.push(dto);
@@ -129,8 +161,7 @@ function safeResolveCollection(dto: DtoCtorWithIndexes, log: ILogger): string {
       `ensureIndexes: DTO ${
         dto.name ?? "<anon>"
       } cannot resolve db collection. ` +
-        `Ops: verify BaseDto.configureEnv(...) was called at boot and that the ` +
-        `DTO's dbCollectionKey() env var is present and non-empty.`
+        "Ops: verify the DTO implements a static dbCollectionName() that returns a non-empty string."
     );
   }
 }

@@ -6,13 +6,13 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)  [collection no longer sourced from env]
  *   - ADR-0053 (Instantiation Discipline via Registry Secret)
- *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
+ *   - ADR-0057 (ID Generation & Validation — UUIDv4 or 24-hex Mongo id; immutable; WARN on overwrite attempt)
  *
  * Purpose:
  * - Abstract DTO base with a single outbound JSON path.
  * - Meta stamping (createdAt/updatedAt/updatedByUserId) happens **inside toJson()** via helper.
  * - Adds optional instantiation secret enforcement (Registry-only construction).
- * - Adds canonical ID lifecycle: immutable once set, UUIDv4 validation, WARN on overwrite attempts.
+ * - Adds canonical ID lifecycle: immutable once set, validated format, WARN on overwrite attempts.
  *
  * Notes:
  * - DTOs remain pure (no business logging). Handlers/services log operational details.
@@ -24,6 +24,20 @@ import { isValidUuidV4, newUuid } from "../utils/uuid";
 
 // ─────────────────────────── Secret Key ───────────────────────────
 const DTO_SECRET = Symbol("DTO_SECRET");
+
+// Accept either UUIDv4 or a 24-hex Mongo ObjectId string as a valid DTO id.
+function isValidDtoIdFormat(id: string): boolean {
+  const v = (id ?? "").trim();
+  if (!v) return false;
+
+  // Mongo ObjectId format: 24 hex chars
+  const isMongoHex = /^[0-9a-fA-F]{24}$/.test(v);
+
+  // UUIDv4 format
+  const isUuid = isValidUuidV4(v);
+
+  return isMongoHex || isUuid;
+}
 
 export class DtoValidationError extends Error {
   public readonly issues: Array<{
@@ -90,7 +104,7 @@ export abstract class DtoBase {
     DtoBase._warn = warn;
   }
 
-  // ---- Canonical ID (UUIDv4; immutable once set) ----
+  // ---- Canonical ID (UUIDv4 or 24-hex Mongo id; immutable once set) ----
   private _id?: string;
 
   /** True if an id has been set on this instance. */
@@ -110,11 +124,15 @@ export abstract class DtoBase {
 
   /**
    * One-shot setter:
-   * - First assignment must be UUIDv4 (case-insensitive); stored lowercase.
+   * - First assignment must be a valid DTO id:
+   *     • UUIDv4 (case-insensitive), OR
+   *     • 24-hex Mongo ObjectId string.
+   * - Stored lowercase for stability.
    * - Subsequent attempts are a no-op and emit WARN (investigate call site).
    */
   public set id(value: string) {
     const ctorName = (this as any)?.constructor?.name ?? "DTO";
+
     if (this._id) {
       DtoBase._warn?.({
         component: "BaseDto",
@@ -126,13 +144,20 @@ export abstract class DtoBase {
       });
       return; // no-op per ADR-0057
     }
-    if (!isValidUuidV4(value)) {
-      const detail = "id must be a UUIDv4";
+
+    const v = (value ?? "").trim();
+    if (!isValidDtoIdFormat(v)) {
       throw new DtoValidationError("INVALID_ID_FORMAT", [
-        { path: "id", code: "invalid_uuid_v4", message: detail },
+        {
+          path: "id",
+          code: "invalid_id_format",
+          message:
+            "id must be a UUIDv4 or a 24-hex Mongo ObjectId string (normalized, non-empty).",
+        },
       ]);
     }
-    this._id = value.toLowerCase();
+
+    this._id = v.toLowerCase();
   }
 
   /** Ensure an id exists (UUIDv4 auto-generation path); returns the id. */

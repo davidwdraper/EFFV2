@@ -5,8 +5,8 @@
  * - ADRs:
  *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
  *   - ADR-0032 (RoutePolicyGate — version-agnostic enforcement; health bypass)
- *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0039 (env-service centralized non-secret env; runtime reload endpoint)
+ *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
  * Purpose (generic):
@@ -29,18 +29,18 @@ import {
   type ISvcconfigResolver,
 } from "@nv/shared/middleware/policy/routePolicyGate";
 import { ServiceBase } from "@nv/shared/base/ServiceBase";
-import { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 
 export type AppBaseCtor = {
   service: string;
   version: number;
-  envDto: SvcEnvDto;
+  envDto: EnvServiceDto;
   /**
-   * Called by the /env/reload endpoint to fetch & validate a fresh SvcEnvDto.
+   * Called by the /env/reload endpoint to fetch & validate a fresh EnvServiceDto.
    * Must throw on failure; AppBase will translate to 500 JSON.
    */
-  envReloader: () => Promise<SvcEnvDto>;
+  envReloader: () => Promise<EnvServiceDto>;
 };
 
 export abstract class AppBase extends ServiceBase {
@@ -48,8 +48,8 @@ export abstract class AppBase extends ServiceBase {
   private _booted = false;
 
   protected readonly version: number;
-  private _envDto: SvcEnvDto;
-  private readonly envReloader: () => Promise<SvcEnvDto>;
+  private _envDto: EnvServiceDto;
+  private readonly envReloader: () => Promise<EnvServiceDto>;
 
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
@@ -67,12 +67,12 @@ export abstract class AppBase extends ServiceBase {
   }
 
   /** Current environment DTO (protected for subclasses). */
-  protected get envDto(): SvcEnvDto {
+  protected get envDto(): EnvServiceDto {
     return this._envDto;
   }
 
-  /** ADR-0044: Public accessors so controllers/handlers can retrieve the DTO instance. */
-  public get svcEnv(): SvcEnvDto {
+  /** Public accessors so controllers/handlers can retrieve the DTO instance. */
+  public get svcEnv(): EnvServiceDto {
     return this._envDto;
   }
 
@@ -125,6 +125,7 @@ export abstract class AppBase extends ServiceBase {
   // ─────────────── Hooks (override sparingly) ───────────────
 
   /** One-time, awaitable boot (e.g., warm caches). Default: no-op. */
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
   protected async onBoot(): Promise<void> {}
 
   /** Default versioned base like `/api/<slug>/v<major>` */
@@ -177,6 +178,7 @@ export abstract class AppBase extends ServiceBase {
   }
 
   /** Security layer (verifyS2S, CORS, etc.). Default: no-op. */
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
   protected mountSecurity(): void {}
 
   /** Body parsers. Default: JSON for workers. Gateway may override. */
@@ -191,6 +193,15 @@ export abstract class AppBase extends ServiceBase {
   protected mountPostRouting(): void {
     this.app.use(
       (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+        this.log.error(
+          {
+            error:
+              err instanceof Error
+                ? { message: err.message, stack: err.stack }
+                : err,
+          },
+          "unhandled error in request pipeline"
+        );
         res
           .status(500)
           .json({ type: "about:blank", title: "Internal Server Error" });
@@ -236,23 +247,36 @@ export abstract class AppBase extends ServiceBase {
   /**
    * Standardized environment reload endpoint.
    * Path: `${base}/env/reload` → POST
-   * Contract: returns { ok, reloadedAt, fromEtag?, toEtag? }
+   * Contract: returns { ok, reloadedAt, env, slug, version, level }
    * Policy: expected to be allowed ONLY for UserType >= 5 via routePolicy.
    */
   protected mountEnvReload(base: string): void {
     const path = `${base}/env/reload`;
     this.app.post(path, async (_req: Request, res: Response) => {
-      const from = this._envDto?.etag;
+      const fromEnv = this._envDto.env;
+      const fromSlug = this._envDto.slug;
+      const fromVersion = this._envDto.version;
+      const fromLevel = this._envDto.level;
+
       try {
         const fresh = await this.envReloader();
         this._envDto = fresh; // atomic swap
-        const to = fresh.etag;
 
         return res.status(200).json({
           ok: true,
           reloadedAt: new Date().toISOString(),
-          fromEtag: from ?? null,
-          toEtag: to ?? null,
+          from: {
+            env: fromEnv,
+            slug: fromSlug,
+            version: fromVersion,
+            level: fromLevel,
+          },
+          to: {
+            env: fresh.env,
+            slug: fresh.slug,
+            version: fresh.version,
+            level: fresh.level,
+          },
         });
       } catch (err) {
         return res.status(500).json({
@@ -261,7 +285,7 @@ export abstract class AppBase extends ServiceBase {
           title: "env_reload_failed",
           detail:
             (err as Error)?.message ??
-            "Failed to reload environment. Check svcenv availability and policy.",
+            "Failed to reload environment. Ops: verify env-service configuration document and DB connectivity.",
         });
       }
     });

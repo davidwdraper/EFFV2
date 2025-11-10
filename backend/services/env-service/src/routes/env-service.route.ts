@@ -38,8 +38,18 @@ export function buildEnvServiceRouter(app: AppBase): ReturnType<typeof Router> {
   const deleteCtl = new EnvServiceDeleteController(app);
   const listCtl = new EnvServiceListController(app);
 
-  // CREATE (PUT /:dtoType/create)
-  r.put("/:dtoType/create", (req, res) => createCtl.put(req, res));
+  // CREATE / CLONE (PUT /:dtoType/:op[…])
+  //
+  // - Standard create:
+  //     PUT /:dtoType/create
+  // - Clone:
+  //     PUT /:dtoType/clone/:sourceKey/:targetSlug
+  //
+  // Controller will inspect req.params.op and choose the appropriate pipeline.
+  r.put("/:dtoType/:op", (req, res) => createCtl.put(req, res));
+  r.put("/:dtoType/:op/:sourceKey/:targetSlug", (req, res) =>
+    createCtl.put(req, res)
+  );
 
   // UPDATE (PATCH /:dtoType/update/:id)
   r.patch("/:dtoType/update/:id", (req, res) => updateCtl.patch(req, res));

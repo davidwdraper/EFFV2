@@ -19,7 +19,7 @@
  */
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { XxxDto } from "@nv/shared/dto/xxx.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
@@ -34,7 +34,6 @@ export class Registry extends ServiceRegistryBase {
    */
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
-      // template default DTO
       ["xxx"]: XxxDto as unknown as DtoCtor<IDto>,
       // add new DTOs here as you grow the service:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,

@@ -11,7 +11,7 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/ControllerBase";
 
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { XxxDto } from "@nv/shared/dto/xxx.dto";
 import { QueryListHandler } from "./handlers/query.list.handler";
 import { DbReadListHandler } from "./handlers/dbRead.list.handler";
 

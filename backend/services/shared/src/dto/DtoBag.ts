@@ -150,6 +150,36 @@ export class DtoBag<T> {
     return this.items();
   }
 
+  /**
+   * Ensure this bag is a singleton.
+   * Throws if size !== 1, so callers that expect a single DTO can rely on it.
+   */
+  // inside DtoBag<T>
+  public ensureSingleton(throwOnError = true): boolean {
+    const count = this._items.length;
+
+    if (count === 1) return true;
+
+    const msg =
+      count === 0
+        ? "DtoBag.ensureSingleton(): expected 1 item but bag is empty."
+        : `DtoBag.ensureSingleton(): expected 1 item but found ${count}.`;
+
+    if (throwOnError) throw new Error(msg);
+
+    // return false instead of throwing
+    return false;
+  }
+
+  /**
+   * Convenience: return the single DTO in this bag.
+   * Internally calls ensureSingleton() to enforce invariants.
+   */
+  public getSingleton(): T {
+    this.ensureSingleton();
+    return this._items[0];
+  }
+
   public viewAll(): DtoBagView<T> {
     const n = this._items.length;
     const indices = new Array<number>(n);

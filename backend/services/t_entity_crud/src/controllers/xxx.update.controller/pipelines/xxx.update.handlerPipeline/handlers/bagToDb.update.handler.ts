@@ -7,6 +7,7 @@
  *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
+ *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  *
  * Purpose:
  * - Consume the UPDATED **singleton DtoBag** from ctx["bag"] and execute an update().
@@ -23,7 +24,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import type { DtoBase } from "@nv/shared/dto/DtoBase";
 import {
   DbWriter,
   DuplicateKeyError,
@@ -38,7 +39,7 @@ export class BagToDbUpdateHandler extends HandlerBase {
     this.log.debug({ event: "execute_enter" }, "bagToDb.update enter");
 
     // --- Required context ----------------------------------------------------
-    const bag = this.ctx.get<DtoBag<XxxDto>>("bag");
+    const bag = this.ctx.get<DtoBag<any>>("bag");
     if (!bag) {
       return this._badRequest(
         "BAG_MISSING",
@@ -56,11 +57,56 @@ export class BagToDbUpdateHandler extends HandlerBase {
       );
     }
 
-    // Pull SvcEnv directly from Controller/App (no ctx plumbing)
-    const svcEnv = this.controller.getSvcEnv();
+    // Pull svcEnv directly from Controller/App (no ctx plumbing)
+    const svcEnv = this.controller.getSvcEnv?.();
+    if (!svcEnv) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 500);
+      this.ctx.set("error", {
+        code: "ENV_DTO_MISSING",
+        title: "Internal Error",
+        detail:
+          "EnvServiceDto missing from ControllerBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerBase correctly.",
+      });
+      return;
+    }
 
-    // --- Writer (bag-centric) -----------------------------------------------
-    const writer = new DbWriter<XxxDto>({ bag, svcEnv });
+    // Derive Mongo connection info from svcEnv (ADR-0044; tolerant to shape)
+    const svcEnvAny: any = svcEnv;
+    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
+    const mongoUri: string | undefined =
+      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
+    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+
+    if (!mongoUri || !mongoDb) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 500);
+      this.ctx.set("error", {
+        code: "MONGO_ENV_MISSING",
+        title: "Internal Error",
+        detail:
+          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
+      });
+      this.log.error(
+        {
+          event: "mongo_env_missing",
+          hasSvcEnv: !!svcEnv,
+          mongoUriPresent: !!mongoUri,
+          mongoDbPresent: !!mongoDb,
+        },
+        "update aborted — Mongo env config missing"
+      );
+      return;
+    }
+
+    // --- Writer (bag-centric; use DtoBase for DbWriter contract) ------------
+    const baseBag = bag as unknown as DtoBag<DtoBase>;
+    const writer = new DbWriter<DtoBase>({
+      bag: baseBag,
+      mongoUri,
+      mongoDb,
+      log: this.log,
+    });
 
     try {
       const { collectionName } = (await writer.targetInfo?.()) ?? {

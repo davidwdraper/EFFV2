@@ -2,13 +2,13 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0040 (DTO-Only Persistence; adapter edge coercion)
- *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0043 (Finalize mapping)
- *   - ADR-0048 (Reader/Writer/Deleter contracts)
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
- *   - ADR-0056 (Typed routes use :dtoType; handler resolves collection via Registry)
+ * - ADR-0040 (DTO-Only Persistence; adapter edge coercion)
+ * - ADR-0042 (HandlerContext Bus — KISS)
+ * - ADR-0043 (Finalize mapping)
+ * - ADR-0048 (Reader/Writer/Deleter contracts)
+ * - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ * - ADR-0056 (Typed routes use :dtoType; handler resolves collection via Registry)
+ * - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  *
  * Purpose:
  * - DELETE /:dtoType/delete/:id — delete a single record by canonical id,
@@ -68,7 +68,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
     }
 
     // svcEnv + Registry via Controller (no ctx plumbing)
-    const svcEnv = this.controller.getSvcEnv();
+    const svcEnv = this.controller.getSvcEnv?.();
     const registry = this.controller.getDtoRegistry?.();
 
     if (!svcEnv || !registry) {
@@ -120,8 +120,41 @@ export class DbDeleteDeleteHandler extends HandlerBase {
       return;
     }
 
+    // Derive Mongo connection info from svcEnv (ADR-0044; tolerant to shape)
+    const svcEnvAny: any = svcEnv;
+    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
+    const mongoUri: string | undefined =
+      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
+    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+
+    if (!mongoUri || !mongoDb) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 500);
+      this.ctx.set("error", {
+        code: "MONGO_ENV_MISSING",
+        title: "Internal Error",
+        detail:
+          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
+        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
+      });
+      this.log.error(
+        {
+          event: "mongo_env_missing",
+          hasSvcEnv: !!svcEnv,
+          mongoUriPresent: !!mongoUri,
+          mongoDbPresent: !!mongoDb,
+        },
+        "Delete aborted — Mongo env config missing"
+      );
+      return;
+    }
+
     try {
-      const deleter = new DbDeleter({ svcEnv, collectionName });
+      const deleter = new DbDeleter({
+        mongoUri,
+        mongoDb,
+        collectionName,
+      });
 
       // Introspection for parity with read/write logs
       const tgt = await deleter.targetInfo();
@@ -161,7 +194,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
         code: "DB_OP_FAILED",
         title: "Internal Error",
         detail: err?.message ?? String(err),
-        hint: "Check svcenv NV_MONGO_URI/NV_MONGO_DB; confirm collection name from Registry; verify network/auth and Mongo health.",
+        hint: "Check env-service NV_MONGO_URI/NV_MONGO_DB; confirm collection name from Registry; verify network/auth and Mongo health.",
       });
       this.log.error(
         { event: "delete_error", err: err?.message },

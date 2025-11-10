@@ -37,3 +37,16 @@
 //   HttpLikeRequest,
 //   HttpLikeResponse,
 // } from "./svc/types";
+
+// backend/services/shared/src/index.ts
+
+/**
+ * Shared package entrypoint.
+ *
+ * For now this is intentionally minimal: all consumers use deep imports
+ * like "@nv/shared/dto/xxx.dto". As we stabilize a public surface,
+ * explicit exports can be added here.
+ */
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export {};

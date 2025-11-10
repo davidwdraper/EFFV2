@@ -40,7 +40,7 @@ export class DbReadGetHandler extends HandlerBase {
 
   protected async execute(): Promise<void> {
     // svcEnv comes from the controller (no ctx lookups for it)
-    const svcEnv = this.controller.getSvcEnv();
+    const svcEnv = this.controller.getSvcEnv?.();
 
     // dtoCtor is intentionally per-route seed via ctx (controller/pipeline decides which DTO)
     const dtoCtor = this.ctx.get<any>("read.dtoCtor");
@@ -54,6 +54,46 @@ export class DbReadGetHandler extends HandlerBase {
         detail:
           "Required context missing (read.dtoCtor). Ops: verify the read pipeline seeds the DTO constructor.",
       });
+      return;
+    }
+
+    if (!svcEnv) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
+        code: "ENV_DTO_MISSING",
+        title: "Internal Error",
+        detail:
+          "EnvServiceDto missing from ControllerBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerBase correctly.",
+      });
+      return;
+    }
+
+    // Derive Mongo connection info from svcEnv (ADR-0044; tolerant to shape)
+    const svcEnvAny: any = svcEnv;
+    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
+    const mongoUri: string | undefined =
+      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
+    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+
+    if (!mongoUri || !mongoDb) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
+        code: "MONGO_ENV_MISSING",
+        title: "Internal Error",
+        detail:
+          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
+      });
+      this.log.error(
+        {
+          event: "mongo_env_missing",
+          hasSvcEnv: !!svcEnv,
+          mongoUriPresent: !!mongoUri,
+          mongoDbPresent: !!mongoDb,
+        },
+        "read aborted — Mongo env config missing"
+      );
       return;
     }
 
@@ -82,7 +122,8 @@ export class DbReadGetHandler extends HandlerBase {
 
     const reader = new DbReader<any>({
       dtoCtor,
-      svcEnv,
+      mongoUri,
+      mongoDb,
       validateReads: false,
       idFieldName: "id", // canonical
     });

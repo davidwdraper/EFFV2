@@ -24,8 +24,9 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { XxxDto } from "@nv/shared/dto/xxx.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
+import type { IDto } from "@nv/shared/dto/IDto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 
 export class ApplyPatchUpdateHandler extends HandlerBase {
@@ -131,7 +132,8 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
     }
 
     // ---- Re-bag the UPDATED DTO; replace ctx["bag"] -------------------------
-    const { bag: updatedBag } = BagBuilder.fromDtos([existing], {
+    const dtos: IDto[] = [existing as unknown as IDto];
+    const { bag: updatedBag } = BagBuilder.fromDtos(dtos, {
       requestId: this.ctx.get("requestId") ?? "unknown",
       limit: 1,
       cursor: null,

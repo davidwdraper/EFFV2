@@ -11,7 +11,7 @@ Core rules (simple & explicit):
 - t_entity_crud → <slug>
 - Standalone/identifier 'xxx' → <slug> (dashed)
 - DTO template flatten:
-  "@nv/shared/dto/templates/xxx/xxx.dto" → "@nv/shared/dto/<slug>.dto"
+  "@nv/shared/dto/xxx.dto" → "@nv/shared/dto/<slug>.dto"
 
 Notes:
 - We intentionally do **not** special-case Xxx inside/outside literals. It's a global, blind substitution.

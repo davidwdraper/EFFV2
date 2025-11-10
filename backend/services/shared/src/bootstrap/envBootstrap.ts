@@ -1,0 +1,200 @@
+// backend/services/shared/src/bootstrap/envBootstrap.ts
+/**
+ * Docs:
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADRs:
+ *   - ADR-0039 (svcenv centralized non-secret env)
+ *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
+ *
+ * Purpose:
+ * - Shared environment bootstrap for all services that obtain config from env-service.
+ * - env-service itself is the only exception; it uses its own local DB-based bootstrap.
+ *
+ * Responsibilities:
+ * - Use SvcClient + SvcEnvClient to:
+ *     1) Resolve the current env for { slug, version }.
+ *     2) Fetch the EnvServiceDto config bag for (env, slug, version).
+ * - Work in terms of DtoBag<EnvServiceDto> (no naked DTOs cross this boundary).
+ * - Derive HTTP host/port from the primary DTO in the bag.
+ * - Expose a bag-based envReloader with the same semantics.
+ *
+ * Invariants:
+ * - No .env file parsing here; any env vars (e.g., NV_ENV_SERVICE_URL) are read by SvcClient.
+ * - All failures log concrete Ops guidance and terminate the process with exit code 1.
+ */
+
+import fs from "fs";
+import path from "path";
+import { DtoBag } from "../dto/DtoBag";
+import { EnvServiceDto } from "../dto/env-service.dto";
+import { SvcClient } from "../s2s/SvcClient";
+import { SvcEnvClient } from "../env/svcenvClient";
+
+export type EnvBootstrapOpts = {
+  slug: string;
+  version: number;
+  /**
+   * Optional explicit startup log path. If omitted, defaults to:
+   *   <cwd>/<slug>-startup-error.log
+   */
+  logFile?: string;
+};
+
+export type EnvBootstrapResult = {
+  envBag: DtoBag<EnvServiceDto>;
+  envReloader: () => Promise<DtoBag<EnvServiceDto>>;
+  host: string;
+  port: number;
+};
+
+/** Resolve log file path (default to per-service startup log). */
+function resolveLogFile(slug: string, explicit?: string): string {
+  if (explicit && explicit.trim()) return explicit;
+  const safeSlug = slug.trim() || "service";
+  return path.resolve(process.cwd(), `${safeSlug}-startup-error.log`);
+}
+
+/** Log a fatal bootstrap error to console + file, then exit. */
+function fatal(logFile: string, message: string, err?: unknown): never {
+  const detail =
+    err && err instanceof Error
+      ? `${err.name}: ${err.message}`
+      : err
+      ? String(err)
+      : "";
+  const text = `[${new Date().toISOString()}] ${message}${
+    detail ? ` — ${detail}` : ""
+  }`;
+
+  try {
+    fs.writeFileSync(logFile, text + "\n", { flag: "a" });
+  } catch {
+    // If we can't write the file, we still log to console.
+  }
+
+  // eslint-disable-next-line no-console
+  console.error(text);
+  // eslint-disable-next-line no-process-exit
+  process.exit(1);
+}
+
+/**
+ * Shared bootstrap for non-env-service backends.
+ *
+ * Flow:
+ * - Instantiates SvcClient (callerSlug/version = opts.slug/version).
+ * - Uses SvcEnvClient to:
+ *     • getCurrentEnv({ slug, version })  → envName
+ *     • getConfig({ env, slug, version }) → DtoBag<EnvServiceDto>
+ * - Derives host/port from the primary DTO in the bag.
+ * - Returns:
+ *     • envBag      (config bag)
+ *     • envReloader (same lookup logic, fresh bag each call)
+ *     • host/port
+ */
+export async function envBootstrap(
+  opts: EnvBootstrapOpts
+): Promise<EnvBootstrapResult> {
+  const { slug, version } = opts;
+  const logFile = resolveLogFile(slug, opts.logFile);
+
+  // eslint-disable-next-line no-console
+  console.log("[bootstrap] envBootstrap starting", { slug, version });
+
+  // 1) Construct SvcClient and SvcEnvClient
+  const svcClient = new SvcClient({
+    callerSlug: slug,
+    callerVersion: version,
+  });
+
+  const envClient = new SvcEnvClient({
+    svcClient,
+  });
+
+  // 2) Resolve current env for this service
+  let envName: string;
+  try {
+    envName = await envClient.getCurrentEnv({ slug, version });
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_CURRENT_ENV_FAILED: env-service could not resolve current env " +
+        `for slug="${slug}", version=${version}. ` +
+        "Ops: confirm env-service is healthy, NV_ENV_SERVICE_URL is correct, and a policy record exists.",
+      err
+    );
+  }
+
+  // 3) Fetch EnvServiceDto config bag for that env/slug/version
+  let envBag: DtoBag<EnvServiceDto>;
+  try {
+    envBag = await envClient.getConfig({ env: envName, slug, version });
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_ENV_CONFIG_FAILED: Failed to fetch EnvServiceDto bag from env-service. " +
+        `Ops: ensure a config document exists for env="${envName}", slug="${slug}", version=${version} ` +
+        "and that env-service indexes allow fast lookup by (env, slug, version).",
+      err
+    );
+  }
+
+  // 4) Derive listener host/port from the primary DTO in the bag
+  let primary: EnvServiceDto | undefined;
+  for (const dto of envBag) {
+    primary = dto;
+    break;
+  }
+
+  if (!primary) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_ENV_BAG_EMPTY: EnvServiceDto bag was empty after successful fetch. " +
+        "Ops: investigate env-service collection contents; this should not happen."
+    );
+  }
+
+  let host: string;
+  let port: number;
+  try {
+    host = primary.getEnvVar("NV_HTTP_HOST");
+    const rawPort = primary.getEnvVar("NV_HTTP_PORT");
+    const n = Number(rawPort);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(
+        `NV_HTTP_PORT must be a positive integer, got "${rawPort}". ` +
+          "Ops: correct this value in the env-service config document for this service."
+      );
+    }
+    port = Math.trunc(n);
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_HTTP_CONFIG_INVALID: Failed to derive NV_HTTP_HOST/NV_HTTP_PORT " +
+        "from the EnvServiceDto in the config bag. Ops: ensure these keys exist and hold valid values.",
+      err
+    );
+  }
+
+  // 5) Bag-based reloader: same client, same logic, fresh bag each call.
+  const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
+    const nextEnvName = await envClient.getCurrentEnv({ slug, version });
+    return envClient.getConfig({ env: nextEnvName, slug, version });
+  };
+
+  // eslint-disable-next-line no-console
+  console.log("[bootstrap] envBootstrap complete", {
+    slug,
+    version,
+    host,
+    port,
+  });
+
+  return {
+    envBag,
+    envReloader,
+    host,
+    port,
+  };
+}

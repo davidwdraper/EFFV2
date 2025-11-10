@@ -15,7 +15,7 @@ import type { ControllerBase } from "@nv/shared/base/ControllerBase";
 import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get.handler";
 
 // DTO ctor for downstream
-import { XxxDto } from "@nv/shared/dto/templates/xxx/xxx.dto";
+import { XxxDto } from "@nv/shared/dto/xxx.dto";
 
 // Update-specific handlers
 import { LoadExistingUpdateHandler } from "./handlers/loadExisting.update.handler";

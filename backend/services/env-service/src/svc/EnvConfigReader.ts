@@ -4,65 +4,78 @@
  * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version@level)
+ *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *
  * Purpose:
- * - Single shared surface for reading EnvServiceDto from persistence.
- * - Used by:
- *   • env-service bootstrap (no HTTP hop)
- *   • GET /api/env-service/v1/... handlers (external callers)
+ * - Unified helper for reading and merging EnvServiceDto configs.
+ * - Used by both:
+ *     • envBootstrap() (during service boot)
+ *     • config pipeline handlers (HTTP GET /config)
  *
  * Invariants:
- * - Exactly one EnvServiceDto per (env, slug, version, level) enforced at DB via unique index.
- * - Returns a DtoBag for consistency (no naked DTOs cross this boundary).
+ * - Each (env, slug, version) yields at most one EnvServiceDto.
+ * - No naked DTOs: always return DtoBag<EnvServiceDto>.
+ * - mergeEnvBags() enforces single-item rule for both bags and merges vars deterministically.
  */
 
-import type { DbReader } from "@nv/shared/dto/persistence/DbReader";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
+import type { DbReader } from "@nv/shared/dto/persistence/DbReader";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 export type EnvConfigKey = {
   env: string;
   slug: string;
   version: number;
-  level?: string;
 };
 
 export class EnvConfigReader {
-  public constructor(private readonly dbReader: DbReader<EnvServiceDto>) {}
+  /**
+   * Fetch a DtoBag for the requested (env, slug, version).
+   * Never throws on empty results — caller decides if that’s an error.
+   */
+  public static async getEnv(
+    dbReader: DbReader<EnvServiceDto>,
+    key: EnvConfigKey
+  ): Promise<DtoBag<EnvServiceDto>> {
+    const { env, slug, version } = key;
+    return dbReader.readOneBag({ filter: { env, slug, version } });
+  }
 
   /**
-   * Load config for a specific (env, slug, version, level).
+   * Merge two DtoBags (root + service) into one deterministic bag.
    *
-   * Ops:
-   * - If not found → throw with clear hint about seeding env-service.
-   * - Duplicates are prevented by the unique index on (env, slug, version, level).
+   * Rules:
+   * - If either bag has >1 dto → throw (index violation).
+   * - If both empty → throw (no config at all).
+   * - If one empty → return the other as-is.
+   * - If both have 1 → patch root from service (service wins on collisions).
    */
-  public async getConfigBag(key: EnvConfigKey): Promise<DtoBag<EnvServiceDto>> {
-    const { env, slug, version } = key;
-    const level = key.level ?? "service";
+  public static mergeEnvBags(
+    rootBag?: DtoBag<EnvServiceDto>,
+    serviceBag?: DtoBag<EnvServiceDto>
+  ): DtoBag<EnvServiceDto> {
+    const rootCount = rootBag?.count?.() ?? 0;
+    const svcCount = serviceBag?.count?.() ?? 0;
 
-    const bag = await this.dbReader.readOneBag({
-      filter: { env, slug, version, level },
-    });
-
-    // Generic emptiness check via iteration (no reliance on DtoBag internals).
-    let hasItem = false;
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    for (const _dto of bag as unknown as Iterable<EnvServiceDto>) {
-      hasItem = true;
-      break;
-    }
-
-    if (!hasItem) {
+    if (rootCount > 1 || svcCount > 1 || rootCount + svcCount === 0) {
       throw new Error(
-        "ENV_CONFIG_NOT_FOUND: no env-service record for " +
-          `env='${env}', slug='${slug}', version='${version}', level='${level}'. ` +
-          "Ops: seed env-service with this document before starting env-service or dependents."
+        `ENV_CONFIG_INVALID_COUNT: root=${rootCount}, service=${svcCount}. ` +
+          "Ops: ensure unique index (env, slug, version) and at least one valid config row."
       );
     }
 
-    return bag;
+    // Single-source configs
+    if (rootCount === 0) return serviceBag!;
+    if (svcCount === 0) return rootBag!;
+
+    // Both present: merge service into root (service overrides).
+    const rootDto = rootBag!.get(0);
+    const svcDto = serviceBag!.get(0);
+
+    rootDto.patchFromDto(svcDto);
+
+    return new DtoBag<EnvServiceDto>([rootDto]);
   }
 }

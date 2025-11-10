@@ -4,7 +4,7 @@
  * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version@level)
+ *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *   - ADR-0053 (Instantiation discipline via DtoBase secret)
@@ -13,17 +13,8 @@
  * Purpose:
  * - Concrete DTO for env-service configuration records.
  * - Represents a single environment configuration document:
- *     • one document per (env, slug, version, level)
+ *     • one document per (env, slug, version)
  *     • vars is a bag of env-style key/value pairs
- *
- * Notes:
- * - Instance collection is seeded by the Registry via setCollectionName().
- * - dbCollectionName() returns the hardwired collection for this DTO.
- * - indexHints declare deterministic indexes to be ensured at boot.
- * - ID lifecycle:
- *     • If wire provides id → DtoBase setter validates (UUIDv4 or 24-hex Mongo id) and stores normalized.
- *     • If absent → DbWriter will generate **before** calling toJson().
- *     • toJson() never invents or mutates id (no ID insertion during/after toJson).
  */
 
 import { DtoBase, DtoValidationError } from "./DtoBase";
@@ -38,7 +29,6 @@ type EnvServiceJson = {
   env: string; // e.g. "dev" | "test" | "stage" | "canary" | "prod"
   slug: string; // service slug, e.g. "gateway", "auth", "env-service"
   version: number; // API contract version, e.g. 1
-  level?: string; // logical level, e.g. "service", "system"
 
   vars?: Record<string, unknown>; // bag of env-style key/value pairs
 
@@ -59,12 +49,12 @@ export class EnvServiceDto extends DtoBase implements IDto {
    * Deterministic index hints consumed at boot by ensureIndexesForDtos().
    *
    * Invariants:
-   * - Exactly one document per (env, slug, version, level).
+   * - Exactly one document per (env, slug, version).
    * - Fast lookup by env and slug.
    */
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
     // Uniqueness across the environment “dimension”
-    { kind: "unique", fields: ["env", "slug", "version", "level"] },
+    { kind: "unique", fields: ["env", "slug", "version"] },
 
     // Common query paths
     { kind: "lookup", fields: ["slug"] },
@@ -82,15 +72,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   /** Contract version, e.g. 1. */
   public version = 1;
-
-  /**
-   * Logical level of this config record, e.g.:
-   * - "service" (per-service env vars)
-   * - "system"  (global/system-level env vars)
-   *
-   * Left open as string; Zod/contract can enforce tighter enum.
-   */
-  public level = "service";
 
   /**
    * Bag of environment-style key/value pairs.
@@ -147,10 +128,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
       if (Number.isFinite(n) && n > 0) {
         dto.version = Math.trunc(n);
       }
-    }
-
-    if (typeof j.level === "string" && j.level.trim()) {
-      dto.level = j.level.trim();
     }
 
     // vars bag: normalize keys, stringify values
@@ -217,7 +194,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
       env: this.env,
       slug: this.slug,
       version: this.version,
-      level: this.level,
 
       vars: { ...this._vars },
     };
@@ -225,74 +201,69 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return this._finalizeToJson(body);
   }
 
-  /** Optional patch helper used by update pipelines. */
-  public patchFrom(json: Partial<EnvServiceJson>): this {
-    if (json.env !== undefined && typeof json.env === "string") {
-      this.env = json.env.trim();
+  /**
+   * DTO-to-DTO patch helper for internal merges (no wire/json boundary).
+   * Used by EnvConfigReader.mergeEnvBags() to merge service vars into root vars.
+   *
+   * Semantics:
+   * - env/slug/version from `other` overwrite this instance when present.
+   * - vars are merged key-wise: existing vars stay, `other` wins on conflicts.
+   * - id/meta are NOT touched here (ID is immutable per ADR-0057).
+   */
+  public patchFrom(other: EnvServiceDto): this {
+    if (other.env) {
+      this.env = other.env;
     }
 
-    if (json.slug !== undefined && typeof json.slug === "string") {
-      this.slug = json.slug.trim();
+    if (other.slug) {
+      this.slug = other.slug;
     }
 
-    if (json.version !== undefined) {
-      const n =
-        typeof json.version === "string" ? Number(json.version) : json.version;
-      if (Number.isFinite(n) && n > 0) {
-        this.version = Math.trunc(n as number);
-      }
+    if (typeof other.version === "number" && other.version > 0) {
+      this.version = Math.trunc(other.version);
     }
 
-    if (json.level !== undefined && typeof json.level === "string") {
-      const lvl = json.level.trim();
-      if (lvl) this.level = lvl;
-    }
-
-    if (json.vars !== undefined && json.vars && typeof json.vars === "object") {
-      const incoming: Record<string, string> = {};
-      for (const [k, v] of Object.entries(json.vars)) {
-        const key = k.trim();
-        if (!key) continue;
-        incoming[key] = String(v);
-      }
+    const otherVars = other._vars;
+    if (otherVars && Object.keys(otherVars).length > 0) {
       this._vars = {
         ...this._vars,
-        ...incoming,
+        ...otherVars,
       };
     }
 
     return this;
   }
 
+  /**
+   * Convenience alias for DTO-to-DTO patching.
+   * Used by EnvConfigReader.mergeEnvBags() and other internal callers.
+   */
+  public patchFromDto(other: EnvServiceDto): this {
+    return this.patchFrom(other);
+  }
+
   // ─────────────── ADR-0044: Generic Key/Value API ───────────────
 
-  /**
-   * Retrieve a required variable; throws if missing (no defaults).
-   * Error includes env/slug/version/level for Ops correlation.
-   */
   public getEnvVar(name: string): string {
     const v = this._vars[name];
     if (v === undefined) {
       throw new Error(
         `ENV_VAR_MISSING: "${name}" is not defined for env="${this.env}", ` +
-          `slug="${this.slug}", version=${this.version}, level="${this.level}". ` +
+          `slug="${this.slug}", version=${this.version}. ` +
           "Ops: ensure env-service contains this key in the corresponding document."
       );
     }
     return v;
   }
 
-  /** Retrieve an optional variable (undefined if absent). */
   public tryEnvVar(name: string): string | undefined {
     return this._vars[name];
   }
 
-  /** Predicate — does the key exist? */
   public hasEnvVar(name: string): boolean {
     return Object.prototype.hasOwnProperty.call(this._vars, name);
   }
 
-  /** List all available variable keys (copy, sorted for stability). */
   public listEnvVars(): string[] {
     return Object.keys(this._vars).sort();
   }
@@ -309,12 +280,10 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   // ─────────────── IDto contract ───────────────
 
-  /** Canonical DTO type key (registry key). */
   public getType(): string {
     return "env-service";
   }
 
-  /** Canonical DTO id. */
   public getId(): string {
     return this.id;
   }

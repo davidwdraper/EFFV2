@@ -5,14 +5,14 @@
  * - ADR-0041 (Per-route controllers; single-purpose handlers)
  * - ADR-0042 (HandlerContext Bus — KISS)
  * - ADR-0043 (Hydration & Failure Propagation)
- * - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ * - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  * - ADR-0049 (DTO Registry & Wire Discrimination)
  * - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
  * - For PUT /api/env-service/v1/:
  *   • Read bag (seeded by BagPopulateGetHandler) and enforce exactly one item.
- *   • Build a DbWriter({ bag, svcEnv }) and execute write().
+ *   • Build a DbWriter({ bag, mongoUri, mongoDb }) derived from EnvServiceDto.
  *   • Map duplicate-key → HTTP 409 with WARN.
  *
  * Inputs (ctx):
@@ -28,8 +28,8 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { IDto } from "@nv/shared/dto/IDto";
-import type { BaseDto } from "@nv/shared/dto/DtoBase";
-import type { SvcEnvDto } from "@nv/shared/dto/svcenv.dto";
+import type { DtoBase } from "@nv/shared/dto/DtoBase";
+import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import {
   DbWriter,
   DuplicateKeyError,
@@ -65,12 +65,56 @@ export class BagToDbCreateHandler extends HandlerBase {
       return;
     }
 
-    // Pull SvcEnv directly from Controller/App (no ctx plumbing)
-    const svcEnv: SvcEnvDto = this.controller.getSvcEnv();
+    // Pull EnvServiceDto-based svcEnv directly from Controller/App (no ctx plumbing)
+    const svcEnv: EnvServiceDto = this.controller.getSvcEnv?.();
+    if (!svcEnv || typeof svcEnv.getEnvVar !== "function") {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 500);
+      this.ctx.set("error", {
+        code: "SERVICE_ENV_UNAVAILABLE",
+        title: "Internal Error",
+        detail:
+          "Service environment configuration is unavailable. Ops: ensure AppBase/ControllerBase seeds svcEnv with NV_MONGO_URI/NV_MONGO_DB.",
+      });
+      this.log.error(
+        { event: "svc_env_unavailable" },
+        "BagToDbCreateHandler: svcEnv unavailable or invalid"
+      );
+      return;
+    }
+
+    let mongoUri: string;
+    let mongoDb: string;
+    try {
+      mongoUri = svcEnv.getEnvVar("NV_MONGO_URI");
+      mongoDb = svcEnv.getEnvVar("NV_MONGO_DB");
+    } catch (err) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 500);
+      this.ctx.set("error", {
+        code: "SERVICE_DB_CONFIG_MISSING",
+        title: "Internal Error",
+        detail:
+          (err as Error)?.message ??
+          "Missing NV_MONGO_URI/NV_MONGO_DB in env-service configuration. Ops: ensure these keys exist and are valid.",
+      });
+
+      this.log.error(
+        {
+          event: "service_db_config_missing",
+          err:
+            err instanceof Error
+              ? { message: err.message, stack: err.stack }
+              : err,
+        },
+        "BagToDbCreateHandler: failed to resolve DB config from EnvServiceDto"
+      );
+      return;
+    }
 
     // 2) Build writer with **bag**, not a naked DTO (bags across all interfaces)
-    const baseBag = bag as unknown as DtoBag<BaseDto>;
-    const writer = new DbWriter<BaseDto>({ bag: baseBag, svcEnv });
+    const baseBag = bag as unknown as DtoBag<DtoBase>;
+    const writer = new DbWriter<DtoBase>({ bag: baseBag, mongoUri, mongoDb });
 
     try {
       const { collectionName } = await writer.targetInfo();

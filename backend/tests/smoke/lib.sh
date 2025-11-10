@@ -49,8 +49,8 @@ _TEST_NAME_DEFAULT="$(basename "${BASH_SOURCE[1]:-${0##*/}}")"
 TEST_NAME="${SMOKE_TEST_NAME:-${_TEST_NAME_DEFAULT}}"
 
 # Pretty markers
-CHECK="✅"
-CROSS="❌"
+_CHECK="✅"
+_CROSS="❌"
 
 # -------------------------- test header/footer --------------------------------
 : "${SMOKE_QUIET_HEADERS:=0}"   # set to 1 to suppress headers/footers
@@ -70,9 +70,9 @@ _smoke_footer(){
   local status="$1" dur
   dur="$(_duration "$_SMOKE_START_TS")"
   if [ "$status" -eq 0 ]; then
-    echo "${CHECK} PASS: ${TEST_NAME}  [${dur}]" >&2
+    echo "${_CHECK} PASS: ${TEST_NAME}  [${dur}]" >&2
   else
-    echo "${CROSS} FAIL: ${TEST_NAME}  [${dur}]" >&2
+    echo "${_CROSS} FAIL: ${TEST_NAME}  [${dur}]" >&2
   fi
   echo "" >&2
 }
@@ -128,16 +128,16 @@ _del_json(){ local url="$1"; _log_url "DELETE" "$url"; _curl_json_core "DELETE" 
 json_eq(){ local body="$1" expr="$2" expect="$3"; [[ "$(jq -er "$expr" <<<"$body")" == "$expect" ]]; }
 
 # Pass/Fail helpers that tests can opt into (no requirement)
-pass(){ printf "%s %s\n" "$CHECK" "${*:-OK}"; }
-fail(){ printf "%s %s\n" "$CROSS" "${*:-FAIL}" >&2; return 1; }
+pass(){ printf "%s %s\n" "$_CHECK" "${*:-OK}"; }
+fail(){ printf "%s %s\n" "$_CROSS" "${*:-FAIL}" >&2; return 1; }
 # printf-style variants
 passf(){ # usage: passf "deleted id=%s" "$id"
   # shellcheck disable=SC2059
-  printf "$CHECK %s\n" "$(printf "${1:-OK}" "${@:2}")"
+  printf "$_CHECK %s\n" "$(printf "${1:-OK}" "${@:2}")"
 }
 failf(){ # usage: failf "expected %s, got %s" "$a" "$b"
   # shellcheck disable=SC2059
-  printf "$CROSS %s\n" "$(printf "${1:-FAIL}" "${@:2}")" >&2
+  printf "$_CROSS %s\n" "$(printf "${1:-FAIL}" "${@:2}")" >&2
   return 1
 }
 

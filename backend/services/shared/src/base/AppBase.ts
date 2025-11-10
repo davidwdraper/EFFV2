@@ -231,7 +231,6 @@ export abstract class AppBase extends ServiceBase {
           ts: new Date().toISOString(),
         });
       } catch {
-        // If the readyCheck throws, still return a syntactically valid health, but ready=false
         res.status(200).json({
           ok: true,
           service: this.service,
@@ -247,7 +246,7 @@ export abstract class AppBase extends ServiceBase {
   /**
    * Standardized environment reload endpoint.
    * Path: `${base}/env/reload` → POST
-   * Contract: returns { ok, reloadedAt, env, slug, version, level }
+   * Contract: returns { ok, reloadedAt, env, slug, version }
    * Policy: expected to be allowed ONLY for UserType >= 5 via routePolicy.
    */
   protected mountEnvReload(base: string): void {
@@ -256,7 +255,6 @@ export abstract class AppBase extends ServiceBase {
       const fromEnv = this._envDto.env;
       const fromSlug = this._envDto.slug;
       const fromVersion = this._envDto.version;
-      const fromLevel = this._envDto.level;
 
       try {
         const fresh = await this.envReloader();
@@ -265,18 +263,8 @@ export abstract class AppBase extends ServiceBase {
         return res.status(200).json({
           ok: true,
           reloadedAt: new Date().toISOString(),
-          from: {
-            env: fromEnv,
-            slug: fromSlug,
-            version: fromVersion,
-            level: fromLevel,
-          },
-          to: {
-            env: fresh.env,
-            slug: fresh.slug,
-            version: fresh.version,
-            level: fresh.level,
-          },
+          from: { env: fromEnv, slug: fromSlug, version: fromVersion },
+          to: { env: fresh.env, slug: fresh.slug, version: fresh.version },
         });
       } catch (err) {
         return res.status(500).json({

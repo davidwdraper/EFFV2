@@ -1,4 +1,3 @@
-// backend/services/env-service/src/controllers/env-service.read.controller/pipelines/env-service.config.handlerPipeline/index.ts
 /**
  * Docs:
  * - SOP: per-pipeline folders; handlers under ./handlers
@@ -15,14 +14,21 @@
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { EnvServiceConfigGetHandler } from "./handlers/env-service.config.get.handler";
+import { EnvServiceConfigLoadRootHandler } from "./handlers/env-service.config.loadRoot.handler";
+import { EnvServiceConfigLoadServiceHandler } from "./handlers/env-service.config.loadService.handler";
+import { EnvServiceConfigMergeHandler } from "./handlers/env-service.config.merge.handler";
 
 export function getSteps(
   ctx: HandlerContext,
   controller: ControllerBase
-): EnvServiceConfigGetHandler[] {
-  const steps: EnvServiceConfigGetHandler[] = [
-    new EnvServiceConfigGetHandler(ctx, controller),
+): Array<
+  | EnvServiceConfigLoadRootHandler
+  | EnvServiceConfigLoadServiceHandler
+  | EnvServiceConfigMergeHandler
+> {
+  return [
+    new EnvServiceConfigLoadRootHandler(ctx, controller),
+    new EnvServiceConfigLoadServiceHandler(ctx, controller),
+    new EnvServiceConfigMergeHandler(ctx, controller),
   ];
-  return steps;
 }

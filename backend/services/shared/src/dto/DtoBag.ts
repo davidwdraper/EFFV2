@@ -124,10 +124,13 @@ export class DtoBag<T> {
     this._items = Array.isArray(items) ? items.slice() : Array.from(items);
   }
 
-  public size(): number {
+  public count(): number {
     return this._items.length;
   }
 
+  public size(): number {
+    return this._items.length;
+  }
   public get(i: number): T {
     return this._items[i];
   }

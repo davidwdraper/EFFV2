@@ -9,7 +9,7 @@
  * Purpose:
  * - Pure orchestration entrypoint for env-service.
  * - Delegates DB + config loading to envBootstrap().
- * - Unwraps a primary EnvServiceDto internally for createApp().
+ * - Unwraps the merged EnvServiceDto (from envBag) for createApp().
  */
 
 import fs from "fs";
@@ -25,13 +25,14 @@ const LOG_FILE = path.resolve(process.cwd(), "env-service-startup-error.log");
 
 (async () => {
   try {
+    // Step 1: Bootstrap and load configuration (merged root + service config)
     const { envBag, envReloader, host, port } = await envBootstrap({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
       logFile: LOG_FILE,
     });
 
-    // Internal unwrap: we expect exactly one DTO in this bag for this service.
+    // Step 2: Extract the primary DTO from the bag (should always be exactly one)
     let primary: EnvServiceDto | undefined;
     for (const dto of envBag as unknown as Iterable<EnvServiceDto>) {
       primary = dto;
@@ -45,7 +46,7 @@ const LOG_FILE = path.resolve(process.cwd(), "env-service-startup-error.log");
       );
     }
 
-    // Wrap the bag-based reloader into a single-DTO reloader for AppBase/logger.
+    // Step 3: Adapt the bag-based reloader into a single-DTO reloader for the AppBase/logger.
     const envReloaderForApp = async (): Promise<EnvServiceDto> => {
       const bag: DtoBag<EnvServiceDto> = await envReloader();
       for (const dto of bag as unknown as Iterable<EnvServiceDto>) {
@@ -57,6 +58,7 @@ const LOG_FILE = path.resolve(process.cwd(), "env-service-startup-error.log");
       );
     };
 
+    // Step 4: Construct and boot the service app.
     const { app } = await createApp({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
@@ -64,6 +66,7 @@ const LOG_FILE = path.resolve(process.cwd(), "env-service-startup-error.log");
       envReloader: envReloaderForApp,
     });
 
+    // Step 5: Start listening.
     app.listen(port, host, () => {
       console.info("[entrypoint] http_listening", {
         slug: SERVICE_SLUG,
@@ -81,7 +84,7 @@ const LOG_FILE = path.resolve(process.cwd(), "env-service-startup-error.log");
         flag: "a",
       });
     } catch {
-      // If we can't write the file, console is all we have.
+      // If we can't write to file, at least log to console.
     }
     // eslint-disable-next-line no-console
     console.error(msg);

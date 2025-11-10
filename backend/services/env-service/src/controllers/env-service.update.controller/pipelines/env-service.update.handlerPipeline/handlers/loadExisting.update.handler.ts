@@ -23,6 +23,7 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DbReader } from "@nv/shared/dto/persistence/DbReader";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { IDto } from "@nv/shared/dto/IDto";
+import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 export class LoadExistingUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -68,12 +69,62 @@ export class LoadExistingUpdateHandler extends HandlerBase {
       return;
     }
 
-    const svcEnv = this.controller.getSvcEnv();
+    const svcEnv: EnvServiceDto | undefined = this.controller.getSvcEnv?.();
+    if (!svcEnv || typeof svcEnv.getEnvVar !== "function") {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 500);
+      this.ctx.set("error", {
+        code: "SERVICE_ENV_UNAVAILABLE",
+        title: "Internal Error",
+        detail:
+          "Service environment configuration is unavailable. Ops: ensure AppBase/ControllerBase seeds svcEnv with NV_MONGO_URI/NV_MONGO_DB.",
+      });
+      this.log.error(
+        { event: "svc_env_unavailable" },
+        "LoadExistingUpdateHandler: svcEnv unavailable or invalid"
+      );
+      return;
+    }
+
+    let mongoUri: string;
+    let mongoDb: string;
+    try {
+      mongoUri = svcEnv.getEnvVar("NV_MONGO_URI");
+      mongoDb = svcEnv.getEnvVar("NV_MONGO_DB");
+    } catch (err) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("status", 500);
+      this.ctx.set("error", {
+        code: "SERVICE_DB_CONFIG_MISSING",
+        title: "Internal Error",
+        detail:
+          (err as Error)?.message ??
+          "Missing NV_MONGO_URI/NV_MONGO_DB in env-service configuration. Ops: ensure these keys exist and are valid.",
+      });
+
+      this.log.error(
+        {
+          event: "service_db_config_missing",
+          err:
+            err instanceof Error
+              ? { message: err.message, stack: err.stack }
+              : err,
+        },
+        "LoadExistingUpdateHandler: failed to resolve DB config from EnvServiceDto"
+      );
+      return;
+    }
 
     // --- Reader + fetch as **BAG** ------------------------------------------
     const validateReads =
       this.ctx.get<boolean>("update.validateReads") ?? false;
-    const reader = new DbReader<any>({ dtoCtor, svcEnv, validateReads });
+
+    const reader = new DbReader<any>({
+      dtoCtor,
+      mongoUri,
+      mongoDb,
+      validateReads,
+    });
     this.ctx.set("dbReader", reader);
 
     const existingBag = await reader.readOneBagById({ id });

@@ -2,9 +2,12 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Smoke 003 — duplicate-by-content (business fields)
-# NEW SYSTEM RULES:
-#  - Success response MUST be bagged: { ok:true, items:[ { id, type, ... } ] }
-#  - Second create with SAME content but DIFFERENT id MUST 409 with
+#
+# SYSTEM RULES (CURRENT):
+#  - Success response MUST be bagged:
+#        { ok:true, items:[ { _id, type, ... } ] }
+#    where `_id` is the external/wire primary key.
+#  - Second create with SAME business content but DIFFERENT _id MUST 409 with
 #    Problem+JSON and code "DUPLICATE_CONTENT".
 #
 # macOS Bash 3.2 compatible.
@@ -23,7 +26,7 @@ BASE="http://${HOST}:${PORT}/api/${SLUG}/v1/${TYPE}"
 # --- payload seed ------------------------------------------------------------
 STAMP="dup-test-$(date +%s%N | cut -b1-15)"
 ID1="${ID1:-$(uuidgen | tr 'A-Z' 'a-z')}"
-ID2="${ID2:-$(uuidgen | tr 'A-Z' 'a-z')}" # different id
+ID2="${ID2:-$(uuidgen | tr 'A-Z' 'a-z')}" # different _id
 
 PAYLOAD1=$(cat <<JSON
 {
@@ -31,7 +34,7 @@ PAYLOAD1=$(cat <<JSON
     {
       "type": "${TYPE}",
       "doc": {
-        "id": "${ID1}",
+        "_id": "${ID1}",
         "txtfield1": "${STAMP}",
         "txtfield2": "${STAMP}",
         "numfield1": 1,
@@ -49,7 +52,7 @@ PAYLOAD2=$(cat <<JSON
     {
       "type": "${TYPE}",
       "doc": {
-        "id": "${ID2}",
+        "_id": "${ID2}",
         "txtfield1": "${STAMP}",
         "txtfield2": "${STAMP}",
         "numfield1": 1,
@@ -65,7 +68,7 @@ say "TEST: 003-xxx-create-duplicate-4015.sh  (SLUG=${SLUG} DTO_TYPE=${TYPE} PORT
 say "=============================================================================="
 
 # --- First create: must be bagged -------------------------------------------
-say "→ PUT ${BASE}/create (first create, explicit id=${ID1})"
+say "→ PUT ${BASE}/create (first create, explicit _id=${ID1})"
 RESP1=$(curl -sS -X PUT -H 'content-type: application/json' --data-binary "${PAYLOAD1}" "${BASE}/create" -w '\n%{http_code}')
 BODY1="${RESP1%$'\n'*}"
 CODE1="${RESP1##*$'\n'}"
@@ -83,16 +86,16 @@ HAS_ITEMS=$(printf '%s' "${BODY1}" | jq -r 'has("items")')
 ITEMS_LEN=$(printf '%s' "${BODY1}" | jq -r '.items | length')
 [ "${ITEMS_LEN}" = "1" ] || { say "${BODY1}"; die "response must contain exactly one item in 'items'"; }
 
-ID_ECHO=$(printf '%s' "${BODY1}" | jq -r '.items[0].id // empty')
-[ -n "${ID_ECHO}" ] || { say "${BODY1}"; die "bagged dto missing .items[0].id"; }
+ID_ECHO=$(printf '%s' "${BODY1}" | jq -r '.items[0]._id // empty')
+[ -n "${ID_ECHO}" ] || { say "${BODY1}"; die "bagged dto missing .items[0]._id"; }
 
 TYPE_ECHO=$(printf '%s' "${BODY1}" | jq -r '.items[0].type // empty')
 [ "${TYPE_ECHO}" = "${TYPE}" ] || { say "${BODY1}"; die "bagged dto .items[0].type must equal '${TYPE}'"; }
 
-say "First create ok: bagged id=${ID_ECHO}"
+say "First create ok: bagged _id=${ID_ECHO}"
 
 # --- Second create: expect 409 DUPLICATE_CONTENT ----------------------------
-say "→ PUT ${BASE}/create (second create, SAME content, different id=${ID2} → expect 409 DUPLICATE_CONTENT)"
+say "→ PUT ${BASE}/create (second create, SAME content, different _id=${ID2} → expect 409 DUPLICATE_CONTENT)"
 RESP2=$(curl -sS -X PUT -H 'content-type: application/json' --data-binary "${PAYLOAD2}" "${BASE}/create" -w '\n%{http_code}')
 BODY2="${RESP2%$'\n'*}"
 CODE2="${RESP2##*$'\n'}"

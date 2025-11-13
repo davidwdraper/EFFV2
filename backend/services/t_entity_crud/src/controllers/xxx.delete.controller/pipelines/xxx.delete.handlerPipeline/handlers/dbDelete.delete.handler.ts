@@ -1,4 +1,4 @@
-// backend/services/t_entity_crud/src/controllers/xxx.delete.controller/handlers/dbDelete.delete.handler.ts
+// backend/services/t_entity_crud/src/controllers/xxx.delete.controller/pipelines/xxx.delete.handlerPipleine/handlers/dbDelete.delete.handler.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -67,24 +67,21 @@ export class DbDeleteDeleteHandler extends HandlerBase {
       return;
     }
 
-    // svcEnv + Registry via Controller (no ctx plumbing)
-    const svcEnv = this.controller.getSvcEnv?.();
+    // Registry via Controller (env comes from HandlerBase.getVar, same as create)
     const registry = this.controller.getDtoRegistry?.();
-
-    if (!svcEnv || !registry) {
+    if (!registry) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 500);
       this.ctx.set("error", {
         code: "DELETE_SETUP_MISSING",
         title: "Internal Error",
         detail:
-          "Missing svcEnv or Registry. Ops: ensure App exposes svcEnv and DTO Registry; controller must extend ControllerBase correctly.",
-        hint: "AppBase owns env DTO and per-service Registry; expose via getters.",
+          "Missing DTO Registry. Ops: ensure App exposes getDtoRegistry() and controller extends ControllerBase correctly.",
+        hint: "AppBase owns the per-service Registry; expose via a public getter.",
       });
       this.log.error(
         {
           event: "setup_missing",
-          hasSvcEnv: !!svcEnv,
           hasRegistry: !!registry,
         },
         "Delete setup missing"
@@ -120,14 +117,12 @@ export class DbDeleteDeleteHandler extends HandlerBase {
       return;
     }
 
-    // Derive Mongo connection info from svcEnv
-    const svcEnvAny: any = svcEnv;
-    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
-    const mongoUri: string | undefined =
-      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
-    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+    // Derive Mongo connection info via the same path as create (HandlerBase.getVar)
+    const mongoUri = this.getVar("NV_MONGO_URI");
+    const mongoDb = this.getVar("NV_MONGO_DB");
 
     if (!mongoUri || !mongoDb) {
+      const svcEnv = this.ctx.get<any>("svcEnv");
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 500);
       this.ctx.set("error", {

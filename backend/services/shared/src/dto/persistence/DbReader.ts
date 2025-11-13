@@ -15,7 +15,6 @@
  *
  * Invariants:
  * - Service code only deals in **DTO ids (string)**. Canonical id field name is **"id"**.
- * - Mongo/ObjectId conversion occurs **at the last possible moment** inside this class.
  * - No implicit fallbacks; Dev == Prod. Missing config → fail fast.
  * - DTOs persist their collection identity as class data; reader does not mutate instances post-hydration.
  */
@@ -32,7 +31,7 @@ import {
 } from "@nv/shared/db/cursor";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { coerceForMongoQuery } from "./adapters/mongo/queryHelper";
-import { MongoClient, Collection, Db, ObjectId } from "mongodb";
+import { MongoClient, Collection, Db, Document } from "mongodb";
 
 type DtoCtorWithCollection<T> = {
   fromJson: (j: unknown, opts?: { validate?: boolean }) => T;
@@ -68,11 +67,13 @@ let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
 let _uriPinned: string | null = null;
 
-async function getExplicitCollection(
+type WireDoc = Document & { _id?: string };
+
+async function getExplicitCollection<T extends Document = WireDoc>(
   mongoUri: string,
   mongoDbName: string,
   collectionName: string
-): Promise<Collection> {
+): Promise<Collection<T>> {
   if (!mongoUri || !mongoDbName || !collectionName) {
     throw new Error(
       "DBREADER_MISCONFIG: mongoUri/mongoDb/collectionName required. " +
@@ -101,7 +102,7 @@ async function getExplicitCollection(
     }
   }
 
-  return (_db as Db).collection(collectionName);
+  return (_db as Db).collection<T>(collectionName);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -122,7 +123,7 @@ export class DbReader<TDto> {
   }
 
   /** Resolve collection from the DTO class. */
-  private async collection(): Promise<Collection> {
+  private async collection(): Promise<Collection<WireDoc>> {
     const fn = this.dtoCtor.dbCollectionName;
     if (typeof fn !== "function") {
       throw new Error(
@@ -139,7 +140,11 @@ export class DbReader<TDto> {
         } returned empty dbCollectionName(). Dev: hard-wire a non-empty string.`
       );
     }
-    return getExplicitCollection(this.mongoUri, this.mongoDb, collectionName);
+    return getExplicitCollection<WireDoc>(
+      this.mongoUri,
+      this.mongoDb,
+      collectionName
+    );
   }
 
   /** Introspection hook for handlers to log target collection. */
@@ -148,7 +153,7 @@ export class DbReader<TDto> {
     return { collectionName };
   }
 
-  private _hydrateDto(raw: any): TDto {
+  private _hydrateDto(raw: WireDoc): TDto {
     const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
     return this.dtoCtor.fromJson(dtoJson, {
       validate: this.validateReads,
@@ -166,17 +171,10 @@ export class DbReader<TDto> {
       return new DtoBag<TDto>([]);
     }
 
-    let oid: ObjectId;
-    try {
-      const q = coerceForMongoQuery({ _id: dtoId }) as { _id: ObjectId };
-      oid = q._id;
-    } catch {
-      return new DtoBag<TDto>([]);
-    }
-
-    const raw = await col.findOne({ _id: oid });
+    // UUIDv4 string primary key — query directly by `_id` as a string.
+    const raw = await col.findOne({ _id: dtoId } as any);
     if (!raw) return new DtoBag<TDto>([]);
-    const dto = this._hydrateDto(raw);
+    const dto = this._hydrateDto(raw as WireDoc);
     return new DtoBag<TDto>([dto] as readonly TDto[]);
   }
 
@@ -189,9 +187,9 @@ export class DbReader<TDto> {
       string,
       unknown
     >;
-    const raw = await col.findOne(q);
+    const raw = await col.findOne(q as any);
     if (!raw) return new DtoBag<TDto>([]);
-    const dto = this._hydrateDto(raw);
+    const dto = this._hydrateDto(raw as WireDoc);
     return new DtoBag<TDto>([dto] as readonly TDto[]);
   }
 
@@ -211,10 +209,13 @@ export class DbReader<TDto> {
         ? (opts!.limit as number)
         : 100;
     const sort = toMongoSort(opts?.order ?? ORDER_STABLE_ID_ASC);
-    const cur = col.find(q).sort(sort).limit(limit);
+    const cur = col
+      .find(q as any)
+      .sort(sort)
+      .limit(limit);
     const dtos: TDto[] = [];
     for await (const raw of cur) {
-      dtos.push(this._hydrateDto(raw));
+      dtos.push(this._hydrateDto(raw as WireDoc));
     }
     return new DtoBag<TDto>(dtos as readonly TDto[]);
   }
@@ -250,16 +251,19 @@ export class DbReader<TDto> {
     const col = await this.collection();
 
     const fetchN = limit + 1;
-    const docs: any[] =
+    const docs: WireDoc[] =
       (await col
-        .find(filter)
+        .find(filter as any)
         .sort(toMongoSort(order))
         .limit(fetchN)
         .toArray?.()) ??
       (await (async () => {
-        const arr: any[] = [];
-        const cursor = col.find(filter).sort(toMongoSort(order)).limit(fetchN);
-        for await (const raw of cursor) arr.push(raw);
+        const arr: WireDoc[] = [];
+        const cursor = col
+          .find(filter as any)
+          .sort(toMongoSort(order))
+          .limit(fetchN);
+        for await (const raw of cursor) arr.push(raw as WireDoc);
         return arr;
       })());
 

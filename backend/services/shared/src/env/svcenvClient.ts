@@ -6,19 +6,20 @@
  *   - ADR-0039 (svcenv centralized non-secret env) [carried via env-service]
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
- *   - ADR-0050 (Wire Bag Envelope)
+ *   - ADR-0050 (Wire Bag Envelope)  // NOTE: v2: wire = DTO JSON; no nested `doc`
  *
  * Purpose:
  * - Thin, strongly-typed client for env-service.
  * - All transport concerns (URL resolution, headers, requestId, future JWT) are
  *   delegated to SvcClient.
  *
- * Wire contract (deterministic):
- * - GET /api/env-service/v1/env/current?slug=<slug>&version=<version>
- *     → { env: string }
+ * Current wire contract (v1, updated):
+ * - DTO is the sole source of truth for shape; no secondary "doc" envelope.
+ * - EnvServiceDto.toJson() produces the JSON items; EnvServiceDto.fromJson()
+ *   hydrates them.
  *
- * - GET /api/env-service/v1/config?env=<env>&slug=<slug>&version=<version>
- *     → { items: [ { type: "env-service", doc: { ...vars... } }, ... ] }
+ * - GET /api/env-service/v1/env-service/config?env=<env>&slug=<slug>&version=<version>
+ *     → { items: [ <EnvServiceDto.toJson()>, ... ], meta?: { ... } }
  */
 
 import { DtoBag } from "../dto/DtoBag";
@@ -46,17 +47,9 @@ export type GetConfigArgs = {
   version: number;
 };
 
-type EnvCurrentWire = {
-  env: string;
-};
-
-type EnvConfigItemWire = {
-  type: string;
-  doc: unknown;
-};
-
 type EnvConfigWire = {
-  items: EnvConfigItemWire[];
+  items: unknown[];
+  meta?: unknown;
 };
 
 export class SvcEnvClient {
@@ -71,48 +64,56 @@ export class SvcEnvClient {
   /**
    * Resolve the current logical environment for a given service.
    *
-   * Deterministic contract:
-   *   { env: string }
+   * v1 behavior:
+   *   - Reads NV_ENV from process.env.
+   *   - Fails fast if NV_ENV is missing/empty.
+   *
+   * No HTTP call is made here; env-service does not currently expose an
+   * implemented /env/current route in the v1 router.
    */
-  public async getCurrentEnv(args: GetCurrentEnvArgs): Promise<string> {
-    const { slug, version } = args;
+  public async getCurrentEnv(_args: GetCurrentEnvArgs): Promise<string> {
+    const raw = process.env.NV_ENV;
+    const env = typeof raw === "string" ? raw.trim() : "";
 
-    const res = await this.svcClient.call<EnvCurrentWire>(
-      this.envServiceSlugKey,
-      {
-        method: "GET",
-        path: "/api/env-service/v1/env/current",
-        query: { slug, version },
-      }
-    );
-
-    if (res.status < 200 || res.status >= 300) {
+    if (!env) {
       throw new Error(
-        `SVCENV_CURRENT_ENV_HTTP_${res.status}: env-service failed to resolve current env ` +
-          `for slug="${slug}", version=${version}. ` +
-          "Ops: inspect env-service logs, health endpoint, and routing configuration."
+        "SVCENV_CURRENT_ENV_MISSING: NV_ENV is not set or empty. " +
+          "Ops: set NV_ENV to the desired logical environment (e.g., 'dev', 'stage', 'prod') " +
+          "for this service before starting the process."
       );
     }
 
-    const data = res.data;
-    if (!data || typeof data.env !== "string" || !data.env.trim()) {
-      throw new Error(
-        "SVCENV_CURRENT_ENV_INVALID_RESPONSE: expected { env: string }. " +
-          "Ops: verify /env/current returns a JSON object with a non-empty 'env' field."
-      );
-    }
-
-    return data.env.trim();
+    return env;
   }
 
   /**
    * Fetch the EnvServiceDto configuration bag for (env, slug, version).
    *
-   * Deterministic wire contract:
-   *   { items: [ { type: "env-service", doc: { ... } }, ... ] }
+   * Wire contract (v1 router, DTO-first):
+   *   GET /api/env-service/v1/env-service/config?env=<env>&slug=<slug>&version=<version>
+   *
+   * Response shape:
+   *   {
+   *     items: [
+   *       // Each element is EnvServiceDto.toJson()
+   *       {
+   *         id: string;
+   *         env: string;
+   *         slug: string;
+   *         version: number;
+   *         vars: Record<string, string>;
+   *         createdAt: string;
+   *         updatedAt: string;
+   *         updatedByUserId: string;
+   *         // ...any additional DTO fields...
+   *       },
+   *       ...
+   *     ],
+   *     meta?: { ... }
+   *   }
    *
    * Returns:
-   *   DtoBag<EnvServiceDto> (bag purity; no naked DTOs cross the boundary).
+   *   DtoBag<EnvServiceDto>
    */
   public async getConfig(args: GetConfigArgs): Promise<DtoBag<EnvServiceDto>> {
     const { env, slug, version } = args;
@@ -121,7 +122,7 @@ export class SvcEnvClient {
       this.envServiceSlugKey,
       {
         method: "GET",
-        path: "/api/env-service/v1/config",
+        path: "/api/env-service/v1/env-service/config",
         query: { env, slug, version },
       }
     );
@@ -137,8 +138,9 @@ export class SvcEnvClient {
     const data = res.data;
     if (!data || !Array.isArray(data.items)) {
       throw new Error(
-        "SVCENV_CONFIG_INVALID_RESPONSE: expected { items: [...] } bag envelope. " +
-          "Ops: verify /config returns a JSON object with an 'items' array of { type, doc } entries."
+        "SVCENV_CONFIG_INVALID_RESPONSE: expected { items: [...] } where each item " +
+          "is EnvServiceDto JSON. Ops: verify /env-service/config returns a JSON object " +
+          "with an 'items' array."
       );
     }
 
@@ -147,34 +149,20 @@ export class SvcEnvClient {
     for (const item of data.items) {
       if (!item || typeof item !== "object") {
         throw new Error(
-          "SVCENV_CONFIG_INVALID_ITEM: bag item is not an object. " +
-            "Ops: inspect env-service /config handler and its DTO-to-wire mapper."
-        );
-      }
-
-      const { type, doc } = item as EnvConfigItemWire;
-
-      if (type !== "env-service") {
-        throw new Error(
-          `SVCENV_CONFIG_WRONG_TYPE: expected type "env-service", got "${type}". ` +
-            "Ops: ensure /config only returns EnvServiceDto items for this endpoint."
-        );
-      }
-
-      if (!doc || typeof doc !== "object") {
-        throw new Error(
-          "SVCENV_CONFIG_MISSING_DOC: bag item is missing a valid 'doc' object. " +
-            "Ops: inspect the stored EnvServiceDto document for corruption or mapping errors."
+          "SVCENV_CONFIG_INVALID_ITEM: bag item is not a JSON object. " +
+            "Ops: inspect env-service /env-service/config handler and its DTO.toJson() output."
         );
       }
 
       try {
-        const dto = EnvServiceDto.fromJson(doc, { validate: true });
+        // DTO owns the contract; no 'doc' wrapper.
+        const dto = EnvServiceDto.fromJson(item as unknown, { validate: true });
         items.push(dto);
       } catch (err) {
         throw new Error(
-          "SVCENV_CONFIG_DTO_HYDRATION_FAILED: failed to hydrate EnvServiceDto from 'doc'. " +
-            "Ops: inspect the offending env-service document; it may violate the EnvServiceDto contract. " +
+          "SVCENV_CONFIG_DTO_HYDRATION_FAILED: failed to hydrate EnvServiceDto " +
+            "from response JSON. Ops: inspect the offending env-service document; " +
+            "it may violate the EnvServiceDto contract. " +
             `Detail: ${(err as Error)?.message ?? String(err)}`
         );
       }

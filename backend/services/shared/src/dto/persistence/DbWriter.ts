@@ -1,35 +1,32 @@
 // backend/services/shared/src/dto/persistence/DbWriter.ts
 /**
  * Docs:
- * - SOP: DTO-first; bag-centric persistence
- * - ADRs:
- *   - ADR-0040/0041/0042/0043
- *   - ADR-0048 (Revised) — Writers accept **DtoBag** only
- *   - ADR-0053 (Bag Purity) — no naked DTOs cross boundaries
- *   - ADR-0054 (Idempotent Create via clone-on-duplicate, fixed retries)
- *   - ADR-0045 (Index Hints — boot ensure via shared helper)
- *   - ADR-0057 (ID Generation & Validation — UUIDv4; assign BEFORE toJson; return id)
+ * - ADR-0040/41/42/43 (DTO-first, handlers, context bus, failure propagation)
+ * - ADR-0045 (Index Hints ensured at boot)
+ * - ADR-0048 (Writers accept DtoBag only)
+ * - ADR-0053 (Bag Purity — return DTOs, not wire)
+ * - ADR-0057 (IDs are UUIDv4; assign BEFORE toJson; immutable thereafter)
  *
  * Purpose:
- * - Persist DTOs from a **DtoBag** using explicit Mongo connectivity
- *   (mongoUri/mongoDb), typically sourced from EnvServiceDto.getEnvVar().
- * - Create (write) and update are **singleton-bag** operations in current controllers.
- * - Batch insert supported via writeMany(bag) with per-item duplicate handling.
+ * - Persist DTOs from a **DtoBag** with explicit Mongo connectivity.
+ * - On create (write): always **insertOne** (no upsert). Singleton bag only.
+ * - On _id duplicate: **clone()**, force **new UUIDv4**, retry (max 3).
  *
- * Invariants:
- * - Canonical **wire** id field is strictly "id" (string).
- * - DB `_id` is stored as the **same string** (UUIDv4). No ObjectId coercion.
- * - Adapter maps "id" → "_id" **exactly once** before insert; wire never leaks "_id".
- * - Collection comes from each DTO instance via requireCollectionName().
- * - Duplicate key errors are normalized to DuplicateKeyError.
- * - On duplicate during **write() / writeMany()**, we call `dto.clone()` and retry up to 3 times.
- *   Only the id can change; class and collection must remain identical — enforced below.
+ * Returns:
+ * - For write(): a **singleton DtoBag<TDto>** containing the exact DTO that was inserted
+ *   (either the original instance or the clone used on retry).
+ * - For writeMany(): a **DtoBag<TDto>** containing every DTO that was inserted.
+ *
+ * Ground rules (ID handling):
+ * - Internally, DTOs manage their id via DtoBase.id (UUIDv4, lowercase).
+ * - Outbound wire JSON from DTOs includes **_id** (string). There is no `id` on wire.
+ * - Writer does **no** id mapping: it inserts the DTO’s JSON as-is and trusts `_id`.
  */
 
 import type { DtoBase } from "../DtoBase";
 import type { ILogger } from "../../logger/Logger";
 import { MongoClient, Collection, Db } from "mongodb";
-import { DtoBag } from "@nv/shared/dto/DtoBag";
+import { DtoBag } from "../../dto/DtoBag";
 import {
   parseDuplicateKey,
   DuplicateKeyError,
@@ -89,14 +86,12 @@ async function getExplicitCollection(
   } else {
     if (_uriPinned !== mongoUri) {
       throw new Error(
-        `DBWRITER_URI_MISMATCH: Previously pinned URI="${_uriPinned}", new URI="${mongoUri}". ` +
-          "Ops: a single process must target one DB URI; restart with consistent configuration."
+        `DBWRITER_URI_MISMATCH: Previously pinned URI="${_uriPinned}", new URI="${mongoUri}".`
       );
     }
     if (_dbNamePinned !== mongoDbName) {
       throw new Error(
-        `DBWRITER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${mongoDbName}". ` +
-          "Ops: a single process must target one DB; restart with consistent configuration."
+        `DBWRITER_DB_MISMATCH: Previously pinned DB="${_dbNamePinned}", new DB="${mongoDbName}".`
       );
     }
   }
@@ -129,42 +124,27 @@ function assertCloneInvariants(before: DtoBase, after: DtoBase): void {
   const afterCtor = (after as any)?.constructor;
   if (beforeCtor !== afterCtor) {
     throw new Error(
-      "DBWRITER_CLONE_INVARIANT: clone() changed DTO class. " +
-        "Dev: clone must preserve type; only 'id' may change."
+      "DBWRITER_CLONE_INVARIANT: clone() changed DTO class. Only 'id' may change."
     );
   }
   const beforeColl = before.requireCollectionName();
   const afterColl = after.requireCollectionName();
   if (beforeColl !== afterColl) {
     throw new Error(
-      `DBWRITER_CLONE_INVARIANT: clone() changed dbCollectionName() from "${beforeColl}" to "${afterColl}". ` +
-        "Dev: collection identity must be immutable."
+      `DBWRITER_CLONE_INVARIANT: clone() changed dbCollectionName() from "${beforeColl}" to "${afterColl}".`
     );
   }
 }
 
-/**
- * Map wire id → DB _id (string) exactly once.
- * - Requires a non-empty string `id` on the input.
- * - Produces a doc with `_id:<string>` and removes `id`.
- * - Never persists both `id` and `_id`.
- */
-function mapWireIdToMongoDoc(json: Record<string, unknown>): {
-  doc: Record<string, unknown>;
-  usedId: string;
-} {
-  const id = json["id"];
-  if (typeof id !== "string" || !id.trim()) {
-    throw new Error(
-      "DBWRITER_ID_MAPPING: missing id before insert. " +
-        "Dev: ensure DTO carries a valid 'id' (string) prior to persistence."
-    );
-  }
-
-  const doc: Record<string, unknown> = { ...json, _id: id };
-  delete (doc as any).id;
-
-  return { doc, usedId: id };
+/** Heuristic: does a parsed duplicate refer to the _id key/index? */
+function isIdDuplicate(dup: any): boolean {
+  if (!dup) return false;
+  const key = String(dup.key ?? "").toLowerCase();
+  const index = String(dup.index ?? "").toLowerCase();
+  if (key === "_id" || index === "_id_") return true;
+  if (dup.fields && typeof dup.fields === "object" && "_id" in dup.fields)
+    return true;
+  return false;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -197,13 +177,13 @@ export class DbWriter<TDto extends DtoBase> {
   /**
    * Insert a single DTO from the singleton bag.
    * Assign ID **before** toJson() if absent (ADR-0057).
-   * On duplicate: clone() with a new id and retry up to MAX_DUP_RETRIES.
-   * Instrumentation:
-   *  - DEBUG before insert with collection and _id
-   *  - DEBUG after insert with insertedId
-   *  - WARN on duplicate, ERROR on unexpected failure
+   * On duplicate:
+   *   - If duplicate is on `_id`: clone() and **force a NEW UUIDv4**, then retry (up to MAX_DUP_RETRIES).
+   *   - Otherwise: surface DuplicateKeyError immediately.
+   *
+   * Returns: a **singleton DtoBag<TDto>** containing the exact DTO that was inserted.
    */
-  public async write(): Promise<{ id: string }> {
+  public async write(): Promise<DtoBag<TDto>> {
     let dto = requireSingleton(this._bag, "write");
     let collectionName = (dto as DtoBase).requireCollectionName();
     let coll = await getExplicitCollection(
@@ -214,73 +194,35 @@ export class DbWriter<TDto extends DtoBase> {
 
     for (let attempt = 1; attempt <= MAX_DUP_RETRIES; attempt++) {
       try {
-        // ---- ID lifecycle (strictly BEFORE toJson) -------------------------
-        this.log.debug(
-          {
-            op: "pre_hasId() test",
-            haveId: (dto as DtoBase).hasId(),
-            id: (dto as DtoBase).hasId() ? (dto as DtoBase).id : undefined,
-          },
-          "dbwriter: id status before toJson"
-        );
-
+        // Ensure id BEFORE toJson
         if (!dto.hasId()) {
-          // setter validates UUIDv4 and lowercases
           (dto as DtoBase).id = newUuid();
         }
-        const dtoId = (dto as DtoBase).id;
 
-        this.log.debug(
-          {
-            op: "pre_toJson",
-            haveId: (dto as DtoBase).hasId(),
-            id: (dto as DtoBase).hasId() ? (dto as DtoBase).id : undefined,
-          },
-          "dbwriter: id status before toJson"
-        );
-
+        // Outbound wire already contains `_id`; writer does no transformations.
         const json = (dto as DtoBase).toJson() as Record<string, unknown>;
-        const mapped = mapWireIdToMongoDoc(json); // strips id → _id (string)
-
-        this.log.debug(
-          {
-            op: "insertOne",
-            attempt,
-            collection: collectionName,
-            willInsert: { _id: String(mapped.doc._id) },
-          },
-          "dbwriter: about to insert"
-        );
-
-        const res = await coll.insertOne(mapped.doc as any);
-
-        const insertedId = String(res?.insertedId ?? "");
-        if (!insertedId) {
-          const msg =
-            "DBWRITER_WRITE_NO_ID: insertOne returned no insertedId. " +
-            "Ops: check write concerns and Mongo driver versions.";
-          this.log.error({ collection: collectionName }, msg);
-          throw new Error(msg);
+        const wireId = String((json as any)._id ?? "");
+        if (!wireId) {
+          throw new Error(
+            "DBWRITER_WRITE_NO_WIRE_ID: toJson() did not include `_id`."
+          );
         }
 
-        this.log.debug(
-          {
-            op: "insertOne",
-            attempt,
-            collection: collectionName,
-            insertedId,
-          },
-          "dbwriter: insert complete"
-        );
+        const res = await coll.insertOne(json as any);
+        const insertedId = String(res?.insertedId ?? "");
+        if (!insertedId) {
+          throw new Error(
+            "DBWRITER_WRITE_NO_ID: insertOne returned no insertedId."
+          );
+        }
 
-        // Return canonical wire id we used
-        return { id: dtoId };
+        // Success — return a bag containing the exact DTO we inserted
+        return new DtoBag<TDto>([dto as TDto]);
       } catch (err) {
         const dup = parseDuplicateKey(err);
         if (!dup) {
           this.log.error(
             {
-              op: "insertOne",
               attempt,
               collection: collectionName,
               err: (err as Error)?.message,
@@ -290,18 +232,22 @@ export class DbWriter<TDto extends DtoBase> {
           throw err;
         }
 
-        // Duplicate key
+        const idDup = isIdDuplicate(dup);
         this.log.warn(
           {
-            op: "insertOne",
             attempt,
             collection: collectionName,
             code: 11000,
             detail: dup,
+            idDuplicate: idDup,
           },
           "dbwriter: duplicate key"
         );
 
+        // Non-_id unique violation → surface immediately
+        if (!idDup) throw new DuplicateKeyError(dup, err as Error);
+
+        // _id duplicate — retry with clone + NEW UUID
         if (attempt < MAX_DUP_RETRIES) {
           if (typeof (dto as any).clone !== "function") {
             this.log.warn(
@@ -312,16 +258,15 @@ export class DbWriter<TDto extends DtoBase> {
           }
           const cloned = (dto as any).clone() as DtoBase;
           assertCloneInvariants(dto as DtoBase, cloned as DtoBase);
+          (cloned as DtoBase).id = newUuid(); // force new UUIDv4 for retry
+
           dto = cloned as TDto;
 
-          // Sanity: collection should remain identical
+          // safety: collection should remain identical
           const nextCollection = (dto as DtoBase).requireCollectionName();
           if (nextCollection !== collectionName) {
             this.log.warn(
-              {
-                from: collectionName,
-                to: nextCollection,
-              },
+              { from: collectionName, to: nextCollection },
               "dbwriter: collection changed across clone (unexpected)"
             );
             collectionName = nextCollection;
@@ -341,19 +286,20 @@ export class DbWriter<TDto extends DtoBase> {
     }
 
     // Unreachable
-    const msg =
-      "DBWRITER_WRITE_EXHAUSTED: exhausted duplicate retries without success.";
-    this.log.error({ msg }, "dbwriter: exhausted retries");
-    throw new Error(msg);
+    throw new Error(
+      "DBWRITER_WRITE_EXHAUSTED: exhausted duplicate retries without success."
+    );
   }
 
   /**
    * Batch insert with per-item duplicate handling.
-   * IDs are ensured BEFORE toJson() on each item.
+   * Returns a DtoBag containing all successfully inserted DTOs (with any retried clones).
    */
-  public async writeMany(bag?: DtoBag<TDto>): Promise<{ ids: string[] }> {
+  public async writeMany(bag?: DtoBag<TDto>): Promise<DtoBag<TDto>> {
     const source = bag ?? this._bag;
-    const ids: string[] = [];
+
+    // Collect inserted DTOs in a plain array; return immutable bag at the end.
+    const inserted: TDto[] = [];
 
     for (const _item of source.items()) {
       let dto = _item as TDto;
@@ -364,59 +310,41 @@ export class DbWriter<TDto extends DtoBase> {
         collectionName
       );
 
-      let inserted = false;
+      let insertedOk = false;
       for (
         let attempt = 1;
-        attempt <= MAX_DUP_RETRIES && !inserted;
+        attempt <= MAX_DUP_RETRIES && !insertedOk;
         attempt++
       ) {
         try {
           if (!(dto as DtoBase).hasId()) {
             (dto as DtoBase).id = newUuid();
           }
-          const dtoId = (dto as DtoBase).id;
 
           const json = (dto as DtoBase).toJson() as Record<string, unknown>;
-          const mapped = mapWireIdToMongoDoc(json);
-
-          this.log.debug(
-            {
-              op: "insertOne",
-              attempt,
-              collection: collectionName,
-              willInsert: { _id: String(mapped.doc._id) },
-            },
-            "dbwriter: about to insert (many)"
-          );
-
-          const res = await coll.insertOne(mapped.doc as any);
-          const insertedId = String(res?.insertedId ?? "");
-          if (!insertedId) {
-            const msg =
-              "DBWRITER_WRITE_MANY_NO_ID: insertOne returned no insertedId. " +
-              "Ops: check write concerns and Mongo driver versions.";
-            this.log.error({ collection: collectionName }, msg);
-            throw new Error(msg);
+          const wireId = String((json as any)._id ?? "");
+          if (!wireId) {
+            throw new Error(
+              "DBWRITER_WRITE_MANY_NO_WIRE_ID: toJson() did not include `_id`."
+            );
           }
 
-          this.log.debug(
-            {
-              op: "insertOne",
-              attempt,
-              collection: collectionName,
-              insertedId,
-            },
-            "dbwriter: insert complete (many)"
-          );
+          const res = await coll.insertOne(json as any);
+          const insertedId = String(res?.insertedId ?? "");
+          if (!insertedId) {
+            throw new Error(
+              "DBWRITER_WRITE_MANY_NO_ID: insertOne returned no insertedId."
+            );
+          }
 
-          ids.push(dtoId);
-          inserted = true;
+          // Track the exact DTO instance that made it into the DB.
+          inserted.push(dto as TDto);
+          insertedOk = true;
         } catch (err) {
           const dup = parseDuplicateKey(err);
           if (!dup) {
             this.log.error(
               {
-                op: "insertOne",
                 attempt,
                 collection: collectionName,
                 err: (err as Error)?.message,
@@ -426,16 +354,19 @@ export class DbWriter<TDto extends DtoBase> {
             throw err;
           }
 
+          const idDup = isIdDuplicate(dup);
           this.log.warn(
             {
-              op: "insertOne",
               attempt,
               collection: collectionName,
               code: 11000,
               detail: dup,
+              idDuplicate: idDup,
             },
             "dbwriter: duplicate key (many)"
           );
+
+          if (!idDup) throw new DuplicateKeyError(dup, err as Error);
 
           if (attempt < MAX_DUP_RETRIES) {
             if (typeof (dto as any).clone !== "function") {
@@ -447,6 +378,8 @@ export class DbWriter<TDto extends DtoBase> {
             }
             const cloned = (dto as any).clone() as DtoBase;
             assertCloneInvariants(dto as DtoBase, cloned as DtoBase);
+            (cloned as DtoBase).id = newUuid();
+
             dto = cloned as TDto;
 
             const nextCollection = (dto as DtoBase).requireCollectionName();
@@ -470,14 +403,10 @@ export class DbWriter<TDto extends DtoBase> {
       }
     }
 
-    return { ids };
+    return new DtoBag<TDto>(inserted);
   }
 
-  /**
-   * Update by canonical id:
-   * - **No** id mutation.
-   * - Uses string `_id` filter (UUIDv4), not ObjectId.
-   */
+  /** Update by canonical id (no id mutation). */
   public async update(): Promise<{ id: string }> {
     const dto = requireSingleton(this._bag, "update");
     const collectionName = (dto as DtoBase).requireCollectionName();
@@ -487,62 +416,30 @@ export class DbWriter<TDto extends DtoBase> {
       collectionName
     );
 
-    // Require the id prior to serialization; do NOT generate on update.
-    const rawId = (dto as DtoBase).id;
+    const rawId = (dto as DtoBase).id; // must exist; no generation on update
 
     const json = (dto as DtoBase).toJson() as Record<string, unknown>;
-    const { _id, id: _wireId, ...rest } = json as Record<string, unknown>; // strip any leakage defensively
+    const { _id, id: _wireId, ...rest } = json as Record<string, unknown>;
 
     const filter = { _id: String(rawId) };
 
     try {
-      this.log.debug(
-        { op: "updateOne", collection: collectionName, _id: String(rawId) },
-        "dbwriter: about to update"
-      );
-
       const res = await coll.updateOne(filter as any, { $set: rest });
       const matched =
         typeof res?.matchedCount === "number" ? res.matchedCount : 0;
 
       if (matched === 0) {
-        const msg = `DBWRITER_UPDATE_NO_MATCH: matched 0 documents for _id=${String(
-          rawId
-        )}. Ops: record may have been deleted; re-read before updating.`;
-        this.log.warn({ collection: collectionName, _id: String(rawId) }, msg);
-        throw new Error(msg);
+        throw new Error(
+          `DBWRITER_UPDATE_NO_MATCH: matched 0 documents for _id=${String(
+            rawId
+          )}`
+        );
       }
-
-      this.log.debug(
-        { op: "updateOne", collection: collectionName, _id: String(rawId) },
-        "dbwriter: update complete"
-      );
 
       return { id: String(rawId) };
     } catch (err) {
       const dup = parseDuplicateKey(err);
-      if (dup) {
-        this.log.warn(
-          {
-            op: "updateOne",
-            collection: collectionName,
-            _id: String(rawId),
-            code: 11000,
-            detail: dup,
-          },
-          "dbwriter: duplicate key on update"
-        );
-        throw new DuplicateKeyError(dup, err as Error);
-      }
-      this.log.error(
-        {
-          op: "updateOne",
-          collection: collectionName,
-          _id: String(rawId),
-          err: (err as Error)?.message,
-        },
-        "dbwriter: update failed"
-      );
+      if (dup) throw new DuplicateKeyError(dup, err as Error);
       throw err;
     }
   }

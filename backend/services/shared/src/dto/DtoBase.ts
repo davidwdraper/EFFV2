@@ -4,41 +4,20 @@
  * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)  [collection no longer sourced from env]
+ *   - ADR-0044 (SvcEnv DTO contract)
  *   - ADR-0053 (Instantiation Discipline via Registry Secret)
- *   - ADR-0057 (ID Generation & Validation — UUIDv4 or 24-hex Mongo id; immutable; WARN on overwrite attempt)
+ *   - ADR-0057 (R1) — ID Generation & Validation (UUIDv4 only; immutable; WARN on overwrite)
  *
  * Purpose:
- * - Abstract DTO base with a single outbound JSON path.
- * - Meta stamping (createdAt/updatedAt/updatedByUserId) happens **inside toJson()** via helper.
- * - Adds optional instantiation secret enforcement (Registry-only construction).
- * - Adds canonical ID lifecycle: immutable once set, validated format, WARN on overwrite attempts.
- *
- * Notes:
- * - DTOs remain pure (no business logging). Handlers/services log operational details.
- * - **No DB shape here**: this base never reads/writes `_id`. Canonical id exposure is up to concrete DTOs.
- * - Instance-level collection seeding (set once by Registry); DB ops require it via requireCollectionName().
+ * - Abstract DTO base with single outbound JSON path and canonical ID lifecycle.
+ * - Meta stamping (createdAt/updatedAt/updatedByUserId) occurs inside toJson().
+ * - Optional constructor secret enforcement (Registry-only construction).
  */
 
-//import { isValidUuidV4, newUuid } from "../utils/uuid";
 import { isValidUuidV4, newUuid } from "../utils/uuid";
 
 // ─────────────────────────── Secret Key ───────────────────────────
 const DTO_SECRET = Symbol("DTO_SECRET");
-
-// Accept either UUIDv4 or a 24-hex Mongo ObjectId string as a valid DTO id.
-function isValidDtoIdFormat(id: string): boolean {
-  const v = (id ?? "").trim();
-  if (!v) return false;
-
-  // Mongo ObjectId format: 24 hex chars
-  const isMongoHex = /^[0-9a-fA-F]{24}$/.test(v);
-
-  // UUIDv4 format
-  const isUuid = isValidUuidV4(v);
-
-  return isMongoHex || isUuid;
-}
 
 export class DtoValidationError extends Error {
   public readonly issues: Array<{
@@ -57,7 +36,7 @@ export class DtoValidationError extends Error {
     this.issues = issues;
     this.opsHint =
       opsHint ??
-      "Ops: Check caller payload against DTO requirements; confirm versions match; re-run with DEBUG and requestId to capture the failing field(s).";
+      "Ops: Check caller payload against DTO requirements; confirm versions match; re-run with DEBUG and requestId.";
   }
 }
 
@@ -70,7 +49,6 @@ export class DtoMutationUnsupportedError extends Error {
   }
 }
 
-// Minimal warn hook to avoid hard dependency on a logger inside DTOs.
 type _WarnLike = (payload: Record<string, unknown>) => void;
 type _DtoMeta = {
   createdAt?: string;
@@ -79,41 +57,29 @@ type _DtoMeta = {
 };
 
 export abstract class DtoBase {
-  // ---- Process-wide defaults (configured at boot) ----
   private static _defaults = { updatedByUserId: "system" };
   private static _warn?: _WarnLike;
 
-  /** Expose the secret to Registry and subclasses */
   public static getSecret(): symbol {
     return DTO_SECRET;
   }
+  protected static _requireSecret = true;
 
-  /** Optional enforcement toggle for constructor discipline */
-  protected static _requireSecret = false;
-
-  /** Call once at service boot. */
   public static configureDefaults(opts: { updatedByUserId?: string }): void {
     if (opts.updatedByUserId)
       DtoBase._defaults.updatedByUserId = opts.updatedByUserId;
   }
-
-  /**
-   * Optional: provide a warn sink (e.g., logger.warn) for soft violations.
-   * DTOs themselves remain logging-light; this hook avoids tight coupling.
-   */
   public static configureWarn(warn: _WarnLike): void {
     DtoBase._warn = warn;
   }
 
-  // ---- Canonical ID (UUIDv4 or 24-hex Mongo id; immutable once set) ----
+  // ---- Canonical ID (UUIDv4 only; immutable once set) ----
   private _id?: string;
 
-  /** True if an id has been set on this instance. */
   public hasId(): boolean {
     return typeof this._id === "string" && this._id.length > 0;
   }
 
-  /** Getter exposes the canonical string id (throws if unset to avoid silent misuse). */
   public get id(): string {
     if (!this._id) {
       throw new Error(
@@ -125,9 +91,7 @@ export abstract class DtoBase {
 
   /**
    * One-shot setter:
-   * - First assignment must be a valid DTO id:
-   *     • UUIDv4 (case-insensitive), OR
-   *     • 24-hex Mongo ObjectId string.
+   * - First assignment must be a valid UUIDv4 (case-insensitive).
    * - Stored lowercase for stability.
    * - Subsequent attempts are a no-op and emit WARN (investigate call site).
    */
@@ -147,13 +111,12 @@ export abstract class DtoBase {
     }
 
     const v = (value ?? "").trim();
-    if (!isValidDtoIdFormat(v)) {
+    if (!isValidUuidV4(v)) {
       throw new DtoValidationError("INVALID_ID_FORMAT", [
         {
           path: "id",
           code: "invalid_id_format",
-          message:
-            "id must be a UUIDv4 or a 24-hex Mongo ObjectId string (normalized, non-empty).",
+          message: "id must be a UUIDv4",
         },
       ]);
     }
@@ -164,7 +127,7 @@ export abstract class DtoBase {
   /** Ensure an id exists (UUIDv4 auto-generation path); returns the id. */
   public ensureId(): string {
     if (!this._id) {
-      this._id = newUuid();
+      this._id = newUuid().toLowerCase();
     }
     return this._id;
   }
@@ -179,7 +142,7 @@ export abstract class DtoBase {
       throw new Error(
         `DTO_COLLECTION_EMPTY: ${
           ctor.name ?? "DTO"
-        } received empty collection. Ops: Registry must seed dto.setCollectionName(<hardwired>); handlers must not set/override.`
+        } received empty collection. Ops: Registry must seed dto.setCollectionName(<hardwired>).`
       );
     }
     if (!this._collectionName) {
@@ -205,25 +168,11 @@ export abstract class DtoBase {
     throw new Error(
       `DTO_COLLECTION_UNSET: ${
         ctor.name ?? "DTO"
-      } missing instance collection. Ops: ensure the service Registry calls dto.setCollectionName(<hardwired>) during instantiation.`
+      } missing instance collection. Ops: ensure the service Registry calls dto.setCollectionName(<hardwired>).`
     );
   }
 
-  // ---- Cloning (ADR-0057: new UUIDv4 id, preserved collection) ----
-
-  /**
-   * Deep clone as a new instance with a NEW UUIDv4 id (ADR-0057).
-   *
-   * Invariants:
-   * - Subclasses MUST implement: static fromJson(json, opts?) and (optionally) dbCollectionName().
-   * - Cloning:
-   *    • Rehydrates from current wire state (this.toJson()) without revalidation.
-   *    • Assigns a brand-new UUIDv4 id (or the supplied override).
-   *    • Preserves the instance collection name on the clone, falling back to dbCollectionName().
-   *
-   * Ops:
-   * - If this throws DTO_CLONE_UNSUPPORTED, fix the concrete DTO so it implements fromJson().
-   */
+  // ---- Cloning (brand-new UUIDv4 id, preserved collection) ----
   public clone<T extends DtoBase>(this: T, newId?: string): T {
     const ctor = this.constructor as any;
 
@@ -231,30 +180,25 @@ export abstract class DtoBase {
       const name = ctor?.name ?? "DTO";
       throw new Error(
         `DTO_CLONE_UNSUPPORTED: ${name} is missing static fromJson(). ` +
-          "Ops: ensure this DTO implements fromJson(json, opts?) per ADR-0057 so clone() remains consistent."
+          "Ops: ensure this DTO implements fromJson(json, opts?) per ADR-0057."
       );
     }
 
-    // Rehydrate from current wire state (no revalidation).
     const next = ctor.fromJson(this.toJson(), { validate: false }) as T;
 
-    // Assign NEW id (or supplied override) — bypass previous id while still
-    // using the canonical setter for validation & normalization.
     const idToUse = newId ?? newUuid();
     if (!isValidUuidV4(idToUse)) {
       throw new DtoValidationError("INVALID_ID_FORMAT", [
         {
           path: "id",
           code: "invalid_uuid_v4",
-          message:
-            "clone() received an invalid id override; must be a UUIDv4 string.",
+          message: "clone() id must be UUIDv4",
         },
       ]);
     }
     (next as any)._id = undefined;
     (next as any).id = idToUse;
 
-    // Preserve instance collection to avoid DTO_COLLECTION_UNSET.
     const coll =
       (this as any)._collectionName ??
       (typeof ctor.dbCollectionName === "function"
@@ -272,7 +216,6 @@ export abstract class DtoBase {
   private _meta: _DtoMeta;
 
   protected constructor(secretOrArgs?: symbol | _DtoMeta) {
-    // Enforce instantiation only via Registry if required
     if (DtoBase._requireSecret && secretOrArgs !== DTO_SECRET) {
       throw new Error(
         "Direct instantiation of DTOs is not allowed. Use the Registry to construct DTOs."

@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — canonical wire id is `_id`)
  *   - ADR-0053 (Instantiation discipline via BaseDto secret)
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *
@@ -19,19 +19,19 @@
  * - dbCollectionName() returns the hardwired collection for this DTO.
  * - indexHints declare deterministic indexes to be ensured at boot.
  * - ID lifecycle:
- *     • If wire provides id → BaseDto setter validates UUIDv4 and stores lowercase.
- *     • If absent → DbWriter will generate **before** calling toJson().
- *     • toJson() never invents or mutates id (no ID insertion during/after toJson).
+ *     • Wire always uses `_id` (UUIDv4 string, lowercase).
+ *     • DbWriter generates id BEFORE toJson() when absent.
+ *     • No legacy `id` tolerance — strictly `_id` on input/output.
  */
 
 import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
-import type { IDto } from "./IDto"; // ← added
+import type { IDto } from "./IDto";
 
-// Wire-friendly shape (for clarity)
+// Wire-friendly shape
 type XxxJson = {
-  id?: string; // canonical id (wire, ADR-0050); stored as Mongo _id (string) by adapter
-  type?: "xxx"; // dtoType (wire)
+  _id?: string; // canonical wire id
+  type?: "xxx";
   txtfield1: string;
   txtfield2: string;
   numfield1: number;
@@ -42,39 +42,39 @@ type XxxJson = {
 };
 
 export class XxxDto extends DtoBase implements IDto {
-  // ← implements IDto
-  // ─────────────── Static: Collection & Index Hints ───────────────
-
-  /** Hardwired collection for this DTO. Registry seeds instances with this once. */
+  /** Hardwired collection for this DTO. */
   public static dbCollectionName(): string {
     return "xxx";
   }
 
   /**
    * Deterministic index hints consumed at boot by ensureIndexesForDtos().
-   * NOTE: We do NOT index "id" here because the Mongo adapter maps { id → _id } and
-   * Mongo guarantees uniqueness on _id by default.
+   * Business duplicate-by-content is enforced via a compound **unique** index.
    */
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
-    { kind: "lookup", fields: ["txtfield1"] },
-    { kind: "lookup", fields: ["numfield1"] },
-    // Examples:
-    // { kind: "text", fields: ["txtfield1", "txtfield2"] },
-    // { kind: "ttl", field: "expiresAt", seconds: 3600 },
-    // { kind: "hash", fields: ["txtfield1"] },
+    {
+      kind: "unique",
+      fields: ["txtfield1", "txtfield2", "numfield1", "numfield2"],
+      options: { name: "ux_xxx_business" },
+    },
+    {
+      kind: "lookup",
+      fields: ["txtfield1"],
+      options: { name: "ix_xxx_txtfield1" },
+    },
+    {
+      kind: "lookup",
+      fields: ["numfield1"],
+      options: { name: "ix_xxx_numfield1" },
+    },
   ];
 
   // ─────────────── Instance: Domain Fields ───────────────
-  // IMPORTANT: Do NOT declare a public `id` field here — it would shadow BaseDto.id.
   public txtfield1 = "";
   public txtfield2 = "";
   public numfield1 = 0;
   public numfield2 = 0;
 
-  /**
-   * Accepts either the BaseDto secret (Registry path) OR meta (fromJson path).
-   * This matches BaseDto’s `(secretOrArgs?: symbol | _DtoMeta)` contract.
-   */
   public constructor(
     secretOrMeta?:
       | symbol
@@ -83,16 +83,16 @@ export class XxxDto extends DtoBase implements IDto {
     super(secretOrMeta);
   }
 
-  /** Wire hydration (plug Zod here when opts?.validate is true). */
+  /** Wire hydration (strict `_id` only). */
   public static fromJson(json: unknown, opts?: { validate?: boolean }): XxxDto {
     const dto = new XxxDto(DtoBase.getSecret());
-
-    // Minimal parse/assign
     const j = (json ?? {}) as Partial<XxxJson>;
-    if (typeof j.id === "string" && j.id.trim()) {
+
+    if (typeof j._id === "string" && j._id.trim()) {
       // BaseDto setter validates UUIDv4 & lowercases; immutable after first set.
-      dto.id = j.id.trim();
+      dto.id = j._id.trim();
     }
+
     if (typeof j.txtfield1 === "string") dto.txtfield1 = j.txtfield1;
     if (typeof j.txtfield2 === "string") dto.txtfield2 = j.txtfield2;
     if (typeof j.numfield1 === "number")
@@ -100,7 +100,6 @@ export class XxxDto extends DtoBase implements IDto {
     if (typeof j.numfield2 === "number")
       dto.numfield2 = Math.trunc(j.numfield2);
 
-    // If meta is present on wire, capture it (BaseDto will normalize on toJson)
     dto.setMeta({
       createdAt: j.createdAt,
       updatedAt: j.updatedAt,
@@ -112,10 +111,10 @@ export class XxxDto extends DtoBase implements IDto {
 
   /** Canonical outbound wire shape; BaseDto stamps meta here. */
   public toJson(): XxxJson {
-    // NO id generation here — DbWriter ensures id BEFORE calling toJson().
+    // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
     const body = {
-      id: this.id, // getter throws if not set; DbWriter guarantees presence on create
-      type: "xxx" as const, // wire type (matches slug)
+      _id: super.id, // emit `_id` on wire
+      type: "xxx" as const,
       txtfield1: this.txtfield1,
       txtfield2: this.txtfield2,
       numfield1: this.numfield1,
@@ -149,14 +148,11 @@ export class XxxDto extends DtoBase implements IDto {
     return this;
   }
 
-  // ─────────────── IDto contract (added) ───────────────
-  /** Canonical DTO type key (registry key). */
+  // ─────────────── IDto contract ───────────────
   public getType(): string {
     return "xxx";
   }
-
-  /** Canonical DTO id. */
   public getId(): string {
-    return this.id;
+    return super.id;
   }
 }

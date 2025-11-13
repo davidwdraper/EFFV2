@@ -69,7 +69,7 @@ export class BagPopulateQueryHandler extends HandlerBase {
       return;
     }
 
-    // svcEnv is provided via ControllerBase (per ADR-0044 style).
+    // ---- Env from ControllerBase (no ctx / no process.env) ----------------
     const svcEnv = (this.controller as any).getSvcEnv?.();
     if (!svcEnv) {
       this.ctx.set("handlerStatus", "error");
@@ -89,10 +89,54 @@ export class BagPopulateQueryHandler extends HandlerBase {
     }
 
     const svcEnvAny: any = svcEnv;
-    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
-    const mongoUri: string | undefined =
-      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
-    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+
+    // Explicit interface: EnvServiceDto stores vars in `_vars`.
+    const envVars = svcEnvAny._vars as
+      | Record<string, unknown>
+      | undefined
+      | null;
+
+    if (!envVars || typeof envVars !== "object") {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
+        code: "ENV_VARS_MISSING",
+        title: "Internal Error",
+        detail:
+          "EnvServiceDto._vars missing or invalid. Ops: ensure EnvServiceDto carries a concrete _vars map for this service.",
+        requestId: this.ctx.get("requestId"),
+      });
+      this.log.error(
+        {
+          event: "env_vars_missing",
+          svcEnvSlug: svcEnvAny?.slug,
+          svcEnvEnv: svcEnvAny?.env,
+          svcEnvVersion: svcEnvAny?.version,
+          hasVarsField: Object.prototype.hasOwnProperty.call(
+            svcEnvAny,
+            "_vars"
+          ),
+        },
+        "bag.populate.query — EnvServiceDto._vars missing/invalid"
+      );
+      return;
+    }
+
+    // Snapshot for debugging
+    this.log.debug(
+      {
+        event: "svcEnv_inspect",
+        svcEnvType: svcEnvAny?.type,
+        svcEnvSlug: svcEnvAny?.slug,
+        svcEnvEnv: svcEnvAny?.env,
+        svcEnvVersion: svcEnvAny?.version,
+        varsKeys: Object.keys(envVars),
+      },
+      "bag.populate.query — svcEnv snapshot"
+    );
+
+    const mongoUri = envVars["NV_MONGO_URI"] as string | undefined;
+    const mongoDb = envVars["NV_MONGO_DB"] as string | undefined;
 
     if (!mongoUri || !mongoDb) {
       this.ctx.set("handlerStatus", "error");
@@ -101,15 +145,20 @@ export class BagPopulateQueryHandler extends HandlerBase {
         code: "MONGO_ENV_MISSING",
         title: "Internal Error",
         detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
+          "Missing NV_MONGO_URI or NV_MONGO_DB in EnvServiceDto._vars for this service.",
+        hint: "Check env-service config for this slug/env/version and ensure NV_MONGO_URI and NV_MONGO_DB are present under vars.",
         requestId: this.ctx.get("requestId"),
       });
       this.log.error(
         {
           event: "mongo_env_missing",
+          hasSvcEnv: !!svcEnv,
           mongoUriPresent: !!mongoUri,
           mongoDbPresent: !!mongoDb,
+          svcEnvSlug: svcEnvAny?.slug,
+          svcEnvEnv: svcEnvAny?.env,
+          svcEnvVersion: svcEnvAny?.version,
+          varsKeys: Object.keys(envVars),
         },
         "bag.populate.query aborted — Mongo env config missing"
       );
@@ -124,7 +173,6 @@ export class BagPopulateQueryHandler extends HandlerBase {
     });
     this.ctx.set("dbReader", reader);
 
-    // For now we only implement "read one by filter → bag".
     const bag = (await reader.readOneBag({
       filter,
     })) as DtoBag<IDto>;

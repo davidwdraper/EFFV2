@@ -1,27 +1,30 @@
 // backend/services/shared/src/http/handlers/bag.toDb.create.handler.ts
 /**
  * Docs:
- * - SOP: DTO-only persistence; DTO-only edges
+ * - SOP: DTO-only persistence; bag-centric writes
  * - ADRs:
- *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0048 (Bag-centric reads/writes)
- *   - ADR-0050 (Wire Bag Envelope; singleton inbound for create)
+ *   - ADR-0040/0041/0042/0043
+ *   - ADR-0048 (All writes accept DtoBag)
+ *   - ADR-0050 (Wire Bag Envelope)
+ *   - ADR-0053 (Bag Purity)
  *
  * Purpose:
- * - Generic "bag → DB (create)" handler.
- * - Shared across services; final step in create/clone pipelines.
+ * - Take a DtoBag<DtoBase> from the ctx bus and persist it via DbWriter.
+ * - Generic "create" handler, reusable across services.
  *
  * Config (ctx):
  * - "bag.write.targetKey":       string ctx key to READ the bag from (default: "bag")
  * - "bag.write.ensureSingleton": boolean (default: true)
  *
  * Inputs (ctx):
- * - [targetKey]: DtoBag<DtoBase> (typically singleton)
+ * - [targetKey]: DtoBag<DtoBase> (required)
  *
  * Outputs (ctx):
- * - [targetKey]: same bag instance (DTO ids populated by DbWriter)
+ * - [targetKey]: DtoBag<DtoBase> (unchanged → now set to the **persisted** bag)
+ * - "dbWriter.lastId": string (id used for the insert)
  * - "handlerStatus": "ok" | "error"
- * - "response.status" / "response.body" on error
+ * - "response.status"/"response.body" on error
+ * - "result": { ok:true, items:[ <persisted dto json> ] }  (added for wire)
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -86,29 +89,9 @@ export class BagToDbCreateHandler extends HandlerBase {
       }
     }
 
-    const svcEnv = (this.controller as any).getSvcEnv?.();
-    if (!svcEnv) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "ENV_DTO_MISSING",
-        title: "Internal Error",
-        detail:
-          "EnvServiceDto missing from ControllerBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerBase correctly.",
-        requestId: this.ctx.get("requestId"),
-      });
-      this.log.error(
-        { event: "env_missing" },
-        "bag.toDb.create — svcEnv missing"
-      );
-      return;
-    }
-
-    const svcEnvAny: any = svcEnv;
-    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
-    const mongoUri: string | undefined =
-      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
-    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+    // ---- Env from HandlerBase.getVar (strict, no fallbacks) ---------------
+    const mongoUri = this.getVar("NV_MONGO_URI");
+    const mongoDb = this.getVar("NV_MONGO_DB");
 
     if (!mongoUri || !mongoDb) {
       this.ctx.set("handlerStatus", "error");
@@ -126,6 +109,7 @@ export class BagToDbCreateHandler extends HandlerBase {
           event: "mongo_env_missing",
           mongoUriPresent: !!mongoUri,
           mongoDbPresent: !!mongoDb,
+          handler: this.constructor.name,
         },
         "bag.toDb.create aborted — Mongo env config missing"
       );
@@ -140,15 +124,25 @@ export class BagToDbCreateHandler extends HandlerBase {
     });
 
     try {
-      const { id } = await writer.write();
+      // CHANGED: DbWriter.write() returns the **persisted bag**
+      const persistedBag = await writer.write();
+      const persisted = persistedBag.getSingleton();
 
-      // DTO in the bag already has the id set; we just keep the bag on ctx.
-      this.ctx.set(targetKey, bag);
-      this.ctx.set("dbWriter.lastId", id);
+      // Keep ctx discipline but replace with the persisted bag
+      this.ctx.set(targetKey, persistedBag);
+      this.ctx.set("dbWriter.lastId", persisted.id);
       this.ctx.set("handlerStatus", "ok");
 
+      // Build wire body from the **persisted** DTO (original or clone after retry)
+      this.ctx.set("result", { ok: true, items: [persisted.toJson()] });
+
       this.log.debug(
-        { event: "execute_exit", targetKey, id },
+        {
+          event: "execute_exit",
+          targetKey,
+          id: persisted.id,
+          collection: persisted.requireCollectionName(),
+        },
         "bag.toDb.create exit"
       );
     } catch (err) {

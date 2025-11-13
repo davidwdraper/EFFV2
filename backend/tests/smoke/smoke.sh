@@ -21,7 +21,7 @@
 # Options:
 #   --slug <slug>      Service slug (default: xxx)
 #   --dtoType <type>   DTO type (default: same as slug)
-#   --port <port>      Service port (default: 4015)
+#   --port <port>      Service port (REQUIRED)
 #   --host <host>      Host (default: 127.0.0.1)
 # ============================================================================
 
@@ -38,14 +38,14 @@ normalize_id(){ local s="$1"; echo $((10#$s)); }
 
 usage() {
   echo "Usage:"
-  echo "  $(basename "$0")                       # list tests for current slug"
-  echo "  $(basename "$0") --all [opts]          # run all tests for current slug"
-  echo "  $(basename "$0") <ID> [opts]           # run a single test by numeric ID"
+  echo "  $(basename "$0") --port <port>                       # list tests for current slug"
+  echo "  $(basename "$0") --port <port> --all [opts]          # run all tests for current slug"
+  echo "  $(basename "$0") --port <port> <ID> [opts]           # run a single test by numeric ID"
   echo
   echo "Options:"
   echo "  --slug <slug>      Service slug (default: xxx)"
   echo "  --dtoType <type>   DTO type (default: same as slug)"
-  echo "  --port <port>      Service port (default: 4015)"
+  echo "  --port <port>      Service port (REQUIRED)"
   echo "  --host <host>      Host (default: 127.0.0.1)"
 }
 
@@ -56,9 +56,9 @@ done
 
 # --- Defaults for service under test -----------------------------------------
 SLUG="xxx"
-PORT="4015"
+PORT=""          # must be provided via --port
 HOST="127.0.0.1"
-DTO_TYPE=""   # resolved to SLUG if empty
+DTO_TYPE=""      # resolved to SLUG if empty
 
 RUN_MODE="list"   # default: just list tests
 REQ_ID_RAW=""
@@ -104,6 +104,14 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# --- Require explicit port ----------------------------------------------------
+if [ -z "${PORT}" ]; then
+  echo "❌ Missing required parameter: --port <port>" >&2
+  echo
+  usage
+  exit 2
+fi
 
 # --- Resolve DTO_TYPE default (dtoType == slug when not explicitly given) ----
 if [ -z "${DTO_TYPE}" ]; then

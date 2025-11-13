@@ -80,9 +80,14 @@ export class DbReadGetHandler extends HandlerBase {
       return;
     }
 
+    // Extract concrete DB params from svcEnv (per ADR-0044)
+    const mongoUri = svcEnv.getEnvVar("NV_MONGO_URI");
+    const mongoDb = svcEnv.getEnvVar("NV_MONGO_DB");
+
     const reader = new DbReader<any>({
       dtoCtor,
-      svcEnv,
+      mongoUri,
+      mongoDb,
       validateReads: false,
       idFieldName: "id", // canonical
     });

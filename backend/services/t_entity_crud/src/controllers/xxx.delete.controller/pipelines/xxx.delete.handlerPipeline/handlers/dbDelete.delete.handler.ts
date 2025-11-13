@@ -33,7 +33,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
   protected async execute(): Promise<void> {
     this.log.debug({ event: "execute_start" }, "dbDelete.delete enter");
 
-    // Pull required params
+    // Require canonical path id only
     const params: any = this.ctx.get("params") ?? {};
     const id = typeof params.id === "string" ? params.id.trim() : "";
     const dtoType = this.ctx.get<string>("dtoType");
@@ -120,7 +120,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
       return;
     }
 
-    // Derive Mongo connection info from svcEnv (ADR-0044; tolerant to shape)
+    // Derive Mongo connection info from svcEnv
     const svcEnvAny: any = svcEnv;
     const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
     const mongoUri: string | undefined =
@@ -183,7 +183,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
         return;
       }
 
-      // Success
+      // Success → standard JSON envelope (no 204)
       this.ctx.set("result", { ok: true, deleted: 1, id });
       this.ctx.set("handlerStatus", "ok");
       this.log.info({ event: "delete_ok", id }, "Delete succeeded");

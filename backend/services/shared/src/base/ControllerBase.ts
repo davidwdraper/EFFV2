@@ -24,6 +24,10 @@ import { getLogger, type IBoundLogger } from "../logger/Logger";
 import type { EnvServiceDto } from "../dto/env-service.dto";
 import type { AppBase } from "../base/AppBase";
 import type { IDtoRegistry } from "../registry/RegistryBase";
+import {
+  DuplicateKeyError,
+  parseDuplicateKey,
+} from "../dto/persistence/adapters/mongo/dupeKeyError";
 
 type ProblemJson = {
   type: string;
@@ -55,12 +59,10 @@ export abstract class ControllerBase {
 
   // ─────────────── Public getters for handlers (strict contract) ─────────────
 
-  /** App instance for downstream usage (e.g., logger, env, services). */
   public getApp(): AppBase {
     return this.app;
   }
 
-  /** DTO Registry (base-typed) for wire discrimination & hydration. */
   public getDtoRegistry(): IDtoRegistry {
     const reg = (this.app as any)?.getDtoRegistry?.();
     if (!reg) {
@@ -69,17 +71,12 @@ export abstract class ControllerBase {
     return reg as IDtoRegistry;
   }
 
-  /**
-   * Current service environment DTO (EnvServiceDto).
-   * This is the non-secret config DTO owned by AppBase.
-   */
   public getSvcEnv(): EnvServiceDto {
     const env = (this.app as any)?.svcEnv;
     if (!env) throw new Error("EnvServiceDto not available from AppBase.");
     return env as EnvServiceDto;
   }
 
-  /** Controller-bound logger (already scoped per service). */
   public getLogger(): IBoundLogger {
     return this.log;
   }
@@ -100,7 +97,6 @@ export abstract class ControllerBase {
 
   // ─────────────── Context build / pipeline / finalize ───────────────────────
 
-  /** Create and seed HandlerContext per ADR-0042. */
   protected makeContext(req: Request, res: Response): HandlerContext {
     const ctx = new HandlerContext();
     const requestId = (req.headers["x-request-id"] as string) ?? this.randId();
@@ -112,7 +108,6 @@ export abstract class ControllerBase {
     ctx.set("body", req.body);
     ctx.set("res", res);
 
-    // Seed EnvServiceDto directly from controller/app (no plumbing objects shoved into ctx)
     const svcEnv: EnvServiceDto | undefined = this.getSvcEnv();
     if (svcEnv) {
       ctx.set("svcEnv", svcEnv);
@@ -135,11 +130,6 @@ export abstract class ControllerBase {
     return ctx;
   }
 
-  /**
-   * One-per-request invariant check.
-   * Derived controllers can opt-out of registry requirement by overriding needsRegistry() → false,
-   * or by passing { requireRegistry:false } to runPipeline(...).
-   */
   protected preflight(
     ctx: HandlerContext,
     opts?: { requireRegistry?: boolean }
@@ -149,7 +139,6 @@ export abstract class ControllerBase {
 
     const requestId = ctx.get<string>("requestId") ?? "unknown";
 
-    // Env presence (makeContext already tried — reassert deterministically)
     const svcEnv = ctx.get<EnvServiceDto>("svcEnv");
     if (!svcEnv) {
       ctx.set("handlerStatus", "error");
@@ -164,7 +153,6 @@ export abstract class ControllerBase {
       return;
     }
 
-    // Registry presence (if required for this pipeline), via getters (no ctx plumbing)
     if (requireRegistry) {
       try {
         void this.getDtoRegistry(); // throws if missing
@@ -193,10 +181,6 @@ export abstract class ControllerBase {
     );
   }
 
-  /**
-   * Convenience: run preflight once, then execute handlers in order.
-   * If preflight or any handler marks an error, later handlers no-op via HandlerBase.
-   */
   protected async runPipeline(
     ctx: HandlerContext,
     handlers: HandlerBase[],
@@ -213,7 +197,6 @@ export abstract class ControllerBase {
     }
   }
 
-  /** Controller finalization — maps context → HTTP per ADR-0043. */
   protected finalize(ctx: HandlerContext): void {
     const res = ctx.get<Response>("res")!;
     const requestId = ctx.get<string>("requestId") ?? "";
@@ -237,18 +220,38 @@ export abstract class ControllerBase {
       const status =
         statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
 
+      // If a handler prebuilt a body, normalize duplicate-key codes using the existing parser.
+      let normalized = error;
+      if (error && error.title && error.code) {
+        const maybeDup =
+          parseDuplicateKey({
+            message: error.detail ?? error.message ?? "",
+            code: 11000,
+          }) ?? parseDuplicateKey(error);
+        if (maybeDup) {
+          const idx = (maybeDup.index ?? "").toString();
+          const mappedCode =
+            idx === "ux_xxx_business"
+              ? "DUPLICATE_CONTENT"
+              : idx === "_id_"
+              ? "DUPLICATE_ID"
+              : "DUPLICATE_KEY";
+          normalized = { ...error, code: mappedCode };
+        }
+      }
+
       const body: ProblemJson =
-        error && error.title && error.code
+        normalized && normalized.title && normalized.code
           ? {
               type: "about:blank",
-              title: error.title,
-              detail: error.detail ?? error.message,
+              title: normalized.title,
+              detail: normalized.detail ?? normalized.message,
               status,
-              code: error.code,
-              issues: error.issues,
+              code: normalized.code,
+              issues: normalized.issues,
               requestId,
             }
-          : this.toProblemJson(error, status, requestId);
+          : this.toProblemJson(normalized, status, requestId);
 
       res.status(status).type("application/problem+json").json(body);
 
@@ -297,7 +300,6 @@ export abstract class ControllerBase {
     this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
   }
 
-  /** Default: creation/read/list pipelines typically need a registry. Override to loosen. */
   // eslint-disable-next-line class-methods-use-this
   protected needsRegistry(): boolean {
     return true;
@@ -308,6 +310,25 @@ export abstract class ControllerBase {
     status: number,
     requestId?: string
   ): ProblemJson {
+    if (err instanceof DuplicateKeyError) {
+      const idx = (err.index ?? "").toString();
+      const code =
+        idx === "ux_xxx_business"
+          ? "DUPLICATE_CONTENT"
+          : idx === "_id_"
+          ? "DUPLICATE_ID"
+          : "DUPLICATE_KEY";
+
+      return {
+        type: "about:blank",
+        title: "Conflict",
+        detail: err.message,
+        status: 409,
+        code,
+        requestId,
+      };
+    }
+
     const code = err?.code ?? "UNSPECIFIED";
     const detail = err?.detail ?? err?.message ?? "Unhandled error";
     const issues = Array.isArray(err?.issues) ? err.issues : undefined;

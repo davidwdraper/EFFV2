@@ -1,4 +1,3 @@
-// backend/services/shared/src/dto/persistence/adapters/mongo/mongoNormalizeToDto.ts
 /**
  * Docs:
  * - SOP: DTO-only persistence (reads hydrate with validate=false)
@@ -12,11 +11,6 @@
  *   • Remove Mongo-only keys like `_id`, `__v`, etc.
  *   • Inject a canonical `id:string` (or overridable `idFieldName`) derived from `_id`.
  *   • Leave all other fields intact.
- *
- * Notes:
- * - This is the **only** step between raw Mongo and DTO instantiation.
- * - DbReader passes `idFieldName = "id"` for all DTOs.
- * - Cloners/templates MAY override idFieldName if they truly need a different name.
  */
 
 export function mongoNormalizeToDto(raw: unknown, idFieldName = "id"): unknown {
@@ -29,17 +23,30 @@ export function mongoNormalizeToDto(raw: unknown, idFieldName = "id"): unknown {
   const disallowed = new Set([
     "_id", // replaced by idFieldName (canonical "id")
     "__v", // Mongoose-style version key (unused)
-    "$clusterTime", // internal replication metadata
-    "$db", // command metadata
-    "$id", // BSON ref junk
-    "$ref", // legacy DBRef junk
-    "$timestamp", // internal diagnostic timestamp
+    "$clusterTime",
+    "$db",
+    "$id",
+    "$ref",
+    "$timestamp",
   ]);
 
   // 1) Convert Mongo _id → idFieldName (canonical "id")
   if (Object.prototype.hasOwnProperty.call(src, "_id")) {
-    const v = (src as any)["_id"];
-    const idStr = typeof v === "string" ? v : v != null ? String(v) : "";
+    const v: any = (src as any)["_id"];
+
+    let idStr = "";
+    // True BSON ObjectId (works even if driver instances differ)
+    if (v && typeof v === "object" && typeof v.toHexString === "function") {
+      idStr = String(v.toHexString()).toLowerCase();
+    } else if (typeof v === "string") {
+      // Strip possible "ObjectId('...')" or 'ObjectId("...")' wrappers if leaked
+      const m = v.match(/^ObjectId\(['"]?([0-9a-fA-F]{24})['"]?\)$/);
+      idStr = (m ? m[1] : v).toLowerCase();
+    } else {
+      // As a last resort, avoid String(v) which can yield "ObjectId('...')"
+      idStr = "";
+    }
+
     out[idFieldName] = idStr;
   }
 

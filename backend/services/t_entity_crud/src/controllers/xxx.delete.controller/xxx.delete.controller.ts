@@ -21,8 +21,6 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
 import * as XxxDeletePipeline from "./pipelines/xxx.delete.handlerPipeline";
-// Future dtoType example (uncomment when adding a new type):
-// import * as MyNewDtoDeletePipeline from "./pipelines/myNewDto.delete.handlerPipeline";
 
 export class XxxDeleteController extends ControllerBase {
   constructor(app: AppBase) {
@@ -31,8 +29,9 @@ export class XxxDeleteController extends ControllerBase {
 
   public async delete(req: Request, res: Response): Promise<void> {
     const dtoType = req.params.dtoType;
-
     const ctx: HandlerContext = this.makeContext(req, res);
+
+    // Seed op & dtoType; params already include :id from express
     ctx.set("dtoType", dtoType);
     ctx.set("op", "delete");
 
@@ -41,6 +40,7 @@ export class XxxDeleteController extends ControllerBase {
         event: "pipeline_select",
         op: "delete",
         dtoType,
+        hasIdPath: typeof req.params.id === "string" && !!req.params.id.trim(),
         requestId: ctx.get("requestId"),
       },
       "selecting delete pipeline"
@@ -52,14 +52,6 @@ export class XxxDeleteController extends ControllerBase {
         await this.runPipeline(ctx, steps, { requireRegistry: true });
         break;
       }
-
-      // Future dtoType example:
-      // case "myNewDto": {
-      //   const steps = MyNewDtoDeletePipeline.getSteps(ctx, this);
-      //   await this.runPipeline(ctx, steps, { requireRegistry: true });
-      //   break;
-      // }
-
       default: {
         ctx.set("handlerStatus", "error");
         ctx.set("response.status", 501);

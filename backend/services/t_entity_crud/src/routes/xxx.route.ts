@@ -47,7 +47,7 @@ export function buildXxxRouter(app: AppBase): ReturnType<typeof Router> {
   // READ (GET /:dtoType/read/:id)
   r.get("/:dtoType/read/:id", (req, res) => readCtl.get(req, res));
 
-  // DELETE (DELETE /:dtoType/delete/:id)
+  // DELETE (DELETE /:dtoType/delete/:id) — canonical only
   r.delete("/:dtoType/delete/:id", (req, res) => deleteCtl.delete(req, res));
 
   // LIST (GET /:dtoType/list) — pagination via query (?limit=&cursor=…)

@@ -4,14 +4,19 @@
 # Parametrized: SLUG, DTO_TYPE, HOST, PORT, VERSION, SVCFAC_BASE_URL, BASE
 set -euo pipefail
 
+# PORT must be provided by the runner (smoke.sh --port)
+if [ -z "${PORT:-}" ]; then
+  echo "ERROR: PORT is not set. Run this test via smoke.sh with --port <port>." >&2
+  exit 2
+fi
+
 # shellcheck disable=SC1090
-. "$(cd "$(dirname "$0")" && pwd)/../lib.sh"
+. "$(cd "$(dirname "$0")" && pwd)/../../lib.sh"
 
 # --- Config (env override friendly) ------------------------------------------
 SLUG="${SLUG:-xxx}"
 DTO_TYPE="${DTO_TYPE:-$SLUG}"   # dtoType path segment; defaults to registry key (slug)
 HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-4015}"
 VERSION="${VERSION:-1}"
 
 # Precedence: BASE (if provided) > SVCFAC_BASE_URL > computed from HOST/PORT
@@ -30,9 +35,8 @@ URL="${BASE}/${DTO_TYPE}/create"
 # Unique suffix for repeatable runs
 SUF="$(date +%s)$$"
 
-# --- Bag-only payload (ADR-0050) --------------------------------------------
+# --- Bag-only payload --------------------------------------------------------
 # Edges are bag-only. Provide a single DTO item with the registry type key.
-# NOTE: 'type' must match the DtoRegistry key for this DTO (usually the slug).
 BODY="$(cat <<JSON
 {
   "items": [
@@ -54,27 +58,24 @@ RESP="$(_put_json "${URL}" "${BODY}")"
 # Must be JSON
 echo "${RESP}" | jq -e . >/dev/null
 
-# ok must be true
-[ "$(echo "${RESP}" | jq -r '.ok // empty')" = "true" ] || {
-  echo "ERROR: create not ok"
+# Must have at least one item in the bag
+COUNT="$(echo "${RESP}" | jq -r '.items | length // 0')"
+[ "${COUNT}" -ge 1 ] || {
+  echo "ERROR: no items in response (expected at least one created DTO)"
   echo "${RESP}" | jq .
   exit 1
 }
 
-# --- Extract id (slug/dtoType-aware, with fallbacks) -------------------------
+# --- Extract id from the first item (DTO-first, no doc) ----------------------
 ID="$(echo "${RESP}" | jq -er \
       --arg k "${DTO_TYPE}Id" \
-      '.id
-       // .doc[$k]
-       // .[$k]
-       // .doc._id
-       // ._id
-       // .doc.xxxId
-       // .xxxId
+      '.items[0][$k]
+       // .items[0].id
+       // .items[0]._id
        // empty')"
 
 [ -n "${ID}" ] || {
-  echo "ERROR: no id in response (.id | .doc[\"${DTO_TYPE}Id\"] | .[\"${DTO_TYPE}Id\"] | .doc._id | ._id | .doc.xxxId | .xxxId)"
+  echo "ERROR: no id in response (.items[0][\"${DTO_TYPE}Id\"] | .items[0].id | .items[0]._id)"
   echo "${RESP}" | jq .
   exit 1
 }

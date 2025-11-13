@@ -5,22 +5,24 @@
  * - ADRs:
  *   - ADR-0040/0041/0042/0043 (DTO-only persistence, per-route controllers, HandlerContext bus, finalize)
  *   - ADR-0048 (Revised) — Reader/Writer/Deleter contracts at adapter edge
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="_id" on wire)
  *   - ADR-0056 (DELETE uses <DtoTypeKey>; controller resolves collection)
  *
  * Purpose:
  * - Shared deleter that mirrors DbWriter/DbReader connectivity rules.
- * - Delete by canonical id (string). Adapter edge performs ObjectId coercion.
+ * - Delete by canonical id (UUIDv4 string). `_id` is a string end-to-end.
  *
  * Invariants:
- * - Canonical id name is strictly "id".
+ * - Canonical wire id field is `_id` (UUIDv4 string).
  * - No defaults: mongoUri/mongoDb must be provided explicitly by the caller
  *   (typically via EnvServiceDto.getEnvVar()).
  * - No DTO/Bag requirement; callers provide the explicit collection name.
  */
 
-import { MongoClient, Collection, Db, ObjectId } from "mongodb";
-import { coerceForMongoQuery } from "./adapters/mongo/queryHelper";
+import { MongoClient, Collection, Db, Document } from "mongodb";
+
+/** Wire doc type: ensure `_id` is a string so TS doesn't expect ObjectId. */
+type WireDoc = Document & { _id: string };
 
 /* ----------------- minimal pooled client (per-process) ----------------- */
 let _client: MongoClient | null = null;
@@ -28,11 +30,11 @@ let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
 let _uriPinned: string | null = null;
 
-async function getExplicitCollection(
+async function getExplicitCollection<T extends Document = WireDoc>(
   mongoUri: string,
   mongoDbName: string,
   collectionName: string
-): Promise<Collection> {
+): Promise<Collection<T>> {
   if (!mongoUri || !mongoDbName || !collectionName?.trim()) {
     throw new Error(
       "DBDELETER_MISCONFIG: mongoUri/mongoDb/collectionName required. " +
@@ -61,7 +63,7 @@ async function getExplicitCollection(
     }
   }
 
-  return (_db as Db).collection(collectionName);
+  return (_db as Db).collection<T>(collectionName);
 }
 
 /* --------------------------- Deleter ----------------------------------- */
@@ -106,18 +108,13 @@ export class DbDeleter {
       );
     }
 
-    const coll = await getExplicitCollection(
+    const coll = await getExplicitCollection<WireDoc>(
       this._mongoUri,
       this._mongoDb,
       this._collectionName
     );
 
-    // Adapter-edge coercion to {_id: ObjectId|string} as needed.
-    const filter = coerceForMongoQuery({ _id: String(id) }) as {
-      _id: ObjectId;
-    };
-
-    const res = await coll.deleteOne({ _id: filter._id });
+    const res = await coll.deleteOne({ _id: String(id) } as Partial<WireDoc>);
     const deleted =
       typeof res?.deletedCount === "number" ? res.deletedCount : 0;
 
@@ -147,11 +144,12 @@ export class DbDeleter {
       );
     }
 
-    const coll = await getExplicitCollection(mongoUri, mongoDb, collectionName);
-    const filter = coerceForMongoQuery({ _id: String(id) }) as {
-      _id: ObjectId;
-    };
-    const res = await coll.deleteOne({ _id: filter._id });
+    const coll = await getExplicitCollection<WireDoc>(
+      mongoUri,
+      mongoDb,
+      collectionName
+    );
+    const res = await coll.deleteOne({ _id: String(id) } as Partial<WireDoc>);
     const deleted =
       typeof res?.deletedCount === "number" ? res.deletedCount : 0;
     return { deleted, id };

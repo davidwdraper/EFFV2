@@ -1,14 +1,25 @@
-# backend/tests/smoke/tests/001-xxx-health-4015.sh
+# backend/tests/smoke/tests/001-xxx-health-4016.sh
 #!/usr/bin/env bash
 # NowVibin Smoke — health check (parametrized)
 # Works with env: SLUG, HOST, PORT, VERSION, SVCFAC_BASE_URL, BASE
-# Defaults: SLUG=xxx, HOST=127.0.0.1, PORT=4015, VERSION=1
+# Expected usage:
+#   ./smoke.sh --slug xxx --port <port> 1
 set -euo pipefail
+
+# --- Require PORT from runner BEFORE lib.sh can default it --------------------
+if [ -z "${PORT:-}" ]; then
+  echo "ERROR: PORT is not set. Run this test via smoke.sh with --port <port>." >&2
+  exit 2
+fi
+
+# --- Source shared smoke library (header/footer, helpers, etc.) --------------
+# Path: tests/xxx/ -> ../../lib.sh
+# shellcheck source=../../lib.sh
+. "$(dirname "$0")/../../lib.sh"
 
 # --- Config (env override friendly) ------------------------------------------
 SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-4015}"
 VERSION="${VERSION:-1}"
 
 # Precedence: BASE (if provided) > SVCFAC_BASE_URL > computed from HOST/PORT

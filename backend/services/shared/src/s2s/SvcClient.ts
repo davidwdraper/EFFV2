@@ -152,13 +152,13 @@ export class SvcClient {
       // Example: env-service v1 running locally on 4010
       "env-service@1": "http://127.0.0.1:4015",
       // Add more services here as they come online:
-      // "t_entity_crud@1": "http://127.0.0.1:4020",
+      "xxx@1": "http://127.0.0.1:4016",
     };
 
     const url = MOCK_BASE_URLS[slugKey];
     if (!url) {
       throw new Error(
-        `SVC_CLIENT_MOCK_UNKNOWN_TARGET: No mock base URL mapping for slugKey "${slugKey}". ` +
+        `******** SVC_CLIENT_MOCK_UNKNOWN_TARGET: No mock base URL mapping for slugKey "${slugKey}". ` +
           "Ops: until svcconfig is implemented, only a small set of slugKeys are supported by SvcClient. " +
           `Requested slug="${slug}", version=${version}. ` +
           "Add an entry to MOCK_BASE_URLS in SvcClient to enable this target."

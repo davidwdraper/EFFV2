@@ -5,6 +5,7 @@
  * - ADR-0042 (HandlerContext Bus — KISS)
  * - ADR-0043 (Hydration + Failure Propagation)
  * - ADR-0049 (DTO Registry & Wire Discrimination)
+ * - ADR-0058 (HandlerBase.getVar — Strict Env Accessor)
  *
  * Purpose:
  * - Abstract base for handlers:
@@ -12,10 +13,13 @@
  *   • Access to App, Registry, Logger via controller getters
  *   • Short-circuit on prior failure
  *   • Standardized instrumentation via bound logger
+ *   • Provides getVar(key) — strict per-service env accessor
  *
  * Invariants:
  * - Controllers MUST pass `this` into handler constructors.
  * - No reading plumbing from ctx (no ctx.get('app'), etc).
+ * - getVar() reads only from ControllerBase.getSvcEnv()._vars
+ *   (never from ctx or process.env)
  */
 
 import { HandlerContext } from "./HandlerContext";
@@ -114,6 +118,52 @@ export abstract class HandlerBase {
     }
 
     this.log.debug({ event: "execute_end" }, "Handler execute() end");
+  }
+
+  /**
+   * Strict accessor for per-service environment variables.
+   * - Reads from ControllerBase.getSvcEnv()._vars only.
+   * - Logs WARN if the key or vars bag is missing.
+   * - Never falls back to process.env or ctx.
+   */
+  protected getVar(key: string): string | undefined {
+    const svcEnv = (this.controller as any)?.getSvcEnv?.();
+    const vars = svcEnv?._vars as Record<string, unknown> | undefined;
+
+    if (!svcEnv || !vars || typeof vars !== "object") {
+      this.log.warn(
+        {
+          event: "getVar_no_vars",
+          handler: this.constructor.name,
+          key,
+          hasSvcEnv: !!svcEnv,
+          svcEnvSlug: svcEnv?.slug,
+          svcEnvEnv: svcEnv?.env,
+          svcEnvVersion: svcEnv?.version,
+        },
+        `getVar('${key}') — svcEnv or _vars missing`
+      );
+      return undefined;
+    }
+
+    const val = vars[key];
+    if (typeof val === "string" && val.trim() !== "") {
+      return val;
+    }
+
+    this.log.warn(
+      {
+        event: "getVar_missing",
+        handler: this.constructor.name,
+        key,
+        svcEnvSlug: svcEnv?.slug,
+        svcEnvEnv: svcEnv?.env,
+        svcEnvVersion: svcEnv?.version,
+        varsKeys: Object.keys(vars),
+      },
+      `getVar('${key}') — key missing or empty`
+    );
+    return undefined;
   }
 
   protected abstract execute(): Promise<void>;

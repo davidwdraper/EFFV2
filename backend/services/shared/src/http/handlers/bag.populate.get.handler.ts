@@ -2,20 +2,22 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs: 0041/0042/0043/0049/0050
+ * - ADRs: 0041/0042/0043/0049/0050/0057
  *
  * Purpose:
  * - Populate a DtoBag from a wire bag envelope (one or many).
- * - Hydrates DTOs via Registry.resolveCtorByType(type).fromJson(doc, { validate }).
+ * - Hydrates DTOs via Registry.resolveCtorByType(type).fromJson(json, { validate }).
  * - Sets instance collectionName on each DTO using Registry.dbCollectionNameByType(type).
+ *
+ * Notes:
+ * - Accepts both legacy `{ type, doc:{...} }` and new `{ type, ...dtoFields }` bag items.
+ * - Normalizes `${dtoType}Id` → `id` pre-hydration so DbWriter sees the client-supplied id.
  */
-
-// backend/services/shared/src/http/handlers/bag.populate.get.handler.ts
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
 import type { IDtoRegistry } from "../../registry/RegistryBase";
-import { BagBuilder } from "../../dto/wire/BagBuilder"; // ⬅ add this import
+import { BagBuilder } from "../../dto/wire/BagBuilder";
 
 export class BagPopulateGetHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -50,7 +52,7 @@ export class BagPopulateGetHandler extends HandlerBase {
         code: "BAD_REQUEST_BODY",
         title: "Bad Request",
         detail:
-          "Body must be a bag envelope: { items: [ { type: string, doc: {...} } ], meta?: {...} }",
+          "Body must be a bag envelope: { items: [ { type: string, doc?: {...} | <inline fields> } ], meta?: {...} }",
       });
       this.log.warn(
         { event: "bad_request", reason: "empty_items" },
@@ -81,18 +83,35 @@ export class BagPopulateGetHandler extends HandlerBase {
         return;
       }
 
-      const json = w?.doc ?? w; // wire uses .doc
+      // Support legacy `{doc:{...}}` and new inline `{ ... }`
+      const raw =
+        (w && typeof w === "object" && "doc" in w ? (w as any).doc : w) ?? {};
+      const json: Record<string, unknown> = {
+        ...(raw as Record<string, unknown>),
+      };
+
+      // ✅ Normalize alias key: `${dtoType}Id` → `id` (only if `id` not already present)
+      //    Example: "xxxId" -> "id"
+      const aliasKey = `${routeDtoType}Id`;
+      if (
+        json.id == null &&
+        typeof (json as any)[aliasKey] === "string" &&
+        String((json as any)[aliasKey]).trim()
+      ) {
+        json.id = String((json as any)[aliasKey]).trim();
+      }
+
+      // Hydrate
       const dto = ctor.fromJson(json, { mode: "wire", validate });
       if (typeof (dto as any).setCollectionName === "function") {
         (dto as any).setCollectionName(coll);
       }
 
-      // Never touch dto.id here — may be unset on create path.
       this.log.debug(
         {
           event: "hydrate_item",
           type: routeDtoType,
-          wireId: json?.id ?? "(none)",
+          wireId: (json as any)?.id ?? (json as any)?.[aliasKey] ?? "(none)",
           dtoId: "(pending)",
         },
         "bag.populate: wire→dto trace"
@@ -101,7 +120,7 @@ export class BagPopulateGetHandler extends HandlerBase {
       dtos.push(dto);
     }
 
-    // ✅ Build a real DtoBag and store it at ctx["bag"] (not bag.items).
+    // Build DtoBag and stash in ctx
     const { bag } = BagBuilder.fromDtos(dtos, {
       requestId: this.ctx.get("requestId") ?? "unknown",
       limit: dtos.length,

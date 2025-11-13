@@ -8,6 +8,7 @@
  * - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  * - ADR-0049 (DTO Registry & Wire Discrimination)
  * - ADR-0050 (Wire Bag Envelope; bag-only edges)
+ * - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
  *
  * Purpose:
  * - Shared abstract controller base for all services.
@@ -127,6 +128,104 @@ export abstract class ControllerBase {
       { event: "make_context", requestId, hasSvcEnv: !!svcEnv },
       "Context seeded"
     );
+    return ctx;
+  }
+
+  /**
+   * Helper for dtoType-based routes (create/read/delete/etc.).
+   *
+   * Responsibilities:
+   * - Build a HandlerContext via makeContext().
+   * - Extract :dtoType from req.params and stamp into ctx["dtoType"].
+   * - Stamp operation name into ctx["op"].
+   * - Optionally resolve db.collectionName via DtoRegistry and stamp into ctx["db.collectionName"].
+   *
+   * On error (missing :dtoType, registry/collection issues), this method:
+   * - Sets handlerStatus="error" and response.status/response.body on the ctx.
+   * - Logs a warning.
+   * - Returns the ctx so the controller can immediately finalize().
+   */
+  protected makeDtoOpContext(
+    req: Request,
+    res: Response,
+    op: string,
+    opts?: { resolveCollectionName?: boolean }
+  ): HandlerContext {
+    const ctx = this.makeContext(req, res);
+    const params: any = req.params ?? {};
+    const dtoType = typeof params.dtoType === "string" ? params.dtoType : "";
+    const requestId = ctx.get<string>("requestId") ?? "unknown";
+
+    if (!dtoType || !dtoType.trim()) {
+      ctx.set("handlerStatus", "error");
+      ctx.set("response.status", 400);
+      ctx.set("response.body", {
+        code: "BAD_REQUEST",
+        title: "Bad Request",
+        detail: "Missing required path parameter ':dtoType'.",
+        hint: "Routes must be shaped as /api/:slug/v:version/:dtoType/<op>[/:id]",
+        requestId,
+      });
+
+      this.log.warn(
+        { event: "bad_request", reason: "no_dtoType", op, requestId },
+        "ControllerBase.makeDtoOpContext — missing :dtoType"
+      );
+      return ctx;
+    }
+
+    ctx.set("dtoType", dtoType);
+    ctx.set("op", op);
+
+    if (opts?.resolveCollectionName) {
+      try {
+        const reg = this.getDtoRegistry();
+        const coll = (reg as any).dbCollectionNameByType?.(dtoType) as
+          | string
+          | undefined;
+
+        if (!coll || !coll.trim()) {
+          throw new Error(`No collection mapped for dtoType="${dtoType}"`);
+        }
+
+        ctx.set("db.collectionName", coll);
+      } catch (e: any) {
+        ctx.set("handlerStatus", "error");
+        ctx.set("response.status", 400);
+        ctx.set("response.body", {
+          code: "UNKNOWN_DTO_TYPE",
+          title: "Bad Request",
+          detail:
+            e?.message ??
+            `Unable to resolve collection for dtoType "${dtoType}".`,
+          hint: "Verify the DtoRegistry contains this dtoType and exposes a collection name.",
+          requestId,
+        });
+
+        this.log.warn(
+          {
+            event: "dto_type_resolve_failed",
+            dtoType,
+            op,
+            err: e?.message,
+            requestId,
+          },
+          "ControllerBase.makeDtoOpContext — failed to resolve collection"
+        );
+        return ctx;
+      }
+    }
+
+    this.log.debug(
+      {
+        event: "pipeline_select",
+        op,
+        dtoType,
+        requestId,
+      },
+      "selecting pipeline"
+    );
+
     return ctx;
   }
 

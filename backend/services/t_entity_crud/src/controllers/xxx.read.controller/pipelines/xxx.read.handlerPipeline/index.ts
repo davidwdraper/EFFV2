@@ -12,12 +12,12 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/ControllerBase";
 
 import { XxxDto } from "@nv/shared/dto/xxx.dto";
-import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get.handler";
+import { DbReadByIdGetHandler } from "@nv/shared/http/handlers/dbRead.byId.get.handler";
 export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
   // Seed required inputs for the read handler
   ctx.set("read.dtoCtor", XxxDto);
 
-  return [new BagPopulateGetHandler(ctx, controller)];
+  return [new DbReadByIdGetHandler(ctx, controller)];
 }
 
 /**

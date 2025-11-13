@@ -1,23 +1,32 @@
-# backend/smoke/004-xxx-read-4015.sh
 #!/usr/bin/env bash
-# Purpose:
-# - Create a record (DtoBag) with a caller-provided id, then read it back by that id.
-# - Contract-aware: prefers public DTO ids; never depends on DB _id.
-# - Prints each curl; fails on id/type mismatch or DB-shape leaks.
+# =============================================================================
+# Smoke 004 — create + read-by-id roundtrip
 #
-# Usage:
-#   ./backend/smoke/004-xxx-read-4015.sh [port]
+# Contract:
+# - CREATE:
+#     PUT /api/:slug/v:version/:dtoType/create
+#     body: { items:[{ type, doc:{ _id, ...fields } }] }
+#     resp: { ok:true, items:[{ _id, type, ...fields }] }
 #
-# Param env (optional):
-#   SLUG=xxx HOST=127.0.0.1 PORT=4015 VERSION=1 DTO_TYPE=xxx BASE=http://host:port/api/<slug>/v<version>
-# Notes:
-# - Wire is a DtoBag: { items: [ { id, type, ...dtoFields } ], meta?: {...} }
-# - Backend requires DTO to carry a valid 'id' before persistence.
+# - READ:
+#     GET /api/:slug/v:version/:dtoType/read/:id
+#     resp: { ok:true, items:[{ _id, type, ...fields }] }
+#
+# Rules:
+# - `_id` is the external/wire primary key (tests only speak `_id`).
+# - Inside the service, DTO exposes `id` via getter; internal only.
+# - No legacy shapes; no `doc` on responses; bag-only edges.
+#
+# macOS Bash 3.2 compatible.
+# =============================================================================
 
 set -euo pipefail
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 97; }; }
 need curl; need jq; need date
+
+say(){ printf '%s\n' "$*" >&2; }
+die(){ say "ERROR: $*"; exit 1; }
 
 # ---- Config ------------------------------------------------------------------
 PORT_ARG="${1:-}"
@@ -25,108 +34,113 @@ if [ -n "$PORT_ARG" ]; then PORT="$PORT_ARG"; fi
 
 SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-4015}"
+PORT="${PORT:-4015}"   # overridden by PORT_ARG from smoke.sh
 VERSION="${VERSION:-1}"
 DTO_TYPE="${DTO_TYPE:-xxx}"
 
-# Precedence: BASE env (if set) > computed from HOST/PORT (dtoType appended per call)
 if [ -z "${BASE:-}" ]; then
   BASE="http://${HOST}:${PORT}/api/${SLUG}/v${VERSION}"
 fi
 
 RUN_ID="$(date +%s%N)"
 
-# Make a stable request id for the DTO we're creating; prefer uuidgen.
+# Prefer uuidgen for a stable probe id
 if command -v uuidgen >/dev/null 2>&1; then
   REQ_ID="$(uuidgen | tr 'A-Z' 'a-z')"
 else
   REQ_ID="$(printf "%s-%06d" "${RUN_ID}" "$RANDOM")"
 fi
 
-# ---- CREATE (DtoBag) ---------------------------------------------------------
 CREATE_URL="${BASE}/${DTO_TYPE}/create"
-echo "→ PUT  ${CREATE_URL}" >&2
+READ_BASE="${BASE}/${DTO_TYPE}/read"
 
-# Build DtoBag with both id and <slug>Id (the backend ignores the latter if unused; safe for future mappers).
-CREATE_BODY="$(jq -n --arg rid "$REQ_ID" --arg type "$DTO_TYPE" --arg k "${SLUG}Id" '
+say "TEST: 004-xxx-read-4015.sh  (SLUG=${SLUG} DTO_TYPE=${DTO_TYPE} PORT=${PORT} HOST=${HOST})"
+say "=============================================================================="
+
+# ---- CREATE (bagged, wire uses _id) -----------------------------------------
+say "→ PUT  ${CREATE_URL}"
+
+CREATE_BODY="$(jq -n --arg id "$REQ_ID" --arg type "$DTO_TYPE" '
   {
     items: [
       {
         type: $type,
         doc: {
-          id: $rid,
+          _id: $id,
           txtfield1: "probe",
-          txtfield2: ("probe_" + $rid),
+          txtfield2: ("probe_" + $id),
           numfield1: 1,
           numfield2: 1
         }
       }
     ]
   }
-  | (.items[0].doc[$k] = $rid)
 ')"
 
-echo "$CREATE_BODY" | jq . >&2 || true
+echo "${CREATE_BODY}" | jq . >&2 || true
 
-CREATE_JSON="$(curl -fsS -X PUT "${CREATE_URL}" -H 'content-type: application/json' --data "$CREATE_BODY")"
-echo "$CREATE_JSON" | jq . || true
+RESP1=$(curl -sS -X PUT "${CREATE_URL}" \
+  -H 'content-type: application/json' \
+  --data-binary "${CREATE_BODY}" \
+  -w '\n%{http_code}')
 
-# Try to read back any id the service echoes; if absent, we trust what we sent.
-CREATED_ID_FROM_RESP="$(jq -r --arg k "${SLUG}Id" '
-  .id // .doc[$k] // .[$k] // .items[0].doc.id // .items[0].doc[$k] // .items[0][$k] // empty
-' <<<"$CREATE_JSON")"
+BODY1="${RESP1%$'\n'*}"
+CODE1="${RESP1##*$'\n'}"
 
-if [[ -n "${CREATED_ID_FROM_RESP}" && "${CREATED_ID_FROM_RESP}" != "null" && "${CREATED_ID_FROM_RESP}" != "${REQ_ID}" ]]; then
-  echo "ERROR: service echoed a different id (resp:${CREATED_ID_FROM_RESP} != sent:${REQ_ID})" >&2
-  exit 2
-fi
+[ -n "${CODE1}" ] || die "could not determine HTTP code for create"
+[ "${CODE1}" = "200" ] || { say "${BODY1}"; die "create expected HTTP 200"; }
 
-NEW_ID="${REQ_ID}"
-echo "ID=${NEW_ID}"
+OK=$(printf '%s' "${BODY1}" | jq -r '.ok // false')
+[ "${OK}" = "true" ] || { say "${BODY1}"; die "expected ok:true on create"; }
 
-# ---- READ --------------------------------------------------------------------
-READ_URL="${BASE}/${DTO_TYPE}/read/${NEW_ID}"
-echo "→ GET  ${READ_URL}" >&2
-READ_JSON="$(curl -fsS "${READ_URL}")"
-echo "$READ_JSON" | jq . || true
+HAS_ITEMS=$(printf '%s' "${BODY1}" | jq -r 'has("items")')
+[ "${HAS_ITEMS}" = "true" ] || { say "${BODY1}"; die "create response must be bagged: missing '\''items'\''"; }
 
-# Require exactly one item
-COUNT="$(jq -r '.items | length' <<<"$READ_JSON")"
-if [ "$COUNT" != "1" ]; then
-  echo "ERROR: expected exactly 1 item, got ${COUNT}" >&2
-  exit 3
-fi
+ITEMS_LEN=$(printf '%s' "${BODY1}" | jq -r '.items | length')
+[ "${ITEMS_LEN}" = "1" ] || { say "${BODY1}"; die "create response must contain exactly one item in '\''items'\''"; }
 
-# Extract id and type from the new read contract (bag-only, flat item fields)
-RESP_ID="$(jq -r '.items[0].id // empty' <<<"$READ_JSON")"
-RESP_TYPE="$(jq -r '.items[0].type // empty' <<<"$READ_JSON")"
+CREATED_ID=$(printf '%s' "${BODY1}" | jq -r '.items[0]._id // empty')
+[ -n "${CREATED_ID}" ] || { say "${BODY1}"; die "bagged dto missing .items[0]._id in create response"; }
 
-if [[ -z "${RESP_ID}" || "${RESP_ID}" == "null" ]]; then
-  echo "ERROR: read response missing items[0].id" >&2
-  exit 4
-fi
+CREATED_TYPE=$(printf '%s' "${BODY1}" | jq -r '.items[0].type // empty')
+[ "${CREATED_TYPE}" = "${DTO_TYPE}" ] || { say "${BODY1}"; die "create response .items[0].type must equal '${DTO_TYPE}'"; }
 
-if [[ "${RESP_ID}" != "${NEW_ID}" ]]; then
-  echo "ERROR: id mismatch (resp:${RESP_ID} != created:${NEW_ID})" >&2
-  exit 5
-fi
+# Guard: response item must NOT contain a nested legacy 'doc' wrapper
+ITEM_HAS_DOC_CREATE=$(printf '%s' "${BODY1}" | jq -r '.items[0] | has("doc")')
+[ "${ITEM_HAS_DOC_CREATE}" = "false" ] || { say "${BODY1}"; die "create response must not contain items[0].doc (DTO JSON is flat)"; }
 
-if [[ -z "${RESP_TYPE}" || "${RESP_TYPE}" != "${DTO_TYPE}" ]]; then
-  echo "ERROR: type mismatch (resp:${RESP_TYPE} != expected:${DTO_TYPE})" >&2
-  exit 6
-fi
+say "ID=${CREATED_ID}"
 
-# Assert we are NOT leaking DB shapes back out (no _id anywhere in items[0])
-DOC_HAS_DB_ID="$(jq -r '(.items[0] | has("_id"))' <<<"$READ_JSON")"
-if [[ "${DOC_HAS_DB_ID}" == "true" ]]; then
-  echo "ERROR: response leaks DB shape (_id present on item). Contract expects DTO-only json." >&2
-  exit 7
-fi
+# ---- READ by id -------------------------------------------------------------
+READ_URL="${READ_BASE}/${CREATED_ID}"
+say "→ GET  ${READ_URL}"
 
-# Optional diagnostics (do not fail)
-HAS_TOP_ID="$(jq -r 'has("id")' <<<"$READ_JSON")"
-echo "diag: top-level id present?         ${HAS_TOP_ID}"
-echo "diag: items[0].id?                  true"
-echo "diag: items[0].type?                ${RESP_TYPE}"
+READ_RESP=$(curl -sS "${READ_URL}" -w '\n%{http_code}' || true)
+READ_BODY="${READ_RESP%$'\n'*}"
+READ_CODE="${READ_RESP##*$'\n'}"
 
-echo "✅ PASS: create/read-by-id roundtrip (id=${NEW_ID}, slug=${SLUG}, dtoType=${DTO_TYPE}, port=${PORT})"
+[ -n "${READ_CODE}" ] || { say "${READ_BODY}"; die "could not determine HTTP code for read"; }
+[ "${READ_CODE}" = "200" ] || { say "${READ_BODY}"; die "read expected HTTP 200"; }
+
+echo "${READ_BODY}" | jq . || true
+
+COUNT="$(printf '%s' "${READ_BODY}" | jq -r '.items | length')"
+[ "${COUNT}" = "1" ] || { say "${READ_BODY}"; die "read: expected exactly 1 item, got ${COUNT}"; }
+
+RESP_ID="$(printf '%s' "${READ_BODY}" | jq -r '.items[0]._id // empty')"
+RESP_TYPE="$(printf '%s' "${READ_BODY}" | jq -r '.items[0].type // empty')"
+
+[ -n "${RESP_ID}" ] || { say "${READ_BODY}"; die "read response missing items[0]._id"; }
+[ "${RESP_ID}" = "${CREATED_ID}" ] || { say "${READ_BODY}"; die "id mismatch (resp:${RESP_ID} != created:${CREATED_ID})"; }
+
+[ -n "${RESP_TYPE}" ] || { say "${READ_BODY}"; die "read response missing items[0].type"; }
+[ "${RESP_TYPE}" = "${DTO_TYPE}" ] || { say "${READ_BODY}"; die "type mismatch (resp:${RESP_TYPE} != expected:${DTO_TYPE})"; }
+
+# Guard: read response item must NOT contain a nested legacy 'doc' wrapper
+ITEM_HAS_DOC_READ=$(printf '%s' "${READ_BODY}" | jq -r '.items[0] | has("doc")')
+[ "${ITEM_HAS_DOC_READ}" = "false" ] || { say "${READ_BODY}"; die "read response must not contain items[0].doc (DTO JSON is flat)"; }
+
+echo "diag: items[0]._id                  ${RESP_ID}"
+echo "diag: items[0].type                 ${RESP_TYPE}"
+
+echo "✅ PASS: create/read-by-id roundtrip (id=${CREATED_ID}, slug=${SLUG}, dtoType=${DTO_TYPE}, port=${PORT})"

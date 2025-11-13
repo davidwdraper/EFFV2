@@ -14,7 +14,8 @@
  * - Collection name is resolved from the DTO CLASS via dbCollectionName() (hard-wired per DTO, DB-agnostic).
  *
  * Invariants:
- * - Service code only deals in **DTO ids (string)**. Canonical id field name is **"id"**.
+ * - Wire primary key is `_id`; DTO internals expose `id` via DtoBase.
+ * - Service code only deals in DTO ids (string) at the edges.
  * - No implicit fallbacks; Dev == Prod. Missing config → fail fast.
  * - DTOs persist their collection identity as class data; reader does not mutate instances post-hydration.
  */
@@ -44,8 +45,6 @@ type DbReaderOptions<T> = {
   mongoUri: string;
   mongoDb: string;
   validateReads?: boolean; // default false
-  /** Canonical id field on DTO JSON. Default: "id" */
-  idFieldName?: string; // default: "id"
 };
 
 export type ReadBatchArgs = {
@@ -60,6 +59,9 @@ export type ReadBatchResult<TDto> = {
   bag: DtoBag<TDto>;
   nextCursor?: string;
 };
+
+/** Canonical wire id field for this codebase. */
+const WIRE_ID_FIELD = "_id";
 
 /* ----------------- minimal pooled client (per-process) ----------------- */
 let _client: MongoClient | null = null;
@@ -112,14 +114,12 @@ export class DbReader<TDto> {
   private readonly mongoUri: string;
   private readonly mongoDb: string;
   private readonly validateReads: boolean;
-  private readonly idFieldName: string;
 
   constructor(opts: DbReaderOptions<TDto>) {
     this.dtoCtor = opts.dtoCtor;
     this.mongoUri = opts.mongoUri;
     this.mongoDb = opts.mongoDb;
     this.validateReads = opts.validateReads ?? false;
-    this.idFieldName = opts.idFieldName ?? "id"; // canonical
   }
 
   /** Resolve collection from the DTO class. */
@@ -154,7 +154,8 @@ export class DbReader<TDto> {
   }
 
   private _hydrateDto(raw: WireDoc): TDto {
-    const dtoJson = mongoNormalizeToDto(raw, this.idFieldName);
+    // Always normalize from `_id` → DTO `id` per DtoBase contract.
+    const dtoJson = mongoNormalizeToDto(raw, WIRE_ID_FIELD);
     return this.dtoCtor.fromJson(dtoJson, {
       validate: this.validateReads,
     });

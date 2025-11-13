@@ -20,8 +20,6 @@
  * - DTOs persist their collection identity as class data; reader does not mutate instances post-hydration.
  */
 
-import { mongoNormalizeToDto } from "./adapters/mongo/mongoNormalizeToDto";
-
 import type { OrderSpec } from "@nv/shared/db/orderSpec";
 import { ORDER_STABLE_ID_ASC, toMongoSort } from "@nv/shared/db/orderSpec";
 import {
@@ -155,8 +153,7 @@ export class DbReader<TDto> {
 
   private _hydrateDto(raw: WireDoc): TDto {
     // Always normalize from `_id` → DTO `id` per DtoBase contract.
-    const dtoJson = mongoNormalizeToDto(raw, WIRE_ID_FIELD);
-    return this.dtoCtor.fromJson(dtoJson, {
+    return this.dtoCtor.fromJson(raw, {
       validate: this.validateReads,
     });
   }

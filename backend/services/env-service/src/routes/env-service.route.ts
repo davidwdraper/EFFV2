@@ -22,11 +22,11 @@
 
 import { Router } from "express";
 import type { AppBase } from "@nv/shared/base/AppBase";
-import { EnvServiceCreateController } from "../controllers/env-service.create.controller/env-service.create.controller";
-import { EnvServiceReadController } from "../controllers/env-service.read.controller/env-service.read.controller";
-import { EnvServiceDeleteController } from "../controllers/env-service.delete.controller/env-service.delete.controller";
-import { EnvServiceUpdateController } from "../controllers/env-service.update.controller/env-service.update.controller";
-import { EnvServiceListController } from "../controllers/env-service.list.controller/env-service.list.controller";
+import { EnvServiceCreateController } from "../controllers/create.controller/create.controller";
+import { EnvServiceReadController } from "../controllers/read.controller/read.controller";
+import { EnvServiceDeleteController } from "../controllers/delete.controller/delete.controller";
+import { EnvServiceUpdateController } from "../controllers/update.controller/update.controller";
+import { EnvServiceListController } from "../controllers/list.controller/list.controller";
 
 export function buildEnvServiceRouter(app: AppBase): ReturnType<typeof Router> {
   const r = Router();

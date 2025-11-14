@@ -62,7 +62,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
   ];
 
   // ─────────────── Instance: Domain Fields ───────────────
-  // IMPORTANT: Do NOT declare a public `id` field here — it would shadow DtoBase.id.
+  // IMPORTANT: Do NOT declare a public `id` field here — it would shadow DtoBase’s id/_id handling.
 
   /** Deployment environment, e.g. "dev", "test", "stage", "canary", "prod". */
   public env = "";
@@ -110,7 +110,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
     // id (optional, but if present must be valid via DtoBase)
     if (typeof j.id === "string" && j.id.trim()) {
-      dto.id = j.id.trim();
+      dto.setIdOnce(j.id.trim());
     }
 
     // required-ish core fields (we keep this minimal; ADR/contract will tighten)
@@ -188,7 +188,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
   /** Canonical outbound wire shape; DtoBase stamps meta here. */
   public toJson(): EnvServiceJson {
     const body: EnvServiceJson = {
-      id: this.hasId() ? this.id : undefined,
+      id: this.hasId() ? this._id : undefined,
       type: "env-service",
 
       env: this.env,
@@ -285,6 +285,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
   }
 
   public getId(): string {
-    return this.id;
+    return this._id;
   }
 }

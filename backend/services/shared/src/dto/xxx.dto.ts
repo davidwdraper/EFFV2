@@ -41,7 +41,7 @@ type XxxJson = {
   updatedByUserId?: string;
 };
 
-export class XxxDto extends DtoBase implements IDto {
+export class XxxDto extends DtoBase {
   /** Hardwired collection for this DTO. */
   public static dbCollectionName(): string {
     return "xxx";
@@ -90,7 +90,7 @@ export class XxxDto extends DtoBase implements IDto {
 
     if (typeof j._id === "string" && j._id.trim()) {
       // BaseDto setter validates UUIDv4 & lowercases; immutable after first set.
-      dto.id = j._id.trim();
+      dto.setIdOnce(j._id.trim());
     }
 
     if (typeof j.txtfield1 === "string") dto.txtfield1 = j.txtfield1;
@@ -113,7 +113,7 @@ export class XxxDto extends DtoBase implements IDto {
   public toJson(): XxxJson {
     // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
     const body = {
-      _id: super.id, // emit `_id` on wire
+      _id: super._id, // emit `_id` on wire
       type: "xxx" as const,
       txtfield1: this.txtfield1,
       txtfield2: this.txtfield2,
@@ -148,11 +148,8 @@ export class XxxDto extends DtoBase implements IDto {
     return this;
   }
 
-  // ─────────────── IDto contract ───────────────
+  // ─────────────── IDto contract - overrides base ───────────────
   public getType(): string {
     return "xxx";
-  }
-  public getId(): string {
-    return super.id;
   }
 }

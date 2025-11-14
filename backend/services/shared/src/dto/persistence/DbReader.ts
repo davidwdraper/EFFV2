@@ -14,8 +14,8 @@
  * - Collection name is resolved from the DTO CLASS via dbCollectionName() (hard-wired per DTO, DB-agnostic).
  *
  * Invariants:
- * - Wire primary key is `_id`; DTO internals expose `id` via DtoBase.
- * - Service code only deals in DTO ids (string) at the edges.
+ * - Wire primary key is `_id` (string); DTO internals store the same value via DtoBase.
+ * - Service code treats ids as opaque strings at the edges.
  * - No implicit fallbacks; Dev == Prod. Missing config → fail fast.
  * - DTOs persist their collection identity as class data; reader does not mutate instances post-hydration.
  */
@@ -152,7 +152,7 @@ export class DbReader<TDto> {
   }
 
   private _hydrateDto(raw: WireDoc): TDto {
-    // Always normalize from `_id` → DTO `id` per DtoBase contract.
+    // Raw Mongo doc → DTO via DTO.fromJson; DTO is responsible for handling `_id`.
     return this.dtoCtor.fromJson(raw, {
       validate: this.validateReads,
     });
@@ -170,7 +170,7 @@ export class DbReader<TDto> {
     }
 
     // UUIDv4 string primary key — query directly by `_id` as a string.
-    const raw = await col.findOne({ _id: dtoId } as any);
+    const raw = await col.findOne({ [WIRE_ID_FIELD]: dtoId } as any);
     if (!raw) return new DtoBag<TDto>([]);
     const dto = this._hydrateDto(raw as WireDoc);
     return new DtoBag<TDto>([dto] as readonly TDto[]);

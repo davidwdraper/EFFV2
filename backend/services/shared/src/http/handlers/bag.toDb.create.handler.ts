@@ -130,7 +130,7 @@ export class BagToDbCreateHandler extends HandlerBase {
 
       // Keep ctx discipline but replace with the persisted bag
       this.ctx.set(targetKey, persistedBag);
-      this.ctx.set("dbWriter.lastId", persisted.id);
+      this.ctx.set("dbWriter.lastId", persisted._id);
       this.ctx.set("handlerStatus", "ok");
 
       // Build wire body from the **persisted** DTO (original or clone after retry)
@@ -140,7 +140,7 @@ export class BagToDbCreateHandler extends HandlerBase {
         {
           event: "execute_exit",
           targetKey,
-          id: persisted.id,
+          id: persisted._id,
           collection: persisted.requireCollectionName(),
         },
         "bag.toDb.create exit"

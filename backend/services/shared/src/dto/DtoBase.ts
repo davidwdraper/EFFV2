@@ -14,7 +14,8 @@
  * - Optional constructor secret enforcement (Registry-only construction).
  */
 
-import { isValidUuidV4, newUuid } from "../utils/uuid";
+import { newUuid, validateUUIDv4String } from "../utils/uuid";
+import { IDto } from "./IDto";
 
 // ─────────────────────────── Secret Key ───────────────────────────
 const DTO_SECRET = Symbol("DTO_SECRET");
@@ -56,7 +57,7 @@ type _DtoMeta = {
   updatedByUserId?: string;
 };
 
-export abstract class DtoBase {
+export abstract class DtoBase implements IDto {
   private static _defaults = { updatedByUserId: "system" };
   private static _warn?: _WarnLike;
 
@@ -73,66 +74,87 @@ export abstract class DtoBase {
     DtoBase._warn = warn;
   }
 
-  // ---- Canonical ID (UUIDv4 only; immutable once set) ----
-  private _id?: string;
+  // ─────────────────────────── Canonical _id (UUIDv4; immutable) ───────────────────────────
 
+  /**
+   * Backing field for the DTO id.
+   * - Always a UUIDv4 string when set.
+   * - Never mutated after first assignment (setIdOnce()).
+   */
+  private _idValue?: string;
+
+  /** Whether this DTO already has an assigned _id */
   public hasId(): boolean {
-    return typeof this._id === "string" && this._id.length > 0;
-  }
-
-  public get id(): string {
-    if (!this._id) {
-      throw new Error(
-        "DTO_ID_UNSET: id requested before assignment. Ops: ensure controller/DbWriter sets id prior to persistence; readers should hydrate from stored value."
-      );
-    }
-    return this._id;
+    return typeof this._idValue === "string" && this._idValue.length > 0;
   }
 
   /**
-   * One-shot setter:
-   * - First assignment must be a valid UUIDv4 (case-insensitive).
-   * - Stored lowercase for stability.
-   * - Subsequent attempts are a no-op and emit WARN (investigate call site).
+   * Public getter literally named `_id`.
+   * Throws if accessed before assignment to surface lifecycle bugs early.
    */
-  public set id(value: string) {
+  public get _id(): string {
+    if (!this._idValue) {
+      throw new Error(
+        "DTO_ID_UNSET: _id requested before assignment. Ops: ensure controller/DbWriter assigns id via setIdOnce() before persistence; readers must hydrate via fromJson()."
+      );
+    }
+    return this._idValue;
+  }
+
+  public getId(): string {
+    return this._id;
+  }
+
+  // ─────────────── IDto contract ───────────────
+  public getType(): string {
+    throw new Error("getType must overriden in derived DTO class");
+  }
+
+  /**
+   * Write-once setter for the DTO id.
+   *
+   * Contract:
+   * - First assignment:
+   *   • Validates the value is a UUIDv4 via validateUUIDv4String().
+   *   • Normalizes to lowercase and stores it.
+   * - Subsequent assignments:
+   *   • Are ignored (no-op).
+   *   • Emit a WARN via DtoBase._warn with guidance for Ops.
+   */
+  public setIdOnce(value: string): void {
     const ctorName = (this as any)?.constructor?.name ?? "DTO";
 
-    if (this._id) {
+    if (this._idValue) {
       DtoBase._warn?.({
         component: "BaseDto",
         event: "id_overwrite_ignored",
         dto: ctorName,
-        existing: this._id,
+        existing: this._idValue,
         attempted: value,
         hint: "ID is immutable; investigate caller attempting to replace it.",
       });
-      return; // no-op per ADR-0057
+      return;
     }
 
-    const v = (value ?? "").trim();
-    if (!isValidUuidV4(v)) {
-      throw new DtoValidationError("INVALID_ID_FORMAT", [
-        {
-          path: "id",
-          code: "invalid_id_format",
-          message: "id must be a UUIDv4",
-        },
-      ]);
-    }
-
-    this._id = v.toLowerCase();
+    const normalized = validateUUIDv4String(value); // throws with Ops guidance if invalid
+    this._idValue = normalized.toLowerCase();
   }
 
-  /** Ensure an id exists (UUIDv4 auto-generation path); returns the id. */
+  /**
+   * Auto-generate a UUIDv4 _id if missing; returns the assigned id.
+   * Uses centralized helpers to ensure all IDs are minted/validated consistently.
+   */
   public ensureId(): string {
-    if (!this._id) {
-      this._id = newUuid().toLowerCase();
+    if (!this._idValue) {
+      const v = newUuid();
+      const normalized = validateUUIDv4String(v);
+      this._idValue = normalized.toLowerCase();
     }
-    return this._id;
+    return this._idValue;
   }
 
-  // ---- Instance-level collection (seeded once by Registry) ----
+  // ─────────────────────────── Instance-level collection (seeded once by Registry) ───────────────────────────
+
   private _collectionName?: string;
 
   public setCollectionName(name: string): this {
@@ -172,7 +194,8 @@ export abstract class DtoBase {
     );
   }
 
-  // ---- Cloning (brand-new UUIDv4 id, preserved collection) ----
+  // ─────────────────────────── Cloning (brand-new UUIDv4 id, preserved collection) ───────────────────────────
+
   public clone<T extends DtoBase>(this: T, newId?: string): T {
     const ctor = this.constructor as any;
 
@@ -186,18 +209,23 @@ export abstract class DtoBase {
 
     const next = ctor.fromJson(this.toJson(), { validate: false }) as T;
 
-    const idToUse = newId ?? newUuid();
-    if (!isValidUuidV4(idToUse)) {
+    const rawId = newId ?? newUuid();
+    let normalized: string;
+    try {
+      normalized = validateUUIDv4String(rawId);
+    } catch {
       throw new DtoValidationError("INVALID_ID_FORMAT", [
         {
-          path: "id",
+          path: "_id",
           code: "invalid_uuid_v4",
           message: "clone() id must be UUIDv4",
         },
       ]);
     }
-    (next as any)._id = undefined;
-    (next as any).id = idToUse;
+
+    // Reset any existing id on the cloned instance before assigning a new one.
+    (next as any)._idValue = undefined;
+    next.setIdOnce(normalized);
 
     const coll =
       (this as any)._collectionName ??
@@ -212,7 +240,8 @@ export abstract class DtoBase {
     return next;
   }
 
-  // ---- Meta ----
+  // ─────────────────────────── Meta ───────────────────────────
+
   private _meta: _DtoMeta;
 
   protected constructor(secretOrArgs?: symbol | _DtoMeta) {
@@ -293,6 +322,7 @@ export abstract class DtoBase {
   }
 
   public abstract toJson(): unknown;
+
   public static fromJson(_json: unknown): DtoBase {
     throw new Error(
       "BaseDto.fromJson must be implemented by subclass. Ops: verify the concrete DTO implements fromJson()."
@@ -302,6 +332,7 @@ export abstract class DtoBase {
   public updateFrom(_other: this): this {
     throw new DtoMutationUnsupportedError(this.constructor.name, "updateFrom");
   }
+
   public patchFrom(_json: unknown): this {
     throw new DtoMutationUnsupportedError(this.constructor.name, "patchFrom");
   }

@@ -23,7 +23,29 @@ export function isValidUuidV4(value: unknown): value is string {
 
 /**
  * Generate a new RFC-4122 UUIDv4 using Node's crypto module.
+ * Normalized to lowercase for stability.
  */
 export function newUuid(): string {
-  return randomUUID();
+  return randomUUID().toLowerCase();
+}
+
+/**
+ * Canonical UUIDv4 validator/normalizer for DTO ids.
+ * - Trims whitespace
+ * - Ensures value is a UUIDv4
+ * - Returns lowercase UUID string
+ * - Throws with Ops guidance on invalid input
+ */
+export function validateUUIDv4String(value: string): string {
+  const trimmed = (value ?? "").trim();
+
+  if (!isValidUuidV4(trimmed)) {
+    throw new Error(
+      `INVALID_UUID_V4: "${value}" is not a valid UUIDv4 string. ` +
+        `Ops: ensure callers mint ids via newUuid() or provide valid UUIDv4 ` +
+        `values from trusted sources; inspect upstream payloads and DTO contracts.`
+    );
+  }
+
+  return trimmed.toLowerCase();
 }

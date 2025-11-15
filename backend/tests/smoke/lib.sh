@@ -141,18 +141,19 @@ failf(){ # usage: failf "expected %s, got %s" "$a" "$b"
   return 1
 }
 
-# ------------------------------- id helpers -----------------------------------
-# Returns the first present of: .id, .<slug>Id, .doc.<slug>Id, .xxxId, .doc.xxxId
+# Extract canonical DTO id from the new bag-first shape.
+# Contract:
+#   - { ok:true, items:[ { _id, ... } ] }
+#   - (optional tolerance) { ok:true, items:[ { doc:{ _id, ... } } ] }
 extract_id(){
-  local body="$1" key="${SLUG}Id"
-  jq -er --arg k "$key" '
-      .id
-   // .[$k]
-   // .doc[$k]
-   // .xxxId
-   // .doc.xxxId
-   // empty' <<<"$body"
+  local body="$1"
+  jq -er '
+        .items[0]._id
+     // .items[0].doc._id
+     // empty
+  ' <<<"$body"
 }
+
 
 # ------------------------------- state helpers --------------------------------
 save_last_id(){

@@ -3,6 +3,10 @@
 # =============================================================================
 # 010 — Batch cursor pagination (no overlap, deterministic; full cleanup)
 # Parametrized: SLUG, HOST, PORT, VERSION, BASE, DTO_TYPE, LIMIT
+#
+# Canonical id:
+# - Wire DTOs expose `_id` as the only canonical identifier.
+# - This test asserts that every listed doc has `_id` and uses that for paging.
 # =============================================================================
 set -euo pipefail
 
@@ -33,7 +37,13 @@ RUN_ID="$(date +%s%N)"
 
 mk_create_bag() {
   local t1="$1" t2="$2" n1="$3" n2="$4"
-  jq -n --arg type "$DTO_TYPE" --arg t1 "$t1" --arg t2 "$t2" --argjson n1 "$n1" --argjson n2 "$n2" --arg rid "$RUN_ID" '
+  jq -n \
+    --arg type "$DTO_TYPE" \
+    --arg t1 "$t1" \
+    --arg t2 "$t2" \
+    --argjson n1 "$n1" \
+    --argjson n2 "$n2" \
+    --arg rid "$RUN_ID" '
     {
       items: [
         {
@@ -81,11 +91,14 @@ for i in $(seq 1 $((LIMIT + 3))); do
   BODY="$(mk_create_bag "t1_${i}" "t2_${i}" "${i}" "$((100 + i))")"
   say "→ PUT ${BASE}/${DTO_TYPE}/create"
   echo "$BODY" | jq . >&2 || true
+
   CRESP="$(_put_json "${BASE}/${DTO_TYPE}/create" "$BODY")"
   echo "$CRESP" | jq -e . >/dev/null || { echo "ERROR: create non-JSON"; echo "$CRESP"; exit 1; }
   [ "$(jq -r '.ok // empty' <<<"$CRESP")" = "true" ] || { echo "ERROR: create failed"; echo "$CRESP" | jq .; exit 1; }
-  CID="$(extract_id "$CRESP")"
-  [ -n "$CID" ] || { echo "ERROR: missing DTO id in create"; echo "$CRESP" | jq .; exit 1; }
+
+  # NOTE: create responses expose canonical `_id` in items[0]._id
+  CID="$(jq -r '.items[0]._id // empty' <<<"$CRESP")"
+  [ -n "$CID" ] || { echo "ERROR: missing _id in create"; echo "$CRESP" | jq .; exit 1; }
   CREATED_IDS+=( "$CID" )
 done
 
@@ -96,9 +109,15 @@ echo "$P1_JSON" | jq -e . >/dev/null || { echo "ERROR: list p1 non-JSON"; echo "
 [ "$(jq -r '.ok // "true"' <<<"$P1_JSON")" = "true" ] || { echo "ERROR: list p1 failed"; echo "$P1_JSON" | jq .; exit 1; }
 
 P1_DOCS="$(echo "$P1_JSON" | normalize_docs)"
-# DTO-only guard: every doc must expose canonical id (ADR-0050)
-echo "$P1_DOCS" | jq -e 'all(.[]; has("id"))' >/dev/null || { echo "ERROR: p1 docs missing canonical id"; exit 1; }
-read -r -a P1_IDS <<<"$(echo "$P1_DOCS" | jq -r '.[] | .id')"
+
+# DTO-only guard: every doc must expose canonical `_id`
+echo "$P1_DOCS" | jq -e 'all(.[]; has("_id"))' >/dev/null || {
+  echo "ERROR: p1 docs missing canonical _id"
+  echo "$P1_DOCS" | jq .
+  exit 1
+}
+
+read -r -a P1_IDS <<<"$(echo "$P1_DOCS" | jq -r '.[] | ._id')"
 P1_NEXT="$(jq -r '.nextCursor // empty' <<<"$P1_JSON")"
 
 # ---- Page 2 ------------------------------------------------------------------
@@ -108,8 +127,14 @@ echo "$P2_JSON" | jq -e . >/dev/null || { echo "ERROR: list p2 non-JSON"; echo "
 [ "$(jq -r '.ok // "true"' <<<"$P2_JSON")" = "true" ] || { echo "ERROR: list p2 failed"; echo "$P2_JSON" | jq .; exit 1; }
 
 P2_DOCS="$(echo "$P2_JSON" | normalize_docs)"
-echo "$P2_DOCS" | jq -e 'all(.[]; has("id"))' >/dev/null || { echo "ERROR: p2 docs missing canonical id"; exit 1; }
-read -r -a P2_IDS <<<"$(echo "$P2_DOCS" | jq -r '.[] | .id')"
+
+echo "$P2_DOCS" | jq -e 'all(.[]; has("_id"))' >/dev/null || {
+  echo "ERROR: p2 docs missing canonical _id"
+  echo "$P2_DOCS" | jq .
+  exit 1
+}
+
+read -r -a P2_IDS <<<"$(echo "$P2_DOCS" | jq -r '.[] | ._id')"
 P2_NEXT="$(jq -r '.nextCursor // empty' <<<"$P2_JSON")"
 
 # ---- Assertions --------------------------------------------------------------

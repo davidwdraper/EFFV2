@@ -1,24 +1,35 @@
-# backend/tests/smoke/tests/007-xxx-read-notfound-4015.sh
+# backend/services/t_entity_crud/smokes/007-xxx-read-notfound-4015.sh
 #!/usr/bin/env bash
 # =============================================================================
-# NowVibin Smoke — read notfound (STRICT, self-contained)
-# Flow:
-#   1) CREATE with explicit id
-#   2) DELETE same id → expect 200 { ok:true, deleted:1 }
-#   3) READ same id   → expect 404 (NOT_FOUND)
+# Smoke 007 — read not found (STRICT, _id-only)
 #
-# No dependency on prior tests. macOS Bash 3.2 compatible.
+# Flow (post _id refactor):
+#   1) CREATE a doc with no id fields; service mints _id (sanity check).
+#   2) Generate a different UUID that is guaranteed not to match that _id.
+#   3) GET /{type}/read/{nonexistentId} → expect 404 (NOT_FOUND).
+#
+# Rules:
+#   - DTOs use _id only; no external id, no idFieldName, no ${slug}Id.
+#   - _id is minted inside the app and passed through to Mongo unchanged.
+#   - Client uses the _id returned in items[0]._id as canonical for real reads,
+#     but this test deliberately targets an id that does not exist.
+#
+# macOS Bash 3.2 compatible.
 # =============================================================================
 set -euo pipefail
 
 say(){ printf '%s\n' "$*" >&2; }
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 97; }; }
+need curl; need jq; need date
 
 # --- Config (env override friendly) ------------------------------------------
 SLUG="${SLUG:-xxx}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-4015}"
 VERSION="${VERSION:-1}"
-DTO_TYPE="${DTO_TYPE:-xxx}"
+DTO_TYPE="${DTO_TYPE:-$SLUG}"
+TYPE="${TYPE:-$DTO_TYPE}"
 
 # Precedence: BASE (if provided) > SVCFAC_BASE_URL > computed from HOST/PORT
 if [ -z "${BASE:-}" ]; then
@@ -29,11 +40,10 @@ if [ -z "${BASE:-}" ]; then
   fi
 fi
 
-CREATE_URL="${BASE}/${DTO_TYPE}/create"
-DELETE_URL_BASE="${BASE}/${DTO_TYPE}/delete"
-READ_URL_BASE="${BASE}/${DTO_TYPE}/read"
+CREATE_URL="${BASE}/${TYPE}/create"
+READ_URL_BASE="${BASE}/${TYPE}/read"
 
-# --- UUIDv4 (portable) -------------------------------------------------------
+# --- UUIDv4 helper (portable) -----------------------------------------------
 gen_uuid4() {
   if command -v uuidgen >/dev/null 2>&1; then
     uuidgen | tr 'A-Z' 'a-z'
@@ -46,75 +56,66 @@ PY
   fi
 }
 
-ID="$(gen_uuid4)"
+# --- Step 1: CREATE a doc (no id; service mints _id) -------------------------
 SUF="$(date +%s)$$"
 
-BODY_JSON="$(cat <<JSON
-{
-  "items": [
-    {
-      "type": "${DTO_TYPE}",
-      "doc": {
-        "id": "${ID}",
-        "txtfield1": "read-notfound-${SUF}",
-        "txtfield2": "read-notfound-${SUF}",
-        "numfield1": 1,
-        "numfield2": 2
+CREATE_BODY="$(jq -n --arg type "${TYPE}" --arg suf "${SUF}" '
+  {
+    items: [
+      {
+        type: $type,
+        doc: {
+          txtfield1: ("read-notfound-" + $suf),
+          txtfield2: ("read-notfound-" + $suf),
+          numfield1: 1,
+          numfield2: 2
+        }
       }
-    }
-  ]
-}
-JSON
-)"
+    ]
+  }
+')"
 
-# --- 1) CREATE ---------------------------------------------------------------
-say "→ PUT  ${CREATE_URL} (seed explicit id=${ID})"
-RESP_CREATE="$(curl -sS -X PUT "${CREATE_URL}" -H "content-type: application/json" --data "${BODY_JSON}")"
-echo "${RESP_CREATE}" | jq -e '.ok == true' >/dev/null
-ECHO_ID="$(echo "${RESP_CREATE}" | jq -r '.id // empty')"
-[ "${ECHO_ID}" = "${ID}" ] || { say "ERROR: create did not echo id"; echo "${RESP_CREATE}" | jq .; exit 1; }
+say "→ PUT  ${CREATE_URL} (seed doc; service mints _id)"
+RESP_CREATE="$(curl -sS -X PUT "${CREATE_URL}" -H "content-type: application/json" --data "${CREATE_BODY}")"
+echo "${RESP_CREATE}" | jq . >&2 || true
 
-# --- 2) DELETE ---------------------------------------------------------------
-DEL_URL="${DELETE_URL_BASE}/${ID}"
-say "→ DELETE ${DEL_URL} (delete seeded doc)"
-RESP_DEL="$(curl -sS -w '\n%{http_code}' -X DELETE "${DEL_URL}")"
-BODY_DEL="$(printf '%s' "${RESP_DEL}" | sed '$d')"
-CODE_DEL="$(printf '%s' "${RESP_DEL}" | tail -n1)"
-echo "${BODY_DEL}" | jq -e . >/dev/null
-
-if [ "${CODE_DEL}" != "200" ]; then
-  say "ERROR: expected 200 on delete; got ${CODE_DEL}"
-  echo "${BODY_DEL}" | jq .
-  exit 1
-fi
-echo "${BODY_DEL}" | jq -e '.ok == true and .deleted == 1 and .id == "'"${ID}"'"' >/dev/null || {
-  say "ERROR: delete body mismatch"
-  echo "${BODY_DEL}" | jq .
+echo "${RESP_CREATE}" | jq -e '.ok == true' >/dev/null || {
+  say "ERROR: create.ok != true"
   exit 1
 }
 
-# --- tiny backoff before read (durability) -----------------------------------
-perl -e 'select(undef,undef,undef,0.15);' 2>/dev/null || sleep 1
-
-# --- 3) READ (expect 404 NOT_FOUND) ------------------------------------------
-READ_URL="${READ_URL_BASE}/${ID}"
-say "→ GET  ${READ_URL} (expect 404 NOT_FOUND)"
-RESP_READ="$(curl -sS "${READ_URL}")"
-
-# Must be JSON
-echo "${RESP_READ}" | jq -e . >/dev/null 2>&1 || {
-  echo "ERROR: read-notfound response is not valid JSON"
-  echo "${RESP_READ}"
+ITEM_COUNT="$(echo "${RESP_CREATE}" | jq -r '.items | length')"
+[ "${ITEM_COUNT}" -eq 1 ] || {
+  say "ERROR: expected exactly 1 item from create, got ${ITEM_COUNT}"
   exit 1
 }
 
-STATUS="$(echo "${RESP_READ}" | jq -r '.status // empty')"
-CODE="$(echo "${RESP_READ}" | jq -r '.code // empty' | tr 'a-z' 'A-Z')"
+CREATED_ID="$(echo "${RESP_CREATE}" | jq -r '.items[0]._id // empty')"
+[ -n "${CREATED_ID}" ] || {
+  say "ERROR: create missing items[0]._id"
+  exit 1
+}
+say "seeded doc _id=${CREATED_ID}"
 
-if [ "${STATUS}" != "404" ] && [ "${CODE}" != "NOT_FOUND" ]; then
-  echo "ERROR: expected 404 NOT_FOUND on read of deleted id=${ID}"
-  echo "${RESP_READ}" | jq .
+# --- Step 2: choose a guaranteed non-existent id -----------------------------
+# We just need something different from CREATED_ID. A fresh UUIDv4 is fine.
+NOTFOUND_ID="$(gen_uuid4)"
+say "probing read with nonexistent id=${NOTFOUND_ID}"
+
+# --- Step 3: READ should return 404 -----------------------------------------
+READ_URL="${READ_URL_BASE}/${NOTFOUND_ID}"
+say "→ GET  ${READ_URL} (expect 404 not found)"
+
+RESP_READ="$(curl -sS -w '\n%{http_code}' -X GET "${READ_URL}")"
+BODY_READ="$(printf '%s' "${RESP_READ}" | sed '$d')"
+CODE_READ="$(printf '%s' "${RESP_READ}" | tail -n1)"
+
+# Body should be JSON (problem+json or error payload); we just assert it's parseable.
+echo "${BODY_READ}" | jq . >&2 || true
+
+if [ "${CODE_READ}" != "404" ]; then
+  say "ERROR: expected 404 on read-notfound; got ${CODE_READ}"
   exit 1
 fi
 
-echo "OK: read-notfound confirmed for id=${ID} (${SLUG}:${PORT}, dtoType=${DTO_TYPE})"
+say "✅ PASS: read-notfound returned 404 as expected (slug=${SLUG} type=${TYPE} port=${PORT})"

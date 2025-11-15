@@ -57,26 +57,13 @@ export class BagToDbUpdateHandler extends HandlerBase {
       );
     }
 
-    // Pull svcEnv directly from Controller/App (no ctx plumbing)
-    const svcEnv = this.controller.getSvcEnv?.();
-    if (!svcEnv) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "ENV_DTO_MISSING",
-        title: "Internal Error",
-        detail:
-          "EnvServiceDto missing from ControllerBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerBase correctly.",
-      });
-      return;
-    }
+    // --- Env via HandlerBase.getVar (aligned with BagToDbCreateHandler) -----
+    const mongoUri = this.getVar("NV_MONGO_URI");
+    const mongoDb = this.getVar("NV_MONGO_DB");
 
-    // Derive Mongo connection info from svcEnv (ADR-0044; tolerant to shape)
-    const svcEnvAny: any = svcEnv;
-    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
-    const mongoUri: string | undefined =
-      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
-    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+    // Optional: diagnose whether ControllerBase is actually holding svcEnv.
+    const svcEnv = this.controller.getSvcEnv?.();
+    const hasSvcEnv = !!svcEnv;
 
     if (!mongoUri || !mongoDb) {
       this.ctx.set("handlerStatus", "error");
@@ -86,13 +73,15 @@ export class BagToDbUpdateHandler extends HandlerBase {
         title: "Internal Error",
         detail:
           "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
+        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
       });
       this.log.error(
         {
           event: "mongo_env_missing",
-          hasSvcEnv: !!svcEnv,
+          hasSvcEnv,
           mongoUriPresent: !!mongoUri,
           mongoDbPresent: !!mongoDb,
+          handler: this.constructor.name,
         },
         "update aborted — Mongo env config missing"
       );

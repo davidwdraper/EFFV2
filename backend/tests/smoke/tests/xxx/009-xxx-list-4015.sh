@@ -1,4 +1,4 @@
-# backend/tests/smoke/tests/009-xxx-list-4015.sh
+# backend/tests/smoke/tests/xxx/009-xxx-list-4015.sh
 #!/usr/bin/env bash
 # ============================================================================
 # Smoke 009 — list (create x4 → list → verify → delete x4)
@@ -7,9 +7,14 @@
 # ============================================================================
 set -euo pipefail
 
-SMOKE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$(dirname "$0")/../../../.." && pwd))"
+LIB="$ROOT/backend/tests/smoke/lib.sh"
+if [ ! -f "$LIB" ]; then
+  echo "❌ Missing smoke lib: $LIB" >&2
+  exit 2
+fi
 # shellcheck disable=SC1090
-. "$SMOKE_DIR/lib.sh"
+. "$LIB"
 
 # --- Config ------------------------------------------------------------------
 SLUG="${SLUG:-xxx}"
@@ -17,6 +22,9 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-4015}"
 VERSION="${VERSION:-1}"
 DTO_TYPE="${DTO_TYPE:-xxx}"
+
+# Crank this up so our 4 docs land in the first page.
+LIST_LIMIT="${LIST_LIMIT:-1000}"
 
 # Precedence: BASE (if provided) > SVCFAC_BASE_URL > computed from HOST/PORT
 if [ -z "${BASE:-}" ]; then
@@ -60,69 +68,101 @@ for i in 1 2 3 4; do
 
   CRESP="$(_put_json "${BASE}/${DTO_TYPE}/create" "${BODY}")"
 
-  echo "$CRESP" | jq -e . >/dev/null || { echo "ERROR: create[#${i}]: non-JSON"; echo "$CRESP"; exit 1; }
-  OK="$(jq -er '.ok // empty' <<<"$CRESP")"
-  [ "$OK" = "true" ] || { echo "ERROR: create[#${i}] failed"; echo "$CRESP" | jq .; exit 1; }
+  if ! echo "$CRESP" | jq -e . >/dev/null 2>&1; then
+    echo "ERROR: create[#${i}]: non-JSON" >&2
+    echo "$CRESP"
+    exit 1
+  fi
+
+  OK="$(echo "$CRESP" | jq -er '.ok // empty' 2>/dev/null || echo "")"
+  if [ "$OK" != "true" ]; then
+    echo "ERROR: create[#${i}] failed" >&2
+    echo "$CRESP" | jq .
+    exit 1
+  fi
 
   ID="$(extract_id "$CRESP")"
-  [ -n "$ID" ] || { echo "ERROR: create[#${i}]: missing DTO id"; echo "$CRESP" | jq .; exit 1; }
+  if [ -z "$ID" ]; then
+    echo "ERROR: create[#${i}]: missing DTO id" >&2
+    echo "$CRESP" | jq .
+    exit 1
+  fi
 
   ids+=( "$ID" )
 done
 
 # --- 2) LIST (server no filter; client-filter by PREFIX) ---------------------
-echo "→ GET ${BASE}/${DTO_TYPE}/list" >&2
-LRESP="$(_get_json "${BASE}/${DTO_TYPE}/list")"
-echo "$LRESP" | jq -e . >/dev/null || { echo "ERROR: list: non-JSON"; echo "$LRESP"; exit 1; }
+echo "→ GET ${BASE}/${DTO_TYPE}/list?limit=${LIST_LIMIT}" >&2
+LRESP="$(_get_json "${BASE}/${DTO_TYPE}/list?limit=${LIST_LIMIT}")"
 
-# Be tolerant: some controllers may not stamp { ok:true } yet.
-# Treat absence of .ok as ok for now.
-LOK="$(jq -r '.ok // "true"' <<<"$LRESP")"
-[ "$LOK" = "true" ] || { echo "ERROR: list failed"; echo "$LRESP" | jq .; exit 1; }
+if ! echo "$LRESP" | jq -e . >/dev/null 2>&1; then
+  echo "ERROR: list: non-JSON" >&2
+  echo "$LRESP"
+  exit 1
+fi
 
-# Normalize possible shapes:
-#  - bag style: { items:[ { doc:{...} } ] }
-#  - flat docs: { docs:[ {...} ] }
-#  - bag but flattened items: { items:[ {...} ] }
-LIST_DOCS="$(jq '
-  if (.docs|type) == "array" then
-    .docs
-  elif (.items|type) == "array" then
-    [ .items[] | (.doc // .) ]
-  else
-    []
-  end
-' <<<"$LRESP")"
+LOK="$(echo "$LRESP" | jq -r '.ok // "true"')"
+if [ "$LOK" != "true" ]; then
+  echo "ERROR: list failed" >&2
+  echo "$LRESP" | jq .
+  exit 1
+fi
+
+# Normalize shape to plain docs array
+LIST_DOCS="$(
+  echo "$LRESP" | jq '
+    if (.docs|type) == "array" then
+      .docs
+    elif (.items|type) == "array" then
+      [ .items[] | (.doc // .) ]
+    else
+      []
+    end
+  '
+)"
 
 echo "— Full list response (first 50 normalized docs) —" >&2
-jq '.[0:50]' <<<"$LIST_DOCS"
+echo "$LIST_DOCS" | jq '.[0:50]'
 
-MATCH_JSON="$(jq --arg pfx "${PREFIX}-t2-" '[ .[] | select(.txtfield2 | startswith($pfx)) ]' <<<"$LIST_DOCS")"
-COUNT="$(jq -er 'length' <<<"$MATCH_JSON")" || COUNT=0
-[ "$COUNT" -eq 4 ] || {
-  echo "ERROR: expected 4 matching docs for prefix ${PREFIX}-t2-, got ${COUNT}"
-  echo "Matches:"; echo "$MATCH_JSON" | jq .
+MATCH_JSON="$(
+  echo "$LIST_DOCS" | jq --arg pfx "${PREFIX}-t2-" '
+    [ .[] | select(.txtfield2 | startswith($pfx)) ]
+  '
+)"
+
+COUNT="$(echo "$MATCH_JSON" | jq -er 'length' 2>/dev/null || echo 0)"
+
+if [ "$COUNT" -ne 4 ]; then
+  echo "ERROR: expected 4 matching docs for prefix ${PREFIX}-t2-, got ${COUNT}" >&2
+  echo "Matches:" >&2
+  echo "$MATCH_JSON" | jq .
   exit 1
-}
+fi
 
 # --- 3) DELETE x4 (cleanup; strict route with dtoType) -----------------------
 for id in "${ids[@]}"; do
   echo "→ DELETE ${BASE}/${DTO_TYPE}/delete/${id}" >&2
   DRESP="$(_del_json "${BASE}/${DTO_TYPE}/delete/${id}")"
-  echo "$DRESP" | jq -e . >/dev/null || { echo "ERROR: delete: non-JSON"; echo "$DRESP"; exit 1; }
 
-  DOK="$(jq -r '.ok // empty' <<<"$DRESP")"
+  if ! echo "$DRESP" | jq -e . >/dev/null 2>&1; then
+    echo "ERROR: delete: non-JSON" >&2
+    echo "$DRESP"
+    exit 1
+  fi
+
+  DOK="$(echo "$DRESP" | jq -r '.ok // empty')"
   if [ "$DOK" != "true" ]; then
-    # As a safety net, verify it’s actually gone
+    # Safety net: verify it’s actually gone
     RURL="${BASE}/${DTO_TYPE}/read/${id}"
     echo "→ GET  ${RURL} (post-delete check)" >&2
     RDRESP="$(_get_json "${RURL}")" || true
-    if jq -e '(.status|tostring=="404") or (.code|ascii_upcase=="NOT_FOUND")' >/dev/null 2>&1 <<<"$RDRESP"; then
-      : # treat as pass
-    else
-      echo "ERROR: delete did not confirm cleanup for id=${id}"
-      echo "Delete response:"; echo "$DRESP" | jq . || echo "$DRESP"
-      echo "Read-after-delete:"; echo "$RDRESP" | jq . || echo "$RDRESP"
+
+    if ! echo "$RDRESP" | jq -e '(.status|tostring=="404") or (.code|ascii_upcase=="NOT_FOUND")' >/dev/null 2>&1; then
+      echo "ERROR: delete did not confirm cleanup for id=${id}" >&2
+      echo "Delete response:" >&2
+      echo "$DRESP" | jq . || echo "$DRESP"
+      echo "Read-after-delete:" >&2
+      echo "$RDRESP" | jq . || echo "$RDRESP"
       exit 1
     fi
   fi

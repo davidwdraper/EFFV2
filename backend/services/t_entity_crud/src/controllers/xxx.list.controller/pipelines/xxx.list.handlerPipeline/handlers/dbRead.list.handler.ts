@@ -9,15 +9,16 @@
  *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *
  * Purpose:
  * - Use DbReader<XxxDto> to fetch a deterministic batch with cursor pagination.
  * - Return { ok, docs, nextCursor } (docs via DTO.toJson()).
  *
  * Notes:
- * - Pull svcEnv from ControllerBase (no ctx plumbing), then derive mongoUri/mongoDb.
- * - Still accepts dtoCtor via ctx (controller-specific).
+ * - Env is obtained via HandlerBase.getVar("NV_MONGO_URI"/"NV_MONGO_DB")
+ *   which is backed by the service's EnvServiceDto (ADR-0044).
+ * - DTO ctor is supplied via ctx["list.dtoCtor"] by the pipeline.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -31,32 +32,29 @@ export class DbReadListHandler extends HandlerBase {
   }
 
   protected async execute(): Promise<void> {
-    // svcEnv via ControllerBase getter
-    const svcEnv = this.controller.getSvcEnv?.();
-    const dtoCtor = this.ctx.get<any>("list.dtoCtor");
+    this.log.debug({ event: "execute_enter" }, "list.dbRead enter");
 
-    if (!svcEnv || !dtoCtor) {
+    // --- Required DTO ctor ---------------------------------------------------
+    const dtoCtor = this.ctx.get<any>("list.dtoCtor");
+    if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 500);
       this.ctx.set("error", {
-        code: "LIST_SETUP_MISSING",
+        code: "DTO_CTOR_MISSING",
         title: "Internal Error",
         detail:
-          "Required setup missing (svcEnv from ControllerBase or list.dtoCtor from controller).",
+          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromJson().",
       });
       this.log.error(
-        { event: "setup_missing", hasSvcEnv: !!svcEnv, hasDtoCtor: !!dtoCtor },
-        "List setup missing"
+        { event: "dtoCtor_missing", hasDtoCtor: !!dtoCtor },
+        "List setup missing DTO ctor"
       );
       return;
     }
 
-    // Derive Mongo connection info from svcEnv (ADR-0044; tolerant to shape)
-    const svcEnvAny: any = svcEnv;
-    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
-    const mongoUri: string | undefined =
-      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
-    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+    // --- Env from HandlerBase.getVar (strict, no fallbacks) -----------------
+    const mongoUri = this.getVar("NV_MONGO_URI");
+    const mongoDb = this.getVar("NV_MONGO_DB");
 
     if (!mongoUri || !mongoDb) {
       this.ctx.set("handlerStatus", "error");
@@ -66,20 +64,19 @@ export class DbReadListHandler extends HandlerBase {
         title: "Internal Error",
         detail:
           "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
       });
       this.log.error(
         {
           event: "mongo_env_missing",
-          hasSvcEnv: !!svcEnv,
           mongoUriPresent: !!mongoUri,
           mongoDbPresent: !!mongoDb,
         },
-        "List aborted — Mongo env config missing"
+        "list aborted — Mongo env config missing"
       );
       return;
     }
 
+    // --- Filter + pagination -------------------------------------------------
     const filter =
       (this.ctx.get("list.filter") as Record<string, unknown>) ?? {};
     const q = (this.ctx.get("query") as Record<string, unknown>) ?? {};
@@ -87,6 +84,7 @@ export class DbReadListHandler extends HandlerBase {
     const DEFAULT_LIMIT = 50;
     const MAX_LIMIT = 1000;
     let limit = DEFAULT_LIMIT;
+
     if (q.limit !== undefined) {
       const n =
         typeof q.limit === "string" ? Number(q.limit) : (q.limit as number);
@@ -98,7 +96,7 @@ export class DbReadListHandler extends HandlerBase {
     const cursor =
       typeof q.cursor === "string" && q.cursor.trim() ? q.cursor.trim() : null;
 
-    // New DbReader contract: use mongoUri/mongoDb instead of svcEnv
+    // --- Reader + batch read -------------------------------------------------
     const reader = new DbReader<any>({
       dtoCtor,
       mongoUri,
@@ -112,6 +110,7 @@ export class DbReadListHandler extends HandlerBase {
       cursor,
     });
 
+    // Canonical list shape: docs[] = DTO.toJson()
     const docs = DtoBagView.fromBag(bag).toJsonArray();
 
     this.ctx.set("result", { ok: true, docs, nextCursor });

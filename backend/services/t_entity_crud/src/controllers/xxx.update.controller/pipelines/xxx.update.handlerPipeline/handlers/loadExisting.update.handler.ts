@@ -50,7 +50,7 @@ export class LoadExistingUpdateHandler extends HandlerBase {
       return;
     }
 
-    // --- Required dtoCtor; svcEnv via controller (no ctx plumbing) ----------
+    // --- Required dtoCtor ----------------------------------------------------
     const dtoCtor = this.ctx.get<any>("update.dtoCtor");
     if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
       this.ctx.set("handlerStatus", "error");
@@ -68,29 +68,14 @@ export class LoadExistingUpdateHandler extends HandlerBase {
       return;
     }
 
-    const svcEnv = this.controller.getSvcEnv?.();
-    if (!svcEnv) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "ENV_DTO_MISSING",
-        title: "Internal Error",
-        detail:
-          "EnvServiceDto missing from ControllerBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerBase correctly.",
-      });
-      this.log.error(
-        { event: "env_missing", id },
-        "loadExisting.update — svcEnv missing"
-      );
-      return;
-    }
+    // --- Env via HandlerBase.getVar (same as BagToDbCreateHandler) ----------
+    // Prefer the centralized env wiring (svcenv/envBootstrap) over any ctx spelunking.
+    const mongoUri = this.getVar("NV_MONGO_URI");
+    const mongoDb = this.getVar("NV_MONGO_DB");
 
-    // Derive Mongo connection info from svcEnv (ADR-0044; tolerant to shape)
-    const svcEnvAny: any = svcEnv;
-    const vars = svcEnvAny?.vars ?? svcEnvAny ?? {};
-    const mongoUri: string | undefined =
-      vars.NV_MONGO_URI ?? vars["NV_MONGO_URI"];
-    const mongoDb: string | undefined = vars.NV_MONGO_DB ?? vars["NV_MONGO_DB"];
+    // Optional: diagnose whether ControllerBase is actually holding svcEnv.
+    const svcEnv = this.controller.getSvcEnv?.();
+    const hasSvcEnv = !!svcEnv;
 
     if (!mongoUri || !mongoDb) {
       this.ctx.set("handlerStatus", "error");
@@ -105,9 +90,11 @@ export class LoadExistingUpdateHandler extends HandlerBase {
       this.log.error(
         {
           event: "mongo_env_missing",
-          hasSvcEnv: !!svcEnv,
+          hasSvcEnv,
           mongoUriPresent: !!mongoUri,
           mongoDbPresent: !!mongoDb,
+          handler: this.constructor.name,
+          id,
         },
         "loadExisting.update aborted — Mongo env config missing"
       );

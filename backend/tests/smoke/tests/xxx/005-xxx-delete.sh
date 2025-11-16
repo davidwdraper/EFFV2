@@ -1,5 +1,7 @@
-# backend/tests/smoke/tests/005-xxx-delete-4015.sh
 #!/usr/bin/env bash
+# backend/tests/smoke/tests/005-xxx-delete.sh
+# 005 - create then delete
+#
 # NowVibin Smoke — create then delete (slug/port aware, fully independent)
 # Strategy:
 #   1) CREATE a record (DtoBag) with a simple payload, no id fields.
@@ -84,4 +86,4 @@ printf '%s\n' "$DEL_JSON" | jq . || true
 [ "$(jq -r '.ok // empty' <<<"$DEL_JSON")" = "true" ] || { say "ERROR: delete.ok != true"; exit 3; }
 jq -e '(.deleted|tostring) == "1"' >/dev/null <<<"$DEL_JSON" || { say "ERROR: deleted != 1"; exit 3; }
 
-say "✅ PASS: created and deleted _id=${CREATED_ID} (slug=${SLUG}, dtoType=${DTO_TYPE}, port=${PORT})"
+say "created and deleted _id=${CREATED_ID} (slug=${SLUG}, dtoType=${DTO_TYPE}, port=${PORT})"

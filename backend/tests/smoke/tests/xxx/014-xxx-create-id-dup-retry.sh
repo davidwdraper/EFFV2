@@ -1,7 +1,7 @@
-# backend/tests/smoke/tests/014-xxx-create-id-dup-retry.sh
 #!/usr/bin/env bash
+# backend/tests/smoke/tests/014-xxx-create-id-dup-retry.sh
+# 014 - _id duplicate triggers retry → two inserts
 # =============================================================================
-# NowVibin Smoke — _id duplicate triggers retry → two inserts
 # Requirements:
 #   • First create MUST return bagged success: { ok:true, items:[{ _id, type, ... }] }
 #   • Second create MUST use the SAME _id but DIFFERENT business fields
@@ -169,5 +169,5 @@ READ2="$(curl -sS "$(READ_URL_FOR_ID "${ID2}")")" || die "read2 HTTP error"
 echo "${READ1}" | jq -e '.items[0]._id == "'${ID1}'"' >/dev/null 2>&1 || { echo "${READ1}" | jq .; die "read1 did not return _id=${ID1}"; }
 echo "${READ2}" | jq -e '.items[0]._id == "'${ID2}'"' >/dev/null 2>&1 || { echo "${READ2}" | jq .; die "read2 did not return _id=${ID2}"; }
 
-say "✅ PASS: _id duplicate retried → two inserts (ids: ${ID1}, ${ID2})"
+say "OK: _id duplicate retried → two inserts (ids: ${ID1}, ${ID2})"
 exit 0

@@ -1,7 +1,7 @@
-# backend/tests/smoke/tests/xxx/009-xxx-list-4015.sh
 #!/usr/bin/env bash
+# backend/tests/smoke/tests/xxx/009-xxx-list.sh
+# 009 — list (create x4 → list → verify → delete x4)
 # ============================================================================
-# Smoke 009 — list (create x4 → list → verify → delete x4)
 # Parametrized: SLUG, HOST, PORT, VERSION, SVCFAC_BASE_URL, BASE, DTO_TYPE
 # Leaves no baggage in DB. macOS Bash 3.2 compatible.
 # ============================================================================

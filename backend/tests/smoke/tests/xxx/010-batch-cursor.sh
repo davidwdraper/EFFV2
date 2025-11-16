@@ -1,7 +1,7 @@
-# backend/services/t_entity_crud/smokes/010-batch-cursor.sh
 #!/usr/bin/env bash
-# =============================================================================
+# backend/services/t_entity_crud/smokes/010-batch-cursor.sh
 # 010 — Batch cursor pagination (no overlap, deterministic; full cleanup)
+# =============================================================================
 # Parametrized: SLUG, HOST, PORT, VERSION, BASE, DTO_TYPE, LIMIT
 #
 # Canonical id:

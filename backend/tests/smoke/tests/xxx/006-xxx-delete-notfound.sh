@@ -1,8 +1,7 @@
-# backend/services/t_entity_crud/smokes/006-xxx-delete-notfound-4015.sh
 #!/usr/bin/env bash
+# backend/services/t_entity_crud/smokes/006-xxx-delete-notfound.sh
+# 006 — delete not found
 # =============================================================================
-# Smoke 006 — delete not found (STRICT, _id-only)
-#
 # Flow (post _id refactor):
 #   1) CREATE a doc with no id fields; service mints _id.
 #   2) DELETE /{type}/delete/{_id} → expect 200 { ok:true, deleted:1 }.

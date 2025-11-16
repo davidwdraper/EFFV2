@@ -1,8 +1,7 @@
-# backend/services/t_entity_crud/smokes/007-xxx-read-notfound-4015.sh
 #!/usr/bin/env bash
+# backend/services/t_entity_crud/smokes/007-xxx-read-notfound.sh
+# 007 — read not found
 # =============================================================================
-# Smoke 007 — read not found (STRICT, _id-only)
-#
 # Flow (post _id refactor):
 #   1) CREATE a doc with no id fields; service mints _id (sanity check).
 #   2) Generate a different UUID that is guaranteed not to match that _id.

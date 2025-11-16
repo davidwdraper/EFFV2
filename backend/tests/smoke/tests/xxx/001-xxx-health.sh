@@ -1,6 +1,6 @@
-# backend/tests/smoke/tests/001-xxx-health-4016.sh
 #!/usr/bin/env bash
-# NowVibin Smoke — health check (parametrized)
+# backend/tests/smoke/tests/001-xxx-health.sh
+# 001 - health check
 # Works with env: SLUG, HOST, PORT, VERSION, SVCFAC_BASE_URL, BASE
 # Expected usage:
 #   ./smoke.sh --slug xxx --port <port> 1
@@ -49,5 +49,3 @@ if echo "${RESP}" | jq -e 'has("service")' >/dev/null; then
   SVC="$(echo "${RESP}" | jq -r '.service')"
   [ "${SVC}" = "${SLUG}" ] || { echo "ERROR: service != ${SLUG}"; echo "${RESP}" | jq .; exit 1; }
 fi
-
-echo "OK: health ready for ${SLUG} at ${HOST}:${PORT}"

@@ -1,7 +1,7 @@
-# backend/services/t_entity_crud/smokes/012-cursor-invalid.sh
 #!/usr/bin/env bash
+# backend/services/t_entity_crud/smokes/012-cursor-invalid.sh
+# 012 — cursor invalid
 # =============================================================================
-# Smoke 012 — cursor invalid
 # Expectation: reject bad base64-ish cursor with a 4xx problem+json OR a clear
 # error code (INVALID_CURSOR/BAD_CURSOR). Bag-first + dtoType-aware routes.
 #

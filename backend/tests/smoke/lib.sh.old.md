@@ -8,8 +8,6 @@
 # - Captures LAST_HTTP_CODE for every request and prints "HTTP <code>".
 # - Zero changes required in existing tests; this file is sourced at top.
 # - NEW: DTO_TYPE exported from smoke.sh; defaults to SLUG when not set.
-# - Newer smoke.sh sets SMOKE_QUIET_HEADERS=1 to let the runner own the
-#   per-test 4-line header/summary; all other helpers still work as-is.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -155,6 +153,7 @@ extract_id(){
      // empty
   ' <<<"$body"
 }
+
 
 # ------------------------------- state helpers --------------------------------
 save_last_id(){

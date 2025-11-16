@@ -3,7 +3,7 @@
 # ============================================================================
 # NowVibin — Smoke Test Runner (macOS Bash 3.2 compatible)
 #
-# Layout (new, enforced):
+# Layout:
 #   backend/tests/smoke/
 #     smoke.sh
 #     lib.sh
@@ -13,16 +13,31 @@
 #         002-*.sh
 #         ...
 #
-# Behavior:
-# - No args           : list tests for the current slug (defaults to xxx).
-# - --all [opts]      : run all tests for the selected slug.
-# - <ID> [opts]       : run a single test (e.g. "1" runs 001-*.sh) for the slug.
+# Test file header convention:
+#   line 1: #!/usr/bin/env bash
+#   line 2: # backend/tests/smoke/tests/<slug>/<file>.sh
+#   line 3: # <test #> One-line description of the test
 #
-# Options:
-#   --slug <slug>      Service slug (default: xxx)
-#   --dtoType <type>   DTO type (default: same as slug)
-#   --port <port>      Service port (REQUIRED)
-#   --host <host>      Host (default: 127.0.0.1)
+# Behavior:
+#   No args:
+#     - Show usage.
+#
+#   --slug <slug> [--port <port>]:
+#     - List tests for the slug (no execution if no test spec).
+#
+#   Run tests:
+#     ./smoke.sh --slug <slug> --port <port> [--verbose] --all
+#     ./smoke.sh --slug <slug> --port <port> [--verbose] <N>
+#     ./smoke.sh --slug <slug> --port <port> [--verbose] <N-M>
+#
+# Header for each executed test (always shown, verbose or not):
+#   -------------------------------------------------------------------------------
+#   <test #> One description of test         (from line 3 of test file)
+#   backend/tests/smoke/tests/...           (from line 2 of test file)
+#   ✅ PASSED   /   ❌ FAILED (exit <code>)
+#
+# In non-verbose mode, ALL test output is suppressed.
+# In verbose mode, test output is shown normally.
 # ============================================================================
 
 set -Eeuo pipefail
@@ -37,63 +52,81 @@ has_cmd(){ command -v "$1" >/dev/null 2>&1; }
 normalize_id(){ local s="$1"; echo $((10#$s)); }
 
 usage() {
-  echo "Usage:"
-  echo "  $(basename "$0") --port <port>                       # list tests for current slug"
-  echo "  $(basename "$0") --port <port> --all [opts]          # run all tests for current slug"
-  echo "  $(basename "$0") --port <port> <ID> [opts]           # run a single test by numeric ID"
-  echo
-  echo "Options:"
-  echo "  --slug <slug>      Service slug (default: xxx)"
-  echo "  --dtoType <type>   DTO type (default: same as slug)"
-  echo "  --port <port>      Service port (REQUIRED)"
-  echo "  --host <host>      Host (default: 127.0.0.1)"
+  cat <<USAGE
+Usage:
+  $(basename "$0")                       # show this help
+  $(basename "$0") --slug <slug>        # list tests for slug
+  $(basename "$0") --slug <slug> --port <port>         # list tests for slug
+  $(basename "$0") --slug <slug> --port <port> [--verbose] --all
+  $(basename "$0") --slug <slug> --port <port> [--verbose] <ID>
+  $(basename "$0") --slug <slug> --port <port> [--verbose] <ID1-ID2>
+
+Options:
+  --slug <slug>      Service slug (default: xxx)
+  --dtoType <type>   DTO type (default: same as slug)
+  --port <port>      Service port (required for execution)
+  --host <host>      Host (default: 127.0.0.1)
+  --verbose          Show full test output (default: only 4-line header/result)
+USAGE
 }
 
-# --- Dependencies -------------------------------------------------------------
+# --- Dependencies ------------------------------------------------------------
 for dep in curl jq; do
   has_cmd "$dep" || { echo "❌ Missing $dep" >&2; exit 2; }
 done
 
-# --- Defaults for service under test -----------------------------------------
+# --- Defaults ----------------------------------------------------------------
 SLUG="xxx"
-PORT=""          # must be provided via --port
+PORT=""          # must be provided via --port for execution
 HOST="127.0.0.1"
 DTO_TYPE=""      # resolved to SLUG if empty
+VERBOSE=0
 
-RUN_MODE="list"   # default: just list tests
-REQ_ID_RAW=""
+RUN_MODE="list"      # "list" | "exec"
+TEST_SPEC=""         # "", "--all", "N", "N-M"
 
-# --- Arg parsing --------------------------------------------------------------
+# --- Arg parsing -------------------------------------------------------------
+if [ $# -eq 0 ]; then
+  usage
+  exit 0
+fi
+
 while [ $# -gt 0 ]; do
   case "${1:-}" in
     --help|-h)
       usage
       exit 0
       ;;
-    --all)
-      RUN_MODE="all"
-      shift
-      ;;
     --slug)
-      SLUG="${2:?}"
+      SLUG="${2:?missing slug for --slug}"
       shift 2
       ;;
     --dtoType)
-      DTO_TYPE="${2:?}"
+      DTO_TYPE="${2:?missing type for --dtoType}"
       shift 2
       ;;
     --port)
-      PORT="${2:?}"
+      PORT="${2:?missing port for --port}"
       shift 2
       ;;
     --host)
-      HOST="${2:?}"
+      HOST="${2:?missing host for --host}"
       shift 2
       ;;
+    --verbose)
+      VERBOSE=1
+      shift
+      ;;
+    --all)
+      RUN_MODE="exec"
+      TEST_SPEC="--all"
+      shift
+      ;;
     *)
-      if echo "$1" | grep -Eq '^[0-9]+$'; then
-        REQ_ID_RAW="$1"
-        RUN_MODE="single"
+      # Test spec: "N" or "N-M"
+      if echo "$1" | grep -Eq '^[0-9]+(-[0-9]+)?$'; then
+        RUN_MODE="exec"
+        TEST_SPEC="$1"
         shift
       else
         echo "❌ Unknown arg: $1" >&2
@@ -105,21 +138,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# --- Require explicit port ----------------------------------------------------
-if [ -z "${PORT}" ]; then
-  echo "❌ Missing required parameter: --port <port>" >&2
-  echo
-  usage
-  exit 2
-fi
-
-# --- Resolve DTO_TYPE default (dtoType == slug when not explicitly given) ----
+# --- Resolve DTO_TYPE default ------------------------------------------------
 if [ -z "${DTO_TYPE}" ]; then
   DTO_TYPE="$SLUG"
 fi
-
-# --- Export for child test scripts -------------------------------------------
-export SLUG PORT HOST DTO_TYPE
 
 # --- Discover tests for this slug --------------------------------------------
 TEST_DIR="$TEST_ROOT_BASE/$SLUG"
@@ -153,84 +175,155 @@ if [ "$COUNT" -eq 0 ]; then
   exit 2
 fi
 
+# --- Helpers to read header metadata from test file --------------------------
+# line2 = path/filename comment, line3 = one-line description
+get_test_path_line() {
+  local tpath="$1"
+  sed -n '2p' "$tpath" | sed -E 's/^# ?//'
+}
+
+get_test_desc_line() {
+  local tpath="$1"
+  sed -n '3p' "$tpath" | sed -E 's/^# ?//'
+}
+
+print_test_header() {
+  local tpath="$1"
+  local desc path
+  desc="$(get_test_desc_line "$tpath")"
+  path="$(get_test_path_line "$tpath")"
+
+  # Fallbacks if headers are missing/mis-ordered
+  [ -z "$desc" ] && desc="$(basename "$tpath")"
+  [ -z "$path" ] && path="$tpath"
+
+  printf '%s\n' "-------------------------------------------------------------------------------"
+  printf '%s\n' "$desc"
+  printf '%s\n' "$path"
+}
+
 # --- List mode ---------------------------------------------------------------
 if [ "$RUN_MODE" = "list" ]; then
   echo "▶ smoke: found ${COUNT} test(s) for slug '${SLUG}'"
   for (( i=0; i<COUNT; i++ )); do
-    echo "  ${IDS[$i]}) $(basename "${FILES[$i]}")"
+    tpath="${FILES[$i]}"
+    base="$(basename "$tpath")"
+    desc="$(get_test_desc_line "$tpath")"
+    [ -z "$desc" ] && desc="$base"
+    printf "  %s) %s — %s\n" "${IDS[$i]}" "$base" "$desc"
   done
   echo
   usage
   exit 0
 fi
 
-# --- Resolve selected test (single mode) -------------------------------------
-RUN_IDX=-1
-if [ "$RUN_MODE" = "single" ]; then
-  req_n="$(normalize_id "$REQ_ID_RAW")"
-  found=0
+# --- Execution mode: require port --------------------------------------------
+if [ -z "${PORT}" ]; then
+  echo "❌ Missing required parameter: --port <port> for execution" >&2
+  echo
+  usage
+  exit 2
+fi
+
+# --- Export for child test scripts -------------------------------------------
+export SLUG PORT HOST DTO_TYPE
+# Always keep lib.sh quiet; runner controls headers/footers.
+export SMOKE_QUIET_HEADERS=1
+
+# --- Build list of indices to run --------------------------------------------
+SELECTED_INDEXES=()
+
+if [ "$TEST_SPEC" = "--all" ]; then
   for (( i=0; i<COUNT; i++ )); do
-    cur_n="$(normalize_id "${IDS[$i]}")"
-    if [ "$cur_n" -eq "$req_n" ]; then
-      RUN_IDX="$i"
-      found=1
-      break
-    fi
+    SELECTED_INDEXES+=("$i")
   done
-  if [ "$found" -ne 1 ]; then
-    echo "❌ No test with ID: $REQ_ID_RAW for slug '${SLUG}'" >&2
-    echo "Available tests:"
-    for (( i=0; i<COUNT; i++ )); do
-      echo "  ${IDS[$i]}  $(basename "${FILES[$i]}")"
+else
+  # Either "N" or "N-M"
+  if echo "$TEST_SPEC" | grep -q '-'; then
+    # Range
+    start_raw="${TEST_SPEC%-*}"
+    end_raw="${TEST_SPEC#*-}"
+    start="$(normalize_id "$start_raw")"
+    end="$(normalize_id "$end_raw")"
+    if [ "$start" -gt "$end" ]; then
+      tmp="$start"; start="$end"; end="$tmp"
+    fi
+    for (( n=start; n<=end; n++ )); do
+      found=0
+      for (( i=0; i<COUNT; i++ )); do
+        cur="$(normalize_id "${IDS[$i]}")"
+        if [ "$cur" -eq "$n" ]; then
+          SELECTED_INDEXES+=("$i")
+          found=1
+          break
+        fi
+      done
+      if [ "$found" -ne 1 ]; then
+        echo "❌ No test with ID: $n for slug '${SLUG}'" >&2
+        exit 2
+      fi
     done
-    exit 2
+  else
+    # Single ID
+    req_n="$(normalize_id "$TEST_SPEC")"
+    found=0
+    for (( i=0; i<COUNT; i++ )); do
+      cur_n="$(normalize_id "${IDS[$i]}")"
+      if [ "$cur_n" -eq "$req_n" ]; then
+        SELECTED_INDEXES+=("$i")
+        found=1
+        break
+      fi
+    done
+    if [ "$found" -ne 1 ]; then
+      echo "❌ No test with ID: $TEST_SPEC for slug '${SLUG}'" >&2
+      exit 2
+    fi
   fi
 fi
 
 # --- Runner -------------------------------------------------------------------
-run_test() {
+run_one_test() {
   local tpath="$1"
-  [ -n "$tpath" ] && [ -f "$tpath" ] || {
-    echo "❌ Internal error: empty/absent test path" >&2
-    return 3
-  }
-  local name; name="$(basename "$tpath")"
-  echo "── running: $name  (SLUG=${SLUG} DTO_TYPE=${DTO_TYPE} PORT=${PORT} HOST=${HOST})"
-  bash "$tpath"
-  return $?
+  local verbose="$2"
+
+  print_test_header "$tpath"
+
+  local rc=0
+  if [ "$verbose" -eq 1 ]; then
+    # Full output to console
+    bash "$tpath"
+    rc=$?
+  else
+    # Suppress all test output; status only
+    if bash "$tpath" >/dev/null 2>&1; then
+      rc=0
+    else
+      rc=$?
+    fi
+  fi
+
+  if [ "$rc" -eq 0 ]; then
+    echo "✅ PASSED"
+  else
+    echo "❌ FAILED (exit ${rc})"
+  fi
+
+  return "$rc"
 }
 
 PASS=0
 FAIL=0
-FAILED_LIST=()
 
-if [ "$RUN_MODE" = "all" ]; then
-  for (( i=0; i<COUNT; i++ )); do
-    echo
-    if run_test "${FILES[$i]}"; then
-      PASS=$((PASS+1))
-    else
-      FAIL=$((FAIL+1))
-      FAILED_LIST+=("$(basename "${FILES[$i]}")")
-    fi
-  done
-else
-  echo
-  if run_test "${FILES[$RUN_IDX]}"; then
+for idx in "${SELECTED_INDEXES[@]}"; do
+  tpath="${FILES[$idx]}"
+  if run_one_test "$tpath" "$VERBOSE"; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
-    FAILED_LIST+=("$(basename "${FILES[$RUN_IDX]}")")
   fi
-fi
+done
 
 echo
 echo "Summary: ${PASS} passed, ${FAIL} failed"
-if [ "$FAIL" -gt 0 ]; then
-  printf 'Failures:\n'
-  for f in "${FAILED_LIST[@]}"; do
-    echo " - $f"
-  done
-  exit 1
-fi
-exit 0
+exit $([ "$FAIL" -gt 0 ] && echo 1 || echo 0)

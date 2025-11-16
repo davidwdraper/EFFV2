@@ -1,8 +1,7 @@
-# backend/tests/smoke/tests/xxx/008-xxx-update-4015.sh
 #!/usr/bin/env bash
+# backend/tests/smoke/tests/xxx/008-xxx-update.sh
+# 008 — update (create → patch → read verify → delete)
 # ============================================================================
-# Smoke 008 — update (create → patch → read verify → delete), _id-only
-#
 # Parametrized: SLUG, HOST, PORT, VERSION, SVCFAC_BASE_URL, BASE, DTO_TYPE
 # Leaves no baggage in DB. macOS Bash 3.2 compatible.
 #
@@ -160,4 +159,4 @@ jq -e '(.deleted|tostring) == "1"' >/dev/null <<<"${DRESP}" || {
   exit 1
 }
 
-echo "OK: update verified and cleaned up for ${SLUG}:${PORT} (dtoType=${DTO_TYPE}, _id=${ID})"
+echo "update verified and cleaned up for ${SLUG}:${PORT} (dtoType=${DTO_TYPE}, _id=${ID})"

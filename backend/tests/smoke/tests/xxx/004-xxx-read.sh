@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
+# backend/tests/smoke/tests/004-xxx-read.sh
+# 004 - create + read-by-id roundtrip
 # =============================================================================
-# Smoke 004 — create + read-by-id roundtrip
-#
 # Contract:
 # - CREATE:
 #     PUT /api/:slug/v:version/:dtoType/create
@@ -53,9 +53,6 @@ fi
 
 CREATE_URL="${BASE}/${DTO_TYPE}/create"
 READ_BASE="${BASE}/${DTO_TYPE}/read"
-
-say "TEST: 004-xxx-read-4015.sh  (SLUG=${SLUG} DTO_TYPE=${DTO_TYPE} PORT=${PORT} HOST=${HOST})"
-say "=============================================================================="
 
 # ---- CREATE (bagged, wire uses _id) -----------------------------------------
 say "→ PUT  ${CREATE_URL}"
@@ -143,4 +140,4 @@ ITEM_HAS_DOC_READ=$(printf '%s' "${READ_BODY}" | jq -r '.items[0] | has("doc")')
 echo "diag: items[0]._id                  ${RESP_ID}"
 echo "diag: items[0].type                 ${RESP_TYPE}"
 
-echo "✅ PASS: create/read-by-id roundtrip (id=${CREATED_ID}, slug=${SLUG}, dtoType=${DTO_TYPE}, port=${PORT})"
+echo "create/read-by-id roundtrip (id=${CREATED_ID}, slug=${SLUG}, dtoType=${DTO_TYPE}, port=${PORT})"

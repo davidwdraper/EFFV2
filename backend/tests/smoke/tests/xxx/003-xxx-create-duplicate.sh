@@ -1,8 +1,7 @@
-# backend/services/t_entity_crud/smokes/003-xxx-create-duplicate-4015.sh
 #!/usr/bin/env bash
+# backend/services/t_entity_crud/smokes/003-xxx-create-duplicate-4015.sh
+# 003 — duplicate-by-content (business fields)
 # =============================================================================
-# Smoke 003 — duplicate-by-content (business fields)
-#
 # SYSTEM RULES (CURRENT):
 #  - Success response MUST be bagged:
 #        { ok:true, items:[ { _id, type, ... } ] }
@@ -64,9 +63,6 @@ PAYLOAD2=$(cat <<JSON
 JSON
 )
 
-say "TEST: 003-xxx-create-duplicate-4015.sh  (SLUG=${SLUG} DTO_TYPE=${TYPE} PORT=${PORT} HOST=${HOST})"
-say "=============================================================================="
-
 # --- First create: must be bagged -------------------------------------------
 say "→ PUT ${BASE}/create (first create, explicit _id=${ID1})"
 RESP1=$(curl -sS -X PUT -H 'content-type: application/json' --data-binary "${PAYLOAD1}" "${BASE}/create" -w '\n%{http_code}')
@@ -109,4 +105,4 @@ ERR_TITLE=$(printf '%s' "${BODY2}" | jq -r '.title // empty')
 ERR_CODE=$(printf '%s' "${BODY2}" | jq -r '.code // empty')
 [ "${ERR_CODE}" = "DUPLICATE_CONTENT" ] || { say "${BODY2}"; die "expected error code 'DUPLICATE_CONTENT'"; }
 
-say "✅ PASS: duplicate-by-content correctly returned 409 (DUPLICATE_CONTENT) with bagged success response"
+echo "duplicate-by-content correctly returned 409 (DUPLICATE_CONTENT) with bagged success response"

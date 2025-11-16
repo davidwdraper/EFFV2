@@ -1,7 +1,7 @@
-# backend/services/t_entity_crud/smokes/011-cursor-last-page.sh
 #!/usr/bin/env bash
+# backend/services/t_entity_crud/smokes/011-cursor-last-page.sh
+# 011 — cursor last page
 # =============================================================================
-# Smoke 011 — cursor last page
 # Goal: seed 5 docs → paginate with ?limit → ensure nextCursor disappears on the
 # final page. Aligned to bag-first + dtoType-aware routes (…/v{n}/{type}/…).
 #

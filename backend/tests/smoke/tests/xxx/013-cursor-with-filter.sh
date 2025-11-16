@@ -1,7 +1,7 @@
-# backend/services/t_entity_crud/smokes/013-cursor-with-filter.sh
 #!/usr/bin/env bash
+# backend/services/t_entity_crud/smokes/013-cursor-with-filter.sh
+# 013 — cursor with filter 
 # =============================================================================
-# Smoke 013 — cursor with filter (matches current API)
 # Seeds two groups (groupA, groupB), then pages ONLY groupA with a limit,
 # ensuring every returned doc matches the filter across all pages.
 #

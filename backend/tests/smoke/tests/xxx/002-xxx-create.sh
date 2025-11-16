@@ -1,6 +1,6 @@
-# backend/tests/smoke/tests/002-xxx-create-4015.sh
 #!/usr/bin/env bash
-# NowVibin Smoke — create (saves DTO id + payload for subsequent tests)
+# backend/tests/smoke/tests/002-xxx-create.sh
+# 002 - create
 # Parametrized: SLUG, DTO_TYPE, HOST, PORT, VERSION, SVCFAC_BASE_URL, BASE
 set -euo pipefail
 
@@ -84,4 +84,4 @@ ID="$(echo "${RESP}" | jq -er \
 save_last_id "${ID}"
 save_create_payload "${BODY}"
 
-echo "OK: created id=${ID} @ ${SLUG}:${PORT} dtoType=${DTO_TYPE}"
+echo "created id=${ID} @ ${SLUG}:${PORT} dtoType=${DTO_TYPE}"

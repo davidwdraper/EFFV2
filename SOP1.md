@@ -6,18 +6,18 @@
 - Single-concern files; shared logic lives only in `backend/services/shared`.
 - Full file drops only; no partials, no options.
 - No barrels or shims.
-- Env names only — all values come from `.env.*`.
-- Routes are one-liners; controllers stay thin (Validate → DTO → Repo → Return → Audit).
+- Env names only — not hard coded values or fallbacks
+- Routes are one-liners; controllers orchestrate pipeline of handers.
 - Instrumentation everywhere; global error middleware via `problem.ts`.
 - Audit-ready: explicit env validation, no silent fallbacks. Dev ≈ Prod (URLs/ports aside).
-- Canonical truth = Zod contract in `shared/contracts/<entity>.contract.ts`.
+- Canonical truth = DTO
 - Always TypeScript OO; base classes shared where appropriate.
 
 ---
 
 ## Route & Service Rules
 
-- URL: `http(s)://<host>:<port>/api/<slug>/v<major>/<rest>`
+- URL: `http(s)://<host>:<port>/api/<slug>/v<major>/<dtoType>/<rest>`
   - Health is versioned: `/api/<slug>/v1/health`
 - CRUD (versioned paths):
   - `PUT` create
@@ -25,17 +25,18 @@
   - `GET` read
   - `DELETE` idempotent delete
 - No `PUT /:id` full replaces.
-- Gateway strips `<slug>` and proxies via svcconfig.
+- Gateway strips `<slug>` and proxies via svcconfig replacement port value.
 - Mount health before auth/middleware.
 
 ---
 
 ## Template Service Blueprint
 
-Flow: **contract → DTO → mapper → model → repo → controller → route**
+Flow: \*\*route -> controller -> pipeline -> handlers -> DtoBag(DTO) -> service API
 
 - Model: `bufferCommands=false`; indexes defined.
-- Repo: returns domain objects only.
+- Repo: comprises shared DbReader and DbWriter helpers that work with DTOs
+- DTOs never leave a module boundary outside a DtoBag wrapper
 
 ---
 
@@ -50,7 +51,7 @@ Flow: **contract → DTO → mapper → model → repo → controller → route*
 
 - Shared logger; propagate `x-request-id`.
 - WAL audit flushes once per request.
-- SECURITY logs ≠ WAL logs.
+- SECURITY logs ≠ WAL logs. WAL not complete yet.
 - Every meaningful operation should be logged at `info` level.
 - Heavy instrumentation with `debug` logs for traceability.
 - When the Logger service is complete, log levels will be runtime-adjustable and can optionally forward to the log DB for production triage.
@@ -59,8 +60,8 @@ Flow: **contract → DTO → mapper → model → repo → controller → route*
 
 ## Security & S2S
 
-- Only gateway is public; all others require valid S2S JWT.
-- `verifyS2S` runs after health, before body parsers/routes.
+- Only gateway is public; all others require valid S2S JWT (JWT not in place yet)
+- `verifyS2S` runs after health, before body parsers/routes. (Not in place yet)
 - Gateway never forwards client `Authorization`.
 - All S2S calls via shared `SvcClient` (`callBySlug`).
 
@@ -76,16 +77,18 @@ Flow: **contract → DTO → mapper → model → repo → controller → route*
 ## Session Ritual
 
 Paste SOP → declare active service → paste full current files → merge drops only.
+Be pro-active. Warn if session is getting too bloated for your efficient processing
 
 ---
 
 ## File Discipline
 
-- Top comment: path + ADR refs.
+- Repo Path/Filename on 1st line
+- ADR refs.
 - Inline “why,” not “how.”
 - Always ensure wiring is complete.
 - Never drift; ask if logic exists before adding.
-- First line of every drop = repo path.
+- All returned files in a code block
 
 ---
 
@@ -95,6 +98,10 @@ Paste SOP → declare active service → paste full current files → merge drop
 - One file at a time unless requested.
 - Reuse in shared; use DI where logical.
 - Baby steps — correctness over speed.
+- Never take a fast path over long-term correct path
+- Never provide options, always take best long-term commerical path
+- Project is new and greenfield with no clients. All internal interface to be explicit.
+- Never leave code incomplete with "come back later" comments. All code 100% before moving on.
 
 ---
 
@@ -113,7 +120,7 @@ Paste SOP → declare active service → paste full current files → merge drop
 
 - Defines **what** happens, not **how**.
 - Wires base classes, middleware, and routes.
-- No business logic — that lives in `controllers`, `services`, or `handlers`.
+- No business logic — that lives in `services`, or `handlers`.
 - Think of `app.ts` as a “runtime table of contents.”
 
 ---
@@ -140,17 +147,21 @@ Paste SOP → declare active service → paste full current files → merge drop
 ## DTO-First Development
 
 - DTOs are canonical; domain data lives only in DTOs.
+- DTO data is used via getters but never lives outside the DTO.
 - Each DTO inherits from `DtoBase` and implements `IDto`.
 - DTO validates and authorizes its own data (getters/setters).
-- Multiple DTOs for same entity only with clear justification (e.g., internal vs. public view).
+- Multiple DTOs for same entity service only with clear justification (e.g., internal vs. public view).
 - If a DTO leaves the service boundary, it must be defined under `services/shared/src/dto/<slug>.<purpose>.dto.ts`.
 
 ---
 
 ## Template Service Types
 
-- `entity-crud`: DB-backed CRUD template (with live test DB).
-- `micro-orchestrator (MOS)`: cross-service coordination.
+- `t_entity-crud`: DB-backed CRUD template (with live test DB).
+
+The following are templates yet to be built
+
+- `micro-orchestrator (MOS)`: cross-service coordination. Multiple DTO types expected.
 - `api-adapter`: interfaces external APIs.
 - `daemon`: cron/background task.  
   Each is fully runnable by cloning and assigning a port.
@@ -168,20 +179,24 @@ backend/services/t_entity_crud/
    │   ├─ <route>.route.ts
    ├─ controllers/
    │   ├─ <route>.controller/
-   │   │   ├─ <route>.controller.ts
-   │   │   └─ handlers/
-   │   │       ├─ <handler>.<route>.handler.ts
-   ├─ services/
-   ├─ dtos/
-   ├─ repos/
+   │   │     └─ pipelines
+   │   │           ├─ <op>.pipeline1
+   │   │           │    ├─handlers/
+   │   │           │    │   ├─ <purpose>.handler1.ts
+   │   │           │    │   └─ <purpose>.handler2.ts
+   │   │           │    └─ index.ts
+   │   │           ├─ <op>.pipeline2
 ```
+
+Handlers with common functionality are located in:
+backend/services/shared/src/http/handlers
 
 **Rules:**
 
-- Handlers = single-purpose.
-- Services = cross-handler logic.
+- Handlers = single-purpose (think: could be resused)
+- Services = cross-handler logic. Shared if cross service.
 - DTOs = data authority.
-- Repos = persistence only.
+- Peristence within handlers via DbWriter, DbReader and DbDeleter
 - Controllers = orchestrators only.
   If data lives outside a DTO - it's drift
 
@@ -192,9 +207,9 @@ backend/services/t_entity_crud/
 ```ts
 export const enum UserType {
   Anon = 0,
-  Free = 1,
-  LowFee = 2,
-  HighFee = 3,
+  Viber = 1,    (no fee)
+  Prem-Viber = 2,   (monthly fee)
+  NotUsedYet = 3,
   AdminDomain = 4,
   AdminSystem = 5,
   AdminRoot = 6,
@@ -204,18 +219,21 @@ export const enum UserType {
 shared files can be accessed at:
 @nv/shared/
 rather then ../../../shared/src/
+Files within shared, do not use @nv/shared/
 
 When throwing errors, ensure the message includes guidance and suggestions for Ops
 to triage the situation.
 
-No models, no schemas, no leaked shapes. The DTO is the only source of truth, and persistence just moves opaque JSON in/out via dto.toJson() / DtoClass.fromJson().
+No models, no schemas, no mappers, no leaked shapes. The DTO is the only source of truth, and persistence just moves opaque JSON in/out via dto.toJson() / DtoClass.fromJson().
 
-Always provide ADR docs as downloadable .md files
+Always provide ADR docs as downloadable .md files. Ask for next # at start of session.
 
 As we work our way through building out the backend, there may be time that refactoring is required. We never build shims, or fallbacks, or worry about back-combat. We're greenfield and in total control of all interfaces - everything needs to tight. If entity A needs a function in B that doesn't exist, we don't add it to A, we put it in B where it belongs.
 
-No helper methods to narrow TS type guards. All typing must be designed and implemented correctly.
+No helper methods to narrow TS type guards. All typing must be designed and implemented correctly. There must be a good valid reason for the type 'any'.
 
 When fixing issues or bugs, never offer two or more solutions when one is clearly the preferred. We are never doing quick fixes and always require the best long term production solution. dev == prod.
+
+Be pro-active on when its time for a new session, when we're diverging from the ADRs, or when I'm suggesting something that screams "not best practice".
 
 Your previous session notes follow:

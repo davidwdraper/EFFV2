@@ -35,10 +35,20 @@ type Hydrator<T extends IDto = IDto> = (json: unknown) => T;
 
 export abstract class ServiceRegistryBase extends RegistryBase {
   /**
+   * Hook for attaching UserType (and any other per-request security context)
+   * to a DTO instance. Subclasses decide how to resolve and apply user context.
+   *
+   * DTOs that do not participate in field-level security can implement this as
+   * a no-op that simply returns the DTO.
+   */
+  protected abstract applyUserType<T extends IDto = IDto>(dto: T): T;
+
+  /**
    * Returns a DTO hydrator function for the given registry type key.
    * The hydrator:
    *  - constructs the DTO via <Ctor>.fromJson(json, { mode:'wire', validate })
    *  - ensures the instance's collection name is seeded once from the ctor's static
+   *  - applies per-request user context via applyUserType()
    */
   public hydratorFor<T extends IDto = IDto>(
     type: string,
@@ -64,7 +74,8 @@ export abstract class ServiceRegistryBase extends RegistryBase {
         (dto as any).setCollectionName(collection);
       }
 
-      return dto;
+      // Attach UserType / security context (no-op for DTOs that don't care).
+      return this.applyUserType(dto);
     };
   }
 

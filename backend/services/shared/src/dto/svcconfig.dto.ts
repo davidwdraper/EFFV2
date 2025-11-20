@@ -10,32 +10,43 @@
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *
  * Purpose:
- * - Concrete DTO for the template service ("svcconfig").
- * - Constructor accepts the same union as BaseDto: (secret | meta), so the Registry
- *   can pass the instantiation secret, and fromJson() can pass meta when hydrating.
+ * - Concrete DTO for the svcconfig service.
+ * - Represents a single configuration slot for a given (env, slug, majorVersion).
+ * - Provides the target port for gateway proxying and S2S calls.
+ * - Encodes per-field access rules for admin-only mutation.
  *
  * Notes:
- * - Instance collection is seeded by the Registry via setCollectionName().
- * - dbCollectionName() returns the hardwired collection for this DTO.
- * - indexHints declare deterministic indexes to be ensured at boot.
+ * - Gateway endpoint and target service endpoint are identical except for port.
+ *   Protocol/host come from environment config (svcenv), not from this DTO.
+ * - Admins can:
+ *   • Disable a service via `isEnabled`.
+ *   • Set a minimum UserType via `minUserType` (numeric, per UserType enum).
+ *   • Control whether the service is a gateway or S2S target.
  * - ID lifecycle:
  *     • Wire always uses `_id` (UUIDv4 string, lowercase).
  *     • DbWriter generates id BEFORE toJson() when absent.
  *     • No legacy `id` tolerance — strictly `_id` on input/output.
  */
 
-import { DtoBase } from "./DtoBase";
+import { DtoBase, type DtoMeta, UserType } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
-import type { IDto } from "./IDto";
 
 // Wire-friendly shape
 type SvcconfigJson = {
   _id?: string; // canonical wire id
   type?: "svcconfig";
-  txtfield1: string;
-  txtfield2: string;
-  numfield1: number;
-  numfield2: number;
+
+  env?: string;
+  slug?: string;
+  majorVersion?: number;
+
+  targetPort?: number;
+
+  isGatewayTarget?: boolean;
+  isS2STarget?: boolean;
+  isEnabled?: boolean;
+  minUserType?: number;
+
   createdAt?: string;
   updatedAt?: string;
   updatedByUserId?: string;
@@ -48,40 +59,180 @@ export class SvcconfigDto extends DtoBase {
   }
 
   /**
+   * Per-field access rules.
+   * - read: minimum UserType required to read via `readField()`.
+   * - write: minimum UserType required to write via `writeField()`.
+   *
+   * NOTE:
+   * - Missing rules are considered a hard error (see DtoBase.readField/writeField).
+   */
+  public static readonly access = {
+    env: {
+      read: UserType.Anon,
+      write: UserType.AdminSystem,
+    },
+    slug: {
+      read: UserType.Anon,
+      write: UserType.AdminSystem,
+    },
+    majorVersion: {
+      read: UserType.Anon,
+      write: UserType.AdminDomain,
+    },
+    targetPort: {
+      read: UserType.Anon,
+      write: UserType.AdminRoot,
+    },
+    isGatewayTarget: {
+      read: UserType.Anon,
+      write: UserType.AdminDomain,
+    },
+    isS2STarget: {
+      read: UserType.Anon,
+      write: UserType.AdminDomain,
+    },
+    isEnabled: {
+      read: UserType.Anon,
+      write: UserType.AdminDomain,
+    },
+    minUserType: {
+      read: UserType.Anon,
+      write: UserType.AdminDomain,
+    },
+  } as const;
+
+  /**
    * Deterministic index hints consumed at boot by ensureIndexesForDtos().
-   * Business duplicate-by-content is enforced via a compound **unique** index.
+   *
+   * Business key:
+   * - Unique per (env, slug, majorVersion).
+   *
+   * Lookups:
+   * - env + slug            → fast resolution for specific service in env.
+   * - env + isGatewayTarget → gateway mirror of all qualifying slugs in env.
    */
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
     {
       kind: "unique",
-      fields: ["txtfield1", "txtfield2", "numfield1", "numfield2"],
-      options: { name: "ux_svcconfig_business" },
+      fields: ["env", "slug", "majorVersion"],
+      options: { name: "ux_svcconfig_env_slug_version" },
     },
     {
       kind: "lookup",
-      fields: ["txtfield1"],
-      options: { name: "ix_svcconfig_txtfield1" },
+      fields: ["env", "slug"],
+      options: { name: "ix_svcconfig_env_slug" },
     },
     {
       kind: "lookup",
-      fields: ["numfield1"],
-      options: { name: "ix_svcconfig_numfield1" },
+      fields: ["env", "isGatewayTarget"],
+      options: { name: "ix_svcconfig_env_gateway_target" },
     },
   ];
 
-  // ─────────────── Instance: Domain Fields ───────────────
-  public txtfield1 = "";
-  public txtfield2 = "";
-  public numfield1 = 0;
-  public numfield2 = 0;
+  // ─────────────── Private Domain Fields ───────────────
+  // NOTE: These are accessed via readField/writeField by getters/setters.
 
-  public constructor(
-    secretOrMeta?:
-      | symbol
-      | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
-  ) {
+  /** Environment key (e.g., "dev", "stg", "prod"). */
+  private _env = "";
+
+  /** Service slug (e.g., "gateway", "env-service", "svcconfig", "auth"). */
+  private _slug = "";
+
+  /** API major version used in URL path: `/api/<slug>/v<majorVersion>/...`. */
+  private _majorVersion = 1;
+
+  /**
+   * Target service port. Gateway will proxy to this port; S2S callers will
+   * also resolve to this port. Host/protocol come from environment config.
+   */
+  private _targetPort = 0;
+
+  /** True if this service is exposed via gateway proxy for client traffic. */
+  private _isGatewayTarget = false;
+
+  /** True if this service may be looked up and used as a S2S target. */
+  private _isS2STarget = true;
+
+  /** True if this configuration slot is enabled. */
+  private _isEnabled = true;
+
+  /**
+   * Minimum UserType required to access this service via the gateway layer.
+   * Stored as numeric enum value (see UserType definition).
+   */
+  private _minUserType = UserType.Anon;
+
+  public constructor(secretOrMeta?: symbol | DtoMeta) {
     super(secretOrMeta);
   }
+
+  // ─────────────── Getters/Setters (Secure Access) ───────────────
+
+  public get env(): string {
+    return this.readField<string>("env");
+  }
+
+  public set env(value: string) {
+    this.writeField("env", value);
+  }
+
+  public get slug(): string {
+    return this.readField<string>("slug");
+  }
+
+  public set slug(value: string) {
+    this.writeField("slug", value);
+  }
+
+  public get majorVersion(): number {
+    return this.readField<number>("majorVersion");
+  }
+
+  public set majorVersion(value: number) {
+    this.writeField("majorVersion", Math.trunc(value));
+  }
+
+  public get targetPort(): number {
+    return this.readField<number>("targetPort");
+  }
+
+  public set targetPort(value: number) {
+    this.writeField("targetPort", Math.trunc(value));
+  }
+
+  public get isGatewayTarget(): boolean {
+    return this.readField<boolean>("isGatewayTarget");
+  }
+
+  public set isGatewayTarget(value: boolean) {
+    this.writeField("isGatewayTarget", Boolean(value));
+  }
+
+  public get isS2STarget(): boolean {
+    return this.readField<boolean>("isS2STarget");
+  }
+
+  public set isS2STarget(value: boolean) {
+    this.writeField("isS2STarget", Boolean(value));
+  }
+
+  public get isEnabled(): boolean {
+    return this.readField<boolean>("isEnabled");
+  }
+
+  public set isEnabled(value: boolean) {
+    this.writeField("isEnabled", Boolean(value));
+  }
+
+  public get minUserType(): number {
+    return this.readField<number>("minUserType");
+  }
+
+  public set minUserType(value: number) {
+    this.writeField("minUserType", Math.trunc(value));
+  }
+
+  // ─────────────── Wire Hydration ───────────────
 
   /** Wire hydration (strict `_id` only). */
   public static fromJson(
@@ -92,16 +243,35 @@ export class SvcconfigDto extends DtoBase {
     const j = (json ?? {}) as Partial<SvcconfigJson>;
 
     if (typeof j._id === "string" && j._id.trim()) {
-      // BaseDto setter validates UUIDv4 & lowercases; immutable after first set.
       dto.setIdOnce(j._id.trim());
     }
 
-    if (typeof j.txtfield1 === "string") dto.txtfield1 = j.txtfield1;
-    if (typeof j.txtfield2 === "string") dto.txtfield2 = j.txtfield2;
-    if (typeof j.numfield1 === "number")
-      dto.numfield1 = Math.trunc(j.numfield1);
-    if (typeof j.numfield2 === "number")
-      dto.numfield2 = Math.trunc(j.numfield2);
+    // NOTE:
+    // fromJson hydrates private fields directly; it is considered a trusted,
+    // internal operation, not a user-level mutation path.
+    if (typeof j.env === "string") dto._env = j.env;
+    if (typeof j.slug === "string") dto._slug = j.slug;
+    if (typeof j.majorVersion === "number") {
+      dto._majorVersion = Math.trunc(j.majorVersion);
+    }
+
+    if (typeof j.targetPort === "number") {
+      dto._targetPort = Math.trunc(j.targetPort);
+    }
+
+    if (typeof j.isGatewayTarget === "boolean") {
+      dto._isGatewayTarget = j.isGatewayTarget;
+    }
+    if (typeof j.isS2STarget === "boolean") {
+      dto._isS2STarget = j.isS2STarget;
+    }
+    if (typeof j.isEnabled === "boolean") {
+      dto._isEnabled = j.isEnabled;
+    }
+
+    if (typeof j.minUserType === "number" && Number.isInteger(j.minUserType)) {
+      dto._minUserType = j.minUserType;
+    }
 
     dto.setMeta({
       createdAt: j.createdAt,
@@ -109,49 +279,88 @@ export class SvcconfigDto extends DtoBase {
       updatedByUserId: j.updatedByUserId,
     });
 
+    // Any strict validation (required env/slug/majorVersion/targetPort) should
+    // be enforced by the contract layer when opts?.validate is true.
     return dto;
   }
 
+  // ─────────────── Outbound Wire Shape ───────────────
+
   /** Canonical outbound wire shape; BaseDto stamps meta here. */
   public toJson(): SvcconfigJson {
-    // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
-    const body = {
-      _id: super._id, // emit `_id` on wire
+    // DbWriter should ensure id BEFORE calling toJson().
+    const body: SvcconfigJson = {
+      _id: this._id,
       type: "svcconfig" as const,
-      txtfield1: this.txtfield1,
-      txtfield2: this.txtfield2,
-      numfield1: this.numfield1,
-      numfield2: this.numfield2,
+
+      env: this._env,
+      slug: this._slug,
+      majorVersion: this._majorVersion,
+
+      targetPort: this._targetPort,
+
+      isGatewayTarget: this._isGatewayTarget,
+      isS2STarget: this._isS2STarget,
+      isEnabled: this._isEnabled,
+      minUserType: this._minUserType,
     };
+
     return this._finalizeToJson(body);
   }
 
-  /** Optional patch helper used by update pipelines. */
+  // ─────────────── Patch Helper ───────────────
+
+  /**
+   * Patch helper used by update pipelines.
+   * - Uses public setters, so field-level access rules apply.
+   */
   public patchFrom(json: Partial<SvcconfigJson>): this {
-    if (json.txtfield1 !== undefined && typeof json.txtfield1 === "string") {
-      this.txtfield1 = json.txtfield1;
+    if (json.env !== undefined && typeof json.env === "string") {
+      this.env = json.env;
     }
-    if (json.txtfield2 !== undefined && typeof json.txtfield2 === "string") {
-      this.txtfield2 = json.txtfield2;
+    if (json.slug !== undefined && typeof json.slug === "string") {
+      this.slug = json.slug;
     }
-    if (json.numfield1 !== undefined) {
+
+    if (json.majorVersion !== undefined) {
       const n =
-        typeof json.numfield1 === "string"
-          ? Number(json.numfield1)
-          : json.numfield1;
-      if (Number.isFinite(n)) this.numfield1 = Math.trunc(n as number);
+        typeof json.majorVersion === "string"
+          ? Number(json.majorVersion)
+          : json.majorVersion;
+      if (Number.isFinite(n)) this.majorVersion = Math.trunc(n as number);
     }
-    if (json.numfield2 !== undefined) {
+
+    if (json.targetPort !== undefined) {
       const n =
-        typeof json.numfield2 === "string"
-          ? Number(json.numfield2)
-          : json.numfield2;
-      if (Number.isFinite(n)) this.numfield2 = Math.trunc(n as number);
+        typeof json.targetPort === "string"
+          ? Number(json.targetPort)
+          : json.targetPort;
+      if (Number.isFinite(n)) this.targetPort = Math.trunc(n as number);
     }
+
+    if (json.isGatewayTarget !== undefined) {
+      this.isGatewayTarget = Boolean(json.isGatewayTarget);
+    }
+    if (json.isS2STarget !== undefined) {
+      this.isS2STarget = Boolean(json.isS2STarget);
+    }
+    if (json.isEnabled !== undefined) {
+      this.isEnabled = Boolean(json.isEnabled);
+    }
+
+    if (json.minUserType !== undefined) {
+      const n =
+        typeof json.minUserType === "string"
+          ? Number(json.minUserType)
+          : json.minUserType;
+      if (Number.isInteger(n)) this.minUserType = n as number;
+    }
+
     return this;
   }
 
-  // ─────────────── IDto contract - overrides base ───────────────
+  // ─────────────── IDto Contract Hook ───────────────
+
   public getType(): string {
     return "svcconfig";
   }

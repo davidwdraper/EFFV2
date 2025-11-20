@@ -4,347 +4,299 @@
  * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (SvcEnv DTO contract)
- *   - ADR-0053 (Instantiation Discipline via Registry Secret)
- *   - ADR-0057 (R1) — ID Generation & Validation (UUIDv4 only; immutable; WARN on overwrite)
+ *   - ADR-0045 (Index Hints — boot ensure via shared helper)
+ *   - ADR-0050 (Wire Bag Envelope — canonical wire id is `_id`)
+ *   - ADR-0053 (Instantiation discipline via BaseDto secret)
+ *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
+ *   - ADR-0060 (DTO Secure Access Layer)
  *
  * Purpose:
- * - Abstract DTO base with single outbound JSON path and canonical ID lifecycle.
- * - Meta stamping (createdAt/updatedAt/updatedByUserId) occurs inside toJson().
- * - Optional constructor secret enforcement (Registry-only construction).
+ * - Base class for all DTOs.
+ * - Owns:
+ *   • Instantiation secret (prevents ad-hoc `new Dto()` in random code).
+ *   • Canonical `_id` lifecycle (UUIDv4, set-once).
+ *   • Meta fields (createdAt / updatedAt / updatedByUserId).
+ *   • Collection name plumbing (dbCollectionName → instance).
+ *   • Finalization hook for outbound wire JSON.
+ *   • Optional per-field access rules for secure getters/setters.
  */
 
-import { newUuid, validateUUIDv4String } from "../utils/uuid";
-import { IDto } from "./IDto";
+import { randomUUID } from "crypto";
+import type { IDto } from "./IDto";
 
-// ─────────────────────────── Secret Key ───────────────────────────
-const DTO_SECRET = Symbol("DTO_SECRET");
-
-export class DtoValidationError extends Error {
-  public readonly issues: Array<{
-    path: string;
-    code: string;
-    message: string;
-  }>;
-  public readonly opsHint: string;
-  constructor(
-    message: string,
-    issues: Array<{ path: string; code: string; message: string }>,
-    opsHint?: string
-  ) {
-    super(message);
-    this.name = "DtoValidationError";
-    this.issues = issues;
-    this.opsHint =
-      opsHint ??
-      "Ops: Check caller payload against DTO requirements; confirm versions match; re-run with DEBUG and requestId.";
-  }
+/**
+ * UserType enum used for DTO access control.
+ * The numeric ordinals are ordered from least to most privileged.
+ */
+export const enum UserType {
+  Anon = 0,
+  Viber = 1,
+  PremViber = 2,
+  NotUsedYet = 3,
+  AdminDomain = 4,
+  AdminSystem = 5,
+  AdminRoot = 6,
 }
 
-export class DtoMutationUnsupportedError extends Error {
-  constructor(dtoName: string, method: "updateFrom" | "patchFrom") {
-    super(
-      `${dtoName} does not support ${method}(). Ops: this DTO is immutable; use the approved reload/replace flow instead.`
-    );
-    this.name = "DtoMutationUnsupportedError";
-  }
-}
-
-type _WarnLike = (payload: Record<string, unknown>) => void;
-type _DtoMeta = {
+export type DtoMeta = {
   createdAt?: string;
   updatedAt?: string;
   updatedByUserId?: string;
 };
 
-export abstract class DtoBase implements IDto {
-  private static _defaults = { updatedByUserId: "system" };
-  private static _warn?: _WarnLike;
+type AccessRule = {
+  read: UserType;
+  write: UserType;
+};
+
+type AccessMap = Record<string, AccessRule>;
+
+export abstract class DtoBase {
+  // ─────────────── Instantiation Secret ───────────────
+
+  private static readonly INSTANTIATION_SECRET = Symbol(
+    "DtoBaseInstantiationSecret"
+  );
 
   public static getSecret(): symbol {
-    return DTO_SECRET;
-  }
-  protected static _requireSecret = true;
-
-  public static configureDefaults(opts: { updatedByUserId?: string }): void {
-    if (opts.updatedByUserId)
-      DtoBase._defaults.updatedByUserId = opts.updatedByUserId;
-  }
-  public static configureWarn(warn: _WarnLike): void {
-    DtoBase._warn = warn;
+    return DtoBase.INSTANTIATION_SECRET;
   }
 
-  // ─────────────────────────── Canonical _id (UUIDv4; immutable) ───────────────────────────
+  // ─────────────── Identity & Meta ───────────────
+
+  /** Canonical wire id; UUIDv4, immutable once set. */
+  protected _id?: string;
+
+  protected _createdAt?: string;
+  protected _updatedAt?: string;
+  protected _updatedByUserId?: string;
+
+  // ─────────────── Collection Name ───────────────
+
+  /** Backing field for the Mongo collection name this DTO instance belongs to. */
+  protected _collectionName?: string;
+
+  // ─────────────── Access Control Context ───────────────
 
   /**
-   * Backing field for the DTO id.
-   * - Always a UUIDv4 string when set.
-   * - Never mutated after first assignment (setIdOnce()).
+   * Current user type for this DTO instance.
+   * Set once per request lifecycle by the caller (Registry/pipeline).
    */
-  private _idValue?: string;
+  protected _currentUserType: UserType = UserType.Anon;
 
-  /** Whether this DTO already has an assigned _id */
-  public hasId(): boolean {
-    return typeof this._idValue === "string" && this._idValue.length > 0;
-  }
-
-  /**
-   * Public getter literally named `_id`.
-   * Throws if accessed before assignment to surface lifecycle bugs early.
-   */
-  public get _id(): string {
-    if (!this._idValue) {
-      throw new Error(
-        "DTO_ID_UNSET: _id requested before assignment. Ops: ensure controller/DbWriter assigns id via setIdOnce() before persistence; readers must hydrate via fromJson()."
-      );
-    }
-    return this._idValue;
-  }
-
-  public getId(): string {
-    return this._id;
-  }
-
-  // ─────────────── IDto contract ───────────────
-  public getType(): string {
-    throw new Error("getType must overriden in derived DTO class");
-  }
-
-  /**
-   * Write-once setter for the DTO id.
-   *
-   * Contract:
-   * - First assignment:
-   *   • Validates the value is a UUIDv4 via validateUUIDv4String().
-   *   • Normalizes to lowercase and stores it.
-   * - Subsequent assignments:
-   *   • Are ignored (no-op).
-   *   • Emit a WARN via DtoBase._warn with guidance for Ops.
-   */
-  public setIdOnce(value: string): void {
-    const ctorName = (this as any)?.constructor?.name ?? "DTO";
-
-    if (this._idValue) {
-      DtoBase._warn?.({
-        component: "BaseDto",
-        event: "id_overwrite_ignored",
-        dto: ctorName,
-        existing: this._idValue,
-        attempted: value,
-        hint: "ID is immutable; investigate caller attempting to replace it.",
-      });
+  protected constructor(secretOrMeta?: symbol | DtoMeta) {
+    if (
+      secretOrMeta === DtoBase.INSTANTIATION_SECRET ||
+      secretOrMeta === undefined
+    ) {
+      // Fresh instance; meta/collection will be set explicitly later.
       return;
     }
 
-    const normalized = validateUUIDv4String(value); // throws with Ops guidance if invalid
-    this._idValue = normalized.toLowerCase();
+    if (typeof secretOrMeta === "object" && secretOrMeta !== null) {
+      this.setMeta(secretOrMeta);
+      return;
+    }
+
+    throw new Error(
+      "DTO_INSTANTIATION_DENIED: DtoBase constructed without valid secret or meta."
+    );
+  }
+
+  // ─────────────── ID Lifecycle (matches IDto semantics) ───────────────
+
+  public setIdOnce(id: string): void {
+    const trimmed = (id ?? "").trim();
+    if (!trimmed) {
+      throw new Error("DTO_ID_INVALID: `_id` must be a non-empty string.");
+    }
+
+    if (this._id && this._id !== trimmed.toLowerCase()) {
+      throw new Error(
+        `DTO_ID_IMMUTABLE: Attempt to overwrite existing _id '${this._id}' with '${trimmed}'.`
+      );
+    }
+
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        trimmed
+      )
+    ) {
+      throw new Error(
+        `DTO_ID_INVALID_SHAPE: Expected UUIDv4 string, got '${trimmed}'.`
+      );
+    }
+
+    this._id = trimmed.toLowerCase();
   }
 
   /**
-   * Auto-generate a UUIDv4 _id if missing; returns the assigned id.
-   * Uses centralized helpers to ensure all IDs are minted/validated consistently.
+   * Generate and set a UUIDv4 `_id` if none exists yet.
+   * Used by DbWriter BEFORE calling toJson().
    */
-  public ensureId(): string {
-    if (!this._idValue) {
-      const v = newUuid();
-      const normalized = validateUUIDv4String(v);
-      this._idValue = normalized.toLowerCase();
+  public ensureId(): void {
+    if (!this._id) {
+      const id = randomUUID();
+      this.setIdOnce(id);
     }
-    return this._idValue;
   }
 
-  // ─────────────────────────── Instance-level collection (seeded once by Registry) ───────────────────────────
+  /**
+   * Return the current `_id`.
+   * If no id is present, this is a programming error at the call site.
+   * Callers that want to probe must use hasId() first.
+   */
+  public getId(): string {
+    if (!this._id) {
+      throw new Error(
+        "DTO_ID_MISSING: getId() called on DTO instance without an assigned `_id`. " +
+          "Call hasId()/ensureId() first or fix the call site."
+      );
+    }
+    return this._id;
+  }
 
-  private _collectionName?: string;
+  /** Whether this DTO currently has an `_id`. */
+  public hasId(): boolean {
+    return !!this._id;
+  }
 
-  public setCollectionName(name: string): this {
-    const ctor = (this as any).constructor as { name?: string };
+  // ─────────────── Collection Name ───────────────
+
+  public getCollectionName(): string | undefined {
+    return this._collectionName;
+  }
+
+  public setCollectionName(name: string): void {
     const trimmed = (name ?? "").trim();
     if (!trimmed) {
       throw new Error(
-        `DTO_COLLECTION_EMPTY: ${
-          ctor.name ?? "DTO"
-        } received empty collection. Ops: Registry must seed dto.setCollectionName(<hardwired>).`
+        "DTO_COLLECTION_INVALID: collection name must be a non-empty string."
       );
     }
-    if (!this._collectionName) {
-      this._collectionName = trimmed;
-      return this;
-    }
-    if (this._collectionName === trimmed) return this;
-    DtoBase._warn?.({
-      component: "BaseDto",
-      event: "collection_name_already_set",
-      dto: ctor.name ?? "DTO",
-      existing: this._collectionName,
-      attempted: trimmed,
-      hint: "Registry seeds collection once; callers must not override.",
-    });
-    return this;
+    this._collectionName = trimmed;
   }
 
-  public requireCollectionName(): string {
-    if (this._collectionName && this._collectionName.trim())
-      return this._collectionName;
-    const ctor = (this as any).constructor as { name?: string };
-    throw new Error(
-      `DTO_COLLECTION_UNSET: ${
-        ctor.name ?? "DTO"
-      } missing instance collection. Ops: ensure the service Registry calls dto.setCollectionName(<hardwired>).`
-    );
+  // ─────────────── Meta Handling ───────────────
+
+  protected setMeta(meta?: DtoMeta): void {
+    if (!meta) return;
+    this._createdAt = meta.createdAt ?? this._createdAt;
+    this._updatedAt = meta.updatedAt ?? this._updatedAt;
+    this._updatedByUserId = meta.updatedByUserId ?? this._updatedByUserId;
   }
 
-  // ─────────────────────────── Cloning (brand-new UUIDv4 id, preserved collection) ───────────────────────────
-
-  public clone<T extends DtoBase>(this: T, newId?: string): T {
-    const ctor = this.constructor as any;
-
-    if (typeof ctor.fromJson !== "function") {
-      const name = ctor?.name ?? "DTO";
-      throw new Error(
-        `DTO_CLONE_UNSUPPORTED: ${name} is missing static fromJson(). ` +
-          "Ops: ensure this DTO implements fromJson(json, opts?) per ADR-0057."
-      );
-    }
-
-    let next: any;
-    try {
-      next = ctor.fromJson(this.toJson(), { validate: false }) as T;
-    } catch {
-      throw new DtoValidationError("ctor.fromJson(this.toJson()) - FAILED", [
-        {
-          path: "_id",
-          code: "invalid_uuid_v4",
-          message: `toJson -> fromJson cloning failed, for this._id: ${this._id}`,
-        },
-      ]);
-    }
-
-    const rawId = newId ?? newUuid();
-    let normalized: string;
-    try {
-      normalized = validateUUIDv4String(rawId);
-    } catch {
-      throw new DtoValidationError("INVALID_ID_FORMAT", [
-        {
-          path: "_id",
-          code: "invalid_uuid_v4",
-          message: "clone() id must be UUIDv4",
-        },
-      ]);
-    }
-
-    // Reset any existing id on the cloned instance before assigning a new one.
-    (next as any)._idValue = undefined;
-    next.setIdOnce(normalized);
-
-    const coll =
-      (this as any)._collectionName ??
-      (typeof ctor.dbCollectionName === "function"
-        ? ctor.dbCollectionName()
-        : undefined);
-
-    if (coll && typeof (next as any).setCollectionName === "function") {
-      (next as any).setCollectionName(coll);
-    }
-
-    return next;
+  protected _finalizeToJson<TBody extends object>(
+    body: TBody
+  ): TBody & DtoMeta {
+    return {
+      ...(body as object),
+      createdAt: this._createdAt,
+      updatedAt: this._updatedAt,
+      updatedByUserId: this._updatedByUserId,
+    } as TBody & DtoMeta;
   }
 
-  // ─────────────────────────── Meta ───────────────────────────
+  // ─────────────── Access Context Wiring ───────────────
 
-  private _meta: _DtoMeta;
+  public setCurrentUserType(userType: UserType): void {
+    this._currentUserType = userType;
+  }
 
-  protected constructor(secretOrArgs?: symbol | _DtoMeta) {
-    if (DtoBase._requireSecret && secretOrArgs !== DTO_SECRET) {
-      throw new Error(
-        "Direct instantiation of DTOs is not allowed. Use the Registry to construct DTOs."
-      );
-    }
+  public getCurrentUserType(): UserType {
+    return this._currentUserType;
+  }
 
-    const args =
-      typeof secretOrArgs === "symbol" ? undefined : (secretOrArgs as _DtoMeta);
+  // ─────────────── Secure Field Access Helpers ───────────────
 
-    this._meta = {
-      createdAt: args?.createdAt,
-      updatedAt: args?.updatedAt,
-      updatedByUserId: args?.updatedByUserId,
+  private _getAccessMap(): AccessMap {
+    const ctor = this.constructor as unknown as {
+      access?: AccessMap;
+      name?: string;
     };
+    if (!ctor.access) {
+      throw new Error(
+        `DTO_ACCESS_MAP_MISSING: 'access' map is not defined on DTO '${
+          ctor.name ?? "<anonymous>"
+        }'.`
+      );
+    }
+    return ctor.access;
   }
 
-  get createdAt(): string | undefined {
-    return this._meta.createdAt;
-  }
-  get updatedAt(): string | undefined {
-    return this._meta.updatedAt;
-  }
-  get updatedByUserId(): string | undefined {
-    return this._meta.updatedByUserId;
+  protected readField<T = unknown>(fieldName: string): T {
+    const accessMap = this._getAccessMap();
+    const rule = accessMap[fieldName];
+    const dtoName =
+      (this.constructor as { name?: string }).name ?? "<anonymous>";
+
+    if (!rule) {
+      throw new Error(
+        `DTO_ACCESS_RULE_MISSING: No access rule defined for field '${fieldName}' on DTO '${dtoName}'.`
+      );
+    }
+
+    if (this._currentUserType < rule.read) {
+      throw new Error(
+        `DTO_ACCESS_DENIED_READ: UserType ${this._currentUserType} cannot read field '${fieldName}' on DTO '${dtoName}'.`
+      );
+    }
+
+    return (this as any)[`_${fieldName}`] as T;
   }
 
-  public setMeta(meta: Partial<_DtoMeta> & { updatedByUserId?: string }): this {
-    const next: _DtoMeta = { ...this._meta, ...meta };
-    if (meta.updatedByUserId && !meta.updatedAt)
-      next.updatedAt = new Date().toISOString();
-    this._meta = next;
-    return this;
+  protected writeField<T = unknown>(fieldName: string, value: T): void {
+    const accessMap = this._getAccessMap();
+    const rule = accessMap[fieldName];
+    const dtoName =
+      (this.constructor as { name?: string }).name ?? "<anonymous>";
+
+    if (!rule) {
+      throw new Error(
+        `DTO_ACCESS_RULE_MISSING: No access rule defined for field '${fieldName}' on DTO '${dtoName}'.`
+      );
+    }
+
+    if (this._currentUserType < rule.write) {
+      throw new Error(
+        `DTO_ACCESS_DENIED_WRITE: UserType ${this._currentUserType} cannot write field '${fieldName}' on DTO '${dtoName}'.`
+      );
+    }
+
+    (this as any)[`_${fieldName}`] = value;
   }
 
-  protected _composeForValidation<T extends Record<string, unknown>>(
-    body: T
-  ): T {
-    const withMeta: Record<string, unknown> = { ...body };
-    if (this._meta.createdAt) withMeta.createdAt = this._meta.createdAt;
-    if (this._meta.updatedAt) withMeta.updatedAt = this._meta.updatedAt;
-    if (this._meta.updatedByUserId)
-      withMeta.updatedByUserId = this._meta.updatedByUserId;
-    return withMeta as T;
+  // ─────────────── Cloning (aligned with IDto.clone(newId?: string): this) ───────────────
+
+  /**
+   * Shallow clone this DTO.
+   *
+   * - If newId is omitted, the clone retains the same `_id`.
+   * - If newId is provided, the clone receives that id without violating the
+   *   "id is immutable" rule (we explicitly clear `_id` before setting).
+   */
+  public clone(newId?: string): this {
+    const ctor = this.constructor as { new (...args: any[]): any };
+    const copy = new ctor(DtoBase.getSecret()) as this;
+
+    // Copy all own properties, including _id/meta/collectionName/etc.
+    Object.assign(copy, this);
+
+    if (newId !== undefined) {
+      (copy as any)._id = undefined;
+      copy.setIdOnce(newId);
+    }
+
+    return copy;
   }
 
-  protected _extractMetaAndId<T extends Record<string, unknown>>(
-    validated: T
-  ): Omit<T, "createdAt" | "updatedAt" | "updatedByUserId"> {
-    const { createdAt, updatedAt, updatedByUserId, ...rest } =
-      validated as Record<string, unknown>;
-    this._meta = {
-      createdAt:
-        typeof createdAt === "string" ? createdAt : this._meta.createdAt,
-      updatedAt:
-        typeof updatedAt === "string" ? updatedAt : this._meta.updatedAt,
-      updatedByUserId:
-        typeof updatedByUserId === "string"
-          ? updatedByUserId
-          : this._meta.updatedByUserId,
-    };
-    return rest as Omit<T, "createdAt" | "updatedAt" | "updatedByUserId">;
-  }
+  // ─────────────── Abstracts / Expectations ───────────────
 
-  protected _finalizeToJson<T extends Record<string, unknown>>(body: T): T {
-    const now = new Date().toISOString();
-    if (!this._meta.createdAt) this._meta.createdAt = now;
-    this._meta.updatedAt = now;
-    if (!this._meta.updatedByUserId)
-      this._meta.updatedByUserId = DtoBase._defaults.updatedByUserId;
-    const out: Record<string, unknown> = { ...body };
-    out.createdAt = this._meta.createdAt;
-    out.updatedAt = this._meta.updatedAt;
-    out.updatedByUserId = this._meta.updatedByUserId;
-    return out as T;
-  }
-
-  public abstract toJson(): unknown;
-
-  public static fromJson(_json: unknown): DtoBase {
-    throw new Error(
-      "BaseDto.fromJson must be implemented by subclass. Ops: verify the concrete DTO implements fromJson()."
-    );
-  }
-
-  public updateFrom(_other: this): this {
-    throw new DtoMutationUnsupportedError(this.constructor.name, "updateFrom");
-  }
-
-  public patchFrom(_json: unknown): this {
-    throw new DtoMutationUnsupportedError(this.constructor.name, "patchFrom");
-  }
+  /**
+   * Concrete DTOs must provide a stable type identifier and a concrete toJson().
+   * IDto is satisfied structurally by subclasses that implement:
+   *  - getType(): string
+   *  - toJson(): unknown
+   */
+  public abstract getType(): string;
 }

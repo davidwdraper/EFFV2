@@ -1,0 +1,11 @@
+{
+  "items": [
+    {
+      "type": "svcconfig",
+      "txtfield1": "alpha-176351696921961",
+      "txtfield2": "bravo-176351696921961",
+      "numfield1": 1,
+      "numfield2": 2
+    }
+  ]
+}

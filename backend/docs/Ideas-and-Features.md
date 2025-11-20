@@ -1,3 +1,5 @@
+// backend/docs/ideas-and-features.md
+
 This document is where the NowVibin brainstorming and ideas are logged
 It is a random mix of ideas, design concepts, future branch offs.
 Everything and anything that comes to mind.
@@ -9,7 +11,7 @@ GF: geofence
 TBT: to be determined (in the future)
 WPA: when privacy allows (some functionality is privacy controlled)
 \*: a line starting with '\*' is MVP functionality
-\#: not MVP functionality if showing up within an MVP '\*' section
+\#: not MVP functionality (future version) if showing up within an MVP '\*' section
 
 APP DISPLAY
 

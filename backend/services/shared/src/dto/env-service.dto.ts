@@ -23,7 +23,7 @@ import type { IDto } from "./IDto";
 
 // Wire-friendly shape (for clarity)
 type EnvServiceJson = {
-  id?: string; // canonical id (wire, ADR-0050)
+  _id?: string; // canonical id (wire, ADR-0050)
   type?: "env-service"; // dtoType (wire)
 
   env: string; // e.g. "dev" | "test" | "stage" | "canary" | "prod"
@@ -109,8 +109,8 @@ export class EnvServiceDto extends DtoBase implements IDto {
     const j = (json ?? {}) as Partial<EnvServiceJson>;
 
     // id (optional, but if present must be valid via DtoBase)
-    if (typeof j.id === "string" && j.id.trim()) {
-      dto.setIdOnce(j.id.trim());
+    if (typeof j._id === "string" && j._id.trim()) {
+      dto.setIdOnce(j._id.trim());
     }
 
     // required-ish core fields (we keep this minimal; ADR/contract will tighten)
@@ -188,7 +188,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
   /** Canonical outbound wire shape; DtoBase stamps meta here. */
   public toJson(): EnvServiceJson {
     const body: EnvServiceJson = {
-      id: this.hasId() ? this._id : undefined,
+      _id: this.hasId() ? this._id : undefined,
       type: "env-service",
 
       env: this.env,

@@ -207,7 +207,18 @@ export abstract class DtoBase implements IDto {
       );
     }
 
-    const next = ctor.fromJson(this.toJson(), { validate: false }) as T;
+    let next: any;
+    try {
+      next = ctor.fromJson(this.toJson(), { validate: false }) as T;
+    } catch {
+      throw new DtoValidationError("ctor.fromJson(this.toJson()) - FAILED", [
+        {
+          path: "_id",
+          code: "invalid_uuid_v4",
+          message: `toJson -> fromJson cloning failed, for this._id: ${this._id}`,
+        },
+      ]);
+    }
 
     const rawId = newId ?? newUuid();
     let normalized: string;

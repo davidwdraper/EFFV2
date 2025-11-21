@@ -11,26 +11,14 @@
  *
  * Purpose:
  * - Concrete DTO for the template service ("xxx").
- * - Constructor accepts the same union as BaseDto: (secret | meta), so the Registry
- *   can pass the instantiation secret, and fromJson() can pass meta when hydrating.
- *
- * Notes:
- * - Instance collection is seeded by the Registry via setCollectionName().
- * - dbCollectionName() returns the hardwired collection for this DTO.
- * - indexHints declare deterministic indexes to be ensured at boot.
- * - ID lifecycle:
- *     • Wire always uses `_id` (UUIDv4 string, lowercase).
- *     • DbWriter generates id BEFORE toJson() when absent.
- *     • No legacy `id` tolerance — strictly `_id` on input/output.
  */
 
 import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
-import type { IDto } from "./IDto";
 
 // Wire-friendly shape
 type XxxJson = {
-  _id?: string; // canonical wire id
+  _id?: string;
   type?: "xxx";
   txtfield1: string;
   txtfield2: string;
@@ -42,15 +30,10 @@ type XxxJson = {
 };
 
 export class XxxDto extends DtoBase {
-  /** Hardwired collection for this DTO. */
   public static dbCollectionName(): string {
     return "xxx";
   }
 
-  /**
-   * Deterministic index hints consumed at boot by ensureIndexesForDtos().
-   * Business duplicate-by-content is enforced via a compound **unique** index.
-   */
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
     {
       kind: "unique",
@@ -69,7 +52,6 @@ export class XxxDto extends DtoBase {
     },
   ];
 
-  // ─────────────── Instance: Domain Fields ───────────────
   public txtfield1 = "";
   public txtfield2 = "";
   public numfield1 = 0;
@@ -83,13 +65,11 @@ export class XxxDto extends DtoBase {
     super(secretOrMeta);
   }
 
-  /** Wire hydration (strict `_id` only). */
   public static fromJson(json: unknown, opts?: { validate?: boolean }): XxxDto {
     const dto = new XxxDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<XxxJson>;
 
     if (typeof j._id === "string" && j._id.trim()) {
-      // BaseDto setter validates UUIDv4 & lowercases; immutable after first set.
       dto.setIdOnce(j._id.trim());
     }
 
@@ -106,15 +86,16 @@ export class XxxDto extends DtoBase {
       updatedByUserId: j.updatedByUserId,
     });
 
+    // opts?.validate hook can wire in Zod later if needed.
+
     return dto;
   }
 
-  /** Canonical outbound wire shape; BaseDto stamps meta here. */
   public toJson(): XxxJson {
-    // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
-    const body = {
-      _id: super._id, // emit `_id` on wire
-      type: "xxx" as const,
+    const body: XxxJson = {
+      // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
+      _id: this.hasId() ? this.getId() : undefined,
+      type: "xxx",
       txtfield1: this.txtfield1,
       txtfield2: this.txtfield2,
       numfield1: this.numfield1,
@@ -123,7 +104,6 @@ export class XxxDto extends DtoBase {
     return this._finalizeToJson(body);
   }
 
-  /** Optional patch helper used by update pipelines. */
   public patchFrom(json: Partial<XxxJson>): this {
     if (json.txtfield1 !== undefined && typeof json.txtfield1 === "string") {
       this.txtfield1 = json.txtfield1;
@@ -148,7 +128,6 @@ export class XxxDto extends DtoBase {
     return this;
   }
 
-  // ─────────────── IDto contract - overrides base ───────────────
   public getType(): string {
     return "xxx";
   }

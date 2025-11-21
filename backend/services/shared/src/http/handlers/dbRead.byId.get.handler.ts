@@ -1,28 +1,7 @@
 // backend/services/shared/src/http/handlers/dbRead.byId.get.handler.ts
 /**
- * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs:
- *   - ADR-0040 (DTO-Only Persistence; adapter edge coercion)
- *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0043 (Finalize mapping)
- *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
- *   - ADR-0048 (Revised) — All reads return DtoBag (singleton or empty)
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
- *   - ADR-0056 (Typed routes use :dtoType; handler resolves ctor via Registry)
- *   - ADR-0059 (Controller seeds dtoType into HandlerContext)
- *
- * Purpose:
- * - Shared GET-by-id handler:
- *     GET /:dtoType/read/:id
- * - Reads a single record by canonical id and returns a **bagged** DTO:
- *     { ok:true, items:[ { id, type, ...dtoFields } ] }
- *
- * Behavior:
- * - 200: exactly one DTO found; result placed in ctx["bag"] and ctx["result"].
- * - 404: no document; ctx["bag"] is an **empty** DtoBag; Problem+JSON NOT_FOUND.
- * - 400: invalid/missing id or dtoType.
- * - 500: missing env / registry / DB errors.
+ * Shared GET-by-id handler:
+ *   GET /:dtoType/read/:id
  */
 
 import { HandlerBase } from "./HandlerBase";
@@ -46,7 +25,6 @@ export class DbReadByIdGetHandler extends HandlerBase {
   protected async execute(): Promise<void> {
     this.log.debug({ event: "execute_start" }, "dbRead.byId.enter");
 
-    // ---- Extract route params ------------------------------------------------
     const params: any = this.ctx.get("params") ?? {};
     const rawId = typeof params.id === "string" ? params.id.trim() : "";
     const dtoType = this.ctx.get<string>("dtoType") ?? "";
@@ -99,7 +77,6 @@ export class DbReadByIdGetHandler extends HandlerBase {
       return;
     }
 
-    // ---- Resolve DTO ctor via Registry --------------------------------------
     const registry = this.controller.getDtoRegistry?.();
     if (!registry || typeof registry.resolveCtorByType !== "function") {
       this.ctx.set("handlerStatus", "error");
@@ -124,8 +101,6 @@ export class DbReadByIdGetHandler extends HandlerBase {
 
     let dtoCtor: DtoCtorWithCollection<DtoBase>;
     try {
-      // Registry returns a generic DtoCtor<IDto>; we only need it to behave like
-      // DtoBase at runtime (fromJson + dbCollectionName), so we narrow via `unknown`.
       dtoCtor = registry.resolveCtorByType(
         dtoType
       ) as unknown as DtoCtorWithCollection<DtoBase>;
@@ -151,7 +126,6 @@ export class DbReadByIdGetHandler extends HandlerBase {
       return;
     }
 
-    // ---- Env / Mongo config via HandlerBase.getVar (SvcEnv-driven) ---------
     const mongoUri = this.getVar("NV_MONGO_URI");
     const mongoDb = this.getVar("NV_MONGO_DB");
 
@@ -182,11 +156,9 @@ export class DbReadByIdGetHandler extends HandlerBase {
         dtoCtor,
         mongoUri,
         mongoDb,
-        // Reads are validate=false for perf; bump if we want stricter.
         validateReads: false,
       });
 
-      // Introspection: log where we are actually hitting.
       const tgt = await reader.targetInfo();
       this.log.debug(
         {
@@ -198,16 +170,13 @@ export class DbReadByIdGetHandler extends HandlerBase {
         "dbRead.byId — target collection"
       );
 
-      // Single-record read; always returns a **bag** (0 or 1).
       const bag: DtoBag<DtoBase> = await reader.readOneBagById({ id: rawId });
 
-      // Always stash the bag into ctx, even for 404.
       this.ctx.set("bag", bag);
 
       const size = bag.size();
 
       if (size === 0) {
-        // 404 — empty bag preserved on ctx["bag"].
         this.ctx.set("handlerStatus", "error");
         this.ctx.set("status", 404);
         this.ctx.set("error", {
@@ -229,7 +198,6 @@ export class DbReadByIdGetHandler extends HandlerBase {
       }
 
       if (size !== 1) {
-        // Should never happen; protect invariants.
         this.ctx.set("handlerStatus", "error");
         this.ctx.set("status", 500);
         this.ctx.set("error", {
@@ -251,11 +219,9 @@ export class DbReadByIdGetHandler extends HandlerBase {
         return;
       }
 
-      // Happy path — one DTO. Respect DtoBag invariants.
       const dto = bag.getSingleton();
       const json = dto.toJson();
 
-      // Wire contract: bagged, DTO-only fields, canonical id="id".
       this.ctx.set("result", {
         ok: true,
         items: [json],
@@ -265,7 +231,7 @@ export class DbReadByIdGetHandler extends HandlerBase {
       this.log.info(
         {
           event: "read_ok",
-          id: (json as any).id,
+          id: (json as any)._id,
           dtoType,
           collectionName: tgt.collectionName,
         },

@@ -9,18 +9,6 @@
  *
  * Purpose:
  * - Persist DTOs from a **DtoBag** with explicit Mongo connectivity.
- * - On create (write): always **insertOne** (no upsert). Singleton bag only.
- * - On _id duplicate: **clone()**, ensure a NEW UUIDv4 via DtoBase, retry (max 3).
- *
- * Returns:
- * - For write(): a **singleton DtoBag<TDto>** containing the exact DTO that was inserted
- *   (either the original instance or the clone used on retry).
- * - For writeMany(): a **DtoBag<TDto>** containing every DTO that was inserted.
- *
- * Ground rules (ID handling):
- * - Internally, DTOs manage their canonical id via DtoBase’s `_id` / setIdOnce()/ensureId().
- * - Outbound wire JSON from DTOs includes `_id` (string). There is no separate DB-only id.
- * - Writer does **no** id mapping: it inserts the DTO’s JSON as-is and trusts `_id`.
  */
 
 import type { DtoBase } from "../DtoBase";
@@ -38,7 +26,6 @@ let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
 let _uriPinned: string | null = null;
 
-/** internal: tiny console-backed logger if none is provided */
 function consoleLogger(ctx: Record<string, unknown> = {}): ILogger {
   const wrap =
     (level: "debug" | "info" | "warn" | "error") =>
@@ -117,7 +104,6 @@ function requireSingleton<TDto extends DtoBase>(
   return items[0] as TDto;
 }
 
-/** Enforce clone invariants: same class, same collection; only `_id` may differ. */
 function assertCloneInvariants(before: DtoBase, after: DtoBase): void {
   const beforeCtor = (before as any)?.constructor;
   const afterCtor = (after as any)?.constructor;
@@ -135,7 +121,6 @@ function assertCloneInvariants(before: DtoBase, after: DtoBase): void {
   }
 }
 
-/** Heuristic: does a parsed duplicate refer to the _id key/index? */
 function isIdDuplicate(dup: any): boolean {
   if (!dup) return false;
   const key = String(dup.key ?? "").toLowerCase();
@@ -166,22 +151,12 @@ export class DbWriter<TDto extends DtoBase> {
     this.log = params.log ?? consoleLogger({ component: "DbWriter" });
   }
 
-  /** Introspection hook for handlers to log target collection. */
   public async targetInfo(): Promise<{ collectionName: string }> {
     const dto = requireSingleton(this._bag, "write");
     const collectionName = (dto as DtoBase).requireCollectionName();
     return { collectionName };
   }
 
-  /**
-   * Insert a single DTO from the singleton bag.
-   * Assign ID **before** toJson() if absent (ADR-0057).
-   * On duplicate:
-   *   - If duplicate is on `_id`: clone() and ensure a NEW UUIDv4 via DtoBase, then retry (up to MAX_DUP_RETRIES).
-   *   - Otherwise: surface DuplicateKeyError immediately.
-   *
-   * Returns: a **singleton DtoBag<TDto>** containing the exact DTO that was inserted.
-   */
   public async write(): Promise<DtoBag<TDto>> {
     let dto = requireSingleton(this._bag, "write");
     let collectionName = (dto as DtoBase).requireCollectionName();
@@ -193,10 +168,8 @@ export class DbWriter<TDto extends DtoBase> {
 
     for (let attempt = 1; attempt <= MAX_DUP_RETRIES; attempt++) {
       try {
-        // Ensure id BEFORE toJson (DtoBase handles generation/validation)
         (dto as DtoBase).ensureId();
 
-        // Outbound wire already contains `_id`; writer does no transformations.
         const json = (dto as DtoBase).toJson() as Record<string, unknown>;
         const wireId = String((json as any)._id ?? "");
         if (!wireId) {
@@ -213,7 +186,6 @@ export class DbWriter<TDto extends DtoBase> {
           );
         }
 
-        // Success — return a bag containing the exact DTO we inserted
         return new DtoBag<TDto>([dto as TDto]);
       } catch (err) {
         const dup = parseDuplicateKey(err);
@@ -241,10 +213,8 @@ export class DbWriter<TDto extends DtoBase> {
           "dbwriter: duplicate key"
         );
 
-        // Non-_id unique violation → surface immediately
         if (!idDup) throw new DuplicateKeyError(dup, err as Error);
 
-        // _id duplicate — retry with clone + NEW UUID (enforced by DtoBase)
         if (attempt < MAX_DUP_RETRIES) {
           if (typeof (dto as any).clone !== "function") {
             this.log.warn(
@@ -255,11 +225,10 @@ export class DbWriter<TDto extends DtoBase> {
           }
           const cloned = (dto as any).clone() as DtoBase;
           assertCloneInvariants(dto as DtoBase, cloned as DtoBase);
-          cloned.ensureId(); // ensure a fresh UUIDv4 for retry
+          cloned.ensureId();
 
           dto = cloned as TDto;
 
-          // safety: collection should remain identical
           const nextCollection = (dto as DtoBase).requireCollectionName();
           if (nextCollection !== collectionName) {
             this.log.warn(
@@ -274,28 +243,20 @@ export class DbWriter<TDto extends DtoBase> {
             );
           }
 
-          continue; // retry
+          continue;
         }
 
-        // Exhausted retries
         throw new DuplicateKeyError(dup, err as Error);
       }
     }
 
-    // Unreachable
     throw new Error(
       "DBWRITER_WRITE_EXHAUSTED: exhausted duplicate retries without success."
     );
   }
 
-  /**
-   * Batch insert with per-item duplicate handling.
-   * Returns a DtoBag containing all successfully inserted DTOs (with any retried clones).
-   */
   public async writeMany(bag?: DtoBag<TDto>): Promise<DtoBag<TDto>> {
     const source = bag ?? this._bag;
-
-    // Collect inserted DTOs in a plain array; return immutable bag at the end.
     const inserted: TDto[] = [];
 
     for (const _item of source.items()) {
@@ -332,7 +293,6 @@ export class DbWriter<TDto extends DtoBase> {
             );
           }
 
-          // Track the exact DTO instance that made it into the DB.
           inserted.push(dto as TDto);
           insertedOk = true;
         } catch (err) {
@@ -401,7 +361,6 @@ export class DbWriter<TDto extends DtoBase> {
     return new DtoBag<TDto>(inserted);
   }
 
-  /** Update by canonical id (no id mutation). */
   public async update(): Promise<{ id: string }> {
     const dto = requireSingleton(this._bag, "update");
     const collectionName = (dto as DtoBase).requireCollectionName();
@@ -411,8 +370,7 @@ export class DbWriter<TDto extends DtoBase> {
       collectionName
     );
 
-    // Must already be set; no generation on update.
-    const rawId = (dto as DtoBase)._id;
+    const rawId = dto.getId();
 
     const json = (dto as DtoBase).toJson() as Record<string, unknown>;
     const { _id, id: _wireId, ...rest } = json as Record<string, unknown>;

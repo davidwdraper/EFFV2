@@ -22,7 +22,6 @@
  */
 
 import { randomUUID } from "crypto";
-import type { IDto } from "./IDto";
 
 /**
  * UserType enum used for DTO access control.
@@ -50,6 +49,27 @@ type AccessRule = {
 };
 
 type AccessMap = Record<string, AccessRule>;
+
+/**
+ * Validation error used by concrete DTOs when they perform
+ * per-DTO validation (e.g., EnvServiceDto.fromJson with validate=true).
+ */
+export class DtoValidationError extends Error {
+  public readonly issues: Array<{
+    path: string;
+    code: string;
+    message: string;
+  }>;
+
+  constructor(
+    message: string,
+    issues: Array<{ path: string; code: string; message: string }>
+  ) {
+    super(message);
+    this.name = "DtoValidationError";
+    this.issues = issues;
+  }
+}
 
 export abstract class DtoBase {
   // ─────────────── Instantiation Secret ───────────────
@@ -103,7 +123,7 @@ export abstract class DtoBase {
     );
   }
 
-  // ─────────────── ID Lifecycle (matches IDto semantics) ───────────────
+  // ─────────────── ID Lifecycle (aligned with existing rails) ───────────────
 
   public setIdOnce(id: string): void {
     const trimmed = (id ?? "").trim();
@@ -117,6 +137,7 @@ export abstract class DtoBase {
       );
     }
 
+    // Minimal UUIDv4 shape check; full validation can live in a helper if needed.
     if (
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
         trimmed
@@ -175,6 +196,18 @@ export abstract class DtoBase {
       );
     }
     this._collectionName = trimmed;
+  }
+
+  /** Convenience: require collection name or explode loudly for Ops. */
+  public requireCollectionName(): string {
+    const name = this.getCollectionName();
+    if (!name) {
+      throw new Error(
+        "DTO_COLLECTION_MISSING: DTO instance has no collectionName. " +
+          "Ops: ensure Registry seeded dbCollectionName() via setCollectionName()."
+      );
+    }
+    return name;
   }
 
   // ─────────────── Meta Handling ───────────────
@@ -266,7 +299,7 @@ export abstract class DtoBase {
     (this as any)[`_${fieldName}`] = value;
   }
 
-  // ─────────────── Cloning (aligned with IDto.clone(newId?: string): this) ───────────────
+  // ─────────────── Cloning (aligned with existing IDto semantics) ───────────────
 
   /**
    * Shallow clone this DTO.
@@ -292,11 +325,9 @@ export abstract class DtoBase {
 
   // ─────────────── Abstracts / Expectations ───────────────
 
-  /**
-   * Concrete DTOs must provide a stable type identifier and a concrete toJson().
-   * IDto is satisfied structurally by subclasses that implement:
-   *  - getType(): string
-   *  - toJson(): unknown
-   */
+  /** Stable DTO type identifier (e.g. "env-service", "svcconfig", "xxx"). */
   public abstract getType(): string;
+
+  /** Concrete DTOs must provide their outbound wire JSON shape. */
+  public abstract toJson(): unknown;
 }

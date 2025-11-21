@@ -6,7 +6,7 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *   - ADR-0053 (Instantiation discipline via DtoBase secret)
  *   - ADR-0057 (ID Generation & Validation — id is a string (UUIDv4 or 24-hex Mongo id); immutable; WARN on overwrite attempt)
  *
@@ -23,14 +23,14 @@ import type { IDto } from "./IDto";
 
 // Wire-friendly shape (for clarity)
 type EnvServiceJson = {
-  _id?: string; // canonical id (wire, ADR-0050)
+  _id?: string; // canonical id (wire)
   type?: "env-service"; // dtoType (wire)
 
-  env: string; // e.g. "dev" | "test" | "stage" | "canary" | "prod"
-  slug: string; // service slug, e.g. "gateway", "auth", "env-service"
-  version: number; // API contract version, e.g. 1
+  env: string;
+  slug: string;
+  version: number;
 
-  vars?: Record<string, unknown>; // bag of env-style key/value pairs
+  vars?: Record<string, unknown>;
 
   createdAt?: string;
   updatedAt?: string;
@@ -53,16 +53,12 @@ export class EnvServiceDto extends DtoBase implements IDto {
    * - Fast lookup by env and slug.
    */
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
-    // Uniqueness across the environment “dimension”
     { kind: "unique", fields: ["env", "slug", "version"] },
-
-    // Common query paths
     { kind: "lookup", fields: ["slug"] },
     { kind: "lookup", fields: ["env"] },
   ];
 
   // ─────────────── Instance: Domain Fields ───────────────
-  // IMPORTANT: Do NOT declare a public `id` field here — it would shadow DtoBase’s id/_id handling.
 
   /** Deployment environment, e.g. "dev", "test", "stage", "canary", "prod". */
   public env = "";
@@ -85,10 +81,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   // ─────────────── Construction ───────────────
 
-  /**
-   * Accepts either the DtoBase secret (Registry path) OR meta (fromJson path).
-   * This matches DtoBase’s `(secretOrArgs?: symbol | _DtoMeta)` contract.
-   */
   public constructor(
     secretOrMeta?:
       | symbol
@@ -99,7 +91,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   // ─────────────── Wire hydration ───────────────
 
-  /** Wire hydration (plug Zod/contract here when opts?.validate is true). */
   public static fromJson(
     json: unknown,
     opts?: { validate?: boolean }
@@ -113,7 +104,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
       dto.setIdOnce(j._id.trim());
     }
 
-    // required-ish core fields (we keep this minimal; ADR/contract will tighten)
     if (typeof j.env === "string") {
       dto.env = j.env.trim();
     }
@@ -148,7 +138,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
       updatedByUserId: j.updatedByUserId,
     });
 
-    // Light required-field check when validation is requested
     if (opts?.validate) {
       const issues: { path: string; code: string; message: string }[] = [];
       if (!dto.env) {
@@ -185,10 +174,9 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   // ─────────────── Outbound wire shape ───────────────
 
-  /** Canonical outbound wire shape; DtoBase stamps meta here. */
   public toJson(): EnvServiceJson {
     const body: EnvServiceJson = {
-      _id: this.hasId() ? this._id : undefined,
+      _id: this.hasId() ? this.getId() : undefined,
       type: "env-service",
 
       env: this.env,
@@ -203,12 +191,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   /**
    * DTO-to-DTO patch helper for internal merges (no wire/json boundary).
-   * Used by EnvConfigReader.mergeEnvBags() to merge service vars into root vars.
-   *
-   * Semantics:
-   * - env/slug/version from `other` overwrite this instance when present.
-   * - vars are merged key-wise: existing vars stay, `other` wins on conflicts.
-   * - id/meta are NOT touched here (ID is immutable per ADR-0057).
    */
   public patchFrom(other: EnvServiceDto): this {
     if (other.env) {
@@ -234,10 +216,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return this;
   }
 
-  /**
-   * Convenience alias for DTO-to-DTO patching.
-   * Used by EnvConfigReader.mergeEnvBags() and other internal callers.
-   */
   public patchFromDto(other: EnvServiceDto): this {
     return this.patchFrom(other);
   }
@@ -282,9 +260,5 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   public getType(): string {
     return "env-service";
-  }
-
-  public getId(): string {
-    return this._id;
   }
 }

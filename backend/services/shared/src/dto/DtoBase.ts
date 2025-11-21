@@ -15,7 +15,7 @@
  * - Owns:
  *   • Instantiation secret (prevents ad-hoc `new Dto()` in random code).
  *   • Canonical `_id` lifecycle (UUIDv4, set-once).
- *   • Meta fields (createdAt / updatedAt / updatedByUserId).
+ *   • Meta fields (createdAt / updatedAt / updatedByUserId / ownerUserId).
  *   • Collection name plumbing (dbCollectionName → instance).
  *   • Finalization hook for outbound wire JSON.
  *   • Optional per-field access rules for secure getters/setters.
@@ -41,6 +41,7 @@ export type DtoMeta = {
   createdAt?: string;
   updatedAt?: string;
   updatedByUserId?: string;
+  ownerUserId?: string;
 };
 
 type AccessRule = {
@@ -90,6 +91,7 @@ export abstract class DtoBase {
   protected _createdAt?: string;
   protected _updatedAt?: string;
   protected _updatedByUserId?: string;
+  protected _ownerUserId?: string;
 
   // ─────────────── Collection Name ───────────────
 
@@ -123,7 +125,7 @@ export abstract class DtoBase {
     );
   }
 
-  // ─────────────── ID Lifecycle (aligned with existing rails) ───────────────
+  // ─────────────── ID Lifecycle ───────────────
 
   public setIdOnce(id: string): void {
     const trimmed = (id ?? "").trim();
@@ -137,7 +139,6 @@ export abstract class DtoBase {
       );
     }
 
-    // Minimal UUIDv4 shape check; full validation can live in a helper if needed.
     if (
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
         trimmed
@@ -162,11 +163,7 @@ export abstract class DtoBase {
     }
   }
 
-  /**
-   * Return the current `_id`.
-   * If no id is present, this is a programming error at the call site.
-   * Callers that want to probe must use hasId() first.
-   */
+  /** Return the current `_id` or explode loudly if missing. */
   public getId(): string {
     if (!this._id) {
       throw new Error(
@@ -217,6 +214,56 @@ export abstract class DtoBase {
     this._createdAt = meta.createdAt ?? this._createdAt;
     this._updatedAt = meta.updatedAt ?? this._updatedAt;
     this._updatedByUserId = meta.updatedByUserId ?? this._updatedByUserId;
+    this._ownerUserId = meta.ownerUserId ?? this._ownerUserId;
+  }
+
+  /**
+   * Stamp createdAt if missing.
+   * - If a value already exists, this is a NO-OP (silent), per convention.
+   */
+  public stampCreatedAt(date?: Date | string): void {
+    if (this._createdAt) return;
+
+    if (typeof date === "string") {
+      this._createdAt = date;
+      return;
+    }
+
+    const d = date ?? new Date();
+    this._createdAt = d.toISOString();
+  }
+
+  /**
+   * Stamp ownerUserId if:
+   *  - we have a non-empty userId
+   *  - and ownerUserId is not already set.
+   * This is a one-shot field tied to the creator’s user id.
+   */
+  public stampOwnerUserId(userId?: string): void {
+    if (this._ownerUserId) return;
+    const trimmed = (userId ?? "").trim();
+    if (!trimmed) return;
+    this._ownerUserId = trimmed;
+  }
+
+  /**
+   * Stamp updatedAt and (optionally) updatedByUserId.
+   * - Always refreshes updatedAt.
+   * - If userId is provided and non-empty, sets updatedByUserId.
+   * - If userId is omitted, updatedByUserId is left unchanged (no defaults).
+   */
+  public stampUpdatedAt(userId?: string, date?: Date | string): void {
+    if (typeof date === "string") {
+      this._updatedAt = date;
+    } else {
+      const d = date ?? new Date();
+      this._updatedAt = d.toISOString();
+    }
+
+    const trimmed = (userId ?? "").trim();
+    if (trimmed) {
+      this._updatedByUserId = trimmed;
+    }
   }
 
   protected _finalizeToJson<TBody extends object>(
@@ -227,6 +274,7 @@ export abstract class DtoBase {
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
       updatedByUserId: this._updatedByUserId,
+      ownerUserId: this._ownerUserId,
     } as TBody & DtoMeta;
   }
 
@@ -299,7 +347,7 @@ export abstract class DtoBase {
     (this as any)[`_${fieldName}`] = value;
   }
 
-  // ─────────────── Cloning (aligned with existing IDto semantics) ───────────────
+  // ─────────────── Cloning (aligned with ID semantics) ───────────────
 
   /**
    * Shallow clone this DTO.

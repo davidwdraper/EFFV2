@@ -122,9 +122,29 @@ _curl_json_core(){
   printf "%s" "$body_only"
 }
 
-_get_json(){ local url="$1"; _log_url "GET" "$url"; _curl_json_core "GET" "$url"; }
-_put_json(){ local url="$1" body="$2"; _log_url "PUT" "$url"; _curl_json_core "PUT" "$url" "$body"; }
-_del_json(){ local url="$1"; _log_url "DELETE" "$url"; _curl_json_core "DELETE" "$url"; }
+_get_json(){
+  local url="$1"
+  _log_url "GET" "$url"
+  _curl_json_core "GET" "$url"
+}
+
+_put_json(){
+  local url="$1" body="$2"
+  _log_url "PUT" "$url"
+  _curl_json_core "PUT" "$url" "$body"
+}
+
+# Canonical DELETE helper used by tests
+_delete_json(){
+  local url="$1"
+  _log_url "DELETE" "$url"
+  _curl_json_core "DELETE" "$url"
+}
+
+# Back-compat alias (in case any older test used _del_json)
+_del_json(){
+  _delete_json "$@"
+}
 
 # ------------------------------- assertions -----------------------------------
 json_eq(){ local body="$1" expr="$2" expect="$3"; [[ "$(jq -er "$expr" <<<"$body")" == "$expect" ]]; }

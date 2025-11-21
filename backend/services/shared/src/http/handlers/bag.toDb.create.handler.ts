@@ -7,6 +7,25 @@
  *   - ADR-0048 (All writes accept DtoBag)
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0053 (Bag Purity)
+ *
+ * Purpose:
+ * - Take a DtoBag<DtoBase> from the ctx bus and persist it via DbWriter.
+ * - Generic "create" handler, reusable across services.
+ *
+ * Config (ctx):
+ * - "bag.write.targetKey":       string ctx key to READ the bag from (default: "bag")
+ * - "bag.write.ensureSingleton": boolean (default: true)
+ *
+ * Inputs (ctx):
+ * - [targetKey]: DtoBag<DtoBase> (required)
+ * - "userId": string (optional; typically from JWT, used for meta stamping)
+ *
+ * Outputs (ctx):
+ * - [targetKey]: DtoBag<DtoBase> (unchanged → now set to the **persisted** bag)
+ * - "dbWriter.lastId": string (id used for the insert)
+ * - "handlerStatus": "ok" | "error"
+ * - "response.status"/"response.body" on error
+ * - "result": { ok:true, items:[ <persisted dto json> ] }  (added for wire)
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -71,6 +90,7 @@ export class BagToDbCreateHandler extends HandlerBase {
       }
     }
 
+    // ---- Env from HandlerBase.getVar (strict, no fallbacks) ---------------
     const mongoUri = this.getVar("NV_MONGO_URI");
     const mongoDb = this.getVar("NV_MONGO_DB");
 
@@ -97,11 +117,15 @@ export class BagToDbCreateHandler extends HandlerBase {
       return;
     }
 
+    // User identity (from JWT → ctx) used for meta stamping; may be undefined in tests.
+    const userId = this.ctx.get<string>("userId");
+
     const writer = new DbWriter<DtoBase>({
       bag: bag as DtoBag<DtoBase>,
       mongoUri,
       mongoDb,
       log: this.log,
+      userId,
     });
 
     try {
@@ -109,7 +133,7 @@ export class BagToDbCreateHandler extends HandlerBase {
       const persisted = persistedBag.getSingleton();
 
       this.ctx.set(targetKey, persistedBag);
-      this.ctx.set("dbWriter.lastId", persisted.getId());
+      this.ctx.set("dbWriter.lastId", persisted.getId);
       this.ctx.set("handlerStatus", "ok");
 
       this.ctx.set("result", { ok: true, items: [persisted.toJson()] });
@@ -118,7 +142,7 @@ export class BagToDbCreateHandler extends HandlerBase {
         {
           event: "execute_exit",
           targetKey,
-          id: persisted.getId(),
+          id: persisted.getId,
           collection: persisted.requireCollectionName(),
         },
         "bag.toDb.create exit"
@@ -130,11 +154,11 @@ export class BagToDbCreateHandler extends HandlerBase {
         this.ctx.set("response.body", {
           code: "DUPLICATE_KEY",
           title: "Conflict",
-          detail: (err as Error).message,
+          detail: err.message,
           requestId: this.ctx.get("requestId"),
         });
         this.log.warn(
-          { event: "duplicate_key", detail: (err as Error).message },
+          { event: "duplicate_key", detail: err.message },
           "bag.toDb.create — duplicate key"
         );
         return;

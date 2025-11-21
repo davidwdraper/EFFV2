@@ -2,10 +2,14 @@
   "items": [
     {
       "type": "svcconfig",
-      "txtfield1": "alpha-176351696921961",
-      "txtfield2": "bravo-176351696921961",
-      "numfield1": 1,
-      "numfield2": 2
+      "env": "dev",
+      "slug": "gateway",
+      "majorVersion": 1,
+      "targetPort": 4015,
+      "disabled": false,
+      "minUserType": 0,
+      "labels": ["smoke", "auto"],
+      "notes": "svcconfig-002-176369355924335"
     }
   ]
 }

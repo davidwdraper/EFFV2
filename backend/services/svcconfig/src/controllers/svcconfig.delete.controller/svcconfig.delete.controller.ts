@@ -20,7 +20,7 @@ import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
-import * as SvcconfigDeletePipeline from "./pipelines/svcconfig.delete.handlerPipeline";
+import * as SvcconfigDeletePipeline from "./pipelines/delete.handlerPipeline";
 
 export class SvcconfigDeleteController extends ControllerBase {
   constructor(app: AppBase) {

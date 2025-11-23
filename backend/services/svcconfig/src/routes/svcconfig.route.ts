@@ -50,8 +50,12 @@ export function buildSvcconfigRouter(app: AppBase): ReturnType<typeof Router> {
   // DELETE (DELETE /:dtoType/delete/:id) — canonical only
   r.delete("/:dtoType/delete/:id", (req, res) => deleteCtl.delete(req, res));
 
-  // LIST (GET /:dtoType/list) — pagination via query (?limit=&cursor=…)
-  r.get("/:dtoType/list", (req, res) => listCtl.get(req, res));
+  // LIST / MIRROR (GET /:dtoType/:op)
+  // - list:   GET /:dtoType/list
+  // - mirror: GET /:dtoType/mirror  (gateway mirror snapshot)
+  //
+  // Controller inspects req.params.op and picks the correct pipeline.
+  r.get("/:dtoType/:op", (req, res) => listCtl.get(req, res));
 
   return r;
 }

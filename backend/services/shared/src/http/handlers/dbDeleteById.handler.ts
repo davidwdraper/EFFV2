@@ -19,6 +19,7 @@
  * Behavior (handler-level, not wire-level):
  * - On success:
  *   - Performs delete via DbDeleter.
+ *   - Ensures a DtoBag is present on ctx["bag"] (may be empty).
  *   - Sets handlerStatus="ok".
  *   - Does NOT build a wire payload; ControllerBase.finalize() is responsible
  *     for mapping ctx → HTTP response (status/body).
@@ -43,6 +44,7 @@ import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DbDeleter } from "@nv/shared/dto/persistence/DbDeleter";
 import { isValidUuidV4 } from "@nv/shared/utils/uuid";
+import { DtoBag } from "@nv/shared/dto/DtoBag";
 
 export class DbDeleteByIdHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -230,9 +232,16 @@ export class DbDeleteByIdHandler extends HandlerBase {
         return;
       }
 
-      // Success: do NOT build a wire payload here.
-      // Leave handlerStatus="ok" and let ControllerBase.finalize() decide
-      // how to represent the outcome on the wire (e.g., 200/204, body shape).
+      // ---- Success: ensure a DtoBag is present for finalize() --------------
+      // We intentionally do NOT rebuild the deleted DTO here. For DELETE,
+      // an empty bag is sufficient to satisfy the invariant that successful
+      // pipelines always attach a DtoBag at ctx["bag"].
+      let bag = this.ctx.get<DtoBag<any>>("bag");
+      if (!bag) {
+        bag = new DtoBag<any>([]);
+        this.ctx.set("bag", bag);
+      }
+
       this.ctx.set("handlerStatus", "ok");
       this.log.info({ event: "delete_ok", id }, "dbDeleteById succeeded");
     } catch (err: any) {

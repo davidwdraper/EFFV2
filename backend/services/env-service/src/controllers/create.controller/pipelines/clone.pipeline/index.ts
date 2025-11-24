@@ -15,9 +15,9 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/ControllerBase";
 
-import { EnvServiceCloneBuildFilterHandler } from "./handlers/clone.buildFilter.handler";
+import { EnvServiceCloneBuildFilterHandler } from "./clone.buildFilter.handler";
 import { BagPopulateQueryHandler } from "@nv/shared/http/handlers/bag.populate.query.handler";
-import { EnvServiceClonePatchHandler } from "./handlers/clone.patch.handler";
+import { EnvServiceClonePatchHandler } from "./clone.patch.handler";
 import { BagToDbCreateHandler } from "@nv/shared/http/handlers/bag.toDb.create.handler";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerBase) {

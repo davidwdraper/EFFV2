@@ -1,4 +1,4 @@
-// backend/services/env-service/src/controllers/update.controller/pipelines/update.pipeline/handlers/applyPatch.handler.ts
+// backend/services/env-service/src/controllers/update.controller/pipelines/update.pipeline/applyPatch.handler.ts
 /**
  * Docs:
  * - ADR-0041/0042 (Handlers, Context Bus)
@@ -103,10 +103,8 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
 
     // ---- Apply patch via DTO authority -------------------------------------
     try {
-      // Derive the correct json shape from the DTO’s own patchFrom() signature
-      type PatchShape = Parameters<EnvServiceDto["patchFrom"]>[0];
-      const patchJson = patchDto.toJson() as PatchShape;
-      existing.patchFrom(patchJson);
+      // Apply the patch DTO directly to the existing DTO.
+      existing.patchFromDto(patchDto);
     } catch (e) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 400);

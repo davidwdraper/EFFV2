@@ -44,8 +44,12 @@ export function buildSvcconfigRouter(app: AppBase): ReturnType<typeof Router> {
   // UPDATE (PATCH /:dtoType/update/:id)
   r.patch("/:dtoType/update/:id", (req, res) => updateCtl.patch(req, res));
 
-  // READ (GET /:dtoType/read/:id)
+  // READ by id (GET /:dtoType/read/:id)
   r.get("/:dtoType/read/:id", (req, res) => readCtl.get(req, res));
+
+  // S2S route lookup (GET /:dtoType/s2s-route?env=&slug=&majorVersion=)
+  // This is a single-record read by composite key, not a list-family op.
+  r.get("/:dtoType/s2s-route", (req, res) => readCtl.get(req, res));
 
   // DELETE (DELETE /:dtoType/delete/:id) — canonical only
   r.delete("/:dtoType/delete/:id", (req, res) => deleteCtl.delete(req, res));

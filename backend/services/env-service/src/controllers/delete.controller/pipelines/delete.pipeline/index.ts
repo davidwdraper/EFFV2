@@ -13,10 +13,10 @@ import type { ControllerBase } from "@nv/shared/base/ControllerBase";
 
 // Reuse existing handler; if you later relocate handlers under the pipeline folder,
 // just adjust this import path.
-import { DbDeleteDeleteHandler } from "./handlers/delete.handler";
+import { DbDeleteByIdHandler } from "@nv/shared/http/handlers/dbDeleteById.handler";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
-  return [new DbDeleteDeleteHandler(ctx, controller)];
+  return [new DbDeleteByIdHandler(ctx, controller)];
 }
 
 /**

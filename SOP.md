@@ -907,4 +907,10 @@ This doc represents the evolving user-facing + UX + engagement feature set.
 
 ## Proactively suggest alternatives and better ways to solve problems if you disagree with my approach.
 
-“Active service: svcconfig. We need a new route called getS2SRoute. It will take a slug and a version, and return a bagged SvcconfigDto that will be used by S2S calls for finding their target service.”
+We have added a new route svcconfig called s2s-route.
+It's purpose is to be called by the future SvcClient class for doing S2S calls within the backend.
+The route is called with an env (i.e., "dev"), slug and version.
+
+This session will dedicated to writing a smoke test to ensure the route answers correctly.
+
+I will provide the route file and and an example smoke test script for reference.

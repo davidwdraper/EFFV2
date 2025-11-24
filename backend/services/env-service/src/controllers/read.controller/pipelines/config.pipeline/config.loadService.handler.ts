@@ -1,4 +1,4 @@
-// backend/services/env-service/src/controllers/read.controller/pipelines/config.pipeline/handlers/config.loadService.handler.ts
+// backend/services/env-service/src/controllers/read.controller/pipelines/config.pipeline/config.loadService.handler.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -29,7 +29,7 @@ import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DbReader } from "@nv/shared/dto/persistence/DbReader";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import { EnvConfigReader } from "../../../../../svc/EnvConfigReader";
+import { EnvConfigReader } from "../../../../svc/EnvConfigReader";
 
 export class EnvServiceConfigLoadServiceHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {

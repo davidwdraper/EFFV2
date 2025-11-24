@@ -15,9 +15,9 @@
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/ControllerBase";
-import { EnvServiceConfigLoadRootHandler } from "./handlers/loadRoot.handler";
-import { EnvServiceConfigLoadServiceHandler } from "./handlers/config.loadService.handler";
-import { EnvServiceConfigMergeHandler } from "./handlers/config.merge.handler";
+import { EnvServiceConfigLoadRootHandler } from "./loadRoot.handler";
+import { EnvServiceConfigLoadServiceHandler } from "./config.loadService.handler";
+import { EnvServiceConfigMergeHandler } from "./config.merge.handler";
 
 export function getSteps(
   ctx: HandlerContext,

@@ -131,6 +131,7 @@ export class DtoBag<T> {
   public size(): number {
     return this._items.length;
   }
+
   public get(i: number): T {
     return this._items[i];
   }
@@ -151,10 +152,32 @@ export class DtoBag<T> {
   }
 
   /**
+   * Materialize this bag into a JSON-ready DTO array for wire transport.
+   * Each DTO is expected to implement toJson(); if it does not, it is passed
+   * through as-is (defensive only).
+   *
+   * NOTE:
+   * - This does NOT wrap in { items, meta }; that is the ControllerBase's job.
+   * - This keeps the "DTOs only ever live in bags" invariant: callers only see
+   *   JSON, never live DTO instances.
+   */
+  public toJson(): any[] {
+    const out: any[] = [];
+    for (const dto of this._items) {
+      if (dto && typeof (dto as any).toJson === "function") {
+        out.push((dto as any).toJson());
+      } else {
+        // Defensive fallback; in normal flows all entries are DTOs.
+        out.push(dto);
+      }
+    }
+    return out;
+  }
+
+  /**
    * Ensure this bag is a singleton.
    * Throws if size !== 1, so callers that expect a single DTO can rely on it.
    */
-  // inside DtoBag<T>
   public ensureSingleton(throwOnError = true): boolean {
     const count = this._items.length;
 

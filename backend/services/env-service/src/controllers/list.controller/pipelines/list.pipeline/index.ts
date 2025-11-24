@@ -12,8 +12,8 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/ControllerBase";
 
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import { QueryListHandler } from "./handlers/query.handler";
-import { DbReadListHandler } from "./handlers/dbRead.handler";
+import { QueryListHandler } from "./query.handler";
+import { DbReadListHandler } from "./dbRead.handler";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
   // Seed DTO ctor used by handlers

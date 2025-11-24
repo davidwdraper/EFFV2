@@ -16,6 +16,7 @@
  *
  * Notes:
  * - Indexes are ensured at app boot — never here.
+ * - Success responses are always built from ctx["bag"] (DtoBag) only.
  */
 
 import type { Request, Response } from "express";
@@ -96,7 +97,7 @@ export abstract class ControllerBase {
     );
   }
 
-  // ─────────────── Context build / pipeline / finalize ───────────────────────
+  // ─────────────── Context build / pipeline helpers ──────────────────────────
 
   protected makeContext(req: Request, res: Response): HandlerContext {
     const ctx = new HandlerContext();
@@ -296,30 +297,31 @@ export abstract class ControllerBase {
     }
   }
 
+  // ─────────────── Finalize: bag-or-error only ───────────────────────────────
+
   protected finalize(ctx: HandlerContext): void {
     const res = ctx.get<Response>("res")!;
     const requestId = ctx.get<string>("requestId") ?? "";
-    const handlerStatus = (
-      ctx.get<string>("handlerStatus") ?? "ok"
-    ).toLowerCase();
+    const rawStatus = ctx.get<string>("handlerStatus") ?? "ok";
+    const handlerStatus = rawStatus.toLowerCase();
     const statusFromCtx =
       ctx.get<number>("response.status") ?? ctx.get<number>("status");
     const error = ctx.get<any>("response.body")?.code
       ? ctx.get<any>("response.body")
       : ctx.get<any>("error");
     const warnings = ctx.get<any[]>("warnings");
-    const result = ctx.get<any>("result");
 
     this.log.debug(
       { event: "finalize_enter", requestId, handlerStatus, statusFromCtx },
       "Finalize start"
     );
 
+    // ── 1) Error path: only place where handlers may prebuild a body ──
     if (handlerStatus === "error" || (statusFromCtx && statusFromCtx >= 400)) {
       const status =
         statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
 
-      // If a handler prebuilt a body, normalize duplicate-key codes using the existing parser.
+      // Normalize duplicate-key codes using existing parser.
       let normalized = error;
       if (error && error.title && error.code) {
         const maybeDup =
@@ -370,33 +372,80 @@ export abstract class ControllerBase {
       return;
     }
 
-    if (handlerStatus === "warn") {
-      if (Array.isArray(warnings)) {
-        for (const w of warnings) {
-          this.log.warn(
-            { event: "warn", requestId, warning: w },
-            "Handler warning"
-          );
-        }
-      }
-      const body =
-        result && typeof result === "object"
-          ? { ...result, warnings }
-          : { ok: true, warnings };
-      res.status(200).json(body);
+    // ── 2) Success / warn path: MUST have a DtoBag on ctx["bag"] ──
+    const bag: any = ctx.get<any>("bag");
+
+    if (!bag || typeof bag.toJson !== "function") {
+      const status = 500;
+      const body: ProblemJson = {
+        type: "about:blank",
+        title: "Internal Error",
+        detail:
+          'Handler pipeline completed without attaching a DtoBag at ctx["bag"].',
+        status,
+        code: "BAG_MISSING",
+        requestId,
+      };
+
+      res.status(status).type("application/problem+json").json(body);
+
+      this.log.error(
+        {
+          event: "finalize_bag_missing",
+          requestId,
+          handlerStatus,
+          hasBag: !!bag,
+          bagType: bag ? typeof bag : "undefined",
+        },
+        "Finalize — missing DtoBag for successful response"
+      );
+
       this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
       return;
     }
 
-    const prebuiltStatus =
-      ctx.get<number>("response.status") ?? (result ? 200 : undefined);
-    const prebuiltBody =
-      ctx.get<any>("response.body") ??
-      result ??
-      ({ ok: true } as Record<string, unknown>);
+    const items = bag.toJson() as any[];
 
-    res.status(prebuiltStatus ?? 200).json(prebuiltBody);
-    this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
+    const dtoType = ctx.get<string>("dtoType");
+    const op = ctx.get<string>("op");
+    const idKey = ctx.get<string>("idKey");
+
+    const meta: Record<string, unknown> = {
+      count: Array.isArray(items) ? items.length : 0,
+    };
+    if (dtoType) meta.dtoType = dtoType;
+    if (op) meta.op = op;
+    if (idKey) meta.idKey = idKey;
+
+    const body: any = { items, meta };
+
+    if (Array.isArray(warnings) && warnings.length > 0) {
+      body.warnings = warnings;
+      for (const w of warnings) {
+        this.log.warn(
+          { event: "warn", requestId, warning: w },
+          "Handler warning"
+        );
+      }
+    }
+
+    const successStatus =
+      ctx.get<number>("response.status") ??
+      (handlerStatus === "warn" ? 200 : 200);
+
+    res.status(successStatus).json(body);
+
+    this.log.debug(
+      {
+        event: "finalize_exit",
+        requestId,
+        dtoType,
+        op,
+        idKey,
+        count: meta.count,
+      },
+      "Finalize — DtoBag materialized to wire envelope"
+    );
   }
 
   // eslint-disable-next-line class-methods-use-this

@@ -12,8 +12,21 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *
  * Purpose:
- * - Use DbReader<SvcconfigDto> to fetch a deterministic batch with cursor pagination.
- * - Return { ok, docs, nextCursor } (docs via DTO.toJson()).
+ * - Use DbReader<TDto> to fetch a deterministic batch with cursor pagination.
+ * - Leave the resulting DtoBag on ctx["bag"]; ControllerBase.finalize()
+ *   is responsible for building the wire payload (docs, meta, nextCursor).
+ *
+ * Final-handler invariants (list pipelines):
+ * - On success:
+ *   - ctx["bag"] MUST contain the DtoBag returned from DbReader.
+ *   - MAY expose pagination hints (e.g., ctx["list.nextCursor"], ctx["list.limitUsed"]).
+ *   - ctx["handlerStatus"] MUST be "ok".
+ *   - MUST NOT set ctx["result"].
+ *   - MUST NOT set ctx["response.body"] on success.
+ * - On error:
+ *   - ctx["handlerStatus"] MUST be "error".
+ *   - MUST set ctx["response.status"] (HTTP status).
+ *   - MUST set ctx["response.body"] (problem+json-style object).
  *
  * Notes:
  * - Env is obtained via HandlerBase.getVar("NV_MONGO_URI"/"NV_MONGO_DB")
@@ -24,7 +37,6 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DbReader } from "@nv/shared/dto/persistence/DbReader";
-import { DtoBagView } from "@nv/shared/dto/DtoBagView";
 
 export class DbReadListHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -34,19 +46,23 @@ export class DbReadListHandler extends HandlerBase {
   protected async execute(): Promise<void> {
     this.log.debug({ event: "execute_enter" }, "list.dbRead enter");
 
+    const requestId =
+      (this.ctx.get<string>("requestId") as string | undefined) ?? "unknown";
+
     // --- Required DTO ctor ---------------------------------------------------
     const dtoCtor = this.ctx.get<any>("list.dtoCtor");
     if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
       this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
         code: "DTO_CTOR_MISSING",
         title: "Internal Error",
         detail:
           "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromJson().",
+        requestId,
       });
       this.log.error(
-        { event: "dtoCtor_missing", hasDtoCtor: !!dtoCtor },
+        { event: "dtoCtor_missing", hasDtoCtor: !!dtoCtor, requestId },
         "List setup missing DTO ctor"
       );
       return;
@@ -58,18 +74,20 @@ export class DbReadListHandler extends HandlerBase {
 
     if (!mongoUri || !mongoDb) {
       this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
         code: "MONGO_ENV_MISSING",
         title: "Internal Error",
         detail:
           "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
+        requestId,
       });
       this.log.error(
         {
           event: "mongo_env_missing",
           mongoUriPresent: !!mongoUri,
           mongoDbPresent: !!mongoDb,
+          requestId,
         },
         "list aborted — Mongo env config missing"
       );
@@ -96,34 +114,68 @@ export class DbReadListHandler extends HandlerBase {
     const cursor =
       typeof q.cursor === "string" && q.cursor.trim() ? q.cursor.trim() : null;
 
-    // --- Reader + batch read -------------------------------------------------
-    const reader = new DbReader<any>({
-      dtoCtor,
-      mongoUri,
-      mongoDb,
-      validateReads: false,
-    });
+    try {
+      // --- Reader + batch read -----------------------------------------------
+      const reader = new DbReader<any>({
+        dtoCtor,
+        mongoUri,
+        mongoDb,
+        validateReads: false,
+      });
 
-    const { bag, nextCursor } = await reader.readBatch({
-      filter,
-      limit,
-      cursor,
-    });
+      const tgt = await reader.targetInfo();
+      this.log.debug(
+        {
+          event: "list_target",
+          collection: tgt.collectionName,
+          limit,
+          hasCursor: !!cursor,
+          requestId,
+        },
+        "list.dbRead — target collection"
+      );
 
-    // Canonical list shape: docs[] = DTO.toJson()
-    const docs = DtoBagView.fromBag(bag).toJsonArray();
-
-    this.ctx.set("result", { ok: true, docs, nextCursor });
-    this.ctx.set("handlerStatus", "ok");
-
-    this.log.debug(
-      {
-        event: "list_batch_complete",
-        count: docs.length,
-        hasNext: !!nextCursor,
+      const { bag, nextCursor } = await reader.readBatch({
+        filter,
         limit,
-      },
-      "list batch read complete"
-    );
+        cursor,
+      });
+
+      // Leave the bag and pagination hints on ctx; finalize() will turn this into wire JSON.
+      this.ctx.set("bag", bag);
+      this.ctx.set("list.nextCursor", nextCursor);
+      this.ctx.set("list.limitUsed", limit);
+
+      const count =
+        typeof bag.count === "function"
+          ? bag.count()
+          : Array.from(bag.items?.() ?? []).length;
+
+      this.ctx.set("handlerStatus", "ok");
+
+      this.log.debug(
+        {
+          event: "list_batch_complete",
+          count,
+          hasNext: !!nextCursor,
+          limit,
+          requestId,
+        },
+        "list batch read complete"
+      );
+    } catch (err: any) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
+        code: "DB_READ_FAILED",
+        title: "Internal Error",
+        detail: err?.message ?? String(err),
+        requestId,
+      });
+      this.log.error(
+        { event: "list_read_error", err: err?.message, requestId },
+        "list.dbRead — read failed"
+      );
+    }
   }
 }

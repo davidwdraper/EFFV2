@@ -9,7 +9,8 @@
  *
  * Purpose:
  * - Build a standard Mongo filter object dynamically from a declarative spec,
- *   then stash it into ctx["query.filter"] for DbReader.readOneBag/readManyBag.
+ *   then stash it into ctx["bag.query.filter"] for DbReader.readOneBag/readManyBag
+ *   (and ctx["query.filter"] for introspection/logging if desired).
  *
  * Invariants:
  * - Handler itself knows nothing about svcconfig/env-service/etc.
@@ -201,6 +202,11 @@ export class QueryBuildFilterHandler extends HandlerBase {
       }
     }
 
+    // Primary output for query-based bag population:
+    // - bag.populate.query.handler reads ctx["bag.query.filter"].
+    this.ctx.set("bag.query.filter", filter);
+
+    // Secondary (optional) output for introspection/logging or legacy code:
     this.ctx.set("query.filter", filter);
 
     this.log.debug(

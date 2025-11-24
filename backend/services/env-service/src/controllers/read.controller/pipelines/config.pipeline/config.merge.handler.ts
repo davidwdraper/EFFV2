@@ -1,4 +1,4 @@
-// backend/services/env-service/src/controllers/read.controller/pipelines/config.pipeline/handlers/config.merge.handler.ts
+// backend/services/env-service/src/controllers/read.controller/pipelines/config.pipeline/config.merge.handler.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -6,7 +6,7 @@
  *   - ADR-0040 (DTO-Only Persistence; reads hydrate DTOs)
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0043 (Finalize mapping)
+ *   - ADR-0043 (Finalize mapping; controller builds wire payload)
  *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
@@ -14,13 +14,27 @@
  * - Third step in the config pipeline hierarchy:
  *   1) Read rootBag and serviceBag (DtoBags) from ctx.
  *   2) Delegate hierarchy resolution to EnvConfigReader.mergeEnvBags().
- *   3) Return a DtoBag-style wire envelope: { items:[dtoJson], meta:{...} }.
+ *   3) Leave a single-item DtoBag on ctx["bag"] with proper meta, so
+ *      ControllerBase.finalize() can build the wire payload via bag.toJson().
  *
- * Invariants:
+ * Invariants (final handler contract):
+ * - On success:
+ *   - ctx["bag"] MUST contain a DtoBag<EnvServiceDto> with exactly one item.
+ *   - ctx["handlerStatus"] MUST be "ok".
+ *   - MUST NOT set ctx["result"].
+ *   - MUST NOT set ctx["response.body"] on success.
+ * - On error:
+ *   - ctx["handlerStatus"] MUST be "error".
+ *   - MUST set ctx["response.status"] (HTTP status code).
+ *   - MUST set ctx["response.body"] to a problem+json-style object.
+ *
+ * Behavior:
  * - At least one config record (root or service-level) must exist.
- * - If either DtoBag contains >1 DTO, mergeEnvBags() throws with an error
- *   indicating invalid counts (index/config corruption).
- * - Individual services are responsible for screaming if specific keys are missing.
+ * - EnvConfigReader.mergeEnvBags() is responsible for:
+ *   - Enforcing singleton semantics on each bag.
+ *   - Throwing with a descriptive error message when counts are invalid or
+ *     no records are found.
+ * - Individual services remain responsible for screaming if specific keys are missing.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -28,7 +42,7 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import { EnvConfigReader } from "../../../../../svc/EnvConfigReader";
+import { EnvConfigReader } from "../../../../svc/EnvConfigReader";
 
 export class EnvServiceConfigMergeHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -69,25 +83,26 @@ export class EnvServiceConfigMergeHandler extends HandlerBase {
     }
 
     try {
-      // New API: merge the two bags via EnvConfigReader.
+      // Merge the two bags via EnvConfigReader to enforce hierarchy + counts.
       const mergedBag: DtoBag<EnvServiceDto> = EnvConfigReader.mergeEnvBags(
         rootBag,
         serviceBag
       );
 
       const finalDto: EnvServiceDto = mergedBag.get(0);
-      const items: unknown[] = [finalDto.toJson()];
       const total = 1;
 
-      const { meta } = BagBuilder.fromDtos([], {
+      // Build a canonical single-item bag with proper meta for finalize().
+      const { bag: wireBag } = BagBuilder.fromDtos([finalDto], {
         requestId,
         limit: total,
         total,
         cursor: null,
       });
 
-      this.ctx.set("response.status", 200);
-      this.ctx.set("response.body", { items, meta });
+      // Final-handler invariant: leave the bag on ctx["bag"]; finalize() will
+      // call bag.toJson() and construct the wire payload.
+      this.ctx.set("bag", wireBag);
       this.ctx.set("handlerStatus", "ok");
 
       const hasRoot = !!rootBag && rootBag.count() > 0;
@@ -111,7 +126,7 @@ export class EnvServiceConfigMergeHandler extends HandlerBase {
       const isNotFound = msg.startsWith("ENV_CONFIG_NOT_FOUND");
       const isMulti = msg.startsWith("ENV_CONFIG_MULTIPLE_RECORDS");
 
-      this.ctx.set("handlerStatus", isNotFound ? "warn" : "error");
+      this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", isNotFound ? 404 : 500);
       this.ctx.set("response.body", {
         code: isNotFound

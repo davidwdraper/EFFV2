@@ -16,9 +16,22 @@
  *   - ctx["list.dtoCtor"]  → DTO constructor with static fromJson()
  *   - ctx["list.filter"]   → Mongo filter object (Record<string, unknown>)
  *   - ctx["query"]         → { limit?, cursor? } and any other query params
- * - Reads a deterministic batch from Mongo via DbReader and writes:
- *   - ctx["result"] = { ok: true, docs, nextCursor }
- *   - docs = DTO.toJson()[]
+ * - Reads a deterministic batch from Mongo via DbReader and:
+ *   - Leaves the resulting DtoBag on ctx["bag"].
+ *   - Exposes pagination hints on ctx (e.g., "list.nextCursor", "list.limitUsed").
+ *   - Lets ControllerBase.finalize() build the wire payload from bag.toJson().
+ *
+ * Final-handler invariants (list pipelines):
+ * - On success:
+ *   - ctx["bag"] MUST contain the DtoBag returned from DbReader.
+ *   - ctx["handlerStatus"] MUST be "ok".
+ *   - MAY set ctx["list.nextCursor"], ctx["list.limitUsed"] for finalize().
+ *   - MUST NOT set ctx["result"].
+ *   - MUST NOT set ctx["response.body"] on success.
+ * - On error:
+ *   - ctx["handlerStatus"] MUST be "error".
+ *   - MUST set ctx["response.status"] (HTTP status code).
+ *   - MUST set ctx["response.body"] (problem+json-style object).
  *
  * Notes:
  * - Env is obtained via HandlerBase.getVar("NV_MONGO_URI"/"NV_MONGO_DB"),
@@ -28,7 +41,6 @@
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
 import { DbReader } from "../../dto/persistence/DbReader";
-import { DtoBagView } from "../../dto/DtoBagView";
 
 export class DbReadListHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -38,19 +50,23 @@ export class DbReadListHandler extends HandlerBase {
   protected async execute(): Promise<void> {
     this.log.debug({ event: "execute_enter" }, "dbRead.list enter");
 
+    const requestId =
+      (this.ctx.get<string>("requestId") as string | undefined) ?? "unknown";
+
     // --- Required DTO ctor ---------------------------------------------------
     const dtoCtor = this.ctx.get<any>("list.dtoCtor");
     if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
       this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
         code: "DTO_CTOR_MISSING",
         title: "Internal Error",
         detail:
           "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromJson().",
+        requestId,
       });
       this.log.error(
-        { event: "dtoCtor_missing", hasDtoCtor: !!dtoCtor },
+        { event: "dtoCtor_missing", hasDtoCtor: !!dtoCtor, requestId },
         "list setup missing DTO ctor"
       );
       return;
@@ -62,18 +78,20 @@ export class DbReadListHandler extends HandlerBase {
 
     if (!mongoUri || !mongoDb) {
       this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
         code: "MONGO_ENV_MISSING",
         title: "Internal Error",
         detail:
           "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
+        requestId,
       });
       this.log.error(
         {
           event: "mongo_env_missing",
           mongoUriPresent: !!mongoUri,
           mongoDbPresent: !!mongoDb,
+          requestId,
         },
         "list aborted — Mongo env config missing"
       );
@@ -100,33 +118,70 @@ export class DbReadListHandler extends HandlerBase {
     const cursor =
       typeof q.cursor === "string" && q.cursor.trim() ? q.cursor.trim() : null;
 
-    // --- Reader + batch read -------------------------------------------------
-    const reader = new DbReader<any>({
-      dtoCtor,
-      mongoUri,
-      mongoDb,
-      validateReads: false,
-    });
+    try {
+      // --- Reader + batch read -----------------------------------------------
+      const reader = new DbReader<any>({
+        dtoCtor,
+        mongoUri,
+        mongoDb,
+        validateReads: false,
+      });
 
-    const { bag, nextCursor } = await reader.readBatch({
-      filter,
-      limit,
-      cursor,
-    });
+      const tgt = await reader.targetInfo();
+      this.log.debug(
+        {
+          event: "list_target",
+          collection: tgt.collectionName,
+          limit,
+          hasCursor: !!cursor,
+          requestId,
+        },
+        "dbRead.list — target collection"
+      );
 
-    const docs = DtoBagView.fromBag(bag).toJsonArray();
-
-    this.ctx.set("result", { ok: true, docs, nextCursor });
-    this.ctx.set("handlerStatus", "ok");
-
-    this.log.debug(
-      {
-        event: "list_batch_complete",
-        count: docs.length,
-        hasNext: !!nextCursor,
+      const { bag, nextCursor } = await reader.readBatch({
+        filter,
         limit,
-      },
-      "list batch read complete"
-    );
+        cursor,
+      });
+
+      // Leave the bag on ctx for finalize() and any downstream handlers.
+      this.ctx.set("bag", bag);
+
+      // Pagination hints for finalize().
+      this.ctx.set("list.nextCursor", nextCursor);
+      this.ctx.set("list.limitUsed", limit);
+
+      const count =
+        typeof bag.count === "function"
+          ? bag.count()
+          : Array.from(bag.items?.() ?? []).length;
+
+      this.ctx.set("handlerStatus", "ok");
+
+      this.log.debug(
+        {
+          event: "list_batch_complete",
+          count,
+          hasNext: !!nextCursor,
+          limit,
+          requestId,
+        },
+        "list batch read complete"
+      );
+    } catch (err: any) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
+        code: "DB_READ_FAILED",
+        title: "Internal Error",
+        detail: err?.message ?? String(err),
+        requestId,
+      });
+      this.log.error(
+        { event: "list_read_error", err: err?.message, requestId },
+        "dbRead.list — read failed"
+      );
+    }
   }
 }

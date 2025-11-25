@@ -10,20 +10,40 @@
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *
  * Purpose:
- * - Concrete DTO for the template service ("user").
+ * - Concrete DTO for the "user" entity service.
+ * - Field set is aligned with AuthDto so that an AuthToUserDtoMapperHandler
+ *   can map directly without renaming:
+ *     givenName, lastName, email, phone, homeLat, homeLng
+ * - Extended with basic address fields for global use:
+ *     address1, address2, city, state, pcode, notes
  */
 
 import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
 
 // Wire-friendly shape
-type UserJson = {
+export type UserJson = {
+  // Entity canonical id on the wire for CRUD services.
   _id?: string;
   type?: "user";
-  txtfield1: string;
-  txtfield2: string;
-  numfield1: number;
-  numfield2: number;
+
+  // Auth-compatible identity basics
+  givenName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  homeLat?: number;
+  homeLng?: number;
+
+  // Address / profile extensions
+  address1?: string;
+  address2?: string;
+  city?: string;
+  state?: string;
+  pcode?: string; // postal code, not "zip", for global usage
+  notes?: string;
+
+  // Meta fields stamped via DtoBase
   createdAt?: string;
   updatedAt?: string;
   updatedByUserId?: string;
@@ -34,28 +54,40 @@ export class UserDto extends DtoBase {
     return "user";
   }
 
+  // Index strategy:
+  // - Email is globally unique per user (login / identity).
+  // - Name lookup supports basic search (lastName + givenName).
+  // Additional geo / locality indexes can be added once query patterns stabilize.
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
     {
       kind: "unique",
-      fields: ["txtfield1", "txtfield2", "numfield1", "numfield2"],
-      options: { name: "ux_user_business" },
+      fields: ["email"],
+      options: { name: "ux_user_email" },
     },
     {
       kind: "lookup",
-      fields: ["txtfield1"],
-      options: { name: "ix_user_txtfield1" },
-    },
-    {
-      kind: "lookup",
-      fields: ["numfield1"],
-      options: { name: "ix_user_numfield1" },
+      fields: ["lastName", "givenName"],
+      options: { name: "ix_user_name" },
     },
   ];
 
-  public txtfield1 = "";
-  public txtfield2 = "";
-  public numfield1 = 0;
-  public numfield2 = 0;
+  // ─────────────── Instance: Domain Fields ───────────────
+
+  // Identity basics (aligned with AuthDto)
+  public givenName = "";
+  public lastName = "";
+  public email = "";
+  public phone?: string;
+  public homeLat?: number;
+  public homeLng?: number;
+
+  // Address / profile
+  public address1?: string;
+  public address2?: string;
+  public city?: string;
+  public state?: string;
+  public pcode?: string;
+  public notes?: string;
 
   public constructor(
     secretOrMeta?:
@@ -65,6 +97,8 @@ export class UserDto extends DtoBase {
     super(secretOrMeta);
   }
 
+  // ─────────────── Static: Hydration ───────────────
+
   public static fromJson(
     json: unknown,
     opts?: { validate?: boolean }
@@ -72,64 +106,212 @@ export class UserDto extends DtoBase {
     const dto = new UserDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<UserJson>;
 
+    // Canonical entity id for CRUD services lives in `_id`.
     if (typeof j._id === "string" && j._id.trim()) {
       dto.setIdOnce(j._id.trim());
     }
 
-    if (typeof j.txtfield1 === "string") dto.txtfield1 = j.txtfield1;
-    if (typeof j.txtfield2 === "string") dto.txtfield2 = j.txtfield2;
-    if (typeof j.numfield1 === "number")
-      dto.numfield1 = Math.trunc(j.numfield1);
-    if (typeof j.numfield2 === "number")
-      dto.numfield2 = Math.trunc(j.numfield2);
+    // Required-ish identity fields (formal validation via contract layer later)
+    if (typeof j.givenName === "string") {
+      dto.givenName = j.givenName.trim();
+    }
 
+    if (typeof j.lastName === "string") {
+      dto.lastName = j.lastName.trim();
+    }
+
+    if (typeof j.email === "string") {
+      dto.email = j.email.trim().toLowerCase();
+    }
+
+    if (typeof j.phone === "string") {
+      const trimmed = j.phone.trim();
+      dto.phone = trimmed.length ? trimmed : undefined;
+    }
+
+    // homeLat / homeLng: accept number or numeric string; ignore NaN.
+    if (j.homeLat !== undefined) {
+      const n = typeof j.homeLat === "string" ? Number(j.homeLat) : j.homeLat;
+      if (Number.isFinite(n as number)) {
+        dto.homeLat = n as number;
+      }
+    }
+
+    if (j.homeLng !== undefined) {
+      const n = typeof j.homeLng === "string" ? Number(j.homeLng) : j.homeLng;
+      if (Number.isFinite(n as number)) {
+        dto.homeLng = n as number;
+      }
+    }
+
+    // Address / profile fields (simple string normalization)
+    if (typeof j.address1 === "string") {
+      const trimmed = j.address1.trim();
+      dto.address1 = trimmed.length ? trimmed : undefined;
+    }
+
+    if (typeof j.address2 === "string") {
+      const trimmed = j.address2.trim();
+      dto.address2 = trimmed.length ? trimmed : undefined;
+    }
+
+    if (typeof j.city === "string") {
+      const trimmed = j.city.trim();
+      dto.city = trimmed.length ? trimmed : undefined;
+    }
+
+    if (typeof j.state === "string") {
+      const trimmed = j.state.trim();
+      dto.state = trimmed.length ? trimmed : undefined;
+    }
+
+    if (typeof j.pcode === "string") {
+      const trimmed = j.pcode.trim();
+      dto.pcode = trimmed.length ? trimmed : undefined;
+    }
+
+    if (typeof j.notes === "string") {
+      const trimmed = j.notes.trim();
+      dto.notes = trimmed.length ? trimmed : undefined;
+    }
+
+    // Meta (for DtoBase._finalizeToJson)
     dto.setMeta({
       createdAt: j.createdAt,
       updatedAt: j.updatedAt,
       updatedByUserId: j.updatedByUserId,
     });
 
-    // opts?.validate hook can wire in Zod later if needed.
+    // opts?.validate hook: Zod contract goes here when defined.
+    void opts;
 
     return dto;
   }
+
+  // ─────────────── Instance: Wire Shape ───────────────
 
   public toJson(): UserJson {
     const body: UserJson = {
       // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
       _id: this.hasId() ? this.getId() : undefined,
       type: "user",
-      txtfield1: this.txtfield1,
-      txtfield2: this.txtfield2,
-      numfield1: this.numfield1,
-      numfield2: this.numfield2,
+
+      givenName: this.givenName,
+      lastName: this.lastName,
+      email: this.email,
+      phone: this.phone,
+      homeLat: this.homeLat,
+      homeLng: this.homeLng,
+
+      address1: this.address1,
+      address2: this.address2,
+      city: this.city,
+      state: this.state,
+      pcode: this.pcode,
+      notes: this.notes,
     };
+
     return this._finalizeToJson(body);
   }
 
+  // ─────────────── Instance: Patch Helper ───────────────
+
   public patchFrom(json: Partial<UserJson>): this {
-    if (json.txtfield1 !== undefined && typeof json.txtfield1 === "string") {
-      this.txtfield1 = json.txtfield1;
+    if (json.givenName !== undefined && typeof json.givenName === "string") {
+      this.givenName = json.givenName.trim();
     }
-    if (json.txtfield2 !== undefined && typeof json.txtfield2 === "string") {
-      this.txtfield2 = json.txtfield2;
+
+    if (json.lastName !== undefined && typeof json.lastName === "string") {
+      this.lastName = json.lastName.trim();
     }
-    if (json.numfield1 !== undefined) {
+
+    if (json.email !== undefined && typeof json.email === "string") {
+      this.email = json.email.trim().toLowerCase();
+    }
+
+    if (json.phone !== undefined) {
+      if (typeof json.phone === "string") {
+        const trimmed = json.phone.trim();
+        this.phone = trimmed.length ? trimmed : undefined;
+      } else {
+        this.phone = undefined;
+      }
+    }
+
+    if (json.homeLat !== undefined) {
       const n =
-        typeof json.numfield1 === "string"
-          ? Number(json.numfield1)
-          : json.numfield1;
-      if (Number.isFinite(n)) this.numfield1 = Math.trunc(n as number);
+        typeof json.homeLat === "string" ? Number(json.homeLat) : json.homeLat;
+      if (Number.isFinite(n as number)) {
+        this.homeLat = n as number;
+      }
     }
-    if (json.numfield2 !== undefined) {
+
+    if (json.homeLng !== undefined) {
       const n =
-        typeof json.numfield2 === "string"
-          ? Number(json.numfield2)
-          : json.numfield2;
-      if (Number.isFinite(n)) this.numfield2 = Math.trunc(n as number);
+        typeof json.homeLng === "string" ? Number(json.homeLng) : json.homeLng;
+      if (Number.isFinite(n as number)) {
+        this.homeLng = n as number;
+      }
     }
+
+    if (json.address1 !== undefined) {
+      if (typeof json.address1 === "string") {
+        const trimmed = json.address1.trim();
+        this.address1 = trimmed.length ? trimmed : undefined;
+      } else {
+        this.address1 = undefined;
+      }
+    }
+
+    if (json.address2 !== undefined) {
+      if (typeof json.address2 === "string") {
+        const trimmed = json.address2.trim();
+        this.address2 = trimmed.length ? trimmed : undefined;
+      } else {
+        this.address2 = undefined;
+      }
+    }
+
+    if (json.city !== undefined) {
+      if (typeof json.city === "string") {
+        const trimmed = json.city.trim();
+        this.city = trimmed.length ? trimmed : undefined;
+      } else {
+        this.city = undefined;
+      }
+    }
+
+    if (json.state !== undefined) {
+      if (typeof json.state === "string") {
+        const trimmed = json.state.trim();
+        this.state = trimmed.length ? trimmed : undefined;
+      } else {
+        this.state = undefined;
+      }
+    }
+
+    if (json.pcode !== undefined) {
+      if (typeof json.pcode === "string") {
+        const trimmed = json.pcode.trim();
+        this.pcode = trimmed.length ? trimmed : undefined;
+      } else {
+        this.pcode = undefined;
+      }
+    }
+
+    if (json.notes !== undefined) {
+      if (typeof json.notes === "string") {
+        const trimmed = json.notes.trim();
+        this.notes = trimmed.length ? trimmed : undefined;
+      } else {
+        this.notes = undefined;
+      }
+    }
+
     return this;
   }
+
+  // ─────────────── Type Discriminator ───────────────
 
   public getType(): string {
     return "user";

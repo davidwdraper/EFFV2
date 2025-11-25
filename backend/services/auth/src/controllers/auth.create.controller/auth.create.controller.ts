@@ -6,17 +6,18 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0043 (Finalize mapping)
+ *   - ADR-0043 (Finalize mapping; controller builds wire payload)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
- *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="_id")
  *
  * Purpose:
  * - Orchestrate PUT /api/auth/v1/:dtoType/create
  * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  *
  * Invariants:
- * - Edges are bag-only (payload { items:[{ type:"<dtoType>", ...}] } ).
+ * - Edge payload is a wire bag envelope: { items: [ { type:"<dtoType>", ... } ], meta?: {...} }.
  * - Create requires exactly 1 DTO item; enforced in pipeline handlers.
+ * - No DB work here; this controller delegates to handlers (and eventually SvcClient) only.
  */
 
 import { Request, Response } from "express";
@@ -25,9 +26,7 @@ import { ControllerBase } from "@nv/shared/base/ControllerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
-import * as AuthCreatePipeline from "./pipelines/auth.create.handlerPipeline";
-// Future dtoType example (uncomment when adding a new type):
-// import * as MyNewDtoCreatePipeline from "./pipelines/myNewDto.create.handlerPipeline";
+import * as AuthCreatePipeline from "./pipelines/create.handlerPipeline";
 
 export class AuthCreateController extends ControllerBase {
   constructor(app: AppBase) {
@@ -48,33 +47,31 @@ export class AuthCreateController extends ControllerBase {
         dtoType,
         requestId: ctx.get("requestId"),
       },
-      "selecting create pipeline"
+      "auth.create: selecting create pipeline"
     );
 
     switch (dtoType) {
       case "auth": {
-        this.seedHydrator(ctx, "auth", { validate: true });
+        // NOTE:
+        // - No DB work for this flow.
+        // - Pipeline handlers will:
+        //   1) Validate + hydrate AuthDto from wire bag envelope.
+        //   2) (Stub) Call user service via future SvcClient v3 to create the backing user.
         const steps = AuthCreatePipeline.getSteps(ctx, this);
-        await this.runPipeline(ctx, steps, { requireRegistry: true });
+        await this.runPipeline(ctx, steps, {
+          requireRegistry: true,
+        });
         break;
       }
 
-      // Future dtoType example:
-      // case "myNewDto": {
-      //   this.seedHydrator(ctx, "MyNewDto", { validate: true });
-      //   const steps = MyNewDtoCreatePipeline.getSteps(ctx, this);
-      //   await this.runPipeline(ctx, steps, { requireRegistry: true });
-      //   break;
-      // }
-
       default: {
-        // Seed a clear 501 problem into the context (ControllerBase.finalize will serialize)
+        // Seed a clear 501 problem into the context (ControllerBase.finalize will serialize).
         ctx.set("handlerStatus", "error");
         ctx.set("response.status", 501);
         ctx.set("response.body", {
           code: "NOT_IMPLEMENTED",
           title: "Not Implemented",
-          detail: `No create pipeline for dtoType='${dtoType}'`,
+          detail: `No create pipeline for dtoType='${dtoType}' on auth service.`,
           requestId: ctx.get("requestId"),
         });
 
@@ -85,7 +82,7 @@ export class AuthCreateController extends ControllerBase {
             dtoType,
             requestId: ctx.get("requestId"),
           },
-          "no create pipeline registered for dtoType"
+          "auth.create: no create pipeline registered for dtoType"
         );
       }
     }

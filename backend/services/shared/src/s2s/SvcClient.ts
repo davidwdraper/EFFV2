@@ -2,231 +2,311 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - LDDs:
+ *   - LDD-03 (envBootstrap & SvcClient)
+ *   - LDD-12 (SvcClient & S2S Contract Architecture)
+ *   - LDD-19 (S2S Protocol)
+ *   - LDD-33 (Security & Hardening)
  * - ADRs:
- *   - ADR-XXXX (SvcClient — single S2S door, slugKey-based routing)
+ *   - ADR-0040 (DTO-Only Persistence)
+ *   - ADR-0047 (DtoBag & Views)
+ *   - ADR-0050 (Wire Bag Envelope — canonical wire format)
+ *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *
  * Purpose:
- * - Mock (but structurally correct) Service-to-Service client.
- * - All S2S calls — including env-service — pass through this class.
- * - For now, base URLs are hardcoded for a small set of slugKeys (e.g., "env-service@1").
+ * - Canonical S2S HTTP client for all NV services.
+ * - Resolves targets via svcconfig, enforces call graph, and sends/receives
+ *   DtoBag-based wire envelopes over HTTP.
  *
- * Invariants:
- * - No JWT minting yet (KMS integration pending).
- * - No DTOs here; wire-level JSON only.
- * - No .env parsing; mock URLs are defined in-code.
+ * Notes:
+ * - This class is transport-only: it never inspects DTO internals.
+ * - KMS/JWT integration is pluggable via IKmsTokenFactory (placeholder for now).
  */
 
-import { URL } from "url";
+import type { DtoBag } from "../dto/DtoBag";
 
-export type SvcClientConfig = {
-  callerSlug: string;
-  callerVersion: number;
-};
+export interface WireBagJson {
+  items: unknown[];
+  meta?: Record<string, unknown>;
+}
 
-export type SvcClientCallOptions = {
-  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  path: string;
-  query?: Record<string, string | number | boolean | undefined>;
-  bodyJson?: unknown;
-  headers?: Record<string, string>;
+/**
+ * Result of resolving a target via svcconfig.
+ *
+ * This is intentionally abstracted away from svcconfig's concrete DTO shape.
+ */
+export interface SvcTarget {
+  baseUrl: string; // e.g. "https://svc-env-dev.internal:8443"
+  slug: string; // target slug ("env-service", "svcconfig", "auth", etc.)
+  version: number; // major API version (1, 2, ...)
+  isAuthorized: boolean; // whether the current caller may call this target
+  reasonIfNotAuthorized?: string;
+}
+
+/**
+ * svcconfig resolver abstraction.
+ *
+ * Implementations:
+ * - Call svcconfig directly (using a plain HTTP client).
+ * - Apply call-graph policy to determine isAuthorized.
+ * - Special-case svcconfig itself to avoid recursion through SvcClient.
+ */
+export interface ISvcconfigResolver {
+  resolveTarget(env: string, slug: string, version: number): Promise<SvcTarget>;
+}
+
+/**
+ * KMS/JWT token factory abstraction (placeholder).
+ *
+ * Current behavior:
+ * - Optional dependency: when not supplied, SvcClient omits the Authorization header.
+ *
+ * Future behavior:
+ * - Will become mandatory once verifyS2S is fully enforced across workers.
+ */
+export interface IKmsTokenFactory {
+  mintToken(input: {
+    env: string;
+    callerSlug: string;
+    targetSlug: string;
+    targetVersion: number;
+  }): Promise<string>;
+}
+
+/**
+ * Provides a requestId when one is not explicitly supplied.
+ * Typically wired to the per-request context or a UUID generator.
+ */
+export type RequestIdProvider = () => string;
+
+export interface SvcClientCallParams {
+  env: string;
+  slug: string; // target service slug
+  version: number;
+  dtoType: string;
+  op: string;
+  method: "GET" | "PUT" | "PATCH" | "POST" | "DELETE";
+  bag?: DtoBag<any>;
+  pathSuffix?: string; // optional override for `<dtoType>/<op>`
   requestId?: string;
+  extraHeaders?: Record<string, string>;
   timeoutMs?: number;
-};
+}
 
-export type SvcClientResponse<T = unknown> = {
-  status: number;
-  headers: Record<string, string>;
-  data: T;
-};
+/**
+ * Minimal logger interface used by SvcClient.
+ * Implementations are expected to be backed by the shared logger util.
+ */
+export interface ISvcClientLogger {
+  debug(msg: string, meta?: Record<string, unknown>): void;
+  info(msg: string, meta?: Record<string, unknown>): void;
+  warn(msg: string, meta?: Record<string, unknown>): void;
+  error(msg: string, meta?: Record<string, unknown>): void;
+}
 
+/**
+ * Canonical S2S client.
+ *
+ * Responsibilities:
+ * - Resolve target via svcconfig (through ISvcconfigResolver).
+ * - Enforce call graph authorization (reject unauthorized calls).
+ * - Build standard S2S headers (requestId, service name, version).
+ * - Serialize DtoBag via .toJson() for the request body when appropriate.
+ * - Execute the HTTP call and return the parsed wire bag JSON.
+ */
 export class SvcClient {
   private readonly callerSlug: string;
   private readonly callerVersion: number;
 
-  constructor(cfg: SvcClientConfig) {
-    this.callerSlug = cfg.callerSlug;
-    this.callerVersion = cfg.callerVersion;
+  constructor(options: {
+    callerSlug: string;
+    callerVersion: number;
+    logger: ISvcClientLogger;
+    svcconfigResolver: ISvcconfigResolver;
+    requestIdProvider: RequestIdProvider;
+    tokenFactory?: IKmsTokenFactory; // optional until S2S auth is wired
+  }) {
+    this.callerSlug = options.callerSlug;
+    this.callerVersion = options.callerVersion;
+    this.logger = options.logger;
+    this.svcconfigResolver = options.svcconfigResolver;
+    this.requestIdProvider = options.requestIdProvider;
+    this.tokenFactory = options.tokenFactory;
   }
 
+  private readonly logger: ISvcClientLogger;
+  private readonly svcconfigResolver: ISvcconfigResolver;
+  private readonly requestIdProvider: RequestIdProvider;
+  private readonly tokenFactory?: IKmsTokenFactory;
+
   /**
-   * Core S2S call.
+   * Execute a service-to-service call and return the wire bag JSON envelope.
    *
-   * @param slugKey - Target service key "<slug>@<version>", e.g. "env-service@1".
-   * @param options - Call options (path, method, headers, body, etc.).
+   * Callers are responsible for mapping the returned JSON back into DTOs.
    */
-  public async call<T = unknown>(
-    slugKey: string,
-    options: SvcClientCallOptions
-  ): Promise<SvcClientResponse<T>> {
-    const {
-      method = "GET",
-      path,
-      query,
-      bodyJson,
-      headers,
+  public async call(params: SvcClientCallParams): Promise<WireBagJson> {
+    const requestId = params.requestId ?? this.requestIdProvider();
+
+    this.logger.debug("SvcClient.call.begin", {
       requestId,
-    } = options;
-
-    if (!slugKey.includes("@")) {
-      throw new Error(
-        `SVC_CLIENT_INVALID_SLUGKEY: expected "<slug>@<version>", got "${slugKey}". ` +
-          "Ops: ensure callers pass slugKey like 'env-service@1'."
-      );
-    }
-
-    const [slug, verStr] = slugKey.split("@");
-    const version = Number(verStr);
-    if (!slug || !Number.isFinite(version)) {
-      throw new Error(
-        `SVC_CLIENT_INVALID_SLUGKEY: cannot parse slug/version from "${slugKey}". ` +
-          "Ops: slugKey must be '<slug>@<majorVersion>'."
-      );
-    }
-
-    const baseUrl = this.resolveBaseUrl(slugKey, slug, version);
-    const url = this.buildUrl(baseUrl, path, query);
-
-    const rid = requestId ?? this.generateRequestId(slug, version);
-
-    const stdHeaders: Record<string, string> = {
-      "x-service-name": this.callerSlug,
-      "x-api-version": String(this.callerVersion),
-      "x-request-id": rid,
-      // TODO: add Authorization header once KMS-based JWT minting is implemented.
-    };
-
-    const body = bodyJson !== undefined ? JSON.stringify(bodyJson) : undefined;
-    if (body && !stdHeaders["content-type"]) {
-      stdHeaders["content-type"] = "application/json";
-    }
-
-    const mergedHeaders: Record<string, string> = {
-      ...stdHeaders,
-      ...(headers ?? {}),
-    };
-
-    let resp: Response;
-    try {
-      resp = await fetch(url.toString(), {
-        method,
-        headers: mergedHeaders,
-        body,
-      });
-    } catch (err) {
-      throw new Error(
-        `SVC_CLIENT_NETWORK_ERROR: Failed to call "${slugKey}" at ${url.toString()}. ` +
-          "Ops: verify network connectivity, service deployment, and mock base URL configuration. " +
-          `Detail: ${(err as Error)?.message ?? String(err)}`
-      );
-    }
-
-    const data = (await this.parseJsonSafe(resp)) as T;
-    const headerObj: Record<string, string> = {};
-    resp.headers.forEach((value, key) => {
-      headerObj[key.toLowerCase()] = value;
+      callerSlug: this.callerSlug,
+      callerVersion: this.callerVersion,
+      env: params.env,
+      targetSlug: params.slug,
+      targetVersion: params.version,
+      dtoType: params.dtoType,
+      op: params.op,
+      method: params.method,
     });
 
-    return {
-      status: resp.status,
-      headers: headerObj,
-      data,
+    const target = await this.svcconfigResolver.resolveTarget(
+      params.env,
+      params.slug,
+      params.version
+    );
+
+    if (!target.isAuthorized) {
+      const reason = target.reasonIfNotAuthorized ?? "No reason provided";
+      this.logger.warn("SvcClient.call.unauthorized", {
+        requestId,
+        env: params.env,
+        callerSlug: this.callerSlug,
+        targetSlug: target.slug,
+        targetVersion: target.version,
+        reason,
+      });
+
+      throw new Error(
+        `SvcClient unauthorized call: caller="${this.callerSlug}" → target="${target.slug}@v${target.version}" in env="${params.env}". Reason: ${reason}`
+      );
+    }
+
+    const url = this.buildUrl(target.baseUrl, params);
+
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "x-request-id": requestId,
+      "x-service-name": this.callerSlug,
+      "x-api-version": String(this.callerVersion),
+      ...(params.extraHeaders ?? {}),
     };
+
+    if (this.tokenFactory) {
+      const token = await this.tokenFactory.mintToken({
+        env: params.env,
+        callerSlug: this.callerSlug,
+        targetSlug: target.slug,
+        targetVersion: target.version,
+      });
+
+      // NOTE: KMS/JWT integration placeholder — see ADR-0057.
+      headers["authorization"] = `Bearer ${token}`;
+    }
+
+    const body = this.buildBody(params);
+
+    const controller = new AbortController();
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutMs = params.timeoutMs ?? 30_000;
+
+    if (timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: params.method,
+        headers,
+        body,
+        signal: controller.signal,
+      });
+
+      const responseText = await response.text();
+      let parsed: unknown;
+
+      try {
+        parsed = responseText ? JSON.parse(responseText) : undefined;
+      } catch (err) {
+        this.logger.error("SvcClient.call.response.jsonError", {
+          requestId,
+          targetSlug: target.slug,
+          status: response.status,
+          bodySnippet: responseText.slice(0, 512),
+        });
+        throw new Error(
+          `SvcClient: Failed to parse JSON from target="${target.slug}" (status=${response.status}).`
+        );
+      }
+
+      if (!response.ok) {
+        this.logger.warn("SvcClient.call.non2xx", {
+          requestId,
+          targetSlug: target.slug,
+          status: response.status,
+          body: parsed,
+        });
+
+        // We assume Problem+JSON, but we don't enforce schema here.
+        throw new Error(
+          `SvcClient: Non-success response from target="${target.slug}" (status=${response.status}). See logs for Problem+JSON payload.`
+        );
+      }
+
+      this.logger.info("SvcClient.call.success", {
+        requestId,
+        targetSlug: target.slug,
+        status: response.status,
+      });
+
+      const wire = (parsed ?? {}) as WireBagJson;
+      return wire;
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   /**
-   * Resolve the base URL for a given slugKey.
+   * Build the target URL based on the baseUrl and the route convention.
    *
-   * MOCK implementation:
-   * - Uses an in-file mapping of slugKey → base URL.
-   * - Unknown slugKeys throw with an Ops message.
+   * Convention (SOP/LDD):
+   *   http(s)://host:port/api/<slug>/v<version>/<dtoType>/<op>
    *
-   * Later, this logic will be replaced with a call to svcconfig.
+   * Callers may override the suffix via `pathSuffix` for specialized endpoints.
    */
-  private resolveBaseUrl(
-    slugKey: string,
-    slug: string,
-    version: number
-  ): string {
-    // Hard-coded mock map; adjust as needed for local/dev topology.
-    const MOCK_BASE_URLS: Record<string, string> = {
-      // Example: env-service v1 running locally on 4010
-      "env-service@1": "http://127.0.0.1:4015",
-      // Add more services here as they come online:
-      "xxx@1": "http://127.0.0.1:4016",
-    };
+  private buildUrl(baseUrl: string, params: SvcClientCallParams): string {
+    const suffix =
+      params.pathSuffix ??
+      `${encodeURIComponent(params.dtoType)}/${encodeURIComponent(params.op)}`;
 
-    const url = MOCK_BASE_URLS[slugKey];
-    if (!url) {
-      throw new Error(
-        `******** SVC_CLIENT_MOCK_UNKNOWN_TARGET: No mock base URL mapping for slugKey "${slugKey}". ` +
-          "Ops: until svcconfig is implemented, only a small set of slugKeys are supported by SvcClient. " +
-          `Requested slug="${slug}", version=${version}. ` +
-          "Add an entry to MOCK_BASE_URLS in SvcClient to enable this target."
-      );
-    }
-
-    return url;
+    const trimmedBase = baseUrl.replace(/\/+$/, "");
+    return `${trimmedBase}/api/${encodeURIComponent(params.slug)}/v${
+      params.version
+    }/${suffix}`;
   }
 
-  private buildUrl(
-    baseUrl: string,
-    path: string,
-    query?: Record<string, string | number | boolean | undefined>
-  ): URL {
-    if (!path.startsWith("/")) {
-      throw new Error(
-        `SVC_CLIENT_INVALID_PATH: Expected absolute path starting with '/', got "${path}". ` +
-          "Ops: fix the calling code to pass a fully-qualified path."
-      );
+  /**
+   * Build the JSON request body from the provided DtoBag, if applicable.
+   *
+   * - For GET requests: no body is sent, regardless of bag presence.
+   * - For non-GET requests:
+   *   - If a bag is provided, we serialize bag.toJson().
+   *   - If no bag is provided, we send no body.
+   *
+   * The wire format is defined by ADR-0050 (Wire Bag Envelope).
+   */
+  private buildBody(params: SvcClientCallParams): string | undefined {
+    if (params.method === "GET") {
+      return undefined;
     }
 
-    let url: URL;
-    try {
-      url = new URL(baseUrl);
-    } catch (err) {
-      throw new Error(
-        `SVC_CLIENT_INVALID_BASEURL: Failed to parse base URL "${baseUrl}". ` +
-          "Ops: correct the mock base URL mapping in SvcClient. " +
-          `Detail: ${(err as Error)?.message ?? String(err)}`
-      );
+    if (!params.bag) {
+      return undefined;
     }
 
-    url.pathname = path;
-
-    if (query) {
-      for (const [key, value] of Object.entries(query)) {
-        if (value === undefined) continue;
-        url.searchParams.set(key, String(value));
-      }
-    }
-
-    return url;
-  }
-
-  private async parseJsonSafe(resp: Response): Promise<unknown> {
-    const contentType = resp.headers.get("content-type") || "";
-    if (!contentType.toLowerCase().includes("application/json")) {
-      const text = await resp.text().catch(() => "");
-      return {
-        _nonJson: true,
-        text,
-      };
-    }
-
-    try {
-      return await resp.json();
-    } catch (err) {
-      throw new Error(
-        `SVC_CLIENT_JSON_PARSE_ERROR: Failed to parse JSON response from target service. ` +
-          "Ops: verify that the target endpoint returns valid JSON. " +
-          `Detail: ${(err as Error)?.message ?? String(err)}`
-      );
-    }
-  }
-
-  private generateRequestId(slug: string, version: number): string {
-    const now = Date.now().toString(36);
-    const rand = Math.floor(Math.random() * 1_000_000).toString(36);
-    return `${slug}-${version}-${now}-${rand}`;
+    // We trust DtoBag.toJson() to emit the canonical wire envelope.
+    const json = params.bag.toJson();
+    return JSON.stringify(json);
   }
 }

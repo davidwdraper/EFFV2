@@ -2,16 +2,26 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - ADRs: 0041/0042/0043/0049/0050/0057
+ * - ADRs:
+ *   - ADR-0041 (Per-route controllers; single-purpose handlers)
+ *   - ADR-0042 (HandlerContext Bus — KISS)
+ *   - ADR-0043 (Finalize mapping; controller builds wire payload)
+ *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
+ *   - ADR-0049 (DTO Registry & Wire Discrimination)
+ *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
  * - Populate a DtoBag from a wire bag envelope (one or many).
  * - Hydrates DTOs via Registry.resolveCtorByType(type).fromJson(json, { validate }).
  * - Sets instance collectionName on each DTO using Registry.dbCollectionNameByType(type).
  *
- * Notes:
- * - Accepts both legacy `{ type, doc:{...} }` and new `{ type, ...dtoFields }` bag items.
- * - Normalizes `${dtoType}Id` → `id` pre-hydration so DbWriter sees the client-supplied id.
+ * Invariants:
+ * - Edges are bag-only (payload { items:[{ type:"<dtoType>", ...}] } ).
+ * - Handler never builds wire responses; it only sets ctx["bag"] on success.
+ * - On error, sets:
+ *     handlerStatus = "error"
+ *     response.status = <httpStatus>
+ *     response.body   = Problem+JSON-like object
  */
 
 import { HandlerBase } from "./HandlerBase";
@@ -31,15 +41,16 @@ export class BagPopulateGetHandler extends HandlerBase {
 
     if (!routeDtoType) {
       this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 400);
-      this.ctx.set("error", {
+      this.ctx.set("response.status", 400);
+      this.ctx.set("response.body", {
         code: "BAD_REQUEST",
         title: "Bad Request",
         detail: "Missing required path parameter ':dtoType'.",
+        requestId: this.ctx.get("requestId"),
       });
       this.log.warn(
         { event: "bad_request", reason: "no_dtoType" },
-        "bag.populate"
+        "bag.populate — missing dtoType on route"
       );
       return;
     }
@@ -47,16 +58,17 @@ export class BagPopulateGetHandler extends HandlerBase {
     const items = Array.isArray(body?.items) ? body.items : [];
     if (items.length === 0) {
       this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 400);
-      this.ctx.set("error", {
+      this.ctx.set("response.status", 400);
+      this.ctx.set("response.body", {
         code: "BAD_REQUEST_BODY",
         title: "Bad Request",
         detail:
           "Body must be a bag envelope: { items: [ { type: string, doc?: {...} | <inline fields> } ], meta?: {...} }",
+        requestId: this.ctx.get("requestId"),
       });
       this.log.warn(
         { event: "bad_request", reason: "empty_items" },
-        "bag.populate"
+        "bag.populate — empty or missing items[]"
       );
       return;
     }
@@ -70,28 +82,29 @@ export class BagPopulateGetHandler extends HandlerBase {
       const wType = w?.type;
       if (wType !== routeDtoType) {
         this.ctx.set("handlerStatus", "error");
-        this.ctx.set("status", 400);
-        this.ctx.set("error", {
+        this.ctx.set("response.status", 400);
+        this.ctx.set("response.body", {
           code: "TYPE_MISMATCH",
           title: "Bad Request",
-          detail: `Bag item type '${wType}' does not match route dtoType '${routeDtoType}'`,
+          detail: `Bag item type '${wType}' does not match route dtoType '${routeDtoType}'.`,
+          requestId: this.ctx.get("requestId"),
         });
         this.log.warn(
           { event: "type_mismatch", wType, routeDtoType },
-          "bag.populate"
+          "bag.populate — wire type does not match route dtoType"
         );
         return;
       }
 
-      // Support legacy `{doc:{...}}` and new inline `{ ... }`
+      // Support legacy `{ doc:{...} }` and new inline `{ ... }`
       const raw =
         (w && typeof w === "object" && "doc" in w ? (w as any).doc : w) ?? {};
       const json: Record<string, unknown> = {
         ...(raw as Record<string, unknown>),
       };
 
-      // ✅ Normalize alias key: `${dtoType}Id` → `id` (only if `id` not already present)
-      //    Example: "xxxId" -> "id"
+      // Normalize alias key: `${dtoType}Id` → `id` (only if `id` not already present)
+      // Example: "userId" -> "id"
       const aliasKey = `${routeDtoType}Id`;
       if (
         json.id == null &&
@@ -101,7 +114,7 @@ export class BagPopulateGetHandler extends HandlerBase {
         json.id = String((json as any)[aliasKey]).trim();
       }
 
-      // Hydrate
+      // Hydrate DTO from wire JSON
       const dto = ctor.fromJson(json, { mode: "wire", validate });
       if (typeof (dto as any).setCollectionName === "function") {
         (dto as any).setCollectionName(coll);
@@ -112,7 +125,6 @@ export class BagPopulateGetHandler extends HandlerBase {
           event: "hydrate_item",
           type: routeDtoType,
           wireId: (json as any)?.id ?? (json as any)?.[aliasKey] ?? "(none)",
-          dtoId: "(pending)",
         },
         "bag.populate: wire→dto trace"
       );
@@ -131,9 +143,10 @@ export class BagPopulateGetHandler extends HandlerBase {
 
     this.ctx.set("bag", bag);
     this.ctx.set("handlerStatus", "ok");
+
     this.log.debug(
-      { event: "bag_populated", items: dtos.length, limit: dtos.length },
-      "Bag populated from wire envelope"
+      { event: "bag_populated", items: dtos.length, dtoType: routeDtoType },
+      "bag.populate — DtoBag created from wire envelope"
     );
   }
 }

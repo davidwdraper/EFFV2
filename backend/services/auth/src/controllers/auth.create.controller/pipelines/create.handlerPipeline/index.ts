@@ -16,6 +16,7 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/ControllerBase";
 
 import { CreateAuthDtoHandler } from "./createAuthDto.handler";
+import { AuthToUserDtoMapperHandler } from "./auth.toUser.mapper.handler";
 import { S2sClientCallHandler } from "@nv/shared/http/handlers/s2sClientCall.handler";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
@@ -29,7 +30,10 @@ export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
     // 1) Validate wire bag envelope + hydrate AuthDto from inbound payload via Registry.
     new CreateAuthDtoHandler(ctx, controller),
 
-    // 2) Generic S2S hop (stubbed until SvcClient v3 exists).
+    // 2) Map the AuthDto from the wire to a UserDto sent the user service
+    new AuthToUserDtoMapperHandler(ctx, controller),
+
+    // 3) Generic S2S hop (stubbed until SvcClient v3 exists).
     new S2sClientCallHandler(ctx, controller),
   ];
 }

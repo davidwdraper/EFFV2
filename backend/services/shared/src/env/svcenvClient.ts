@@ -13,7 +13,7 @@
  * - All transport concerns (URL resolution, headers, requestId, future JWT) are
  *   delegated to SvcClient.
  *
- * Current wire contract (v1, updated):
+ * Wire contract (v1, updated):
  * - DTO is the sole source of truth for shape; no secondary "doc" envelope.
  * - EnvServiceDto.toJson() produces the JSON items; EnvServiceDto.fromJson()
  *   hydrates them.
@@ -24,13 +24,14 @@
 
 import { DtoBag } from "../dto/DtoBag";
 import { EnvServiceDto } from "../dto/env-service.dto";
-import { SvcClient } from "../s2s/SvcClient";
+import { SvcClient, type WireBagJson } from "../s2s/SvcClient";
 
 export type SvcEnvClientConfig = {
   /** Underlying SvcClient used for all S2S calls. */
   svcClient: SvcClient;
   /**
    * Target env-service slugKey. Default is "env-service@1".
+   * Format: "<slug>@<version>" (e.g., "env-service@1").
    * When env-service v2 arrives, this can be overridden.
    */
   envServiceSlugKey?: string;
@@ -43,22 +44,30 @@ export type GetCurrentEnvArgs = {
 
 export type GetConfigArgs = {
   env: string;
-  slug: string;
-  version: number;
-};
-
-type EnvConfigWire = {
-  items: unknown[];
-  meta?: unknown;
+  slug: string; // target service slug (e.g., "gateway", "auth")
+  version: number; // target service version
 };
 
 export class SvcEnvClient {
   private readonly svcClient: SvcClient;
-  private readonly envServiceSlugKey: string;
+  private readonly envServiceSlug: string;
+  private readonly envServiceVersion: number;
 
   constructor(cfg: SvcEnvClientConfig) {
     this.svcClient = cfg.svcClient;
-    this.envServiceSlugKey = cfg.envServiceSlugKey?.trim() || "env-service@1";
+
+    const slugKey = cfg.envServiceSlugKey?.trim() || "env-service@1";
+    const [slugPart, versionPart] = slugKey.split("@");
+
+    this.envServiceSlug =
+      slugPart && slugPart.trim().length > 0 ? slugPart.trim() : "env-service";
+
+    const fallbackVersion = 1;
+    const parsed = versionPart
+      ? parseInt(versionPart.trim(), 10)
+      : fallbackVersion;
+    this.envServiceVersion =
+      Number.isNaN(parsed) || parsed <= 0 ? fallbackVersion : parsed;
   }
 
   /**
@@ -116,37 +125,45 @@ export class SvcEnvClient {
    *   DtoBag<EnvServiceDto>
    */
   public async getConfig(args: GetConfigArgs): Promise<DtoBag<EnvServiceDto>> {
-    const { env, slug, version } = args;
+    const { env, slug: targetServiceSlug, version } = args;
 
-    const res = await this.svcClient.call<EnvConfigWire>(
-      this.envServiceSlugKey,
-      {
+    // Build query string for the env-service config endpoint.
+    const query =
+      `env=${encodeURIComponent(env)}` +
+      `&slug=${encodeURIComponent(targetServiceSlug)}` +
+      `&version=${encodeURIComponent(String(version))}`;
+
+    let wire: WireBagJson;
+    try {
+      wire = await this.svcClient.call({
+        env,
+        slug: this.envServiceSlug, // target: env-service
+        version: this.envServiceVersion, // env-service API version
+        dtoType: "env-service",
+        op: "config",
         method: "GET",
-        path: "/api/env-service/v1/env-service/config",
-        query: { env, slug, version },
-      }
-    );
-
-    if (res.status < 200 || res.status >= 300) {
+        // Override the default "<dtoType>/<op>" suffix so we can attach query params.
+        pathSuffix: `env-service/config?${query}`,
+      });
+    } catch (err) {
       throw new Error(
-        `SVCENV_CONFIG_HTTP_${res.status}: env-service failed to return config bag ` +
-          `for env="${env}", slug="${slug}", version=${version}. ` +
-          "Ops: confirm a matching config document exists and that env-service indexes are healthy."
+        "SVCENV_CONFIG_HTTP: failed to call env-service for config. " +
+          `Ops: ensure env-service is reachable and svcconfig contains a valid entry for ` +
+          `"${this.envServiceSlug}@v${this.envServiceVersion}" in env="${env}". ` +
+          `Detail: ${(err as Error)?.message ?? String(err)}`
       );
     }
 
-    const data = res.data;
-    if (!data || !Array.isArray(data.items)) {
+    if (!wire || !Array.isArray(wire.items)) {
       throw new Error(
         "SVCENV_CONFIG_INVALID_RESPONSE: expected { items: [...] } where each item " +
-          "is EnvServiceDto JSON. Ops: verify /env-service/config returns a JSON object " +
-          "with an 'items' array."
+          "is EnvServiceDto JSON. Ops: verify env-service 'config' handler and DTO.toJson() output."
       );
     }
 
     const items: EnvServiceDto[] = [];
 
-    for (const item of data.items) {
+    for (const item of wire.items) {
       if (!item || typeof item !== "object") {
         throw new Error(
           "SVCENV_CONFIG_INVALID_ITEM: bag item is not a JSON object. " +
@@ -171,7 +188,8 @@ export class SvcEnvClient {
     if (items.length === 0) {
       throw new Error(
         "SVCENV_CONFIG_EMPTY_BAG: env-service returned an empty items array. " +
-          `Ops: ensure at least one EnvServiceDto document exists for env="${env}", slug="${slug}", version=${version}.`
+          `Ops: ensure at least one EnvServiceDto document exists for env="${env}", ` +
+          `slug="${targetServiceSlug}", version=${version}.`
       );
     }
 

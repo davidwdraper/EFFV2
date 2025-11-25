@@ -1,4 +1,4 @@
-// backend/services/user/src/index.ts
+// backend/services/prompt/src/index.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -7,7 +7,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *
  * Purpose (template):
- * - Pure orchestration entrypoint for a CRUD-style service cloned from user.
+ * - Pure orchestration entrypoint for a CRUD-style service cloned from prompt.
  * - Delegates DB + config loading to envBootstrap().
  * - Unwraps the EnvServiceDto (from envBag) for createApp().
  */
@@ -22,9 +22,9 @@ import type { DtoBag } from "@nv/shared/dto/DtoBag";
 // ———————————————————————————————————————————————————————————————
 // Service identity (template — overridden by clone slug/name)
 // ———————————————————————————————————————————————————————————————
-const SERVICE_SLUG = "user";
+const SERVICE_SLUG = "prompt";
 const SERVICE_VERSION = 1;
-const LOG_FILE = path.resolve(process.cwd(), "user-startup-error.log");
+const LOG_FILE = path.resolve(process.cwd(), "prompt-startup-error.log");
 
 (async () => {
   try {
@@ -33,7 +33,6 @@ const LOG_FILE = path.resolve(process.cwd(), "user-startup-error.log");
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
       logFile: LOG_FILE,
-      checkDb: true,
     });
 
     // Step 2: Extract the primary EnvServiceDto from the bag (should always be exactly one)

@@ -29,10 +29,11 @@ const LOG_FILE = path.resolve(process.cwd(), "svcconfig-startup-error.log");
 (async () => {
   try {
     // Step 1: Bootstrap and load configuration (env-service-backed config)
-    const { envBag, envReloader, host, port } = await envBootstrap({
+    const { envName, envBag, envReloader, host, port } = await envBootstrap({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
       logFile: LOG_FILE,
+      checkDb: true,
     });
 
     // Step 2: Extract the primary EnvServiceDto from the bag (should always be exactly one)
@@ -67,6 +68,7 @@ const LOG_FILE = path.resolve(process.cwd(), "svcconfig-startup-error.log");
     const { app } = await createApp({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
+      envName, // <- logical env for this process ("dev", "stage", "prod")
       envDto: primary,
       envReloader: envReloaderForApp,
     });
@@ -76,6 +78,7 @@ const LOG_FILE = path.resolve(process.cwd(), "svcconfig-startup-error.log");
       console.info("[entrypoint] http_listening", {
         slug: SERVICE_SLUG,
         version: SERVICE_VERSION,
+        env: envName,
         host,
         port,
       });

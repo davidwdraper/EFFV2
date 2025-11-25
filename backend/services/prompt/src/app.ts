@@ -1,17 +1,17 @@
-// backend/services/svcconfig/src/app.ts
+// backend/services/prompt/src/app.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (SvcEnvDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
- * Purpose:
+ * Purpose (template):
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - For svcconfig, DB/index ensure is ON (checkDb=true).
+ * - DB-backed CRUD template: requires NV_MONGO_* and index ensure at boot (checkDb=true).
  */
 
 import type { Express, Router } from "express";
@@ -22,22 +22,16 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
-import { buildSvcconfigRouter } from "./routes/svcconfig.route";
+import { buildPromptRouter } from "./routes/prompt.route";
 
 type CreateAppOptions = {
   slug: string;
   version: number;
-  /**
-   * Logical environment name for this process (e.g., "dev", "stage", "prod").
-   * - Passed through from envBootstrap.envName.
-   * - Any SvcClient created inside this service should use this value for `env`.
-   */
-  envName: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 };
 
-class SvcconfigApp extends AppBase {
+class PromptApp extends AppBase {
   /** Concrete per-service DTO registry (explicit, no barrels). */
   private readonly registry: Registry;
 
@@ -48,10 +42,9 @@ class SvcconfigApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
-      envName: opts.envName,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // svcconfig is DB-backed: requires NV_MONGO_* and index ensure at boot.
+      // prompt is DB-backed: needs NV_MONGO_* and ensureIndexes at boot.
       checkDb: true,
     });
 
@@ -71,9 +64,9 @@ class SvcconfigApp extends AppBase {
       throw new Error("Base path missing — check AppBase.healthBasePath()");
     }
 
-    const r: Router = buildSvcconfigRouter(this);
+    const r: Router = buildPromptRouter(this);
     this.app.use(base, r);
-    this.log.info({ base, env: this.getEnvName() }, "routes mounted");
+    this.log.info({ base }, "routes mounted");
   }
 }
 
@@ -81,8 +74,8 @@ class SvcconfigApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new SvcconfigApp(opts);
-  // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
+  const app = new PromptApp(opts);
+  // AppBase.boot() handles registry diagnostics + ensureIndexes (checkDb=true).
   await app.boot();
   return { app: app.instance };
 }

@@ -19,6 +19,7 @@
  * - Health mounts FIRST (never gated).
  * - /env/reload mounts under versioned base and is intended to be policy-gated (UserType >= 5) by RoutePolicy.
  * - AppBase owns the env DTO reference; services read via getters or pass it to their own layers.
+ * - AppBase also owns the logical envName (e.g., "dev", "stage", "prod") for this process.
  */
 
 import type { Express, Request, Response, NextFunction } from "express";
@@ -35,6 +36,12 @@ import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 export type AppBaseCtor = {
   service: string;
   version: number;
+  /**
+   * Logical environment name for this process (e.g., "dev", "stage", "prod").
+   * - Derived by envBootstrap (or equivalent) and passed through to the app.
+   * - SvcClient calls inside the service should use this for the `env` parameter.
+   */
+  envName: string;
   envDto: EnvServiceDto;
   /**
    * Called by the /env/reload endpoint to fetch & validate a fresh EnvServiceDto.
@@ -59,6 +66,10 @@ export abstract class AppBase extends ServiceBase {
   private _booted = false;
 
   protected readonly version: number;
+
+  /** Logical environment for this process (e.g., "dev", "stage", "prod"). */
+  private readonly envName: string;
+
   private _envDto: EnvServiceDto;
   private readonly envReloader: () => Promise<EnvServiceDto>;
 
@@ -68,6 +79,7 @@ export abstract class AppBase extends ServiceBase {
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
     this.version = opts.version;
+    this.envName = opts.envName;
     this._envDto = opts.envDto;
     this.envReloader = opts.envReloader;
     this.checkDb = opts.checkDb;
@@ -86,9 +98,17 @@ export abstract class AppBase extends ServiceBase {
     return this._envDto;
   }
 
-  /** Public accessors so controllers/handlers can retrieve the DTO instance. */
+  /** Public accessor for the EnvServiceDto instance. */
   public get svcEnv(): EnvServiceDto {
     return this._envDto;
+  }
+
+  /**
+   * Logical environment accessor for callers that need to construct SvcClient
+   * or make env-aware decisions.
+   */
+  public getEnvName(): string {
+    return this.envName;
   }
 
   /**
@@ -134,7 +154,7 @@ export abstract class AppBase extends ServiceBase {
     this.mountPostRouting();
 
     this._booted = true;
-    this.log.info({ service: this.service }, "app booted");
+    this.log.info({ service: this.service, env: this.envName }, "app booted");
   }
 
   // ─────────────── Hooks (override sparingly) ───────────────
@@ -161,6 +181,7 @@ export abstract class AppBase extends ServiceBase {
         {
           service: this.service,
           component: this.constructor.name,
+          env: this.envName,
         },
         "boot: CHECK_DB=false — skipping registry.listRegistered() and registry.ensureIndexes() (MOS, no DB required)"
       );
@@ -173,13 +194,13 @@ export abstract class AppBase extends ServiceBase {
       if (typeof listFn === "function") {
         const listed = listFn.call(registry); // [{ type, collection }]
         this.log.info(
-          { registry: listed },
+          { registry: listed, env: this.envName },
           "boot: registry listRegistered() — types & collections"
         );
       }
     } catch (err) {
       this.log.warn(
-        { err: (err as Error)?.message },
+        { err: (err as Error)?.message, env: this.envName },
         "boot: registry.listRegistered() failed — continuing to index ensure"
       );
     }
@@ -187,7 +208,11 @@ export abstract class AppBase extends ServiceBase {
     // 2) Ensure indexes via Registry. On failure: log rich context, then rethrow (fail-fast).
     try {
       this.log.info(
-        { service: this.service, component: this.constructor.name },
+        {
+          service: this.service,
+          component: this.constructor.name,
+          env: this.envName,
+        },
         "boot: ensuring indexes via registry.ensureIndexes()"
       );
 
@@ -201,6 +226,7 @@ export abstract class AppBase extends ServiceBase {
         {
           service: this.service,
           component: this.constructor.name,
+          env: this.envName,
           err: message,
           hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in env-service config, DTO.indexHints[], and connectivity. Service will not start without indexes.",
         },
@@ -277,6 +303,7 @@ export abstract class AppBase extends ServiceBase {
       (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
         this.log.error(
           {
+            env: this.envName,
             error:
               err instanceof Error
                 ? { message: err.message, stack: err.stack }
@@ -309,6 +336,7 @@ export abstract class AppBase extends ServiceBase {
           ok: true,
           service: this.service,
           version: this.version,
+          env: this.envName,
           ready,
           ts: new Date().toISOString(),
         });
@@ -317,12 +345,13 @@ export abstract class AppBase extends ServiceBase {
           ok: true,
           service: this.service,
           version: this.version,
+          env: this.envName,
           ready: false,
           ts: new Date().toISOString(),
         });
       }
     });
-    this.log.info({ path }, "health mounted");
+    this.log.info({ path, env: this.envName }, "health mounted");
   }
 
   /**
@@ -345,6 +374,7 @@ export abstract class AppBase extends ServiceBase {
         return res.status(200).json({
           ok: true,
           reloadedAt: new Date().toISOString(),
+          processEnv: this.envName,
           from: { env: fromEnv, slug: fromSlug, version: fromVersion },
           to: { env: fresh.env, slug: fresh.slug, version: fresh.version },
         });
@@ -359,14 +389,14 @@ export abstract class AppBase extends ServiceBase {
         });
       }
     });
-    this.log.info({ path }, "env reload mounted");
+    this.log.info({ path, env: this.envName }, "env reload mounted");
   }
 
   /** Expose the Express instance to the entrypoint (after boot). */
   public get instance(): Express {
     if (!this._booted) {
       throw new Error(
-        `[this.service] App not booted. Call and await app.boot() before using instance.`
+        `[${this.service}] App not booted. Call and await app.boot() before using instance.`
       );
     }
     return this.app;

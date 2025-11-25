@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// backend/tools/scripts/env-service-clone.mjs
 
 /**
  * CLI: env-service clone

@@ -33,6 +33,7 @@ const LOG_FILE = path.resolve(process.cwd(), "auth-startup-error.log");
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
       logFile: LOG_FILE,
+      checkDb: false,
     });
 
     // Step 2: Extract the primary EnvServiceDto from the bag (should always be exactly one)

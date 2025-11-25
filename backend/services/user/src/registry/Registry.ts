@@ -1,4 +1,4 @@
-// backend/services/auth/src/registry/Registry.ts
+// backend/services/user/src/registry/Registry.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -19,7 +19,7 @@
  */
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
-import { AuthDto } from "@nv/shared/dto/auth.dto";
+import { UserDto } from "@nv/shared/dto/user.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
@@ -30,11 +30,11 @@ export class Registry extends ServiceRegistryBase {
 
   /**
    * Explicit map of registry type keys → DTO constructors.
-   * Keys are the stable wire/type identifiers (e.g., "auth").
+   * Keys are the stable wire/type identifiers (e.g., "user").
    */
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
-      ["auth"]: AuthDto as unknown as DtoCtor<IDto>,
+      ["user"]: UserDto as unknown as DtoCtor<IDto>,
       // add new DTOs here as you grow the service:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,
     };
@@ -42,17 +42,17 @@ export class Registry extends ServiceRegistryBase {
 
   // ─────────────── Convenience constructors (optional) ───────────────
 
-  /** Create a new AuthDto instance with a seeded collection. */
-  public newAuthDto(): AuthDto {
-    const dto = new AuthDto(this.secret);
-    dto.setCollectionName(AuthDto.dbCollectionName());
+  /** Create a new UserDto instance with a seeded collection. */
+  public newUserDto(): UserDto {
+    const dto = new UserDto(this.secret);
+    dto.setCollectionName(UserDto.dbCollectionName());
     return dto;
   }
 
-  /** Hydrate an AuthDto from JSON (validates if requested) and seed collection. */
-  public fromJsonAuth(json: unknown, opts?: { validate?: boolean }): AuthDto {
-    const dto = AuthDto.fromJson(json, { validate: !!opts?.validate });
-    dto.setCollectionName(AuthDto.dbCollectionName());
+  /** Hydrate an UserDto from JSON (validates if requested) and seed collection. */
+  public fromJsonUser(json: unknown, opts?: { validate?: boolean }): UserDto {
+    const dto = UserDto.fromJson(json, { validate: !!opts?.validate });
+    dto.setCollectionName(UserDto.dbCollectionName());
     return dto;
   }
 }

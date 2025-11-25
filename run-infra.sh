@@ -42,14 +42,7 @@ echo "   ENV_FILE=$ENV_FILE"
 # ======= Service list (current reality) =====================================
 SERVICES=(
   "env-service|backend/services/env-service|pnpm dev"
-  #"t_entity_crud|backend/services/t_entity_crud|pnpm dev"
-  #"svcfacilitator|backend/services/svcfacilitator|pnpm dev"
-  #"gateway|backend/services/gateway|pnpm dev"
-  #"auth|backend/services/auth|pnpm dev"
-  #"user|backend/services/user|pnpm dev"
-  #"audit|backend/services/audit|pnpm dev"
-  #"jwks|backend/services/jwks|pnpm dev"
-
+  "svcconfig|backend/services/svcconfig|pnpm dev"
 )
 
 # ======= Helpers =============================================================
@@ -58,7 +51,7 @@ has_cmd() { command -v "$1" >/dev/null 2>&1; }
 trim() { echo "$1" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
 mk_crypto_key() { local proj="$1" loc="$2" ring="$3" key="$4"; echo "projects/${proj}/locations/${loc}/keyRings/${ring}/cryptoKeys/${key}"; }
 
-# ======= Gateway env file path (for optional --test KMS export) =============
+# ======= Gateway env file path ==============================================
 GW_ENV_FILE_DEFAULT="$ROOT/backend/services/gateway/.env.dev"
 GW_ENV_FILE="${GATEWAY_ENV:-$GW_ENV_FILE_DEFAULT}"
 
@@ -102,7 +95,6 @@ fi
 [[ "$MODE" == "dev" ]] || { echo "❌ Invalid mode. Usage: ENV_FILE=.env.dev ./scripts/run.sh [--test] [--shared] [dev|docker]"; exit 1; }
 [[ -f "$ENV_FILE" ]] || { echo "❌ ENV_FILE not found: $ENV_FILE"; exit 1; }
 
-# ---- Parity guard: require ADC via SA file in all environments --------------
 if [[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" || ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]]; then
   echo "❌ GOOGLE_APPLICATION_CREDENTIALS not set or file missing."
   echo "   Example: export GOOGLE_APPLICATION_CREDENTIALS=\"\$HOME/.config/nowvibin/gateway-dev.json\""
@@ -137,13 +129,11 @@ else
   echo "❌ Shared package not found at $SHARED_DIR"; exit 1
 fi
 
-# ======= Optional: exit early when --shared ==================================
 if [[ $SHARED_ONLY -eq 1 ]]; then
   echo "🏁 --shared specified: exiting after @nv/shared build."
   exit 0
 fi
 
-# ======= Optional: sync ports step ==========================================
 if [[ -f "$ROOT/scripts/sync/sync_ports_from_svcconfig.cjs" ]]; then
   echo "🔧 Syncing service ports from svcconfig → .env.dev (PORT=…)…"
   node "$ROOT/scripts/sync/sync_ports_from_svcconfig.cjs" || echo "⚠️  port sync script failed or not applicable"
@@ -152,21 +142,18 @@ else
   echo "ℹ️  No svcconfig port sync script found; skipping."
 fi
 
-# ======= Launch/Shutdown framework ==========================================
 mkdir -p "$ROOT/var/log"
-PIDS=()             # session leader PIDs
-TAIL_PIDS=()        # background tail -F PIDs
+PIDS=()
+TAIL_PIDS=()
 USE_SETSID=0
 command -v setsid >/dev/null 2>&1 && USE_SETSID=1
 
 cleanup() {
   echo "🧹 Cleaning up..."
-  # Stop tails first (quiet console)
   if [[ -n "${TAIL_PIDS[*]:-}" ]]; then
     kill "${TAIL_PIDS[@]}" 2>/dev/null || true
   fi
 
-  # Kill services
   if [[ -n "${PIDS[*]:-}" ]]; then
     for pid in "${PIDS[@]}"; do
       if [[ $USE_SETSID -eq 1 ]]; then
@@ -191,7 +178,6 @@ trap 'echo "🛑 Caught signal"; cleanup; exit 0' INT TERM
 trap 'echo "💥 Error on line $LINENO"; cleanup; exit 1' ERR
 trap 'cleanup' EXIT
 
-# ======= Resolve service env files ==========================================
 SERVICE_NAMES=(); SERVICE_PATHS=(); SERVICE_CMDS=(); SERVICE_ENVFILES=()
 for line in "${SERVICES[@]}"; do
   [[ -z "${line// }" ]] && continue
@@ -211,16 +197,13 @@ for i in "${!SERVICE_NAMES[@]}"; do
 done
 echo "🚀 Starting services..."
 
-# Prepare log files and optional console tailer up-front
 LOG_FILES=()
 for i in "${!SERVICE_NAMES[@]}"; do
   name="${SERVICE_NAMES[$i]}"
   LOG_FILES+=("$ROOT/var/log/${name}.dev.log")
 done
-# Ensure files exist so tail -F has concrete paths
 for lf in "${LOG_FILES[@]}"; do : >"$lf"; done
 
-# Start tails if requested
 if [[ "${NV_CONSOLE_LOG:-0}" != "0" ]]; then
   echo "🪵 NV_CONSOLE_LOG=1 → tailing live logs to console"
   for lf in "${LOG_FILES[@]}"; do
@@ -242,7 +225,6 @@ for i in "${!SERVICE_NAMES[@]}"; do
     set -Eeuo pipefail
     cd \"$path\"
 
-    # load env file
     unset PORT SERVICE_PORT
     set -a; [ -f \"$svc_env\" ] && . \"$svc_env\"; set +a
     if [ -n \"\${PORT:-}\" ]; then export ${SLUG_UPPER}_PORT=\"\$PORT\" SERVICE_PORT=\"\$PORT\"; fi
@@ -273,8 +255,12 @@ for i in "${!SERVICE_NAMES[@]}"; do
     bash -lc "$launcher" >>"$LOG_FILE" 2>&1 &
   fi
 
-  pid=$!          # session leader (or direct child)
+  pid=$!
   PIDS+=("$pid")
+
+  # *** INSERTED 3-SECOND DELAY ***
+  echo "⏳ Waiting 3s before launching next service…"
+  sleep 3
 
   if [[ "$name" = "svcfacilitator" ]]; then
     echo "⏳ svcfacilitator started; waiting 5s to warm up…"
@@ -285,7 +271,6 @@ done
 echo "📜 PIDs (leaders): ${PIDS[*]}"
 echo "🟢 All services launched. Ctrl-C to stop."
 
-# ----- Block until all services exit (Bash 3.2: no wait -n) ------------------
 status=0
 for pid in "${PIDS[@]}"; do
   if ! wait "$pid"; then

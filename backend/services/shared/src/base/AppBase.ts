@@ -21,7 +21,7 @@
  * - AppBase owns the env DTO reference; services read via getters or pass it to their own layers.
  */
 
-import type { Express, Router, Request, Response, NextFunction } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import express = require("express");
 import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
 import {
@@ -41,6 +41,17 @@ export type AppBaseCtor = {
    * Must throw on failure; AppBase will translate to 500 JSON.
    */
   envReloader: () => Promise<EnvServiceDto>;
+  /**
+   * CHECK_DB:
+   * - true  => DB-backed service; AppBase will call registry.ensureIndexes()
+   *            at boot and expect NV_MONGO_* to exist in EnvServiceDto.
+   * - false => MOS / non-DB service; AppBase WILL NOT touch NV_MONGO_* or
+   *            call registry.ensureIndexes() at boot.
+   *
+   * This flag is intentionally required so each service (and any cloner output)
+   * must explicitly declare its DB posture.
+   */
+  checkDb: boolean;
 };
 
 export abstract class AppBase extends ServiceBase {
@@ -51,11 +62,15 @@ export abstract class AppBase extends ServiceBase {
   private _envDto: EnvServiceDto;
   private readonly envReloader: () => Promise<EnvServiceDto>;
 
+  /** DB posture: true = CRUD/DB service, false = MOS/non-DB. */
+  protected readonly checkDb: boolean;
+
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
     this.version = opts.version;
     this._envDto = opts.envDto;
     this.envReloader = opts.envReloader;
+    this.checkDb = opts.checkDb;
 
     this.app = express();
     this.initApp();
@@ -100,7 +115,7 @@ export abstract class AppBase extends ServiceBase {
       this.mountEnvReload(base);
     }
 
-    // 2) Pre-routing (edge logs, response error logger, etc.)
+    // 2) Pre-routing (edge logging, response error logger, etc.)
     this.mountPreRouting();
 
     // 3) RoutePolicyGate (shared, skips health paths)
@@ -124,9 +139,76 @@ export abstract class AppBase extends ServiceBase {
 
   // ─────────────── Hooks (override sparingly) ───────────────
 
-  /** One-time, awaitable boot (e.g., warm caches). Default: no-op. */
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
-  protected async onBoot(): Promise<void> {}
+  /**
+   * One-time, awaitable boot hook.
+   *
+   * Behavior:
+   * - If CHECK_DB=false → skip registry.listRegistered() and ensureIndexes()
+   *   entirely (MOS/non-DB service).
+   * - If CHECK_DB=true  → best-effort registry snapshot, then ensureIndexes()
+   *   via the DTO registry; failures are logged with Ops guidance and rethrown
+   *   (fail-fast).
+   *
+   * This logic used to live in each app.ts; it is centralized here so the DB
+   * posture is enforced by `checkDb`.
+   */
+  protected async onBoot(): Promise<void> {
+    const registry = this.getDtoRegistry();
+
+    if (!this.checkDb) {
+      // MOS: no DB, no NV_MONGO_*, no index ensure.
+      this.log.info(
+        {
+          service: this.service,
+          component: this.constructor.name,
+        },
+        "boot: CHECK_DB=false — skipping registry.listRegistered() and registry.ensureIndexes() (MOS, no DB required)"
+      );
+      return;
+    }
+
+    // 1) Best-effort diagnostics
+    try {
+      const listFn = (registry as any).listRegistered;
+      if (typeof listFn === "function") {
+        const listed = listFn.call(registry); // [{ type, collection }]
+        this.log.info(
+          { registry: listed },
+          "boot: registry listRegistered() — types & collections"
+        );
+      }
+    } catch (err) {
+      this.log.warn(
+        { err: (err as Error)?.message },
+        "boot: registry.listRegistered() failed — continuing to index ensure"
+      );
+    }
+
+    // 2) Ensure indexes via Registry. On failure: log rich context, then rethrow (fail-fast).
+    try {
+      this.log.info(
+        { service: this.service, component: this.constructor.name },
+        "boot: ensuring indexes via registry.ensureIndexes()"
+      );
+
+      // EnvServiceDto implements the EnvLike contract (getEnvVar/tryEnvVar/etc.).
+      // Registry.ensureIndexes(env, log) will read NV_MONGO_URI/NV_MONGO_DB
+      // and perform per-DTO index ensure for DB-backed services.
+      await (registry as any).ensureIndexes(this._envDto, this.log);
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err);
+      this.log.error(
+        {
+          service: this.service,
+          component: this.constructor.name,
+          err: message,
+          hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in env-service config, DTO.indexHints[], and connectivity. Service will not start without indexes.",
+        },
+        "boot: ensureIndexes threw — aborting boot (fail-fast)"
+      );
+      throw err;
+    }
+  }
 
   /** Default versioned base like `/api/<slug>/v<major>` */
   protected healthBasePath(): string | null {
@@ -284,7 +366,7 @@ export abstract class AppBase extends ServiceBase {
   public get instance(): Express {
     if (!this._booted) {
       throw new Error(
-        `[${this.service}] App not booted. Call and await app.boot() before using instance.`
+        `[this.service] App not booted. Call and await app.boot() before using instance.`
       );
     }
     return this.app;

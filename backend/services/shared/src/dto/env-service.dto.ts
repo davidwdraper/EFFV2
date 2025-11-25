@@ -87,6 +87,10 @@ export class EnvServiceDto extends DtoBase implements IDto {
       | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
   ) {
     super(secretOrMeta);
+
+    // Ensure every EnvServiceDto instance is collection-aware, even if it is
+    // instantiated outside the Registry helpers (e.g., clone pipelines).
+    this.setCollectionName(EnvServiceDto.dbCollectionName());
   }
 
   // ─────────────── Wire hydration ───────────────

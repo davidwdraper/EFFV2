@@ -8,10 +8,10 @@
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
- * Purpose (template):
+ * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - Ensures Mongo indexes are created at boot (before any routes are mounted).
+ * - For env-service, DB/index ensure is ON (checkDb=true).
  */
 
 import type { Express, Router } from "express";
@@ -44,6 +44,8 @@ class EnvServiceApp extends AppBase {
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
+      // env-service is DB-backed: requires NV_MONGO_* and index ensure at boot.
+      checkDb: true,
     });
 
     this.registry = new Registry();
@@ -52,44 +54,6 @@ class EnvServiceApp extends AppBase {
   /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
   public override getDtoRegistry(): IDtoRegistry {
     return this.registry;
-  }
-
-  /**
-   * Boot sequence (awaited by AppBase.boot()):
-   * 1) Best-effort registry snapshot (non-fatal).
-   * 2) Ensure indexes via Registry. On failure: log rich context, then rethrow (fail-fast).
-   */
-  protected override async onBoot(): Promise<void> {
-    // 1) Best-effort diagnostics
-    try {
-      const listed = this.registry.listRegistered(); // [{ type, collection }]
-      this.log.info(
-        { registry: listed },
-        "boot: registry listRegistered() — types & collections"
-      );
-    } catch (err) {
-      this.log.warn(
-        { err: (err as Error)?.message },
-        "boot: registry.listRegistered() failed — continuing to index ensure"
-      );
-    }
-
-    // 2) Deterministic index creation using DTO-declared indexHints.
-    this.log.info("boot: ensuring indexes via registry.ensureIndexes()");
-    try {
-      await this.registry.ensureIndexes(this.svcEnv, this.log);
-      this.log.info("boot: ensureIndexes complete");
-    } catch (err) {
-      // Add operator guidance, keep the original stack, then bubble.
-      this.log.warn(
-        {
-          err: (err as Error)?.message,
-          hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in env-service config, DTO.indexHints[], and connectivity. Service will not start without indexes.",
-        },
-        "boot: ensureIndexes threw — aborting boot (fail-fast)"
-      );
-      throw err; // bubble per SOP
-    }
   }
 
   /** Mount service routes as one-liners under the versioned base. */
@@ -111,6 +75,6 @@ export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
   const app = new EnvServiceApp(opts);
-  await app.boot(); // ensures onBoot (indexes) completes BEFORE routes mount/serve
+  await app.boot(); // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
   return { app: app.instance };
 }

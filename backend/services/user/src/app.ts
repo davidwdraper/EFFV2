@@ -1,4 +1,4 @@
-// backend/services/auth/src/app.ts
+// backend/services/user/src/app.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -11,7 +11,7 @@
  * Purpose (template):
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - Ensures Mongo indexes are created at boot (before any routes are mounted).
+ * - DB-backed CRUD template: requires NV_MONGO_* and index ensure at boot (checkDb=true).
  */
 
 import type { Express, Router } from "express";
@@ -22,7 +22,7 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
-import { buildAuthRouter } from "./routes/auth.route";
+import { buildUserRouter } from "./routes/user.route";
 
 type CreateAppOptions = {
   slug: string;
@@ -31,7 +31,7 @@ type CreateAppOptions = {
   envReloader: () => Promise<EnvServiceDto>;
 };
 
-class AuthApp extends AppBase {
+class UserApp extends AppBase {
   /** Concrete per-service DTO registry (explicit, no barrels). */
   private readonly registry: Registry;
 
@@ -44,6 +44,8 @@ class AuthApp extends AppBase {
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
+      // user is DB-backed: needs NV_MONGO_* and ensureIndexes at boot.
+      checkDb: true,
     });
 
     this.registry = new Registry();
@@ -54,44 +56,6 @@ class AuthApp extends AppBase {
     return this.registry;
   }
 
-  /**
-   * Boot sequence (awaited by AppBase.boot()):
-   * 1) Best-effort registry snapshot (non-fatal).
-   * 2) Ensure indexes via Registry. On failure: log rich context, then rethrow (fail-fast).
-   */
-  protected override async onBoot(): Promise<void> {
-    // 1) Best-effort diagnostics
-    try {
-      const listed = this.registry.listRegistered(); // [{ type, collection }]
-      this.log.info(
-        { registry: listed },
-        "boot: registry listRegistered() — types & collections"
-      );
-    } catch (err) {
-      this.log.warn(
-        { err: (err as Error)?.message },
-        "boot: registry.listRegistered() failed — continuing to index ensure"
-      );
-    }
-
-    // 2) Deterministic index creation using DTO-declared indexHints.
-    this.log.info("boot: ensuring indexes via registry.ensureIndexes()");
-    try {
-      await this.registry.ensureIndexes(this.svcEnv, this.log);
-      this.log.info("boot: ensureIndexes complete");
-    } catch (err) {
-      // Add operator guidance, keep the original stack, then bubble.
-      this.log.warn(
-        {
-          err: (err as Error)?.message,
-          hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in svcenv config, DTO.indexHints[], and connectivity. Service will not start without indexes.",
-        },
-        "boot: ensureIndexes threw — aborting boot (fail-fast)"
-      );
-      throw err; // bubble per SOP
-    }
-  }
-
   /** Mount service routes as one-liners under the versioned base. */
   protected override mountRoutes(): void {
     const base = this.healthBasePath(); // `/api/<slug>/v<version>`
@@ -100,7 +64,7 @@ class AuthApp extends AppBase {
       throw new Error("Base path missing — check AppBase.healthBasePath()");
     }
 
-    const r: Router = buildAuthRouter(this);
+    const r: Router = buildUserRouter(this);
     this.app.use(base, r);
     this.log.info({ base }, "routes mounted");
   }
@@ -110,7 +74,8 @@ class AuthApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new AuthApp(opts);
-  await app.boot(); // ensures onBoot (indexes) completes BEFORE routes mount/serve
+  const app = new UserApp(opts);
+  // AppBase.boot() handles registry diagnostics + ensureIndexes (checkDb=true).
+  await app.boot();
   return { app: app.instance };
 }

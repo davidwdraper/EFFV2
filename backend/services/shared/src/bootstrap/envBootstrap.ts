@@ -35,6 +35,18 @@ export type EnvBootstrapOpts = {
   slug: string;
   version: number;
   /**
+   * CHECK_DB:
+   * - true  => service is DB-backed; callers are expected to:
+   *            • enforce NV_MONGO_* presence
+   *            • run registry.ensureIndexes() at boot
+   * - false => MOS / non-DB service; callers should NOT touch NV_MONGO_* or indexes.
+   *
+   * NOTE:
+   * - This flag is intentionally required so new services (or cloner output)
+   *   must explicitly declare their DB posture.
+   */
+  checkDb: boolean;
+  /**
    * Optional explicit startup log path. If omitted, defaults to:
    *   <cwd>/<slug>-startup-error.log
    */
@@ -46,6 +58,11 @@ export type EnvBootstrapResult = {
   envReloader: () => Promise<DtoBag<EnvServiceDto>>;
   host: string;
   port: number;
+  /**
+   * Echo of opts.checkDb so downstream boot code can decide whether to
+   * enforce NV_MONGO_* + ensureIndexes() or skip all DB concerns.
+   */
+  checkDb: boolean;
 };
 
 /** Resolve log file path (default to per-service startup log). */
@@ -92,15 +109,16 @@ function fatal(logFile: string, message: string, err?: unknown): never {
  *     • envBag      (config bag)
  *     • envReloader (same lookup logic, fresh bag each call)
  *     • host/port
+ *     • checkDb     (echo of opts.checkDb for downstream boot logic)
  */
 export async function envBootstrap(
   opts: EnvBootstrapOpts
 ): Promise<EnvBootstrapResult> {
-  const { slug, version } = opts;
+  const { slug, version, checkDb } = opts;
   const logFile = resolveLogFile(slug, opts.logFile);
 
   // eslint-disable-next-line no-console
-  console.log("[bootstrap] envBootstrap starting", { slug, version });
+  console.log("[bootstrap] envBootstrap starting", { slug, version, checkDb });
 
   // 1) Construct SvcClient and SvcEnvClient
   const svcClient = new SvcClient({
@@ -189,6 +207,7 @@ export async function envBootstrap(
     version,
     host,
     port,
+    checkDb,
   });
 
   return {
@@ -196,5 +215,6 @@ export async function envBootstrap(
     envReloader,
     host,
     port,
+    checkDb,
   };
 }

@@ -41,6 +41,22 @@ export class Registry extends ServiceRegistryBase {
     };
   }
 
+  /**
+   * Hook for attaching UserType (and any other per-request security context)
+   * to a DTO instance.
+   *
+   * env-service v1:
+   * - EnvServiceDto is purely configuration data, not user-shaped.
+   * - There is no field-level security or per-user view adjustment.
+   * - DTOs are passed through unchanged.
+   *
+   * If we ever introduce user-shaped views of env config, this is where that
+   * logic will live.
+   */
+  protected applyUserType<T extends IDto = IDto>(dto: T): T {
+    return dto;
+  }
+
   // ─────────────── Convenience constructors (optional) ───────────────
 
   /** Create a new EnvServiceDto instance with a seeded collection. */
@@ -51,7 +67,10 @@ export class Registry extends ServiceRegistryBase {
   }
 
   /** Hydrate an EnvServiceDto from JSON (validates if requested) and seed collection. */
-  public fromJsonEnvService(json: unknown, opts?: { validate?: boolean }): EnvServiceDto {
+  public fromJsonEnvService(
+    json: unknown,
+    opts?: { validate?: boolean }
+  ): EnvServiceDto {
     const dto = EnvServiceDto.fromJson(json, { validate: !!opts?.validate });
     dto.setCollectionName(EnvServiceDto.dbCollectionName());
     return dto;

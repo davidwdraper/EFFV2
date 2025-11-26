@@ -9,6 +9,7 @@
  * - ADR-0049 (DTO Registry & Wire Discrimination)
  * - ADR-0050 (Wire Bag Envelope; bag-only edges)
  * - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
+ * - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *
  * Purpose:
  * - Shared abstract controller base for all services.
@@ -17,6 +18,9 @@
  * Notes:
  * - Indexes are ensured at app boot — never here.
  * - Success responses are always built from ctx["bag"] (DtoBag) only.
+ * - Error responses are normalized to Problem+JSON and, when possible, use
+ *   PromptsClient (via AppBase.prompt()) to obtain localized, parameterized
+ *   human-facing detail text.
  */
 
 import type { Request, Response } from "express";
@@ -299,16 +303,13 @@ export abstract class ControllerBase {
 
   // ─────────────── Finalize: bag-or-error only ───────────────────────────────
 
-  protected finalize(ctx: HandlerContext): void {
+  protected async finalize(ctx: HandlerContext): Promise<void> {
     const res = ctx.get<Response>("res")!;
     const requestId = ctx.get<string>("requestId") ?? "";
     const rawStatus = ctx.get<string>("handlerStatus") ?? "ok";
     const handlerStatus = rawStatus.toLowerCase();
     const statusFromCtx =
       ctx.get<number>("response.status") ?? ctx.get<number>("status");
-    const error = ctx.get<any>("response.body")?.code
-      ? ctx.get<any>("response.body")
-      : ctx.get<any>("error");
     const warnings = ctx.get<any[]>("warnings");
 
     this.log.debug(
@@ -321,14 +322,20 @@ export abstract class ControllerBase {
       const status =
         statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
 
+      // Prefer explicit response.body when present; fallback to ctx["error"].
+      const rawError =
+        ctx.get<any>("response.body") && ctx.get<any>("response.body").code
+          ? ctx.get<any>("response.body")
+          : ctx.get<any>("error");
+
       // Normalize duplicate-key codes using existing parser.
-      let normalized = error;
-      if (error && error.title && error.code) {
+      let normalized = rawError;
+      if (rawError && rawError.title && rawError.code) {
         const maybeDup =
           parseDuplicateKey({
-            message: error.detail ?? error.message ?? "",
+            message: rawError.detail ?? rawError.message ?? "",
             code: 11000,
-          }) ?? parseDuplicateKey(error);
+          }) ?? parseDuplicateKey(rawError);
         if (maybeDup) {
           const idx = (maybeDup.index ?? "").toString();
           const mappedCode =
@@ -337,33 +344,43 @@ export abstract class ControllerBase {
               : idx === "_id_"
               ? "DUPLICATE_ID"
               : "DUPLICATE_KEY";
-          normalized = { ...error, code: mappedCode };
+          normalized = { ...rawError, code: mappedCode };
         }
       }
 
       const body: ProblemJson =
         normalized && normalized.title && normalized.code
-          ? {
-              type: "about:blank",
-              title: normalized.title,
-              detail: normalized.detail ?? normalized.message,
+          ? await this.buildProblemJsonWithPrompts(
+              ctx,
+              normalized,
               status,
-              code: normalized.code,
-              issues: normalized.issues,
-              requestId,
-            }
+              requestId
+            )
           : this.toProblemJson(normalized, status, requestId);
 
-      res.status(status).type("application/problem+json").json(body);
+      res
+        .status(body.status ?? status)
+        .type("application/problem+json")
+        .json(body);
 
-      if (status >= 500) {
+      if ((body.status ?? status) >= 500) {
         this.log.error(
-          { event: "finalize_error", requestId, status, problem: body },
+          {
+            event: "finalize_error",
+            requestId,
+            status: body.status ?? status,
+            problem: body,
+          },
           "Controller error response"
         );
       } else {
         this.log.warn(
-          { event: "finalize_client_error", requestId, status, problem: body },
+          {
+            event: "finalize_client_error",
+            requestId,
+            status: body.status ?? status,
+            problem: body,
+          },
           "Controller client/data response"
         );
       }
@@ -491,6 +508,96 @@ export abstract class ControllerBase {
       issues,
       requestId,
     };
+  }
+
+  /**
+   * Build Problem+JSON body, using PromptsClient when a promptKey is present.
+   *
+   * Expected normalized error fields (non-strict):
+   * - code: string          (internal error code)
+   * - title: string
+   * - detail?: string       (fallback if no promptKey)
+   * - promptKey?: string    (ADR-0064 — catalog key)
+   * - promptParams?: Record<string, string|number>
+   * - meta?: Record<string, unknown>   (extra operator/UX metadata)
+   * - issues?: [...]
+   */
+  private async buildProblemJsonWithPrompts(
+    ctx: HandlerContext,
+    err: any,
+    status: number,
+    requestId?: string
+  ): Promise<ProblemJson> {
+    const headers = ctx.get<Record<string, unknown>>("headers") ?? {};
+    const acceptLang =
+      (headers["accept-language"] as string) ??
+      (headers["Accept-Language"] as string) ??
+      "";
+
+    const language = this.resolveLanguage(acceptLang);
+    const code: string = err?.code ?? "UNSPECIFIED";
+    const title: string =
+      err?.title ?? (status >= 500 ? "Internal Server Error" : "Bad Request");
+    const issues = Array.isArray(err?.issues) ? err.issues : undefined;
+
+    const promptKey: string | undefined = err?.promptKey;
+    const promptParams: Record<string, string | number> | undefined =
+      err?.promptParams ?? err?.params;
+    const promptMeta: Record<string, unknown> = {
+      code,
+      ...(err?.meta && typeof err.meta === "object" ? err.meta : {}),
+    };
+
+    let detail: string | undefined;
+
+    if (promptKey && typeof promptKey === "string" && promptKey.trim()) {
+      try {
+        detail = await this.app.prompt(
+          language,
+          promptKey,
+          promptParams,
+          promptMeta
+        );
+      } catch (e) {
+        // Prompts must never break error responses; fall back to plain detail.
+        this.log.error(
+          {
+            event: "prompt_render_failed",
+            requestId,
+            code,
+            promptKey,
+            err: this.log.serializeError(e),
+          },
+          "ControllerBase.buildProblemJsonWithPrompts — falling back to raw detail/message"
+        );
+      }
+    }
+
+    if (!detail) {
+      detail = err?.detail ?? err?.message ?? "Unhandled error";
+    }
+
+    return {
+      type: "about:blank",
+      title,
+      detail,
+      status,
+      code,
+      issues,
+      requestId,
+    };
+  }
+
+  private resolveLanguage(acceptLanguageHeader: string): string {
+    if (!acceptLanguageHeader || typeof acceptLanguageHeader !== "string") {
+      return "en";
+    }
+
+    // Take first entry before comma; keep it as-is for PromptsClient to try,
+    // which will then fall back to "en" if needed.
+    const first = acceptLanguageHeader.split(",")[0]?.trim();
+    if (!first) return "en";
+    return first;
   }
 
   private randId(): string {

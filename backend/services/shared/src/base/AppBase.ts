@@ -8,18 +8,22 @@
  *   - ADR-0039 (env-service centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
+ *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *
  * Purpose (generic):
  * - Canonical Express composition for ALL services.
  * - Centralizes lifecycle & middleware order:
  *   onBoot → health → preRouting → routePolicy → security → parsers → routes → postRouting
  * - Provides a standard, versioned /env/reload endpoint that atomically refreshes the service env DTO.
+ * - Owns a shared PromptsClient so all controllers/handlers can perform
+ *   prompt-key → localized-text lookups via app.prompt().
  *
  * Invariants:
  * - Health mounts FIRST (never gated).
  * - /env/reload mounts under versioned base and is intended to be policy-gated (UserType >= 5) by RoutePolicy.
  * - AppBase owns the env DTO reference; services read via getters or pass it to their own layers.
  * - AppBase also owns the logical envName (e.g., "dev", "stage", "prod") for this process.
+ * - AppBase owns a process-local PromptsClient instance for this service.
  */
 
 import type { Express, Request, Response, NextFunction } from "express";
@@ -32,6 +36,7 @@ import {
 import { ServiceBase } from "@nv/shared/base/ServiceBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
 
 export type AppBaseCtor = {
   service: string;
@@ -76,6 +81,9 @@ export abstract class AppBase extends ServiceBase {
   /** DB posture: true = CRUD/DB service, false = MOS/non-DB. */
   protected readonly checkDb: boolean;
 
+  /** Shared prompts client for this service instance (process-local cache). */
+  protected readonly promptsClient: PromptsClient;
+
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
     this.version = opts.version;
@@ -86,6 +94,12 @@ export abstract class AppBase extends ServiceBase {
 
     this.app = express();
     this.initApp();
+
+    // PromptsClient: central text catalog access for this service.
+    // We attempt to bind to a SvcClient on ServiceBase; if none is wired yet,
+    // we degrade gracefully by treating all prompts as missing (key passthrough)
+    // but still logging once.
+    this.promptsClient = this.createPromptsClient();
   }
 
   /** Disable noisy headers; keep this minimal. */
@@ -101,6 +115,29 @@ export abstract class AppBase extends ServiceBase {
   /** Public accessor for the EnvServiceDto instance. */
   public get svcEnv(): EnvServiceDto {
     return this._envDto;
+  }
+
+  /**
+   * Public accessor for the process-local PromptsClient.
+   * Controllers/handlers should normally use app.prompt(), but this is exposed
+   * for advanced scenarios.
+   */
+  public getPromptsClient(): PromptsClient {
+    return this.promptsClient;
+  }
+
+  /**
+   * Convenience wrapper around PromptsClient.render() so controllers/handlers
+   * can call app.prompt(lang, key, params, meta) without touching the client
+   * directly.
+   */
+  public async prompt(
+    language: string,
+    promptKey: string,
+    params?: Record<string, string | number>,
+    meta: Record<string, unknown> = {}
+  ): Promise<string> {
+    return this.promptsClient.render(language, promptKey, params, meta);
   }
 
   /**
@@ -400,5 +437,76 @@ export abstract class AppBase extends ServiceBase {
       );
     }
     return this.app;
+  }
+
+  // ─────────────── PromptsClient wiring (internal) ───────────────
+
+  /**
+   * Create a PromptsClient bound to this service.
+   *
+   * We attempt to discover a SvcClient on ServiceBase via duck-typing:
+   * - If `this.svcClient.callBySlug` exists, we use it.
+   * - Otherwise we install a stub that logs once per key and treats prompts as
+   *   missing (render() will fall back to promptKey).
+   *
+   * This avoids per-service overrides while still honoring ADR-0064’s
+   * semantics and your “no shims that change behavior later” rule: once a real
+   * SvcClient is present, prompts start flowing without further code changes.
+   */
+  private createPromptsClient(): PromptsClient {
+    const anySelf = this as any;
+
+    let svcClient: {
+      callBySlug: (
+        slug: string,
+        version: string,
+        route: string,
+        message: unknown,
+        options?: Record<string, unknown>
+      ) => Promise<unknown>;
+    };
+
+    if (
+      anySelf.svcClient &&
+      typeof anySelf.svcClient.callBySlug === "function"
+    ) {
+      svcClient = anySelf.svcClient;
+    } else {
+      // Degrade gracefully: no SvcClient wired yet. We still want predictable
+      // behavior (key passthrough + a single PROMPT-level log per key).
+      svcClient = {
+        callBySlug: async (
+          slug: string,
+          version: string,
+          route: string,
+          _message: unknown
+        ): Promise<unknown> => {
+          this.log.prompt(
+            {
+              event: "prompts_svcclient_missing",
+              serviceSlug: this.service,
+              env: this.envName,
+              targetSlug: slug,
+              targetVersion: version,
+              route,
+            },
+            "PromptsClient: svcClient not wired; treating all prompts as missing."
+          );
+          // Throw so PromptsClient treats this as a transport failure and
+          // returns null → render() falls back to promptKey.
+          throw new Error("PromptsClient: svcClient not wired");
+        },
+      };
+    }
+
+    return new PromptsClient({
+      logger: this.log,
+      serviceSlug: this.service,
+      svcClient,
+      // requestId is usually available in controllers/handlers; they can pass
+      // it via meta if desired. For now we don’t try to reach into per-request
+      // context from here.
+      getRequestId: undefined,
+    });
   }
 }

@@ -14,12 +14,14 @@
  *     log.info("msg")            OR  log.info({ctx}, "msg")
  *     log.info("msg", {meta})    OR  log.info({meta}, "msg")
  * - debug() adds origin capture (file/method/line).
+ * - PROMPT is a first-class level for prompt/prompt-catalog events.
  *
  * Runtime Controls (strict, via SvcEnvDto only):
  * - LOG_LEVEL = debug | info | warn | error   (REQUIRED — no defaults)
  *
  * Notes:
  * - Edge channel and debug-origin are always enabled (no flags, greenfield).
+ * - PROMPT logs are gated like WARN (suppressed only when LOG_LEVEL=error).
  * - No process.env usage anywhere; fail-fast if SvcEnv not set.
  */
 
@@ -35,6 +37,13 @@ export interface ILogger {
 
   debug(msg: string, ...rest: unknown[]): void;
   debug(obj: Json, msg?: string, ...rest: unknown[]): void;
+
+  /**
+   * PROMPT: used for prompt-catalog / localization issues (e.g., missing prompts).
+   * Sits between INFO and WARN in seriousness, but is its own channel.
+   */
+  prompt(msg: string, ...rest: unknown[]): void;
+  prompt(obj: Json, msg?: string, ...rest: unknown[]): void;
 
   warn(msg: string, ...rest: unknown[]): void;
   warn(obj: Json, msg?: string, ...rest: unknown[]): void;
@@ -55,6 +64,12 @@ export interface IBoundLogger {
 
   debug(msg: string, ...rest: unknown[]): void;
   debug(obj: Json, msg?: string, ...rest: unknown[]): void;
+
+  /**
+   * PROMPT: first-class level for prompt/prompt-catalog events.
+   */
+  prompt(msg: string, ...rest: unknown[]): void;
+  prompt(obj: Json, msg?: string, ...rest: unknown[]): void;
 
   warn(msg: string, ...rest: unknown[]): void;
   warn(obj: Json, msg?: string, ...rest: unknown[]): void;
@@ -112,7 +127,7 @@ function tsLocal(): string {
 }
 
 /** Create a prefixed console writer for a given level tag. */
-function writer(tag: "EDGE" | "INFO" | "DEBUG" | "WARN" | "ERROR") {
+function writer(tag: "EDGE" | "INFO" | "DEBUG" | "WARN" | "ERROR" | "PROMPT") {
   const c =
     tag === "ERROR"
       ? console.error
@@ -123,7 +138,13 @@ function writer(tag: "EDGE" | "INFO" | "DEBUG" | "WARN" | "ERROR") {
       : console.log;
 
   const displayTag =
-    tag === "ERROR" ? "***ERROR***" : tag === "WARN" ? "**WARN" : tag;
+    tag === "ERROR"
+      ? "***ERROR***"
+      : tag === "WARN"
+      ? "**WARN"
+      : tag === "PROMPT"
+      ? "PROMPT"
+      : tag;
 
   return (obj: Json, msg?: string, ...rest: unknown[]) => {
     const prefix = `${displayTag} ${tsLocal()}`;
@@ -138,6 +159,7 @@ function normalizeRoot(logger: Partial<ILogger>): ILogger {
   const fbEdge = writer("EDGE");
   const fbInfo = writer("INFO");
   const fbDebug = writer("DEBUG");
+  const fbPrompt = writer("PROMPT");
   const fbWarn = writer("WARN");
   const fbError = writer("ERROR");
 
@@ -197,6 +219,10 @@ function normalizeRoot(logger: Partial<ILogger>): ILogger {
       const [o, m, t] = toTriple(args);
       fbDebug(o, m, ...t);
     },
+    prompt: (...args: unknown[]) => {
+      const [o, m, t] = toTriple(args);
+      fbPrompt(o, m, ...t);
+    },
     warn: (...args: unknown[]) => {
       const [o, m, t] = toTriple(args);
       fbWarn(o, m, ...t);
@@ -211,6 +237,7 @@ function normalizeRoot(logger: Partial<ILogger>): ILogger {
     edge: logger.edge ?? fallback.edge,
     info: logger.info ?? fallback.info,
     debug: logger.debug ?? fallback.debug,
+    prompt: logger.prompt ?? fallback.prompt,
     warn: logger.warn ?? fallback.warn,
     error: logger.error ?? fallback.error,
   };
@@ -282,6 +309,22 @@ class BoundLogger implements IBoundLogger {
     this.root().info(obj, msg, ...tail);
   };
 
+  // debug (honors strict LOG_LEVEL; always includes origin)
+  public debug = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
+    if (!levelAllows("debug")) return;
+    const [obj0, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
+    const obj = { ...obj0, origin: captureOrigin(2) };
+    this.root().debug(obj, msg, ...tail);
+  };
+
+  // PROMPT (honors LOG_LEVEL like WARN; suppressed only when LOG_LEVEL=error)
+  public prompt = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
+    if (!levelAllows("warn")) return;
+    const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
+    if ((obj as any)["category"] == null) (obj as any).category = "prompt";
+    this.root().prompt(obj, msg, ...tail);
+  };
+
   // warn (honors strict LOG_LEVEL)
   public warn = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     if (!levelAllows("warn")) return;
@@ -293,14 +336,6 @@ class BoundLogger implements IBoundLogger {
   public error = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
     const [obj, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
     this.root().error(obj, msg, ...tail);
-  };
-
-  // debug (honors strict LOG_LEVEL; always includes origin)
-  public debug = (arg1: unknown, arg2?: unknown, ...rest: unknown[]): void => {
-    if (!levelAllows("debug")) return;
-    const [obj0, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
-    const obj = { ...obj0, origin: captureOrigin(2) };
-    this.root().debug(obj, msg, ...tail);
   };
 
   public serializeError(err: unknown) {

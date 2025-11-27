@@ -17,7 +17,7 @@
 
 import type { Express, Router } from "express";
 import express = require("express");
-import { AppBase } from "@nv/shared/base/AppBase";
+import { AppBase } from "@nv/shared/base/app/AppBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
 

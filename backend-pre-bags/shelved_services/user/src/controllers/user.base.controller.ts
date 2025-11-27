@@ -17,7 +17,7 @@
  * - No format checks, no mock-prefix checks here. Auth owns hashing policy.
  */
 
-import { ControllerBase } from "@nv/shared/base/ControllerBase";
+import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 
 /** Flat shape controllers should receive AFTER unwrapEnvelope middleware. */
 export type ProvisionPayload<TUser = unknown> = {

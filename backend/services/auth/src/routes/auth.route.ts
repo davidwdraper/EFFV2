@@ -22,7 +22,7 @@
  */
 
 import { Router } from "express";
-import type { AppBase } from "@nv/shared/base/AppBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { AuthCreateController } from "../controllers/auth.create.controller/auth.create.controller";
 
 export function buildAuthRouter(app: AppBase): ReturnType<typeof Router> {

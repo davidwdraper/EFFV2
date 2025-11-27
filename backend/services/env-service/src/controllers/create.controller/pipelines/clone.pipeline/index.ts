@@ -13,7 +13,7 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerBase } from "@nv/shared/base/ControllerBase";
+import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 
 import { EnvServiceCloneBuildFilterHandler } from "./clone.buildFilter.handler";
 import { BagPopulateQueryHandler } from "@nv/shared/http/handlers/bag.populate.query.handler";

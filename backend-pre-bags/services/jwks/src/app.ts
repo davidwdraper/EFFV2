@@ -21,7 +21,7 @@
  * - No business logic here; providers/cache/controller are composed in JwksModule.
  */
 
-import { AppBase } from "@nv/shared/base/AppBase";
+import { AppBase } from "@nv/shared/base/app/AppBase";
 import { buildJwksRouter } from "./composition/JwksModule";
 
 export class JwksApp extends AppBase {

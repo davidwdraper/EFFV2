@@ -21,7 +21,7 @@
  */
 
 import { Router } from "express";
-import type { AppBase } from "@nv/shared/base/AppBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { SvcconfigCreateController } from "../controllers/svcconfig.create.controller/svcconfig.create.controller";
 import { SvcconfigReadController } from "../controllers/svcconfig.read.controller/svcconfig.read.controller";
 import { SvcconfigDeleteController } from "../controllers/svcconfig.delete.controller/svcconfig.delete.controller";

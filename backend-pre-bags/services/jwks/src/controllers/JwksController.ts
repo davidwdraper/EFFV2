@@ -19,7 +19,7 @@
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { ControllerBase } from "@nv/shared/base/ControllerBase";
+import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { IJwksProvider } from "../provider/IJwksProvider";
 import { JwkSetSchema } from "@nv/shared/contracts/security/jwks.contract";
 

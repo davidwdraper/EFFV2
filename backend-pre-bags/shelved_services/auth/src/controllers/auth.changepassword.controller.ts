@@ -7,7 +7,10 @@
  *     POST /api/user/v1/changepassword
  */
 
-import type { HandlerCtx, HandlerResult } from "@nv/shared/base/ControllerBase";
+import type {
+  HandlerCtx,
+  HandlerResult,
+} from "@nv/shared/base/controller/ControllerBase";
 import { AuthControllerBase } from "./auth.base.controller";
 import { UserContract } from "@nv/shared/contracts/user.contract";
 

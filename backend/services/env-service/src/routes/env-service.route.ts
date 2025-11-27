@@ -21,7 +21,7 @@
  */
 
 import { Router } from "express";
-import type { AppBase } from "@nv/shared/base/AppBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { EnvServiceCreateController } from "../controllers/create.controller/create.controller";
 import { EnvServiceReadController } from "../controllers/read.controller/read.controller";
 import { EnvServiceDeleteController } from "../controllers/delete.controller/delete.controller";

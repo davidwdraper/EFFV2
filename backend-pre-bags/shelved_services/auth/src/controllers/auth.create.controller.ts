@@ -10,7 +10,7 @@
  */
 
 import type { RequestHandler } from "express";
-import { ControllerBase } from "@nv/shared/base/ControllerBase";
+import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import { getSvcClient } from "@nv/shared/svc/client";
 
 function svcName(): string {

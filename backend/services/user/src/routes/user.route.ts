@@ -21,7 +21,7 @@
  */
 
 import { Router } from "express";
-import type { AppBase } from "@nv/shared/base/AppBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { UserCreateController } from "../controllers/user.create.controller/user.create.controller";
 import { UserReadController } from "../controllers/user.read.controller/user.read.controller";
 import { UserDeleteController } from "../controllers/user.delete.controller/user.delete.controller";

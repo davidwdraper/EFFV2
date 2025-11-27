@@ -23,7 +23,7 @@
  */
 
 import express from "express";
-import { AppBase } from "@nv/shared/base/AppBase";
+import { AppBase } from "@nv/shared/base/app/AppBase";
 import { EntriesRouter } from "./routes/entries.router";
 import {
   AuditEntriesV1BodyHandler,

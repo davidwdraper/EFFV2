@@ -24,7 +24,7 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerBase } from "@nv/shared/base/ControllerBase";
+import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 
 import {

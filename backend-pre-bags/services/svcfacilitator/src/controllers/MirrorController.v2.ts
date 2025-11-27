@@ -12,7 +12,7 @@
  */
 
 import type { Request, Response } from "express";
-import { ControllerBase } from "@nv/shared/base/ControllerBase";
+import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import { SvcReceiver } from "@nv/shared/svc/SvcReceiver";
 import {
   MirrorStoreV2,

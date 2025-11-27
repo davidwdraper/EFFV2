@@ -28,7 +28,7 @@ import { HandlerContext } from "../http/handlers/HandlerContext";
 import type { HandlerBase } from "../http/handlers/HandlerBase";
 import { getLogger, type IBoundLogger } from "../logger/Logger";
 import type { EnvServiceDto } from "../dto/env-service.dto";
-import type { AppBase } from "../base/AppBase";
+import type { AppBase } from "../base/app/AppBase";
 import type { IDtoRegistry } from "../registry/RegistryBase";
 import {
   DuplicateKeyError,

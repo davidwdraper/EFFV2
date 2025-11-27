@@ -9,7 +9,7 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerBase } from "@nv/shared/base/ControllerBase";
+import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { DbReadGetHandler } from "./handlers/dbRead.get.handler";

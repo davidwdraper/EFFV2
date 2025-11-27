@@ -16,7 +16,7 @@
  * - Environment-invariant: no literals; all config via env vars.
  */
 
-import { AppBase } from "@nv/shared/base/AppBase";
+import { AppBase } from "@nv/shared/base/app/AppBase";
 import { AuthRouter } from "./routes/auth.router";
 
 const SERVICE_SLUG = "auth";

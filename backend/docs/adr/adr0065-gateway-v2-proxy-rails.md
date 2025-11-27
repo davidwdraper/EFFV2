@@ -1,168 +1,167 @@
 adr0065-gateway-v2-proxy-rails
 
-# ADR-0065 --- Gateway v2: SvcClient Proxy Rails & Svcconfig Cache Warm
+# ADR-0065 --- Gateway v2: SvcClient Proxy Rails, Svcconfig Cache Warm, and URL Path Preservation
 
 ## Context
 
-Gateway v1 used an in-memory mirror of svcconfig, updated periodically,
-to reduce S2S calls on each request.\
-This design introduced complexity, race conditions, refresh bugs, and
-dual sources of truth.\
-With the new rails (envBootstrap, SvcClient, DTO-first, fail-fast), the
-gateway must be simplified and aligned.
+Gateway v1 performed URL rewriting, local service resolution, and used
+an in-memory "mirror" of svcconfig.\
+This caused route drift, operational confusion, and divergence from the
+platform's SvcClient-first architecture.
 
-This ADR defines Gateway v2's routing model: - SvcClient is the only
-routing mechanism. - Cache replaces the mirror. - Cache warms once at
-boot. - Admin cache-clear route added. - Gateway boot requires svcconfig
-availability.
+Gateway v2 must strictly follow the NV rails: - SvcClient is the only
+routing mechanism. - svcconfig is the single source of truth. - Cache is
+a lightweight optimization, not a mirror. - All paths beyond `<slug>`
+must remain untouched. - Only headers---not paths---are rewritten.
+
+This ADR adds an explicit constraint: **Gateway never changes the URL
+path except removing `<slug>`**.
+
+------------------------------------------------------------------------
 
 ## Decision
 
-### 1. SvcClient as the Canonical Routing Mechanism
+### 1. Gateway Preserves the Entire URL Path (Except `<slug>`)
 
-Gateway never constructs service URLs manually and never calls workers
-via raw fetch.\
-All routing must go through:
+Incoming:
 
-    svcClient.getRoute(env, slug, version)
+    /api/<slug>/v<version>/<rest...>
 
-The returned `SvcconfigDto` is the authoritative source of target
-host/port/protocol.
+Worker receives:
 
-### 2. In-Memory Cache (Not a Mirror)
+    /api/v<version>/<rest...>
 
-A simple TTL-based in-memory cache is used by the SvcClient stack:
+Gateway must not: - Insert new path segments\
+- Rename, collapse, reorder, or transform segments\
+- Modify trailing slashes\
+- Modify query params\
+- Add version decorations
 
--   Key: `(env, slug, version)`
--   Value: `SvcconfigDto`
--   Behavior:
-    -   Cache hit → return immediately.
-    -   Cache miss or expired → fetch from svcconfig → validate → store
-        → return.
+**The gateway performs exactly one path mutation: strip `<slug>` from
+the path prefix.**
 
-This cache is purely an optimization. It is not a mirror and has no
-background refresh loop.
+All remaining path content is forwarded verbatim.
 
-### 3. Cache Warm at Boot
+------------------------------------------------------------------------
 
-At startup, after envBootstrap succeeds:
+### 2. The Only Routing Change Is the Base URL (Host/Port/Protocol)
 
-1.  Gateway calls:
+Gateway constructs the target URL using the resolved svcconfig entry:
 
-        GET /api/svcconfig/v1/list?env=<env>
+    protocol://host:port
 
-2.  Receives a `DtoBag<SvcconfigDto>`.
+Then forwards the request to:
 
-3.  Iterates each DTO and seeds the route cache.
+    protocol://host:port/api/v<version>/<rest...>
 
-4.  Logs:
+No other path transformation is permitted.
 
-    -   Count of entries
-    -   Disabled entries
-    -   Slugs without the required version(s)
+------------------------------------------------------------------------
 
-**If the list call fails, gateway startup fails.**
+### 3. Headers Are Rewritten, Not Paths
 
-### 4. Admin Cache-Clear Route
+Gateway strips user-level headers and adds S2S headers:
 
-Gateway exposes an admin-only route:
+Stripped: - `Authorization` - Any app-level bearer token\
+- Any user identity headers
 
-    POST /api/gateway/v1/admin/cache/clear
+Added: - `authorization: Bearer <S2S token>` - `x-service-name` -
+`x-api-version` - `x-request-id` (propagate)
 
-Handler:
+This confirms: **Gateway modifies headers only. Path remains
+unchanged.**
 
-    svcClient.clearRouteCache()
+------------------------------------------------------------------------
 
-Returns:
+### 4. In-Memory TTL Cache (Replaces Mirror)
 
-``` json
-{
-  "ok": true,
-  "detail": "Routing cache cleared. Next requests will fetch from svcconfig."
-}
-```
+Same as earlier ADR text: - Key: `(env, slug, version)` - Value:
+`SvcconfigDto` - TTL-based entries - No background refresh loop\
+- SvcClient handles lookup, validation, and caching\
+- Admin route clears the cache
 
-This allows Ops to force routing updates after svcconfig changes.
+------------------------------------------------------------------------
 
-### 5. Routing Flow at Runtime
+### 5. Cache Warm at Boot (One-Shot)
 
-For every inbound request:
+At startup:
 
-1.  Extract `{ slug, version, restPath }` from the public URL.
+    GET /api/svcconfig/v1/list?env=<env>
 
-2.  Call:
+Returns a `DtoBag<SvcconfigDto>`.
 
-        const dto = await svcClient.getRoute(env, slug, version)
+Gateway seeds the routing cache with each entry.\
+If this call fails, **gateway refuses to boot**.
 
-    -   Cache hit → ok
-    -   Cache miss → fetch from svcconfig
-    -   Fetch error → return `503 SVCCONFIG_UNAVAILABLE` (Problem+JSON)
+This is not a mirror; it is a one-shot warm.
 
-3.  SvcClient performs the internal call to the worker.
+------------------------------------------------------------------------
 
-Gateway never mints S2S tokens directly; SvcClient handles this.
+### 6. Runtime Request Flow (Final Model)
 
-### 6. Failure Semantics
+1.  Parse incoming URL:
 
--   **Boot:** must reach svcconfig to warm the cache.
--   **Runtime:** cached entries remain usable until TTL expiry.
--   **On cache miss:** failure to reach svcconfig results in 503.
--   No silent fallback, no best-effort routing.
+    -   `slug`
+    -   `version`
+    -   `restPath`
+
+2.  Construct internal worker route:
+
+        /api/v<version>/<restPath>
+
+3.  Resolve routing via SvcClient:
+
+        protocol://host:port
+
+4.  Forward to:
+
+        protocol://host:port/api/v<version>/<restPath>
+
+5.  Rewrite headers (not path).
+
+6.  Relay worker response unchanged except for Problem+JSON
+    normalization.
+
+------------------------------------------------------------------------
 
 ## Consequences
 
 ### Benefits
 
--   Aligned with LDD-12, LDD-14, LDD-16.
--   Eliminates complex mirror logic.
--   Ensures single source of truth.
--   Much easier to reason about.
--   Lightweight runtime performance boost via caching.
--   Ops has explicit cache eviction control.
+-   Path determinism: what the client sends is what the worker receives.
+-   Eliminates historical bugs caused by path rewrites.
+-   Perfectly aligns with CRUD service contract (`/api/vX/...`).
+-   Transparent debugging between gateway and workers.
+-   Strong architectural invariants easy to test.
 
 ### Costs
 
--   Cached routes may become stale until manually refreshed or TTL
-    expires.
--   svcconfig outages during runtime impact uncached or expired entries.
+-   Gateway cannot compensate for malformed client URLs.
+-   Workers must match the canonical DTO-first route layout.
+
+------------------------------------------------------------------------
 
 ## Implementation Notes
 
--   Cache and TTL managed in the shared SvcconfigClient/SvcClient layer.
+-   Route parser must extract `restPath` as a literal substring.
 
--   TTL configured from env-service.
+-   Proxy handler must concatenate:
 
--   Gateway boot sequence:
+        targetBaseUrl + "/api/v" + version + "/" + restPath
 
-    -   envBootstrap
-    -   warm svcconfig list
-    -   AppBase boot continues
+-   Query parameters must be preserved in full.
 
--   Boot logs must show the svcconfig warm summary.
+-   Path encoding must not be altered.
 
--   Future admin route:
+Unit tests must assert: - No segment transformation. - Slug removal
+only. - Identical query params. - Identical slashes.
 
-        POST /api/gateway/v1/admin/cache/warm
-
-    to manually re-seed from list.
-
-## Alternatives Considered
-
-### Full mirror (old design)
-
-Rejected: too complex; caused stale state, drift, and refresh bugs.
-
-### No caching at all
-
-Rejected: would hammer svcconfig under high load.
-
-### Background refresh loop
-
-Rejected: unnecessary complexity; creates race conditions.
+------------------------------------------------------------------------
 
 ## References
 
--   LDD-12 --- SvcClient & S2S contract\
+-   Original ADR-0065
 -   LDD-14 / LDD-25 --- Gateway architecture\
+-   LDD-12 --- SvcClient canonical routing\
 -   LDD-16 / LDD-26 --- svcconfig architecture\
--   SOP --- fail-fast, DTO-first, no mirror semantics
+-   SOP --- Explicit, deterministic, DTO-first HTTP design

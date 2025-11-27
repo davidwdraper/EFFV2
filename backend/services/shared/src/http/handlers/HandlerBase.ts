@@ -24,9 +24,9 @@
 
 import { HandlerContext } from "./HandlerContext";
 import { getLogger, type IBoundLogger } from "../../logger/Logger";
-import type { AppBase } from "../../base/AppBase";
+import type { AppBase } from "../../base/app/AppBase";
 import type { IDtoRegistry } from "../../registry/RegistryBase";
-import type { ControllerBase } from "../../base/ControllerBase";
+import type { ControllerBase } from "../../base/controller/ControllerBase";
 
 export abstract class HandlerBase {
   protected readonly ctx: HandlerContext;

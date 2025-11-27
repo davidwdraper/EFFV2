@@ -13,7 +13,7 @@
  */
 
 import express, { type Request, type Response } from "express";
-import { AppBase } from "@nv/shared/base/AppBase";
+import { AppBase } from "@nv/shared/base/app/AppBase";
 import type { Express } from "express";
 
 // Routers (DI)

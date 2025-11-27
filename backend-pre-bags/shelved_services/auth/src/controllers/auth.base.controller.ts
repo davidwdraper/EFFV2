@@ -18,7 +18,7 @@
 import {
   ControllerBase,
   type HandlerResult,
-} from "@nv/shared/base/ControllerBase";
+} from "@nv/shared/base/controller/ControllerBase";
 import type { SvcResponse } from "@nv/shared/svc/types";
 import { getSvcClient } from "@nv/shared/svc/client"; // no barrels/shims
 

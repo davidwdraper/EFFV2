@@ -23,8 +23,8 @@
  */
 
 import { Request, Response } from "express";
-import type { AppBase } from "@nv/shared/base/AppBase";
-import { ControllerBase } from "@nv/shared/base/ControllerBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
+import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType for LIST)

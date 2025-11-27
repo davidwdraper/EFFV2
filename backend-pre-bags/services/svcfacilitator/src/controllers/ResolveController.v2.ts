@@ -17,7 +17,7 @@
 import {
   ControllerBase,
   type HandlerResult,
-} from "@nv/shared/base/ControllerBase";
+} from "@nv/shared/base/controller/ControllerBase";
 
 import {
   ServiceConfigRecord,

@@ -11,7 +11,7 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerBase } from "@nv/shared/base/ControllerBase";
+import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 
 import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
 import { MirrorFilterHandler } from "./mirrorFilter.list.handler";

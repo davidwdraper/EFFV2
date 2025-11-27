@@ -18,7 +18,7 @@
  * - Adds S2S envelope unwrapping between JSON parser and route mounting.
  */
 
-import { AppBase } from "@nv/shared/base/AppBase";
+import { AppBase } from "@nv/shared/base/app/AppBase";
 import { unwrapEnvelope } from "@nv/shared/middleware/unwrapEnvelope";
 import { UsersCrudRouter } from "./routes/users.crud.routes";
 import { UserS2SRouter } from "./routes/s2s.auth.routes";

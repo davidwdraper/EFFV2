@@ -19,7 +19,7 @@
  * - No duplicated middleware (responseErrorLogger etc.).
  */
 
-import { AppBase } from "@nv/shared/base/AppBase";
+import { AppBase } from "@nv/shared/base/app/AppBase";
 import EnvLoader from "@nv/shared/env/EnvLoader";
 
 import type { SvcConfig } from "./services/svcconfig/SvcConfig";

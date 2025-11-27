@@ -24,7 +24,7 @@
  */
 
 import { Router } from "express";
-import type { AppBase } from "@nv/shared/base/AppBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { PromptCreateController } from "../controllers/create.controller/prompt.create.controller";
 import { PromptReadController } from "../controllers/read.controller/prompt.read.controller";
 import { PromptDeleteController } from "../controllers/delete.controller/prompt.delete.controller";

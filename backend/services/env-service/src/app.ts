@@ -27,6 +27,8 @@ import { buildEnvServiceRouter } from "./routes/env-service.route";
 type CreateAppOptions = {
   slug: string;
   version: number;
+  /** Concrete environment label for this running instance (e.g., "dev", "staging", "prod"). */
+  envName: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 };
@@ -42,6 +44,7 @@ class EnvServiceApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
+      envName: opts.envName,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
       // env-service is DB-backed: requires NV_MONGO_* and index ensure at boot.

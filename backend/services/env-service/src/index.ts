@@ -25,6 +25,16 @@ const LOG_FILE = path.resolve(process.cwd(), "env-service-startup-error.log");
 
 (async () => {
   try {
+    // Determine the concrete environment name for this process (e.g., "dev", "staging", "prod").
+    const envName = process.env.NV_ENV;
+    if (!envName) {
+      throw new Error(
+        "ENV_NAME_MISSING: NV_ENV is not set for env-service. " +
+          "Ops: ensure NV_ENV is configured for this process (e.g., dev/staging/prod) " +
+          "before starting env-service."
+      );
+    }
+
     // Step 1: Bootstrap and load configuration (merged root + service config)
     const { envBag, envReloader, host, port } = await envBootstrap({
       slug: SERVICE_SLUG,
@@ -62,6 +72,7 @@ const LOG_FILE = path.resolve(process.cwd(), "env-service-startup-error.log");
     const { app } = await createApp({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
+      envName,
       envDto: primary,
       envReloader: envReloaderForApp,
     });
@@ -73,6 +84,7 @@ const LOG_FILE = path.resolve(process.cwd(), "env-service-startup-error.log");
         version: SERVICE_VERSION,
         host,
         port,
+        envName,
       });
     });
   } catch (err) {

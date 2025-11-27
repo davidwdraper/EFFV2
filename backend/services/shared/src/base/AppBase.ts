@@ -37,6 +37,7 @@ import { ServiceBase } from "@nv/shared/base/ServiceBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
+import { SvcClient } from "@nv/shared/s2s/SvcClient";
 
 export type AppBaseCtor = {
   service: string;
@@ -81,6 +82,9 @@ export abstract class AppBase extends ServiceBase {
   /** DB posture: true = CRUD/DB service, false = MOS/non-DB. */
   protected readonly checkDb: boolean;
 
+  /** Shared S2S client for this service instance (process-local). */
+  protected readonly svcClient: SvcClient;
+
   /** Shared prompts client for this service instance (process-local cache). */
   protected readonly promptsClient: PromptsClient;
 
@@ -95,10 +99,11 @@ export abstract class AppBase extends ServiceBase {
     this.app = express();
     this.initApp();
 
-    // PromptsClient: central text catalog access for this service.
-    // We attempt to bind to a SvcClient on ServiceBase; if none is wired yet,
-    // we degrade gracefully by treating all prompts as missing (key passthrough)
-    // but still logging once.
+    // Central S2S client rail: owned by AppBase, one per service instance.
+    this.svcClient = this.createSvcClient();
+
+    // PromptsClient: central text catalog access for this service,
+    // built on top of the shared SvcClient rail.
     this.promptsClient = this.createPromptsClient();
   }
 
@@ -439,73 +444,60 @@ export abstract class AppBase extends ServiceBase {
     return this.app;
   }
 
-  // ─────────────── PromptsClient wiring (internal) ───────────────
+  // ─────────────── PromptsClient & SvcClient wiring (internal) ───────────────
+
+  /**
+   * Create the shared SvcClient bound to this service instance.
+   *
+   * NOTE:
+   * - Resolver is currently a stub that fails on use; this will be replaced
+   *   with a real svcconfig-backed resolver once svcconfig rails are wired.
+   * - Until then, any attempted S2S call will fail-fast with clear Ops guidance.
+   */
+  private createSvcClient(): SvcClient {
+    const svcconfigResolver = {
+      resolveTarget: async (
+        env: string,
+        slug: string,
+        version: number
+      ): Promise<import("@nv/shared/s2s/SvcClient").SvcTarget> => {
+        const msg =
+          `[${this.service}] SvcClient resolver not wired. ` +
+          `Cannot resolve target="${slug}@v${version}" in env="${env}". ` +
+          "Ops: implement a svcconfig-backed resolver for this service before enabling S2S calls.";
+        this.log.error({ env, slug, version }, msg);
+        throw new Error(msg);
+      },
+    };
+
+    return new SvcClient({
+      callerSlug: this.service,
+      callerVersion: this.version,
+      logger: {
+        debug: (msg, meta) => this.log.debug(meta ?? {}, msg),
+        info: (msg, meta) => this.log.info(meta ?? {}, msg),
+        warn: (msg, meta) => this.log.warn(meta ?? {}, msg),
+        error: (msg, meta) => this.log.error(meta ?? {}, msg),
+      },
+      svcconfigResolver,
+      requestIdProvider: () => `svcclient-${Date.now()}`,
+      tokenFactory: undefined,
+    });
+  }
 
   /**
    * Create a PromptsClient bound to this service.
    *
-   * We attempt to discover a SvcClient on ServiceBase via duck-typing:
-   * - If `this.svcClient.callBySlug` exists, we use it.
-   * - Otherwise we install a stub that logs once per key and treats prompts as
-   *   missing (render() will fall back to promptKey).
-   *
-   * This avoids per-service overrides while still honoring ADR-0064’s
-   * semantics and your “no shims that change behavior later” rule: once a real
-   * SvcClient is present, prompts start flowing without further code changes.
+   * We rely on the shared svcClient rail owned by AppBase. If prompts are
+   * invoked before prompts/svcconfig rails are wired, SvcClient.callBySlug()
+   * will fail-fast with clear guidance.
    */
   private createPromptsClient(): PromptsClient {
-    const anySelf = this as any;
-
-    let svcClient: {
-      callBySlug: (
-        slug: string,
-        version: string,
-        route: string,
-        message: unknown,
-        options?: Record<string, unknown>
-      ) => Promise<unknown>;
-    };
-
-    if (
-      anySelf.svcClient &&
-      typeof anySelf.svcClient.callBySlug === "function"
-    ) {
-      svcClient = anySelf.svcClient;
-    } else {
-      // Degrade gracefully: no SvcClient wired yet. We still want predictable
-      // behavior (key passthrough + a single PROMPT-level log per key).
-      svcClient = {
-        callBySlug: async (
-          slug: string,
-          version: string,
-          route: string,
-          _message: unknown
-        ): Promise<unknown> => {
-          this.log.prompt(
-            {
-              event: "prompts_svcclient_missing",
-              serviceSlug: this.service,
-              env: this.envName,
-              targetSlug: slug,
-              targetVersion: version,
-              route,
-            },
-            "PromptsClient: svcClient not wired; treating all prompts as missing."
-          );
-          // Throw so PromptsClient treats this as a transport failure and
-          // returns null → render() falls back to promptKey.
-          throw new Error("PromptsClient: svcClient not wired");
-        },
-      };
-    }
-
     return new PromptsClient({
       logger: this.log,
       serviceSlug: this.service,
-      svcClient,
-      // requestId is usually available in controllers/handlers; they can pass
-      // it via meta if desired. For now we don’t try to reach into per-request
-      // context from here.
+      svcClient: this.svcClient,
+      // requestId correlation can later be wired via per-request context.
       getRequestId: undefined,
     });
   }

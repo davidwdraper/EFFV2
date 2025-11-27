@@ -20,7 +20,7 @@
  * - Success responses are always built from ctx["bag"] (DtoBag) only.
  * - Error responses are normalized to Problem+JSON and, when possible, use
  *   PromptsClient (via AppBase.prompt()) to obtain localized, parameterized
- *   human-facing detail text.
+ *   human-facing detail text and user-facing hints.
  */
 
 import type { Request, Response } from "express";
@@ -43,6 +43,22 @@ type ProblemJson = {
   code?: string;
   issues?: Array<{ path: string; code: string; message: string }>;
   requestId?: string;
+
+  /**
+   * Optional, localized, user-facing message suitable for direct UI display.
+   * - Typically produced via PromptsClient using userPromptKey.
+   * - When no template exists, this will fall back to userPromptKey so the UI
+   *   can always render userMessage without branching.
+   */
+  userMessage?: string;
+
+  /**
+   * Prompt/catalog key for the user-facing message.
+   * - Either supplied explicitly by handlers (err.userPromptKey / err.promptKey),
+   *   or derived generically (e.g., "INTERNAL_ERROR"/"BAD_REQUEST") based on
+   *   HTTP status when no explicit key is provided.
+   */
+  userPromptKey?: string;
 };
 
 export abstract class ControllerBase {
@@ -63,7 +79,9 @@ export abstract class ControllerBase {
     );
   }
 
-  // ─────────────── Public getters for handlers (strict contract) ─────────────
+  // ───────────────────────────────────────────
+  // Public getters
+  // ───────────────────────────────────────────
 
   public getApp(): AppBase {
     return this.app;
@@ -87,6 +105,10 @@ export abstract class ControllerBase {
     return this.log;
   }
 
+  // ───────────────────────────────────────────
+  // Context prep helpers
+  // ───────────────────────────────────────────
+
   protected seedHydrator(
     ctx: HandlerContext,
     dtoType: string,
@@ -100,8 +122,6 @@ export abstract class ControllerBase {
       "ControllerBase"
     );
   }
-
-  // ─────────────── Context build / pipeline helpers ──────────────────────────
 
   protected makeContext(req: Request, res: Response): HandlerContext {
     const ctx = new HandlerContext();
@@ -136,20 +156,6 @@ export abstract class ControllerBase {
     return ctx;
   }
 
-  /**
-   * Helper for dtoType-based routes (create/read/delete/etc.).
-   *
-   * Responsibilities:
-   * - Build a HandlerContext via makeContext().
-   * - Extract :dtoType from req.params and stamp into ctx["dtoType"].
-   * - Stamp operation name into ctx["op"].
-   * - Optionally resolve db.collectionName via DtoRegistry and stamp into ctx["db.collectionName"].
-   *
-   * On error (missing :dtoType, registry/collection issues), this method:
-   * - Sets handlerStatus="error" and response.status/response.body on the ctx.
-   * - Logs a warning.
-   * - Returns the ctx so the controller can immediately finalize().
-   */
   protected makeDtoOpContext(
     req: Request,
     res: Response,
@@ -259,7 +265,7 @@ export abstract class ControllerBase {
 
     if (requireRegistry) {
       try {
-        void this.getDtoRegistry(); // throws if missing
+        void this.getDtoRegistry();
       } catch (_e) {
         ctx.set("handlerStatus", "error");
         ctx.set("response.status", 500);
@@ -296,12 +302,13 @@ export abstract class ControllerBase {
     if (ctx.get<string>("handlerStatus") === "error") return;
 
     for (const h of handlers) {
-      // eslint-disable-next-line no-await-in-loop
       await h.run();
     }
   }
 
-  // ─────────────── Finalize: bag-or-error only ───────────────────────────────
+  // ───────────────────────────────────────────
+  // Finalize (bag-or-error)
+  // ───────────────────────────────────────────
 
   protected async finalize(ctx: HandlerContext): Promise<void> {
     const res = ctx.get<Response>("res")!;
@@ -317,18 +324,17 @@ export abstract class ControllerBase {
       "Finalize start"
     );
 
-    // ── 1) Error path: only place where handlers may prebuild a body ──
+    // ─── ERROR PATH ───────────────────────────
     if (handlerStatus === "error" || (statusFromCtx && statusFromCtx >= 400)) {
       const status =
         statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
 
-      // Prefer explicit response.body when present; fallback to ctx["error"].
       const rawError =
         ctx.get<any>("response.body") && ctx.get<any>("response.body").code
           ? ctx.get<any>("response.body")
           : ctx.get<any>("error");
 
-      // Normalize duplicate-key codes using existing parser.
+      // Duplicate key normalization
       let normalized = rawError;
       if (rawError && rawError.title && rawError.code) {
         const maybeDup =
@@ -358,17 +364,15 @@ export abstract class ControllerBase {
             )
           : this.toProblemJson(normalized, status, requestId);
 
-      res
-        .status(body.status ?? status)
-        .type("application/problem+json")
-        .json(body);
+      const finalStatus = body.status ?? status;
+      res.status(finalStatus).type("application/problem+json").json(body);
 
-      if ((body.status ?? status) >= 500) {
+      if (finalStatus >= 500) {
         this.log.error(
           {
             event: "finalize_error",
             requestId,
-            status: body.status ?? status,
+            status: finalStatus,
             problem: body,
           },
           "Controller error response"
@@ -378,7 +382,7 @@ export abstract class ControllerBase {
           {
             event: "finalize_client_error",
             requestId,
-            status: body.status ?? status,
+            status: finalStatus,
             problem: body,
           },
           "Controller client/data response"
@@ -389,7 +393,8 @@ export abstract class ControllerBase {
       return;
     }
 
-    // ── 2) Success / warn path: MUST have a DtoBag on ctx["bag"] ──
+    // ─── SUCCESS PATH ───────────────────────────
+
     const bag: any = ctx.get<any>("bag");
 
     if (!bag || typeof bag.toJson !== "function") {
@@ -414,7 +419,7 @@ export abstract class ControllerBase {
           hasBag: !!bag,
           bagType: bag ? typeof bag : "undefined",
         },
-        "Finalize — missing DtoBag for successful response"
+        "Finalize — missing DtoBag"
       );
 
       this.log.debug({ event: "finalize_exit", requestId }, "Finalize end");
@@ -422,7 +427,6 @@ export abstract class ControllerBase {
     }
 
     const items = bag.toJson() as any[];
-
     const dtoType = ctx.get<string>("dtoType");
     const op = ctx.get<string>("op");
     const idKey = ctx.get<string>("idKey");
@@ -461,11 +465,10 @@ export abstract class ControllerBase {
         idKey,
         count: meta.count,
       },
-      "Finalize — DtoBag materialized to wire envelope"
+      "Finalize — DtoBag materialized"
     );
   }
 
-  // eslint-disable-next-line class-methods-use-this
   protected needsRegistry(): boolean {
     return true;
   }
@@ -510,18 +513,6 @@ export abstract class ControllerBase {
     };
   }
 
-  /**
-   * Build Problem+JSON body, using PromptsClient when a promptKey is present.
-   *
-   * Expected normalized error fields (non-strict):
-   * - code: string          (internal error code)
-   * - title: string
-   * - detail?: string       (fallback if no promptKey)
-   * - promptKey?: string    (ADR-0064 — catalog key)
-   * - promptParams?: Record<string, string|number>
-   * - meta?: Record<string, unknown>   (extra operator/UX metadata)
-   * - issues?: [...]
-   */
   private async buildProblemJsonWithPrompts(
     ctx: HandlerContext,
     err: any,
@@ -540,7 +531,20 @@ export abstract class ControllerBase {
       err?.title ?? (status >= 500 ? "Internal Server Error" : "Bad Request");
     const issues = Array.isArray(err?.issues) ? err.issues : undefined;
 
-    const promptKey: string | undefined = err?.promptKey;
+    const explicitUserKey =
+      typeof err?.userPromptKey === "string" && err.userPromptKey.trim()
+        ? err.userPromptKey.trim()
+        : undefined;
+    const explicitPromptKey =
+      typeof err?.promptKey === "string" && err.promptKey.trim()
+        ? err.promptKey.trim()
+        : undefined;
+
+    const effectivePromptKey =
+      explicitUserKey ??
+      explicitPromptKey ??
+      this.defaultPromptKeyForStatus(code, status);
+
     const promptParams: Record<string, string | number> | undefined =
       err?.promptParams ?? err?.params;
     const promptMeta: Record<string, unknown> = {
@@ -548,33 +552,40 @@ export abstract class ControllerBase {
       ...(err?.meta && typeof err.meta === "object" ? err.meta : {}),
     };
 
-    let detail: string | undefined;
+    let userMessage: string | undefined;
 
-    if (promptKey && typeof promptKey === "string" && promptKey.trim()) {
+    if (effectivePromptKey) {
       try {
-        detail = await this.app.prompt(
+        userMessage = await this.app.prompt(
           language,
-          promptKey,
+          effectivePromptKey,
           promptParams,
           promptMeta
         );
       } catch (e) {
-        // Prompts must never break error responses; fall back to plain detail.
         this.log.error(
           {
             event: "prompt_render_failed",
             requestId,
             code,
-            promptKey,
+            promptKey: effectivePromptKey,
             err: this.log.serializeError(e),
           },
-          "ControllerBase.buildProblemJsonWithPrompts — falling back to raw detail/message"
+          "buildProblemJsonWithPrompts — falling back"
         );
       }
     }
 
+    if (!userMessage && effectivePromptKey) {
+      userMessage = effectivePromptKey;
+    }
+
+    let detail: string | undefined = err?.detail ?? err?.message;
+    if (!detail && userMessage) {
+      detail = userMessage;
+    }
     if (!detail) {
-      detail = err?.detail ?? err?.message ?? "Unhandled error";
+      detail = "Unhandled error";
     }
 
     return {
@@ -585,6 +596,8 @@ export abstract class ControllerBase {
       code,
       issues,
       requestId,
+      userMessage,
+      userPromptKey: effectivePromptKey,
     };
   }
 
@@ -593,11 +606,18 @@ export abstract class ControllerBase {
       return "en";
     }
 
-    // Take first entry before comma; keep it as-is for PromptsClient to try,
-    // which will then fall back to "en" if needed.
     const first = acceptLanguageHeader.split(",")[0]?.trim();
     if (!first) return "en";
     return first;
+  }
+
+  private defaultPromptKeyForStatus(
+    code: string | undefined,
+    status: number
+  ): string | undefined {
+    if (status >= 500) return "INTERNAL_ERROR";
+    if (status >= 400) return "BAD_REQUEST";
+    return code || undefined;
   }
 
   private randId(): string {

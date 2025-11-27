@@ -268,6 +268,38 @@ export class SvcClient {
   }
 
   /**
+   * Temporary adapter for older code that expects a `callBySlug(...)` API.
+   *
+   * NOTE:
+   * - This is *intentionally* not implemented yet.
+   * - PromptsClient currently depends on the existence of this method at
+   *   type level; calling it will fail-fast until prompts routes are wired
+   *   properly using DTO-first SvcClient.call().
+   *
+   * DO NOT build new code against this signature. New S2S calls must use
+   * SvcClient.call() with DTO/DtoBag-based contracts.
+   */
+  public async callBySlug(
+    slug: string,
+    version: string,
+    route: string,
+    _message: unknown,
+    _options?: Record<string, unknown>
+  ): Promise<unknown> {
+    this.logger.error("SvcClient.callBySlug.unimplemented", {
+      slug,
+      version,
+      route,
+      hint: "callBySlug is a compatibility stub. Wire a DTO-based prompts route and switch PromptsClient over to SvcClient.call().",
+    });
+
+    throw new Error(
+      `SvcClient.callBySlug is not implemented. Caller="${this.callerSlug}" attempted to call slug="${slug}" route="${route}". ` +
+        "Use DTO-based SvcClient.call() once prompts/svcconfig rails are in place."
+    );
+  }
+
+  /**
    * Build the target URL based on the baseUrl and the route convention.
    *
    * Convention (SOP/LDD):

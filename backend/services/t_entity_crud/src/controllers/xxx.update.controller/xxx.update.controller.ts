@@ -25,7 +25,7 @@ import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
-import * as XxxUpdatePipeline from "./pipelines/xxx.update.handlerPipeline";
+import * as XxxUpdatePipeline from "./pipelines/update.handlerPipeline";
 // Future dtoType example (uncomment when adding a new type):
 // import * as MyNewDtoUpdatePipeline from "./pipelines/myNewDto.update.handlerPipeline";
 

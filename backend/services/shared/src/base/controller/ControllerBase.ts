@@ -15,6 +15,10 @@
  * - Shared abstract controller base for all services.
  * - Orchestrates context seeding, preflight, pipeline execution, and finalize()
  *   using helpers in this folder.
+ *
+ * Notes:
+ * - Success responses are always built from ctx["bag"] (DtoBag) only.
+ * - Error responses are normalized to Problem+JSON (see controllerFinalize.ts).
  */
 
 import type { Request, Response } from "express";
@@ -24,7 +28,6 @@ import { getLogger, type IBoundLogger } from "../../logger/Logger";
 import type { EnvServiceDto } from "../../dto/env-service.dto";
 import type { AppBase } from "../app/AppBase";
 import type { IDtoRegistry } from "../../registry/RegistryBase";
-import type { ProblemJson } from "./controllerTypes";
 import {
   seedHydratorIntoContext,
   makeHandlerContext,
@@ -70,7 +73,9 @@ export abstract class ControllerBase {
 
   public getSvcEnv(): EnvServiceDto {
     const env = (this.app as any)?.svcEnv;
-    if (!env) throw new Error("EnvServiceDto not available from AppBase.");
+    if (!env) {
+      throw new Error("EnvServiceDto not available from AppBase.");
+    }
     return env as EnvServiceDto;
   }
 
@@ -128,7 +133,8 @@ export abstract class ControllerBase {
 
   /**
    * Whether this controller needs a DTO registry.
-   * Public so helper interfaces can see it; override in subclasses if needed.
+   * Public so controller helpers (ControllerRuntimeDeps) can depend on it.
+   * Override in subclasses if a controller does not require a registry.
    */
   public needsRegistry(): boolean {
     return true;

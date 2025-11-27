@@ -20,7 +20,7 @@ import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
-import * as XxxDeletePipeline from "./pipelines/xxx.delete.handlerPipeline";
+import * as XxxDeletePipeline from "./pipelines/delete.handlerPipeline";
 
 export class XxxDeleteController extends ControllerBase {
   constructor(app: AppBase) {

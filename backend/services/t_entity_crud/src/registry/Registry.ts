@@ -35,9 +35,20 @@ export class Registry extends ServiceRegistryBase {
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
       ["xxx"]: XxxDto as unknown as DtoCtor<IDto>,
-      // add new DTOs here as you grow the service:
+      // Add new DTOs here as the service grows:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,
     };
+  }
+
+  /**
+   * Hook for attaching UserType (and other per-request security context)
+   * to a DTO instance.
+   *
+   * The t_entity_crud template does not apply field-level security by default,
+   * so this implementation is a strict pass-through.
+   */
+  protected applyUserType<T extends IDto = IDto>(dto: T): T {
+    return dto;
   }
 
   // ─────────────── Convenience constructors (optional) ───────────────
@@ -51,7 +62,9 @@ export class Registry extends ServiceRegistryBase {
 
   /** Hydrate an XxxDto from JSON (validates if requested) and seed collection. */
   public fromJsonXxx(json: unknown, opts?: { validate?: boolean }): XxxDto {
-    const dto = XxxDto.fromJson(json, { validate: !!opts?.validate });
+    const dto = XxxDto.fromJson(json, {
+      validate: !!opts?.validate,
+    });
     dto.setCollectionName(XxxDto.dbCollectionName());
     return dto;
   }

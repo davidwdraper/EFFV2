@@ -22,11 +22,11 @@
 
 import { Router } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { XxxCreateController } from "../controllers/xxx.create.controller/xxx.create.controller";
-import { XxxReadController } from "../controllers/xxx.read.controller/xxx.read.controller";
-import { XxxDeleteController } from "../controllers/xxx.delete.controller/xxx.delete.controller";
+import { XxxCreateController } from "../controllers/create.controller/xxx.create.controller";
+import { XxxReadController } from "../controllers/read.controller/xxx.read.controller";
+import { XxxDeleteController } from "../controllers/delete.controller/xxx.delete.controller";
 import { XxxUpdateController } from "../controllers/xxx.update.controller/xxx.update.controller";
-import { XxxListController } from "../controllers/xxx.list.controller/xxx.list.controller";
+import { XxxListController } from "../controllers/list.controller/xxx.list.controller";
 
 export function buildXxxRouter(app: AppBase): ReturnType<typeof Router> {
   const r = Router();

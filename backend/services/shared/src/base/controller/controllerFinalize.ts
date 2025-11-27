@@ -2,28 +2,40 @@
 /**
  * Docs:
  * - ADR-0040 (DTO-Only Persistence via Managers)
+ * - ADR-0041 (Controller & Handler Architecture)
+ * - ADR-0042 (HandlerContext Bus)
  * - ADR-0043 (DTO Hydration & Failure Propagation)
+ * - ADR-0049 (DTO Registry & Wire Discrimination)
  * - ADR-0050 (Wire Bag Envelope; bag-only edges)
- * - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *
  * Purpose:
- * - Shared finalize() logic:
- *   • Normalize error paths to Problem+JSON (with prompt-based userMessage).
- *   • Enforce bag-only success responses (ctx["bag"] → { items, meta }).
+ * - Centralized finalize() logic for all controllers.
+ * - Success: bag-only edges → { ok:true, items, meta[, warnings] }.
+ * - Error: normalized Problem+JSON, with optional user-facing prompt text.
  */
 
 import type { Response } from "express";
-import { HandlerContext } from "../../http/handlers/HandlerContext";
+import type { HandlerContext } from "../../http/handlers/HandlerContext";
+import type { IBoundLogger } from "../../logger/Logger";
+import type { EnvServiceDto } from "../../dto/env-service.dto";
+import type { AppBase } from "../app/AppBase";
 import {
   DuplicateKeyError,
   parseDuplicateKey,
 } from "../../dto/persistence/adapters/mongo/dupeKeyError";
-import type { ControllerRuntimeDeps, ProblemJson } from "./controllerTypes";
+import type { ProblemJson, ControllerRuntimeDeps } from "./controllerTypes";
 
+/**
+ * Finalize a request given the handler context.
+ * - `controller` is a ControllerBase (or compatible) exposing runtime deps.
+ * - `ctx` is the HandlerContext populated by the pipeline.
+ */
 export async function finalizeResponse(
   controller: ControllerRuntimeDeps,
   ctx: HandlerContext
 ): Promise<void> {
+  const log: IBoundLogger = controller.getLogger();
+  const app: AppBase = controller.getApp();
   const res = ctx.get<Response>("res")!;
   const requestId = ctx.get<string>("requestId") ?? "";
   const rawStatus = ctx.get<string>("handlerStatus") ?? "ok";
@@ -32,10 +44,18 @@ export async function finalizeResponse(
     ctx.get<number>("response.status") ?? ctx.get<number>("status");
   const warnings = ctx.get<any[]>("warnings");
 
-  const log = controller.getLogger();
-
   log.debug(
-    { event: "finalize_enter", requestId, handlerStatus, statusFromCtx },
+    {
+      event: "finalize_enter",
+      requestId,
+      handlerStatus,
+      statusFromCtx,
+      origin: {
+        file: "backend/services/shared/src/base/controller/controllerFinalize.ts",
+        method: "finalizeResponse",
+        line: 37,
+      },
+    },
     "ControllerBase.finalize — start"
   );
 
@@ -43,10 +63,9 @@ export async function finalizeResponse(
   if (handlerStatus === "error" || (statusFromCtx && statusFromCtx >= 400)) {
     const status = statusFromCtx && statusFromCtx >= 400 ? statusFromCtx : 500;
 
-    const candidate = ctx.get<any>("response.body") ?? ctx.get<any>("error");
     const rawError =
-      candidate && candidate.code && candidate.title
-        ? candidate
+      ctx.get<any>("response.body") && ctx.get<any>("response.body").code
+        ? ctx.get<any>("response.body")
         : ctx.get<any>("error");
 
     // Duplicate key normalization
@@ -72,13 +91,14 @@ export async function finalizeResponse(
     const body: ProblemJson =
       normalized && normalized.title && normalized.code
         ? await buildProblemJsonWithPrompts(
-            controller,
+            app,
+            log,
             ctx,
             normalized,
             status,
             requestId
           )
-        : toProblemJson(normalized, status, requestId);
+        : toProblemJson(log, normalized, status, requestId);
 
     const finalStatus = body.status ?? status;
     res.status(finalStatus).type("application/problem+json").json(body);
@@ -91,7 +111,7 @@ export async function finalizeResponse(
           status: finalStatus,
           problem: body,
         },
-        "ControllerBase.finalize — server error response"
+        "Controller error response"
       );
     } else {
       log.warn(
@@ -101,13 +121,21 @@ export async function finalizeResponse(
           status: finalStatus,
           problem: body,
         },
-        "ControllerBase.finalize — client/data error response"
+        "Controller client/data response"
       );
     }
 
     log.debug(
-      { event: "finalize_exit", requestId },
-      "ControllerBase.finalize — end (error path)"
+      {
+        event: "finalize_exit",
+        requestId,
+        origin: {
+          file: "backend/services/shared/src/base/controller/controllerFinalize.ts",
+          method: "finalizeResponse",
+          line: 112,
+        },
+      },
+      "ControllerBase.finalize — end"
     );
     return;
   }
@@ -138,12 +166,20 @@ export async function finalizeResponse(
         hasBag: !!bag,
         bagType: bag ? typeof bag : "undefined",
       },
-      "ControllerBase.finalize — missing DtoBag"
+      "Finalize — missing DtoBag"
     );
 
     log.debug(
-      { event: "finalize_exit", requestId },
-      "ControllerBase.finalize — end (bag missing)"
+      {
+        event: "finalize_exit",
+        requestId,
+        origin: {
+          file: "backend/services/shared/src/base/controller/controllerFinalize.ts",
+          method: "finalizeResponse",
+          line: 150,
+        },
+      },
+      "ControllerBase.finalize — end"
     );
     return;
   }
@@ -160,15 +196,13 @@ export async function finalizeResponse(
   if (op) meta.op = op;
   if (idKey) meta.idKey = idKey;
 
-  const body: any = { items, meta };
+  // *** KEY CHANGE FOR SMOKES: include ok:true on success ***
+  const body: any = { ok: true, items, meta };
 
   if (Array.isArray(warnings) && warnings.length > 0) {
     body.warnings = warnings;
     for (const w of warnings) {
-      log.warn(
-        { event: "warn", requestId, warning: w },
-        "ControllerBase.finalize — handler warning"
-      );
+      log.warn({ event: "warn", requestId, warning: w }, "Handler warning");
     }
   }
 
@@ -186,16 +220,22 @@ export async function finalizeResponse(
       op,
       idKey,
       count: meta.count,
+      origin: {
+        file: "backend/services/shared/src/base/controller/controllerFinalize.ts",
+        method: "finalizeResponse",
+        line: 197,
+      },
     },
     "ControllerBase.finalize — DtoBag materialized"
   );
 }
 
 // ───────────────────────────────────────────
-// Problem+JSON helpers
+// Internal helpers (error → Problem+JSON)
 // ───────────────────────────────────────────
 
 function toProblemJson(
+  log: IBoundLogger,
   err: any,
   status: number,
   requestId?: string
@@ -236,7 +276,8 @@ function toProblemJson(
 }
 
 async function buildProblemJsonWithPrompts(
-  controller: ControllerRuntimeDeps,
+  app: AppBase,
+  log: IBoundLogger,
   ctx: HandlerContext,
   err: any,
   status: number,
@@ -275,15 +316,16 @@ async function buildProblemJsonWithPrompts(
     ...(err?.meta && typeof err.meta === "object" ? err.meta : {}),
   };
 
-  const log = controller.getLogger();
-
   let userMessage: string | undefined;
 
   if (effectivePromptKey) {
     try {
-      userMessage = await controller
-        .getApp()
-        .prompt(language, effectivePromptKey, promptParams, promptMeta);
+      userMessage = await app.prompt(
+        language,
+        effectivePromptKey,
+        promptParams,
+        promptMeta
+      );
     } catch (e) {
       log.error(
         {

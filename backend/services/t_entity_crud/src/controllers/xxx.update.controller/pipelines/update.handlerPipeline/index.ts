@@ -18,9 +18,9 @@ import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get
 import { XxxDto } from "@nv/shared/dto/xxx.dto";
 
 // Update-specific handlers
-import { LoadExistingUpdateHandler } from "./handlers/loadExisting.update.handler";
-import { ApplyPatchUpdateHandler } from "./handlers/applyPatch.update.handler";
-import { BagToDbUpdateHandler } from "./handlers/bagToDb.update.handler";
+import { LoadExistingUpdateHandler } from "./loadExisting.update.handler";
+import { ApplyPatchUpdateHandler } from "./applyPatch.update.handler";
+import { BagToDbUpdateHandler } from "./bagToDb.update.handler";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
   // Seed DTO ctor for downstream handlers

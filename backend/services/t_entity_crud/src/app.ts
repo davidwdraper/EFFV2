@@ -1,17 +1,17 @@
-// backend/services/t_entity_crud/src/app.ts
+// backend/services/xxx/src/app.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (SvcEnvDto — Key/Value Contract)
+ *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
- * Purpose (template):
+ * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - DB-backed CRUD template: requires NV_MONGO_* and index ensure at boot (checkDb=true).
+ * - For xxx, DB/index ensure is ON (checkDb=true).
  */
 
 import type { Express, Router } from "express";
@@ -27,11 +27,17 @@ import { buildXxxRouter } from "./routes/xxx.route";
 type CreateAppOptions = {
   slug: string;
   version: number;
+  /**
+   * Logical environment name for this process (e.g., "dev", "stage", "prod").
+   * - Passed through from envBootstrap.envName.
+   * - Any SvcClient created inside this service should use this value for `env`.
+   */
+  envName: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 };
 
-class XxxApp extends AppBase {
+class xxxApp extends AppBase {
   /** Concrete per-service DTO registry (explicit, no barrels). */
   private readonly registry: Registry;
 
@@ -42,9 +48,10 @@ class XxxApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
+      envName: opts.envName,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // t_entity_crud is DB-backed: needs NV_MONGO_* and ensureIndexes at boot.
+      // xxx is DB-backed: requires NV_MONGO_* and index ensure at boot.
       checkDb: true,
     });
 
@@ -66,7 +73,7 @@ class XxxApp extends AppBase {
 
     const r: Router = buildXxxRouter(this);
     this.app.use(base, r);
-    this.log.info({ base }, "routes mounted");
+    this.log.info({ base, env: this.getEnvName() }, "routes mounted");
   }
 }
 
@@ -74,8 +81,8 @@ class XxxApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new XxxApp(opts);
-  // AppBase.boot() handles registry diagnostics + ensureIndexes (checkDb=true).
+  const app = new xxxApp(opts);
+  // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
   await app.boot();
   return { app: app.instance };
 }

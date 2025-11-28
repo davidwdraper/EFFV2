@@ -1,0 +1,11 @@
+{
+  "items": [
+    {
+      "type": "gateway",
+      "txtfield1": "alpha-176430618342739",
+      "txtfield2": "bravo-176430618342739",
+      "numfield1": 1,
+      "numfield2": 2
+    }
+  ]
+}

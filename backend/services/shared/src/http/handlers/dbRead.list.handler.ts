@@ -8,7 +8,7 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *
  * Purpose:
  * - Generic list reader used by list-family routes (list, mirror, etc.).
@@ -149,8 +149,12 @@ export class DbReadListHandler extends HandlerBase {
       this.ctx.set("bag", bag);
 
       // Pagination hints for finalize().
-      this.ctx.set("list.nextCursor", nextCursor);
       this.ctx.set("list.limitUsed", limit);
+      if (nextCursor) {
+        // Namespaced + generic so finalize() and tests can see it.
+        this.ctx.set("list.nextCursor", nextCursor);
+        this.ctx.set("nextCursor", nextCursor);
+      }
 
       const count =
         typeof bag.count === "function"
@@ -170,18 +174,40 @@ export class DbReadListHandler extends HandlerBase {
         "list batch read complete"
       );
     } catch (err: any) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "DB_READ_FAILED",
-        title: "Internal Error",
-        detail: err?.message ?? String(err),
-        requestId,
-      });
-      this.log.error(
-        { event: "list_read_error", err: err?.message, requestId },
-        "dbRead.list — read failed"
-      );
+      const msg = err?.message ?? String(err ?? "");
+
+      // Special-case bad cursor → client error, not server error.
+      if (typeof msg === "string" && msg.startsWith("CURSOR_DECODE_INVALID")) {
+        this.ctx.set("handlerStatus", "error");
+        this.ctx.set("response.status", 400);
+        this.ctx.set("response.body", {
+          code: "INVALID_CURSOR",
+          title: "Invalid Cursor",
+          detail: msg,
+          requestId,
+        });
+        this.log.warn(
+          {
+            event: "invalid_cursor",
+            requestId,
+            message: msg,
+          },
+          "dbRead.list — invalid cursor rejected"
+        );
+      } else {
+        this.ctx.set("handlerStatus", "error");
+        this.ctx.set("response.status", 500);
+        this.ctx.set("response.body", {
+          code: "DB_READ_FAILED",
+          title: "Internal Error",
+          detail: msg,
+          requestId,
+        });
+        this.log.error(
+          { event: "list_read_error", err: msg, requestId },
+          "dbRead.list — read failed"
+        );
+      }
     }
   }
 }

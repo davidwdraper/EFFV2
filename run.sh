@@ -42,10 +42,10 @@ echo "   ENV_FILE=$ENV_FILE"
 # ======= Service list (current reality) =====================================
 SERVICES=(
   #"env-service|backend/services/env-service|pnpm dev"
-  "t_entity_crud|backend/services/t_entity_crud|pnpm dev"
+  #"t_entity_crud|backend/services/t_entity_crud|pnpm dev"
+  "gateway|backend/services/gateway|pnpm dev"
   #"svcconfig|backend/services/svcconfig|pnpm dev"
   #"prompt|backend/services/prompt|pnpm dev"
-  #"gateway|backend/services/gateway|pnpm dev"
   #"auth|backend/services/auth|pnpm dev"
   #"user|backend/services/user|pnpm dev"
   #"audit|backend/services/audit|pnpm dev"

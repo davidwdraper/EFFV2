@@ -10,7 +10,7 @@
  *
  * Purpose:
  * - Centralized finalize() logic for all controllers.
- * - Success: bag-only edges → { ok:true, items, meta[, warnings] }.
+ * - Success: bag-only edges → { ok:true, items, meta[, warnings][, nextCursor] }.
  * - Error: normalized Problem+JSON, with optional user-facing prompt text.
  */
 
@@ -53,7 +53,7 @@ export async function finalizeResponse(
       origin: {
         file: "backend/services/shared/src/base/controller/controllerFinalize.ts",
         method: "finalizeResponse",
-        line: 37,
+        line: 43,
       },
     },
     "ControllerBase.finalize — start"
@@ -76,14 +76,22 @@ export async function finalizeResponse(
           message: rawError.detail ?? rawError.message ?? "",
           code: 11000,
         }) ?? parseDuplicateKey(rawError);
+
       if (maybeDup) {
         const idx = (maybeDup.index ?? "").toString();
-        const mappedCode =
-          idx === "ux_xxx_business"
-            ? "DUPLICATE_CONTENT"
-            : idx === "_id_"
-            ? "DUPLICATE_ID"
-            : "DUPLICATE_KEY";
+        const idxLower = idx.toLowerCase();
+
+        let mappedCode: string;
+        if (idxLower === "_id_") {
+          // Primary key duplicate
+          mappedCode = "DUPLICATE_ID";
+        } else if (/^ux_.*_business$/i.test(idxLower)) {
+          // Any per-service business unique index (ux_xxx_business, ux_gateway_business, etc.)
+          mappedCode = "DUPLICATE_CONTENT";
+        } else {
+          mappedCode = "DUPLICATE_KEY";
+        }
+
         normalized = { ...rawError, code: mappedCode };
       }
     }
@@ -132,7 +140,7 @@ export async function finalizeResponse(
         origin: {
           file: "backend/services/shared/src/base/controller/controllerFinalize.ts",
           method: "finalizeResponse",
-          line: 112,
+          line: 131,
         },
       },
       "ControllerBase.finalize — end"
@@ -176,7 +184,7 @@ export async function finalizeResponse(
         origin: {
           file: "backend/services/shared/src/base/controller/controllerFinalize.ts",
           method: "finalizeResponse",
-          line: 150,
+          line: 170,
         },
       },
       "ControllerBase.finalize — end"
@@ -189,15 +197,27 @@ export async function finalizeResponse(
   const op = ctx.get<string>("op");
   const idKey = ctx.get<string>("idKey");
 
+  // Cursor & paging hints from list handlers (e.g., DbReadListHandler)
+  const nextCursor = ctx.get<string>("list.nextCursor");
+  const limitUsed = ctx.get<number>("list.limitUsed");
+
   const meta: Record<string, unknown> = {
     count: Array.isArray(items) ? items.length : 0,
   };
   if (dtoType) meta.dtoType = dtoType;
   if (op) meta.op = op;
   if (idKey) meta.idKey = idKey;
+  if (typeof limitUsed === "number" && Number.isFinite(limitUsed)) {
+    meta.limitUsed = limitUsed;
+  }
 
-  // *** KEY CHANGE FOR SMOKES: include ok:true on success ***
+  // bag-only success envelope
   const body: any = { ok: true, items, meta };
+
+  // Keyset pagination: expose cursor at the top level
+  if (typeof nextCursor === "string" && nextCursor.trim()) {
+    body.nextCursor = nextCursor.trim();
+  }
 
   if (Array.isArray(warnings) && warnings.length > 0) {
     body.warnings = warnings;
@@ -220,10 +240,11 @@ export async function finalizeResponse(
       op,
       idKey,
       count: meta.count,
+      hasNextCursor: !!nextCursor,
       origin: {
         file: "backend/services/shared/src/base/controller/controllerFinalize.ts",
         method: "finalizeResponse",
-        line: 197,
+        line: 229,
       },
     },
     "ControllerBase.finalize — DtoBag materialized"
@@ -242,12 +263,16 @@ function toProblemJson(
 ): ProblemJson {
   if (err instanceof DuplicateKeyError) {
     const idx = (err.index ?? "").toString();
-    const code =
-      idx === "ux_xxx_business"
-        ? "DUPLICATE_CONTENT"
-        : idx === "_id_"
-        ? "DUPLICATE_ID"
-        : "DUPLICATE_KEY";
+    const idxLower = idx.toLowerCase();
+
+    let code: string;
+    if (idxLower === "_id_") {
+      code = "DUPLICATE_ID";
+    } else if (/^ux_.*_business$/i.test(idxLower)) {
+      code = "DUPLICATE_CONTENT";
+    } else {
+      code = "DUPLICATE_KEY";
+    }
 
     return {
       type: "about:blank",

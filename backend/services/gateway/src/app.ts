@@ -7,11 +7,17 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
+ *   - ADR-0057 (Shared SvcClient for S2S Calls)
+ *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
  * - For gateway, DB/index ensure is ON (checkDb=true).
+ *
+ * Notes:
+ * - Health + env reload remain versioned under `/api/gateway/v1/*` (AppBase).
+ * - All proxied traffic is mounted under `/api` and handled by the proxy controller.
  */
 
 import type { Express, Router } from "express";
@@ -63,17 +69,23 @@ class gatewayApp extends AppBase {
     return this.registry;
   }
 
-  /** Mount service routes as one-liners under the versioned base. */
+  /**
+   * Mount service routes.
+   *
+   * Health + env reload are mounted by AppBase under:
+   *   /api/gateway/v<version>/health
+   *   /api/gateway/v<version>/env/reload
+   *
+   * All proxied traffic uses the shared gateway router under `/api`.
+   */
   protected override mountRoutes(): void {
-    const base = this.healthBasePath(); // `/api/<slug>/v<version>`
-    if (!base) {
-      this.log.error({ reason: "no_base" }, "Failed to derive base path");
-      throw new Error("Base path missing — check AppBase.healthBasePath()");
-    }
-
+    const base = "/api";
     const r: Router = buildGatewayRouter(this);
     this.app.use(base, r);
-    this.log.info({ base, env: this.getEnvName() }, "routes mounted");
+    this.log.info(
+      { base, env: this.getEnvName() },
+      "gateway proxy routes mounted"
+    );
   }
 }
 

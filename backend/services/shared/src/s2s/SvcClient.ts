@@ -12,111 +12,38 @@
  *   - ADR-0047 (DtoBag & Views)
  *   - ADR-0050 (Wire Bag Envelope — canonical wire format)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
+ *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
  *
  * Purpose:
  * - Canonical S2S HTTP client for all NV services.
- * - Resolves targets via svcconfig, enforces call graph, and sends/receives
- *   DtoBag-based wire envelopes over HTTP.
+ * - Provides two paths:
+ *   - DTO-based (call): worker ↔ worker, DtoBag-only.
+ *   - Raw-based (callRaw): gateway edge passthrough, opaque JSON.
  *
  * Notes:
- * - This class is transport-only: it never inspects DTO internals.
- * - KMS/JWT integration is pluggable via IKmsTokenFactory (placeholder for now).
+ * - Transport-only: never inspects DTO internals.
+ * - JWT/mTLS hooks live behind IKmsTokenFactory.
  */
 
-import type { DtoBag } from "../dto/DtoBag";
+import {
+  type ISvcClientLogger,
+  type ISvcconfigResolver,
+  type IKmsTokenFactory,
+  type RawResponse,
+  type RequestIdProvider,
+  type SvcClientCallParams,
+  type SvcClientRawCallParams,
+  type WireBagJson,
+} from "./SvcClient.types";
 
-export interface WireBagJson {
-  items: unknown[];
-  meta?: Record<string, unknown>;
-}
-
-/**
- * Result of resolving a target via svcconfig.
- *
- * This is intentionally abstracted away from svcconfig's concrete DTO shape.
- */
-export interface SvcTarget {
-  baseUrl: string; // e.g. "https://svc-env-dev.internal:8443"
-  slug: string; // target slug ("env-service", "svcconfig", "auth", etc.)
-  version: number; // major API version (1, 2, ...)
-  isAuthorized: boolean; // whether the current caller may call this target
-  reasonIfNotAuthorized?: string;
-}
-
-/**
- * svcconfig resolver abstraction.
- *
- * Implementations:
- * - Call svcconfig directly (using a plain HTTP client).
- * - Apply call-graph policy to determine isAuthorized.
- * - Special-case svcconfig itself to avoid recursion through SvcClient.
- */
-export interface ISvcconfigResolver {
-  resolveTarget(env: string, slug: string, version: number): Promise<SvcTarget>;
-}
-
-/**
- * KMS/JWT token factory abstraction (placeholder).
- *
- * Current behavior:
- * - Optional dependency: when not supplied, SvcClient omits the Authorization header.
- *
- * Future behavior:
- * - Will become mandatory once verifyS2S is fully enforced across workers.
- */
-export interface IKmsTokenFactory {
-  mintToken(input: {
-    env: string;
-    callerSlug: string;
-    targetSlug: string;
-    targetVersion: number;
-  }): Promise<string>;
-}
-
-/**
- * Provides a requestId when one is not explicitly supplied.
- * Typically wired to the per-request context or a UUID generator.
- */
-export type RequestIdProvider = () => string;
-
-export interface SvcClientCallParams {
-  env: string;
-  slug: string; // target service slug
-  version: number;
-  dtoType: string;
-  op: string;
-  method: "GET" | "PUT" | "PATCH" | "POST" | "DELETE";
-  bag?: DtoBag<any>;
-  pathSuffix?: string; // optional override for `<dtoType>/<op>`
-  requestId?: string;
-  extraHeaders?: Record<string, string>;
-  timeoutMs?: number;
-}
-
-/**
- * Minimal logger interface used by SvcClient.
- * Implementations are expected to be backed by the shared logger util.
- */
-export interface ISvcClientLogger {
-  debug(msg: string, meta?: Record<string, unknown>): void;
-  info(msg: string, meta?: Record<string, unknown>): void;
-  warn(msg: string, meta?: Record<string, unknown>): void;
-  error(msg: string, meta?: Record<string, unknown>): void;
-}
-
-/**
- * Canonical S2S client.
- *
- * Responsibilities:
- * - Resolve target via svcconfig (through ISvcconfigResolver).
- * - Enforce call graph authorization (reject unauthorized calls).
- * - Build standard S2S headers (requestId, service name, version).
- * - Serialize DtoBag via .toJson() for the request body when appropriate.
- * - Execute the HTTP call and return the parsed wire bag JSON.
- */
 export class SvcClient {
   private readonly callerSlug: string;
   private readonly callerVersion: number;
+
+  private readonly logger: ISvcClientLogger;
+  private readonly svcconfigResolver: ISvcconfigResolver;
+  private readonly requestIdProvider: RequestIdProvider;
+  private readonly tokenFactory?: IKmsTokenFactory;
 
   constructor(options: {
     callerSlug: string;
@@ -134,13 +61,10 @@ export class SvcClient {
     this.tokenFactory = options.tokenFactory;
   }
 
-  private readonly logger: ISvcClientLogger;
-  private readonly svcconfigResolver: ISvcconfigResolver;
-  private readonly requestIdProvider: RequestIdProvider;
-  private readonly tokenFactory?: IKmsTokenFactory;
+  // ───────────────── DTO-BASED PATH (WORKERS) ─────────────────
 
   /**
-   * Execute a service-to-service call and return the wire bag JSON envelope.
+   * Execute a DTO-based service-to-service call and return the wire bag JSON envelope.
    *
    * Callers are responsible for mapping the returned JSON back into DTOs.
    */
@@ -181,7 +105,13 @@ export class SvcClient {
       );
     }
 
-    const url = this.buildUrl(target.baseUrl, params);
+    const url = this.buildUrl(target.baseUrl, {
+      slug: params.slug,
+      version: params.version,
+      dtoType: params.dtoType,
+      op: params.op,
+      pathSuffix: params.pathSuffix,
+    });
 
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -191,81 +121,184 @@ export class SvcClient {
       ...(params.extraHeaders ?? {}),
     };
 
-    if (this.tokenFactory) {
-      const token = await this.tokenFactory.mintToken({
+    await this.attachTokenIfConfigured({
+      env: params.env,
+      targetSlug: target.slug,
+      targetVersion: target.version,
+      headers,
+    });
+
+    const body = this.buildDtoBody(params);
+
+    const { status, bodyText } = await this.fetchWithTimeout({
+      url,
+      method: params.method,
+      headers,
+      body,
+      timeoutMs: params.timeoutMs,
+      logPrefix: "SvcClient.call",
+      targetSlug: target.slug,
+      requestId,
+    });
+
+    let parsed: unknown;
+    try {
+      parsed = bodyText ? JSON.parse(bodyText) : undefined;
+    } catch {
+      this.logger.error("SvcClient.call.response.jsonError", {
+        requestId,
+        targetSlug: target.slug,
+        status,
+        bodySnippet: bodyText.slice(0, 512),
+      });
+      throw new Error(
+        `SvcClient: Failed to parse JSON from target="${target.slug}" (status=${status}).`
+      );
+    }
+
+    if (status < 200 || status >= 300) {
+      this.logger.warn("SvcClient.call.non2xx", {
+        requestId,
+        targetSlug: target.slug,
+        status,
+        body: parsed,
+      });
+
+      // We assume Problem+JSON, but we don't enforce schema here.
+      throw new Error(
+        `SvcClient: Non-success response from target="${target.slug}" (status=${status}). See logs for Problem+JSON payload.`
+      );
+    }
+
+    this.logger.info("SvcClient.call.success", {
+      requestId,
+      targetSlug: target.slug,
+      status,
+    });
+
+    const wire = (parsed ?? {}) as WireBagJson;
+    return wire;
+  }
+
+  // ───────────────── RAW PATH (GATEWAY EDGE) ─────────────────
+
+  /**
+   * Raw-body S2S call (ADR-0066).
+   *
+   * Intended mainly for the gateway edge, where:
+   * - The JSON payload is treated as opaque.
+   * - We still want svcconfig-based resolution, call-graph enforcement,
+   *   and canonical S2S headers.
+   *
+   * Behavior:
+   * - Never parses JSON.
+   * - Never throws based on HTTP status (only network/timeout/errors).
+   * - Returns { status, headers, bodyText }; callers decide how to handle it.
+   */
+  public async callRaw(params: SvcClientRawCallParams): Promise<RawResponse> {
+    const requestId = params.requestId ?? this.requestIdProvider();
+
+    this.logger.debug("SvcClient.callRaw.begin", {
+      requestId,
+      callerSlug: this.callerSlug,
+      callerVersion: this.callerVersion,
+      env: params.env,
+      targetSlug: params.slug,
+      targetVersion: params.version,
+      method: params.method,
+      pathSuffix: params.pathSuffix,
+    });
+
+    const target = await this.svcconfigResolver.resolveTarget(
+      params.env,
+      params.slug,
+      params.version
+    );
+
+    if (!target.isAuthorized) {
+      const reason = target.reasonIfNotAuthorized ?? "No reason provided";
+      this.logger.warn("SvcClient.callRaw.unauthorized", {
+        requestId,
         env: params.env,
         callerSlug: this.callerSlug,
         targetSlug: target.slug,
         targetVersion: target.version,
+        reason,
       });
 
-      // NOTE: KMS/JWT integration placeholder — see ADR-0057.
-      headers["authorization"] = `Bearer ${token}`;
+      throw new Error(
+        `SvcClient unauthorized call (raw): caller="${this.callerSlug}" → target="${target.slug}@v${target.version}" in env="${params.env}". Reason: ${reason}`
+      );
     }
 
-    const body = this.buildBody(params);
+    const url = this.buildUrl(target.baseUrl, {
+      slug: params.slug,
+      version: params.version,
+      pathSuffix: params.pathSuffix,
+    });
 
-    const controller = new AbortController();
-    let timeoutHandle: NodeJS.Timeout | undefined;
-    const timeoutMs = params.timeoutMs ?? 30_000;
+    const headers: Record<string, string> = {
+      "x-request-id": requestId,
+      "x-service-name": this.callerSlug,
+      "x-api-version": String(this.callerVersion),
+      ...(params.extraHeaders ?? {}),
+    };
 
-    if (timeoutMs > 0) {
-      timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+    const body =
+      params.method === "GET" || params.body === undefined
+        ? undefined
+        : typeof params.body === "string"
+        ? params.body
+        : JSON.stringify(params.body);
+
+    if (body && !headers["content-type"]) {
+      headers["content-type"] = "application/json";
     }
 
-    try {
-      const response = await fetch(url, {
-        method: params.method,
-        headers,
-        body,
-        signal: controller.signal,
-      });
+    await this.attachTokenIfConfigured({
+      env: params.env,
+      targetSlug: target.slug,
+      targetVersion: target.version,
+      headers,
+    });
 
-      const responseText = await response.text();
-      let parsed: unknown;
+    const {
+      status,
+      bodyText,
+      headers: responseHeaders,
+    } = await this.fetchWithTimeout({
+      url,
+      method: params.method,
+      headers,
+      body,
+      timeoutMs: params.timeoutMs,
+      logPrefix: "SvcClient.callRaw",
+      targetSlug: target.slug,
+      requestId,
+    });
 
-      try {
-        parsed = responseText ? JSON.parse(responseText) : undefined;
-      } catch (err) {
-        this.logger.error("SvcClient.call.response.jsonError", {
-          requestId,
-          targetSlug: target.slug,
-          status: response.status,
-          bodySnippet: responseText.slice(0, 512),
-        });
-        throw new Error(
-          `SvcClient: Failed to parse JSON from target="${target.slug}" (status=${response.status}).`
-        );
-      }
-
-      if (!response.ok) {
-        this.logger.warn("SvcClient.call.non2xx", {
-          requestId,
-          targetSlug: target.slug,
-          status: response.status,
-          body: parsed,
-        });
-
-        // We assume Problem+JSON, but we don't enforce schema here.
-        throw new Error(
-          `SvcClient: Non-success response from target="${target.slug}" (status=${response.status}). See logs for Problem+JSON payload.`
-        );
-      }
-
-      this.logger.info("SvcClient.call.success", {
+    if (status < 200 || status >= 300) {
+      this.logger.warn("SvcClient.callRaw.non2xx", {
         requestId,
         targetSlug: target.slug,
-        status: response.status,
+        status,
       });
-
-      const wire = (parsed ?? {}) as WireBagJson;
-      return wire;
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
+    } else {
+      this.logger.info("SvcClient.callRaw.success", {
+        requestId,
+        targetSlug: target.slug,
+        status,
+      });
     }
+
+    return {
+      status,
+      headers: responseHeaders,
+      bodyText,
+    };
   }
+
+  // ───────────────── COMPAT STUB ─────────────────
 
   /**
    * Temporary adapter for older code that expects a `callBySlug(...)` API.
@@ -277,7 +310,7 @@ export class SvcClient {
    *   properly using DTO-first SvcClient.call().
    *
    * DO NOT build new code against this signature. New S2S calls must use
-   * SvcClient.call() with DTO/DtoBag-based contracts.
+   * SvcClient.call() or SvcClient.callRaw().
    */
   public async callBySlug(
     slug: string,
@@ -299,6 +332,26 @@ export class SvcClient {
     );
   }
 
+  // ───────────────── INTERNAL HELPERS ─────────────────
+
+  private async attachTokenIfConfigured(opts: {
+    env: string;
+    targetSlug: string;
+    targetVersion: number;
+    headers: Record<string, string>;
+  }): Promise<void> {
+    if (!this.tokenFactory) return;
+
+    const token = await this.tokenFactory.mintToken({
+      env: opts.env,
+      callerSlug: this.callerSlug,
+      targetSlug: opts.targetSlug,
+      targetVersion: opts.targetVersion,
+    });
+
+    opts.headers["authorization"] = `Bearer ${token}`;
+  }
+
   /**
    * Build the target URL based on the baseUrl and the route convention.
    *
@@ -307,15 +360,29 @@ export class SvcClient {
    *
    * Callers may override the suffix via `pathSuffix` for specialized endpoints.
    */
-  private buildUrl(baseUrl: string, params: SvcClientCallParams): string {
-    const suffix =
-      params.pathSuffix ??
-      `${encodeURIComponent(params.dtoType)}/${encodeURIComponent(params.op)}`;
-
+  private buildUrl(
+    baseUrl: string,
+    params: {
+      slug: string;
+      version: number;
+      dtoType?: string;
+      op?: string;
+      pathSuffix?: string;
+    }
+  ): string {
     const trimmedBase = baseUrl.replace(/\/+$/, "");
+
+    let suffix = params.pathSuffix;
+    if (!suffix) {
+      const dtoType = params.dtoType ?? "";
+      const op = params.op ?? "";
+      suffix = `${encodeURIComponent(dtoType)}/${encodeURIComponent(op)}`;
+    }
+
+    const normalizedSuffix = suffix.replace(/^\/+/, "");
     return `${trimmedBase}/api/${encodeURIComponent(params.slug)}/v${
       params.version
-    }/${suffix}`;
+    }/${normalizedSuffix}`;
   }
 
   /**
@@ -328,17 +395,52 @@ export class SvcClient {
    *
    * The wire format is defined by ADR-0050 (Wire Bag Envelope).
    */
-  private buildBody(params: SvcClientCallParams): string | undefined {
-    if (params.method === "GET") {
-      return undefined;
-    }
-
-    if (!params.bag) {
-      return undefined;
-    }
-
-    // We trust DtoBag.toJson() to emit the canonical wire envelope.
+  private buildDtoBody(params: SvcClientCallParams): string | undefined {
+    if (params.method === "GET") return undefined;
+    if (!params.bag) return undefined;
     const json = params.bag.toJson();
     return JSON.stringify(json);
+  }
+
+  private async fetchWithTimeout(opts: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+    logPrefix: string;
+    targetSlug: string;
+    requestId: string;
+  }): Promise<{
+    status: number;
+    bodyText: string;
+    headers: Record<string, string>;
+  }> {
+    const controller = new AbortController();
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutMs = opts.timeoutMs ?? 30_000;
+
+    if (timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+    }
+
+    try {
+      const response = await fetch(opts.url, {
+        method: opts.method,
+        headers: opts.headers,
+        body: opts.body,
+        signal: controller.signal,
+      });
+
+      const bodyText = await response.text();
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key.toLowerCase()] = value;
+      });
+
+      return { status: response.status, bodyText, headers: responseHeaders };
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   }
 }

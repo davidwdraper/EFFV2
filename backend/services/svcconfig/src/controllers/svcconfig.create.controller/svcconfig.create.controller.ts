@@ -21,7 +21,7 @@
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
@@ -29,7 +29,7 @@ import * as SvcconfigCreatePipeline from "./pipelines/svcconfig.handlerPipeline"
 // Future dtoType example (uncomment when adding a new type):
 // import * as MyNewDtoCreatePipeline from "./pipelines/myNewDto.create.handlerPipeline";
 
-export class SvcconfigCreateController extends ControllerBase {
+export class SvcconfigCreateController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }

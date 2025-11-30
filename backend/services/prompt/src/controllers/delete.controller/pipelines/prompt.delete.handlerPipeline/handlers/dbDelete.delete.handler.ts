@@ -76,7 +76,7 @@ export class DbDeleteDeleteHandler extends HandlerBase {
         code: "DELETE_SETUP_MISSING",
         title: "Internal Error",
         detail:
-          "Missing DTO Registry. Ops: ensure App exposes getDtoRegistry() and controller extends ControllerBase correctly.",
+          "Missing DTO Registry. Ops: ensure App exposes getDtoRegistry() and controller extends ControllerJsonBase correctly.",
         hint: "AppBase owns the per-service Registry; expose via a public getter.",
       });
       this.log.error(

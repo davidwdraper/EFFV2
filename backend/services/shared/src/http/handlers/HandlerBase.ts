@@ -47,15 +47,17 @@ export abstract class HandlerBase {
     this.controller = controller;
 
     const app = controller.getApp?.();
-    if (!app)
+    if (!app) {
       throw new Error("ControllerBase.getApp() returned null/undefined.");
+    }
     this.app = app;
 
     const registry = controller.getDtoRegistry?.();
-    if (!registry)
+    if (!registry) {
       throw new Error(
         "ControllerBase.getDtoRegistry() returned null/undefined."
       );
+    }
     this.registry = registry;
 
     // Logger: prefer app logger, fall back to shared

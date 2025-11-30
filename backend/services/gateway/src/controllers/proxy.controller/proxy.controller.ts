@@ -23,14 +23,14 @@
 
 import type { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 import * as GatewayProxyPipeline from "./pipelines/proxy.handlerPipeline";
 
-export class GatewayProxyController extends ControllerBase {
+export class GatewayProxyController extends ControllerJsonBase {
   private readonly svcClient: SvcClient;
 
   constructor(app: AppBase) {

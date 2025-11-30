@@ -21,14 +21,14 @@
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (resolved via directory index.ts)
 import * as EnvServiceReadPipeline from "./pipelines/read.pipeline";
 import * as EnvServiceConfigPipeline from "./pipelines/config.pipeline";
 
-export class EnvServiceReadController extends ControllerBase {
+export class EnvServiceReadController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }

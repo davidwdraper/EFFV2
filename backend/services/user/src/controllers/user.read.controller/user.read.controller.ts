@@ -20,7 +20,7 @@
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
@@ -28,7 +28,7 @@ import * as UserReadPipeline from "./pipelines/user.read.handlerPipeline";
 // Future dtoType example (uncomment when adding a new type):
 // import * as MyNewDtoReadPipeline from "./pipelines/myNewDto.read.handlerPipeline";
 
-export class UserReadController extends ControllerBase {
+export class UserReadController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }

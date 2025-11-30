@@ -9,7 +9,7 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 // Reuse your existing handlers (single-handler example is fine)
 import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get.handler";

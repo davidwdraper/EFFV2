@@ -9,7 +9,7 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 import { UserDto } from "@nv/shared/dto/user.dto";
 import { DbReadByIdGetHandler } from "@nv/shared/http/handlers/dbRead.byId.get.handler";

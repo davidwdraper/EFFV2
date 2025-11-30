@@ -16,7 +16,7 @@
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
@@ -24,7 +24,7 @@ import * as EnvServiceDeletePipeline from "./pipelines/delete.pipeline";
 // Future dtoType example (uncomment when adding a new type):
 // import * as MyNewDtoDeletePipeline from "./pipelines/myNewDto.delete.handlerPipeline";
 
-export class EnvServiceDeleteController extends ControllerBase {
+export class EnvServiceDeleteController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }

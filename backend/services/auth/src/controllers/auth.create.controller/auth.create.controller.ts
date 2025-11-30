@@ -22,13 +22,13 @@
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
 import * as AuthCreatePipeline from "./pipelines/create.handlerPipeline";
 
-export class AuthCreateController extends ControllerBase {
+export class AuthCreateController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }

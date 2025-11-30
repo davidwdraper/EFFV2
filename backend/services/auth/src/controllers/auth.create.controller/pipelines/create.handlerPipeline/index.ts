@@ -13,7 +13,7 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 import { CreateAuthDtoHandler } from "./createAuthDto.handler";
 import { AuthToUserDtoMapperHandler } from "./auth.toUser.mapper.handler";

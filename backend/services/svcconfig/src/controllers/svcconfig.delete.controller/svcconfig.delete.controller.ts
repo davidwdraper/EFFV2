@@ -16,13 +16,13 @@
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
 import * as SvcconfigDeletePipeline from "./pipelines/delete.handlerPipeline";
 
-export class SvcconfigDeleteController extends ControllerBase {
+export class SvcconfigDeleteController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }

@@ -91,7 +91,7 @@ export class BagPopulateQueryHandler extends HandlerBase {
         code: "ENV_DTO_MISSING",
         title: "Internal Error",
         detail:
-          "EnvServiceDto missing from ControllerBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerBase correctly.",
+          "EnvServiceDto missing from ControllerJsonBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerJsonBase correctly.",
         requestId,
       });
       this.log.error(

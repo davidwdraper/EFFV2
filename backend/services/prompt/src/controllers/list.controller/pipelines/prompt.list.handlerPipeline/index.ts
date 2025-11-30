@@ -9,7 +9,7 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 import { PromptDto } from "@nv/shared/dto/prompt.dto";
 import { QueryListHandler } from "./handlers/query.list.handler";

@@ -25,7 +25,7 @@
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one module per dtoType/op)
@@ -35,7 +35,7 @@ import * as SvcconfigS2sRoutePipeline from "./pipelines/s2s-route.pipeline";
 // DTO ctor used for query-based reads
 import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
 
-export class SvcconfigReadController extends ControllerBase {
+export class SvcconfigReadController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }

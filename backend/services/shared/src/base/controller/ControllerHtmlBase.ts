@@ -37,9 +37,9 @@ import {
   parseDuplicateKey,
 } from "../../dto/persistence/adapters/mongo/dupeKeyError";
 import type { ProblemJson } from "./controllerTypes";
-import { ControllerBase } from "./ControllerBase";
+import { ControllerJsonBase } from "./ControllerJsonBase";
 
-export abstract class ControllerHtmlBase extends ControllerBase {
+export abstract class ControllerHtmlBase extends ControllerJsonBase {
   // ───────────────────────────────────────────
   // Finalize (bag-or-error) — HTML wire format
   // ───────────────────────────────────────────

@@ -16,13 +16,13 @@
 
 import { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
 import * as PromptDeletePipeline from "./pipelines/prompt.delete.handlerPipeline";
 
-export class PromptDeleteController extends ControllerBase {
+export class PromptDeleteController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }

@@ -24,7 +24,7 @@
  *   • Control whether the service is a gateway or S2S target.
  * - ID lifecycle:
  *     • Wire always uses `_id` (UUIDv4 string, lowercase).
- *     • DbWriter generates id BEFORE toJson() when absent.
+ *     • DbWriter generates id BEFORE toBody() when absent.
  *     • No legacy `id` tolerance — strictly `_id` on input/output.
  */
 
@@ -235,7 +235,7 @@ export class SvcconfigDto extends DtoBase {
   // ─────────────── Wire Hydration ───────────────
 
   /** Wire hydration (strict `_id` only). */
-  public static fromJson(
+  public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
   ): SvcconfigDto {
@@ -247,7 +247,7 @@ export class SvcconfigDto extends DtoBase {
     }
 
     // NOTE:
-    // fromJson hydrates private fields directly; it is considered a trusted,
+    // fromBody hydrates private fields directly; it is considered a trusted,
     // internal operation, not a user-level mutation path.
     if (typeof j.env === "string") dto._env = j.env;
     if (typeof j.slug === "string") dto._slug = j.slug;
@@ -287,8 +287,8 @@ export class SvcconfigDto extends DtoBase {
   // ─────────────── Outbound Wire Shape ───────────────
 
   /** Canonical outbound wire shape; BaseDto stamps meta here. */
-  public toJson(): SvcconfigJson {
-    // DbWriter should ensure id BEFORE calling toJson().
+  public toBody(): SvcconfigJson {
+    // DbWriter should ensure id BEFORE calling toBody().
     const body: SvcconfigJson = {
       _id: this._id,
       type: "svcconfig" as const,

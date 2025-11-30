@@ -95,7 +95,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   // ─────────────── Wire hydration ───────────────
 
-  public static fromJson(
+  public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
   ): EnvServiceDto {
@@ -135,7 +135,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
       dto._vars = normalized;
     }
 
-    // meta passthrough (DtoBase will normalize on toJson)
+    // meta passthrough (DtoBase will normalize on toBody)
     dto.setMeta({
       createdAt: j.createdAt,
       updatedAt: j.updatedAt,
@@ -178,7 +178,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   // ─────────────── Outbound wire shape ───────────────
 
-  public toJson(): EnvServiceJson {
+  public toBody(): EnvServiceJson {
     const body: EnvServiceJson = {
       _id: this.hasId() ? this.getId() : undefined,
       type: "env-service",

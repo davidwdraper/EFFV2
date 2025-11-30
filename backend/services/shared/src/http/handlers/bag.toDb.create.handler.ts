@@ -13,7 +13,7 @@
  * - Generic "create" handler, reusable across services.
  * - Final handler invariant:
  *   - On success: leave a DtoBag on ctx["bag"] (and on [targetKey], if configured).
- *   - Only ControllerBase.finalize() builds wire payloads from bag.toJson().
+ *   - Only ControllerBase.finalize() builds wire payloads from bag.toBody().
  *
  * Config (ctx):
  * - "bag.write.targetKey":       string ctx key to READ/WRITE the bag (default: "bag")

@@ -125,7 +125,7 @@ export class BagBuilder {
       }
       // NEW
       const Ctor = registry.resolveCtorByType(t); // throws if unknown
-      const dto = Ctor.fromJson(item, { mode: "wire", validate: true });
+      const dto = Ctor.fromBody(item, { mode: "wire", validate: true });
 
       items.push(dto);
     }

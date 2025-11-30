@@ -51,14 +51,14 @@ export class DbReadListHandler extends HandlerBase {
 
     // --- Required DTO ctor ---------------------------------------------------
     const dtoCtor = this.ctx.get<any>("list.dtoCtor");
-    if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
+    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", 500);
       this.ctx.set("response.body", {
         code: "DTO_CTOR_MISSING",
         title: "Internal Error",
         detail:
-          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromJson().",
+          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromBody().",
         requestId,
       });
       this.log.error(

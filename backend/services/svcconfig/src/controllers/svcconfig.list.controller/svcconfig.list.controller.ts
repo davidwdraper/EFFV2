@@ -19,7 +19,7 @@
  * Notes:
  * - Cursor pagination via ?limit=&cursor= for list.
  * - Mirror reuses the same DbReadListHandler but uses a server-controlled filter.
- * - DTO is the source of truth; serialization via toJson() (stamps meta).
+ * - DTO is the source of truth; serialization via toBody() (stamps meta).
  */
 
 import { Request, Response } from "express";

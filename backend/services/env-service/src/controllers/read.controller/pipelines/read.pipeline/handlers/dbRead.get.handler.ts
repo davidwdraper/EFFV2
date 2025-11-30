@@ -123,7 +123,7 @@ export class DbReadGetHandler extends HandlerBase {
       }
 
       // Success: build wire envelope
-      const itemJson = Array.from(bag.items()).map((d: IDto) => d.toJson());
+      const itemJson = Array.from(bag.items()).map((d: IDto) => d.toBody());
       const { meta } = BagBuilder.fromDtos([], {
         requestId,
         limit: 1,

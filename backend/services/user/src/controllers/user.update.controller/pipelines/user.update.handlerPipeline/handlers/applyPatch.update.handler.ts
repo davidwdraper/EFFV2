@@ -101,7 +101,7 @@ export class ApplyPatchUpdateHandler extends HandlerBase {
 
     // ---- Apply patch via DTO authority -------------------------------------
     try {
-      const patchJson = patchDto.toJson() as Record<string, unknown>;
+      const patchJson = patchDto.toBody() as Record<string, unknown>;
       existing.patchFrom(patchJson); // no options object
     } catch (e) {
       this.ctx.set("handlerStatus", "error");

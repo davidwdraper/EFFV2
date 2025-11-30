@@ -53,14 +53,14 @@ export class LoadExistingUpdateHandler extends HandlerBase {
 
     // --- Required dtoCtor; svcEnv via controller (no ctx plumbing) ----------
     const dtoCtor = this.ctx.get<any>("update.dtoCtor");
-    if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
+    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 500);
       this.ctx.set("error", {
         code: "DTO_CTOR_MISSING",
         title: "Internal Error",
         detail:
-          "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromJson().",
+          "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromBody().",
       });
       this.log.debug(
         { event: "execute_exit", reason: "dtoCtor_missing" },

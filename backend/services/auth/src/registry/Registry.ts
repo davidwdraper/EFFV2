@@ -68,7 +68,7 @@ export class Registry extends ServiceRegistryBase {
 
   /** Hydrate an AuthDto from JSON (validates if requested). */
   public fromJsonAuth(json: unknown, opts?: { validate?: boolean }): AuthDto {
-    const dto = AuthDto.fromJson(json, { validate: !!opts?.validate });
+    const dto = AuthDto.fromBody(json, { validate: !!opts?.validate });
     // MOS: no collection needed for auth v1.
     // dto.setCollectionName(AuthDto.dbCollectionName());
     return dto;

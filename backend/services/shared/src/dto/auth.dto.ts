@@ -61,7 +61,7 @@ export class AuthDto extends DtoBase implements IDto {
   public homeLng?: number;
 
   /**
-   * Accepts either the DtoBase secret (Registry path) OR meta (fromJson path).
+   * Accepts either the DtoBase secret (Registry path) OR meta (fromBody path).
    * This matches DtoBase’s `(secretOrArgs?: symbol | _DtoMeta)` contract.
    */
   public constructor(
@@ -75,7 +75,7 @@ export class AuthDto extends DtoBase implements IDto {
   // ─────────────── Static: Hydration ───────────────
 
   /** Wire hydration (plug Zod here when opts?.validate is true). */
-  public static fromJson(
+  public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
   ): AuthDto {
@@ -132,7 +132,7 @@ export class AuthDto extends DtoBase implements IDto {
   // ─────────────── Instance: Wire Shape ───────────────
 
   /** Canonical outbound wire shape; meta is stamped by _finalizeToJson(). */
-  public toJson(): AuthJson {
+  public toBody(): AuthJson {
     const body: AuthJson = {
       // id is optional for MOS; we surface it if present but do not require it.
       id: this._id,

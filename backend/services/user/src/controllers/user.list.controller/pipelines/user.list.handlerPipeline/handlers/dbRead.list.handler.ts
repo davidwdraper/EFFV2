@@ -13,7 +13,7 @@
  *
  * Purpose:
  * - Use DbReader<UserDto> to fetch a deterministic batch with cursor pagination.
- * - Return { ok, docs, nextCursor } (docs via DTO.toJson()).
+ * - Return { ok, docs, nextCursor } (docs via DTO.toBody()).
  *
  * Notes:
  * - Env is obtained via HandlerBase.getVar("NV_MONGO_URI"/"NV_MONGO_DB")
@@ -36,14 +36,14 @@ export class DbReadListHandler extends HandlerBase {
 
     // --- Required DTO ctor ---------------------------------------------------
     const dtoCtor = this.ctx.get<any>("list.dtoCtor");
-    if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
+    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 500);
       this.ctx.set("error", {
         code: "DTO_CTOR_MISSING",
         title: "Internal Error",
         detail:
-          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromJson().",
+          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromBody().",
       });
       this.log.error(
         { event: "dtoCtor_missing", hasDtoCtor: !!dtoCtor },
@@ -110,7 +110,7 @@ export class DbReadListHandler extends HandlerBase {
       cursor,
     });
 
-    // Canonical list shape: docs[] = DTO.toJson()
+    // Canonical list shape: docs[] = DTO.toBody()
     const docs = DtoBagView.fromBag(bag).toJsonArray();
 
     this.ctx.set("result", { ok: true, docs, nextCursor });

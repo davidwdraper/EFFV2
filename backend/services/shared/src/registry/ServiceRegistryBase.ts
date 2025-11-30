@@ -46,7 +46,7 @@ export abstract class ServiceRegistryBase extends RegistryBase {
   /**
    * Returns a DTO hydrator function for the given registry type key.
    * The hydrator:
-   *  - constructs the DTO via <Ctor>.fromJson(json, { mode:'wire', validate })
+   *  - constructs the DTO via <Ctor>.fromBody(json, { mode:'wire', validate })
    *  - ensures the instance's collection name is seeded once from the ctor's static
    *  - applies per-request user context via applyUserType()
    */
@@ -58,7 +58,7 @@ export abstract class ServiceRegistryBase extends RegistryBase {
     const collection = this.dbCollectionNameByType(type);
 
     return (json: unknown): T => {
-      const dto = ctor.fromJson(json, {
+      const dto = ctor.fromBody(json, {
         mode: "wire",
         validate: opts?.validate === true,
       });

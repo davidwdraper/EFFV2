@@ -74,7 +74,7 @@ export class Registry extends ServiceRegistryBase {
     json: unknown,
     opts?: { validate?: boolean }
   ): SvcconfigDto {
-    const dto = SvcconfigDto.fromJson(json, { validate: !!opts?.validate });
+    const dto = SvcconfigDto.fromBody(json, { validate: !!opts?.validate });
     dto.setCollectionName(SvcconfigDto.dbCollectionName());
     return this.applyUserType(dto);
   }

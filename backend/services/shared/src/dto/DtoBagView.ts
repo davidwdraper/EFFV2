@@ -12,7 +12,7 @@
  *
  * Notes:
  * - DtoBag holds DTO instances; DtoBagView presents them.
- * - Use DtoBagView at network edges to call DTO.toJson() safely.
+ * - Use DtoBagView at network edges to call DTO.toBody() safely.
  * - Static factory fromBag() builds the full index range.
  */
 
@@ -92,15 +92,15 @@ export class DtoBagView<T> implements Iterable<T> {
     return new DtoBagView<T>(this._bag, newIdx);
   }
 
-  /** Serialize DTOs to pure JSON (calls DTO.toJson() if present). */
+  /** Serialize DTOs to pure JSON (calls DTO.toBody() if present). */
   public toJsonArray(): unknown[] {
     const out: unknown[] = [];
     for (const i of this._indices) {
       const dto = (this._bag as any).at
         ? (this._bag as any).at(i)
         : (this._bag as any)._items?.[i];
-      if (dto && typeof (dto as any).toJson === "function") {
-        out.push((dto as any).toJson());
+      if (dto && typeof (dto as any).toBody === "function") {
+        out.push((dto as any).toBody());
       } else {
         out.push(dto);
       }

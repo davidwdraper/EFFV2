@@ -12,7 +12,7 @@
  *
  * Purpose:
  * - Populate a DtoBag from a wire bag envelope (one or many).
- * - Hydrates DTOs via Registry.resolveCtorByType(type).fromJson(json, { validate }).
+ * - Hydrates DTOs via Registry.resolveCtorByType(type).fromBody(json, { validate }).
  * - Sets instance collectionName on each DTO using Registry.dbCollectionNameByType(type).
  *
  * Invariants:
@@ -115,7 +115,7 @@ export class BagPopulateGetHandler extends HandlerBase {
       }
 
       // Hydrate DTO from wire JSON
-      const dto = ctor.fromJson(json, { mode: "wire", validate });
+      const dto = ctor.fromBody(json, { mode: "wire", validate });
       if (typeof (dto as any).setCollectionName === "function") {
         (dto as any).setCollectionName(coll);
       }

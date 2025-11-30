@@ -1,24 +1,29 @@
 // backend/services/shared/src/base/controller/ControllerBase.ts
 /**
  * Docs:
- * - ADR-0040 (DTO-Only Persistence via Managers)
- * - ADR-0041 (Controller & Handler Architecture)
- * - ADR-0042 (HandlerContext Bus)
- * - ADR-0043 (DTO Hydration & Failure Propagation)
- * - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
- * - ADR-0049 (DTO Registry & Wire Discrimination)
- * - ADR-0050 (Wire Bag Envelope; bag-only edges)
- * - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
- * - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADRs:
+ *   - ADR-0040 (DTO-Only Persistence via Managers)
+ *   - ADR-0041 (Controller & Handler Architecture)
+ *   - ADR-0042 (HandlerContext Bus)
+ *   - ADR-0043 (DTO Hydration & Failure Propagation)
+ *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
+ *   - ADR-0049 (DTO Registry & Wire Discrimination)
+ *   - ADR-0050 (Wire Bag Envelope; bag-only edges)
+ *   - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
+ *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
+ *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics)
  *
  * Purpose:
  * - Shared abstract controller base for all services.
- * - Orchestrates context seeding, preflight, pipeline execution, and finalize()
+ * - Orchestrates context seeding, preflight, and pipeline execution
  *   using helpers in this folder.
  *
  * Notes:
- * - Success responses are always built from ctx["bag"] (DtoBag) only.
- * - Error responses are normalized to Problem+JSON (see controllerFinalize.ts).
+ * - finalize() is now an abstract hook implemented by concrete
+ *   controller bases (JSON, HTML, streaming, etc.).
+ * - Success responses must still be built from ctx["bag"] (DtoBag) only;
+ *   concrete subclasses enforce the wire format.
  */
 
 import type { Request, Response } from "express";
@@ -35,7 +40,6 @@ import {
   preflightContext,
   runPipelineHandlers,
 } from "./controllerContext";
-import { finalizeResponse } from "./controllerFinalize";
 
 export abstract class ControllerBase {
   protected readonly app: AppBase;
@@ -124,12 +128,17 @@ export abstract class ControllerBase {
   }
 
   // ───────────────────────────────────────────
-  // Finalize (bag-or-error)
+  // Finalize hook (bag-or-error)
   // ───────────────────────────────────────────
-
-  protected async finalize(ctx: HandlerContext): Promise<void> {
-    await finalizeResponse(this, ctx);
-  }
+  /**
+   * Finalize the HTTP response from the populated HandlerContext.
+   *
+   * Concrete subclasses (e.g., ControllerJsonBase, ControllerHtmlBase)
+   * must implement this and:
+   * - Build success responses strictly from ctx["bag"] (DtoBag).
+   * - Normalize errors into their chosen wire format.
+   */
+  protected abstract finalize(ctx: HandlerContext): Promise<void>;
 
   /**
    * Whether this controller needs a DTO registry.

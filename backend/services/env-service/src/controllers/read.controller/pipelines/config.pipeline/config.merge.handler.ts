@@ -15,7 +15,7 @@
  *   1) Read rootBag and serviceBag (DtoBags) from ctx.
  *   2) Delegate hierarchy resolution to EnvConfigReader.mergeEnvBags().
  *   3) Leave a single-item DtoBag on ctx["bag"] with proper meta, so
- *      ControllerBase.finalize() can build the wire payload via bag.toJson().
+ *      ControllerBase.finalize() can build the wire payload via bag.toBody().
  *
  * Invariants (final handler contract):
  * - On success:
@@ -101,7 +101,7 @@ export class EnvServiceConfigMergeHandler extends HandlerBase {
       });
 
       // Final-handler invariant: leave the bag on ctx["bag"]; finalize() will
-      // call bag.toJson() and construct the wire payload.
+      // call bag.toBody() and construct the wire payload.
       this.ctx.set("bag", wireBag);
       this.ctx.set("handlerStatus", "ok");
 

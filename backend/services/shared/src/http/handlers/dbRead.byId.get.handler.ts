@@ -24,7 +24,7 @@
  *   - ctx["handlerStatus"] MUST be "ok".
  *   - MUST NOT set ctx["result"].
  *   - MUST NOT set ctx["response.body"] on success.
- *   - ControllerBase.finalize() is responsible for calling bag.toJson()
+ *   - ControllerBase.finalize() is responsible for calling bag.toBody()
  *     and building the wire payload (items[], meta, etc.).
  * - On error:
  *   - ctx["handlerStatus"] MUST be "error".
@@ -40,7 +40,7 @@ import type { DtoBase } from "../../dto/DtoBase";
 import { isValidUuidV4 } from "../../utils/uuid";
 
 type DtoCtorWithCollection<T> = {
-  fromJson: (j: unknown, opts?: { validate?: boolean }) => T;
+  fromBody: (j: unknown, opts?: { validate?: boolean }) => T;
   dbCollectionName: () => string;
   name?: string;
 };

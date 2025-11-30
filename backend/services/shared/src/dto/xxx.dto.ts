@@ -65,7 +65,7 @@ export class XxxDto extends DtoBase {
     super(secretOrMeta);
   }
 
-  public static fromJson(json: unknown, opts?: { validate?: boolean }): XxxDto {
+  public static fromBody(json: unknown, opts?: { validate?: boolean }): XxxDto {
     const dto = new XxxDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<XxxJson>;
 
@@ -91,9 +91,9 @@ export class XxxDto extends DtoBase {
     return dto;
   }
 
-  public toJson(): XxxJson {
+  public toBody(): XxxJson {
     const body: XxxJson = {
-      // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
+      // DO NOT generate id here — DbWriter ensures id BEFORE calling toBody().
       _id: this.hasId() ? this.getId() : undefined,
       type: "xxx",
       txtfield1: this.txtfield1,

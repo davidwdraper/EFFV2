@@ -99,7 +99,7 @@ export class UserDto extends DtoBase {
 
   // ─────────────── Static: Hydration ───────────────
 
-  public static fromJson(
+  public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
   ): UserDto {
@@ -190,9 +190,9 @@ export class UserDto extends DtoBase {
 
   // ─────────────── Instance: Wire Shape ───────────────
 
-  public toJson(): UserJson {
+  public toBody(): UserJson {
     const body: UserJson = {
-      // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
+      // DO NOT generate id here — DbWriter ensures id BEFORE calling toBody().
       _id: this.hasId() ? this.getId() : undefined,
       type: "user",
 

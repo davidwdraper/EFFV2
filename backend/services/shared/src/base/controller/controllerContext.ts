@@ -26,7 +26,7 @@ export function seedHydratorIntoContext(
 ): void {
   const reg: any = controller.getDtoRegistry();
   const hydrate = reg.hydratorFor(dtoType, { validate: !!opts?.validate });
-  ctx.set("hydrate.fromJson", hydrate);
+  ctx.set("hydrate.fromBody", hydrate);
 
   controller
     .getLogger()

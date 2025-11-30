@@ -24,7 +24,7 @@ export interface IDto {
   getType(): string;
 
   /** Serialize for wire/persistence; MUST include at least { id, type }. */
-  toJson(): unknown;
+  toBody(): unknown;
 
   /**
    * Defensive copy that returns a new instance with identical data but a new ID.

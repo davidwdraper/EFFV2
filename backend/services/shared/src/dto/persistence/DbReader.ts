@@ -33,7 +33,7 @@ import { coerceForMongoQuery } from "./adapters/mongo/queryHelper";
 import { MongoClient, Collection, Db, Document } from "mongodb";
 
 type DtoCtorWithCollection<T> = {
-  fromJson: (j: unknown, opts?: { validate?: boolean }) => T;
+  fromBody: (j: unknown, opts?: { validate?: boolean }) => T;
   dbCollectionName: () => string; // hard-wired per DTO near indexHints
   name?: string;
 };
@@ -152,8 +152,8 @@ export class DbReader<TDto> {
   }
 
   private _hydrateDto(raw: WireDoc): TDto {
-    // Raw Mongo doc → DTO via DTO.fromJson; DTO is responsible for handling `_id`.
-    return this.dtoCtor.fromJson(raw, {
+    // Raw Mongo doc → DTO via DTO.fromBody; DTO is responsible for handling `_id`.
+    return this.dtoCtor.fromBody(raw, {
       validate: this.validateReads,
     });
   }

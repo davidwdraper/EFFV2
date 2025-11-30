@@ -51,7 +51,7 @@ export class Registry extends ServiceRegistryBase {
 
   /** Hydrate an PromptDto from JSON (validates if requested) and seed collection. */
   public fromJsonPrompt(json: unknown, opts?: { validate?: boolean }): PromptDto {
-    const dto = PromptDto.fromJson(json, { validate: !!opts?.validate });
+    const dto = PromptDto.fromBody(json, { validate: !!opts?.validate });
     dto.setCollectionName(PromptDto.dbCollectionName());
     return dto;
   }

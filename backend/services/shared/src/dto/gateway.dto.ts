@@ -65,7 +65,7 @@ export class GatewayDto extends DtoBase {
     super(secretOrMeta);
   }
 
-  public static fromJson(
+  public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
   ): GatewayDto {
@@ -94,9 +94,9 @@ export class GatewayDto extends DtoBase {
     return dto;
   }
 
-  public toJson(): GatewayJson {
+  public toBody(): GatewayJson {
     const body: GatewayJson = {
-      // DO NOT generate id here — DbWriter ensures id BEFORE calling toJson().
+      // DO NOT generate id here — DbWriter ensures id BEFORE calling toBody().
       _id: this.hasId() ? this.getId() : undefined,
       type: "gateway",
       txtfield1: this.txtfield1,

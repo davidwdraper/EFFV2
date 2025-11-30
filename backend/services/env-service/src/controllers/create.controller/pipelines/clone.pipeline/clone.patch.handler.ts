@@ -94,17 +94,17 @@ export class EnvServiceClonePatchHandler extends HandlerBase {
 
     // Build a NEW EnvServiceDto from the source JSON, but intentionally strip
     // the _id so the cloned document gets a fresh id at write time.
-    const srcJson = sourceDto.toJson() as any;
+    const srcJson = sourceDto.toBody() as any;
     delete srcJson._id;
 
-    const cloned = EnvServiceDto.fromJson(srcJson, { validate: false });
+    const cloned = EnvServiceDto.fromBody(srcJson, { validate: false });
 
     // Apply new slug; keep env/version/vars the same.
     cloned.slug = targetSlug;
 
     // ID handling:
     // - We explicitly removed _id from srcJson before hydration.
-    // - EnvServiceDto.fromJson() will NOT set an id when _id is absent.
+    // - EnvServiceDto.fromBody() will NOT set an id when _id is absent.
     // - DbWriter.ensureId() will assign a fresh id at write time (ADR-0057).
     // - Handlers must not touch IDs directly.
 

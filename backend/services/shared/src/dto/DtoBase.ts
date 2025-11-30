@@ -53,7 +53,7 @@ type AccessMap = Record<string, AccessRule>;
 
 /**
  * Validation error used by concrete DTOs when they perform
- * per-DTO validation (e.g., EnvServiceDto.fromJson with validate=true).
+ * per-DTO validation (e.g., EnvServiceDto.fromBody with validate=true).
  */
 export class DtoValidationError extends Error {
   public readonly issues: Array<{
@@ -154,7 +154,7 @@ export abstract class DtoBase {
 
   /**
    * Generate and set a UUIDv4 `_id` if none exists yet.
-   * Used by DbWriter BEFORE calling toJson().
+   * Used by DbWriter BEFORE calling toBody().
    */
   public ensureId(): void {
     if (!this._id) {
@@ -377,5 +377,5 @@ export abstract class DtoBase {
   public abstract getType(): string;
 
   /** Concrete DTOs must provide their outbound wire JSON shape. */
-  public abstract toJson(): unknown;
+  public abstract toBody(): unknown;
 }

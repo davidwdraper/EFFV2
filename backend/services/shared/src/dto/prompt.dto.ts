@@ -92,7 +92,7 @@ export class PromptDto extends DtoBase {
     super(secretOrMeta);
   }
 
-  public static fromJson(
+  public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
   ): PromptDto {
@@ -137,7 +137,7 @@ export class PromptDto extends DtoBase {
     return dto;
   }
 
-  public toJson(): PromptJson {
+  public toBody(): PromptJson {
     const body: PromptJson = {
       _id: this.hasId() ? this.getId() : undefined,
       type: "prompt",

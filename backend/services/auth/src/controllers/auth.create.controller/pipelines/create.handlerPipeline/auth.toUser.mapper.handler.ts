@@ -101,7 +101,7 @@ export class AuthToUserDtoMapperHandler extends HandlerBase {
     // Resolve the UserDto ctor via the registry
     const registry: IDtoRegistry = this.controller.getDtoRegistry();
     let userCtor: {
-      fromJson(json: Partial<UserJson>, opts?: { validate?: boolean }): UserDto;
+      fromBody(json: Partial<UserJson>, opts?: { validate?: boolean }): UserDto;
     };
 
     try {
@@ -137,7 +137,7 @@ export class AuthToUserDtoMapperHandler extends HandlerBase {
       // Address / notes intentionally left undefined at create time.
     };
 
-    const userDto = userCtor.fromJson(userJson, { validate: false });
+    const userDto = userCtor.fromBody(userJson, { validate: false });
 
     // Build a DtoBag<UserDto> that becomes the new ctx["bag"]
     const { bag: userBag } = BagBuilder.fromDtos([userDto], {

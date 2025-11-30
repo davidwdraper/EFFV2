@@ -12,7 +12,7 @@
  * - Generic, reusable handler — analogous to bag.populate.get.handler, but for DB queries.
  *
  * Config (from ctx):
- * - "bag.query.dtoCtor":         DTO class (required; must have fromJson + dbCollectionName)
+ * - "bag.query.dtoCtor":         DTO class (required; must have fromBody + dbCollectionName)
  * - "bag.query.filter":         Record<string, unknown> (required)
  * - "bag.query.targetKey":      string ctx key to write the bag to (default: "bag")
  * - "bag.query.validateReads":  boolean (default: false)
@@ -60,14 +60,14 @@ export class BagPopulateQueryHandler extends HandlerBase {
     const ensureSingleton =
       this.ctx.get<boolean>("bag.query.ensureSingleton") ?? false;
 
-    if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
+    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", 500);
       this.ctx.set("response.body", {
         code: "BAG_QUERY_DTO_CTOR_MISSING",
         title: "Internal Error",
         detail:
-          "bag.query.dtoCtor missing or invalid. Dev: set ctx['bag.query.dtoCtor'] to the DTO class (with static fromJson/dbCollectionName).",
+          "bag.query.dtoCtor missing or invalid. Dev: set ctx['bag.query.dtoCtor'] to the DTO class (with static fromBody/dbCollectionName).",
         requestId,
       });
       this.log.debug(

@@ -5,7 +5,7 @@
  * - ADR-0045 (Index Hints ensured at boot)
  * - ADR-0048 (Writers accept DtoBag only)
  * - ADR-0053 (Bag Purity — return DTOs, not wire)
- * - ADR-0057 (IDs are UUIDv4; assign BEFORE toJson; immutable thereafter)
+ * - ADR-0057 (IDs are UUIDv4; assign BEFORE toBody; immutable thereafter)
  *
  * Purpose:
  * - Persist DTOs from a **DtoBag** with explicit Mongo connectivity.
@@ -188,7 +188,7 @@ export class DbWriter<TDto extends DtoBase> {
 
   /**
    * Insert a single DTO from the singleton bag.
-   * Assign meta + id BEFORE toJson.
+   * Assign meta + id BEFORE toBody.
    */
   public async write(): Promise<DtoBag<TDto>> {
     let dto = requireSingleton(this._bag, "write");
@@ -208,15 +208,15 @@ export class DbWriter<TDto extends DtoBase> {
         base.stampOwnerUserId(this._userId);
         base.stampUpdatedAt(this._userId);
 
-        // Ensure id BEFORE toJson (DtoBase handles generation/validation)
+        // Ensure id BEFORE toBody (DtoBase handles generation/validation)
         base.ensureId();
 
         // Outbound wire already contains `_id`; writer does no transformations.
-        const json = base.toJson() as Record<string, unknown>;
+        const json = base.toBody() as Record<string, unknown>;
         const wireId = String((json as any)._id ?? "");
         if (!wireId) {
           throw new Error(
-            "DBWRITER_WRITE_NO_WIRE_ID: toJson() did not include `_id`."
+            "DBWRITER_WRITE_NO_WIRE_ID: toBody() did not include `_id`."
           );
         }
 
@@ -340,11 +340,11 @@ export class DbWriter<TDto extends DtoBase> {
           base.stampUpdatedAt(this._userId);
           base.ensureId();
 
-          const json = base.toJson() as Record<string, unknown>;
+          const json = base.toBody() as Record<string, unknown>;
           const wireId = String((json as any)._id ?? "");
           if (!wireId) {
             throw new Error(
-              "DBWRITER_WRITE_MANY_NO_WIRE_ID: toJson() did not include `_id`."
+              "DBWRITER_WRITE_MANY_NO_WIRE_ID: toBody() did not include `_id`."
             );
           }
 
@@ -446,7 +446,7 @@ export class DbWriter<TDto extends DtoBase> {
     // Refresh update meta only; createdAt/ownerUserId stay as-is.
     base.stampUpdatedAt(this._userId);
 
-    const json = base.toJson() as Record<string, unknown>;
+    const json = base.toBody() as Record<string, unknown>;
     const { _id, id: _wireId, ...rest } = json as Record<string, unknown>;
 
     const filter = { _id: String(rawId) };

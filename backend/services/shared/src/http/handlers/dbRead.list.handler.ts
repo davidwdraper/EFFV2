@@ -13,13 +13,13 @@
  * Purpose:
  * - Generic list reader used by list-family routes (list, mirror, etc.).
  * - Given:
- *   - ctx["list.dtoCtor"]  → DTO constructor with static fromJson()
+ *   - ctx["list.dtoCtor"]  → DTO constructor with static fromBody()
  *   - ctx["list.filter"]   → Mongo filter object (Record<string, unknown>)
  *   - ctx["query"]         → { limit?, cursor? } and any other query params
  * - Reads a deterministic batch from Mongo via DbReader and:
  *   - Leaves the resulting DtoBag on ctx["bag"].
  *   - Exposes pagination hints on ctx (e.g., "list.nextCursor", "list.limitUsed").
- *   - Lets ControllerBase.finalize() build the wire payload from bag.toJson().
+ *   - Lets ControllerBase.finalize() build the wire payload from bag.toBody().
  *
  * Final-handler invariants (list pipelines):
  * - On success:
@@ -55,14 +55,14 @@ export class DbReadListHandler extends HandlerBase {
 
     // --- Required DTO ctor ---------------------------------------------------
     const dtoCtor = this.ctx.get<any>("list.dtoCtor");
-    if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
+    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", 500);
       this.ctx.set("response.body", {
         code: "DTO_CTOR_MISSING",
         title: "Internal Error",
         detail:
-          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromJson().",
+          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromBody().",
         requestId,
       });
       this.log.error(

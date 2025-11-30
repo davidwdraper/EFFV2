@@ -12,7 +12,7 @@
  *
  * Purpose:
  * - Validate the inbound wire bag envelope for auth.create.
- * - Hydrate a single AuthDto instance **via the Registry**, never via direct ctor/fromJson.
+ * - Hydrate a single AuthDto instance **via the Registry**, never via direct ctor/fromBody.
  * - Store the hydrated DTO on the bus for downstream handlers.
  *
  * Inputs (ctx):
@@ -149,7 +149,7 @@ export class CreateAuthDtoHandler extends HandlerBase {
       return;
     }
 
-    // ───── Registry-based instantiation (no direct DTO.fromJson) ─────
+    // ───── Registry-based instantiation (no direct DTO.fromBody) ─────
     const registry = (this.controller as any).registry as
       | IDtoRegistry
       | undefined;

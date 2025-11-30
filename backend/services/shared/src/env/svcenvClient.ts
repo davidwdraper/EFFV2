@@ -15,11 +15,11 @@
  *
  * Wire contract (v1, updated):
  * - DTO is the sole source of truth for shape; no secondary "doc" envelope.
- * - EnvServiceDto.toJson() produces the JSON items; EnvServiceDto.fromJson()
+ * - EnvServiceDto.toBody() produces the JSON items; EnvServiceDto.fromBody()
  *   hydrates them.
  *
  * - GET /api/env-service/v1/env-service/config?env=<env>&slug=<slug>&version=<version>
- *     → { items: [ <EnvServiceDto.toJson()>, ... ], meta?: { ... } }
+ *     → { items: [ <EnvServiceDto.toBody()>, ... ], meta?: { ... } }
  */
 
 import { DtoBag } from "../dto/DtoBag";
@@ -104,7 +104,7 @@ export class SvcEnvClient {
    * Response shape:
    *   {
    *     items: [
-   *       // Each element is EnvServiceDto.toJson()
+   *       // Each element is EnvServiceDto.toBody()
    *       {
    *         id: string;
    *         env: string;
@@ -157,7 +157,7 @@ export class SvcEnvClient {
     if (!wire || !Array.isArray(wire.items)) {
       throw new Error(
         "SVCENV_CONFIG_INVALID_RESPONSE: expected { items: [...] } where each item " +
-          "is EnvServiceDto JSON. Ops: verify env-service 'config' handler and DTO.toJson() output."
+          "is EnvServiceDto JSON. Ops: verify env-service 'config' handler and DTO.toBody() output."
       );
     }
 
@@ -167,13 +167,13 @@ export class SvcEnvClient {
       if (!item || typeof item !== "object") {
         throw new Error(
           "SVCENV_CONFIG_INVALID_ITEM: bag item is not a JSON object. " +
-            "Ops: inspect env-service /env-service/config handler and its DTO.toJson() output."
+            "Ops: inspect env-service /env-service/config handler and its DTO.toBody() output."
         );
       }
 
       try {
         // DTO owns the contract; no 'doc' wrapper.
-        const dto = EnvServiceDto.fromJson(item as unknown, { validate: true });
+        const dto = EnvServiceDto.fromBody(item as unknown, { validate: true });
         items.push(dto);
       } catch (err) {
         throw new Error(

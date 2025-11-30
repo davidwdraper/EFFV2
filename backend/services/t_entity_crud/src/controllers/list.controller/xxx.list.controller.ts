@@ -17,7 +17,7 @@
  *
  * Notes:
  * - Cursor pagination via ?limit=&cursor=.
- * - DTO is the source of truth; serialization via toJson() (stamps meta).
+ * - DTO is the source of truth; serialization via toBody() (stamps meta).
  */
 
 import { Request, Response } from "express";

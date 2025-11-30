@@ -152,7 +152,7 @@ export async function finalizeResponse(
 
   const bag: any = ctx.get<any>("bag");
 
-  if (!bag || typeof bag.toJson !== "function") {
+  if (!bag || typeof bag.toBody !== "function") {
     const status = 500;
     const body: ProblemJson = {
       type: "about:blank",
@@ -192,7 +192,7 @@ export async function finalizeResponse(
     return;
   }
 
-  const items = bag.toJson() as any[];
+  const items = bag.toBody() as any[];
   const dtoType = ctx.get<string>("dtoType");
   const op = ctx.get<string>("op");
   const idKey = ctx.get<string>("idKey");

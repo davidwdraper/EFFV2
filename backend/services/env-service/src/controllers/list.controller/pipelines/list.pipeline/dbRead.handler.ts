@@ -15,7 +15,7 @@
  * Purpose:
  * - Use DbReader<TDto> to fetch a deterministic batch with cursor pagination.
  * - Leave the resulting DtoBag on ctx["bag"] for ControllerBase.finalize()
- *   to build the wire payload via bag.toJson().
+ *   to build the wire payload via bag.toBody().
  *
  * Invariants:
  * - On success:
@@ -39,7 +39,7 @@ import { DbReader } from "@nv/shared/dto/persistence/DbReader";
 import type { DtoBase } from "@nv/shared/dto/DtoBase";
 
 type DtoCtorWithCollection<T> = {
-  fromJson: (j: unknown, opts?: { validate?: boolean }) => T;
+  fromBody: (j: unknown, opts?: { validate?: boolean }) => T;
   dbCollectionName: () => string;
   name?: string;
 };

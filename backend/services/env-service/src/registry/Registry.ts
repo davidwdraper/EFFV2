@@ -71,7 +71,7 @@ export class Registry extends ServiceRegistryBase {
     json: unknown,
     opts?: { validate?: boolean }
   ): EnvServiceDto {
-    const dto = EnvServiceDto.fromJson(json, { validate: !!opts?.validate });
+    const dto = EnvServiceDto.fromBody(json, { validate: !!opts?.validate });
     dto.setCollectionName(EnvServiceDto.dbCollectionName());
     return dto;
   }

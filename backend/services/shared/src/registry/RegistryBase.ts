@@ -21,7 +21,7 @@ import type { IDto } from "../dto/IDto";
 
 /** Minimal structural type a DTO ctor must satisfy. */
 export type DtoCtor<T extends IDto = IDto> = {
-  fromJson(
+  fromBody(
     json: unknown,
     opts?: { mode?: "wire" | "db"; validate?: boolean }
   ): T;
@@ -52,7 +52,7 @@ export abstract class RegistryBase implements IDtoRegistry {
 
   public resolveCtorByType(type: string): DtoCtor<IDto> {
     const ctor = this.getCtorByType(type);
-    if (!ctor || typeof ctor.fromJson !== "function") {
+    if (!ctor || typeof ctor.fromBody !== "function") {
       throw new Error(
         `REGISTRY_UNKNOWN_TYPE: no ctor registered for type "${type}".`
       );
@@ -93,7 +93,7 @@ export abstract class RegistryBase implements IDtoRegistry {
     const json =
       (item as any).item !== undefined ? (item as any).item : (item as unknown);
 
-    const dto = ctor.fromJson(json, {
+    const dto = ctor.fromBody(json, {
       mode: "wire",
       validate: opts?.validate === true,
     });

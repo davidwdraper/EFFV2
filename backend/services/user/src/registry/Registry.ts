@@ -51,7 +51,7 @@ export class Registry extends ServiceRegistryBase {
 
   /** Hydrate an UserDto from JSON (validates if requested) and seed collection. */
   public fromJsonUser(json: unknown, opts?: { validate?: boolean }): UserDto {
-    const dto = UserDto.fromJson(json, { validate: !!opts?.validate });
+    const dto = UserDto.fromBody(json, { validate: !!opts?.validate });
     dto.setCollectionName(UserDto.dbCollectionName());
     return dto;
   }

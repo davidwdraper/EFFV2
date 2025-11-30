@@ -13,6 +13,7 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical wire format)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
+ *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics)
  *
  * Purpose:
  * - Canonical S2S HTTP client for all NV services.
@@ -34,6 +35,7 @@ import {
   type SvcClientCallParams,
   type SvcClientRawCallParams,
   type WireBagJson,
+  type SvcTarget,
 } from "./SvcClient.types";
 
 export class SvcClient {
@@ -390,7 +392,7 @@ export class SvcClient {
    *
    * - For GET requests: no body is sent, regardless of bag presence.
    * - For non-GET requests:
-   *   - If a bag is provided, we serialize bag.toJson().
+   *   - If a bag is provided, we serialize bag.toBody().
    *   - If no bag is provided, we send no body.
    *
    * The wire format is defined by ADR-0050 (Wire Bag Envelope).
@@ -398,7 +400,7 @@ export class SvcClient {
   private buildDtoBody(params: SvcClientCallParams): string | undefined {
     if (params.method === "GET") return undefined;
     if (!params.bag) return undefined;
-    const json = params.bag.toJson();
+    const json = params.bag.toBody();
     return JSON.stringify(json);
   }
 
@@ -444,3 +446,19 @@ export class SvcClient {
     }
   }
 }
+
+// ───────────────────────────────────────────
+// Public type re-exports (for consumers like envBootstrap/appClient)
+// ───────────────────────────────────────────
+
+export type {
+  ISvcClientLogger,
+  ISvcconfigResolver,
+  IKmsTokenFactory,
+  RawResponse,
+  RequestIdProvider,
+  SvcClientCallParams,
+  SvcClientRawCallParams,
+  WireBagJson,
+  SvcTarget,
+} from "./SvcClient.types";

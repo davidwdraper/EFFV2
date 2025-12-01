@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.create.controller/createAuthDto.handler.ts
+// backend/services/auth/src/controllers/auth.create.controller/pipelines/auth.create.handlerPipeline/createAuthDto.handler.ts
 /**
  * Docs:
  * - SOP: DTO-first; bag-centric edges
@@ -28,7 +28,7 @@
  *
  * Error (ctx):
  * - "handlerStatus": "error"
- * - "response.status": 4xx
+ * - "response.status": 4xx/5xx
  * - "response.body": ProblemDetails-like object
  *
  * Invariants:
@@ -150,9 +150,16 @@ export class CreateAuthDtoHandler extends HandlerBase {
     }
 
     // ───── Registry-based instantiation (no direct DTO.fromBody) ─────
-    const registry = (this.controller as any).registry as
-      | IDtoRegistry
-      | undefined;
+    let registry: IDtoRegistry | undefined;
+
+    try {
+      // Use the standard controller API used elsewhere (e.g. AuthToUserDtoMapperHandler)
+      if (typeof (this.controller as any).getDtoRegistry === "function") {
+        registry = (this.controller as any).getDtoRegistry() as IDtoRegistry;
+      }
+    } catch {
+      registry = undefined;
+    }
 
     if (!registry || typeof registry.fromWireItem !== "function") {
       this.ctx.set("handlerStatus", "error");
@@ -161,7 +168,7 @@ export class CreateAuthDtoHandler extends HandlerBase {
         code: "REGISTRY_MISSING",
         title: "Internal Error",
         detail:
-          "Auth DTO registry is not available on the controller. Dev: ensure ControllerBase/app wires a per-service Registry instance.",
+          "Auth DTO registry is not available on the controller. Dev: ensure ControllerBase/app wires a per-service Registry instance and exposes getDtoRegistry().",
         requestId: this.ctx.get("requestId"),
       });
 
@@ -170,7 +177,7 @@ export class CreateAuthDtoHandler extends HandlerBase {
           event: "registry_missing",
           handler: this.constructor.name,
         },
-        "auth.createAuthDto: controller.registry is missing or invalid"
+        "auth.createAuthDto: controller.getDtoRegistry() is missing or invalid"
       );
       return;
     }
@@ -179,6 +186,19 @@ export class CreateAuthDtoHandler extends HandlerBase {
       // All instantiation discipline enforced inside Registry/DtoBase.
       const dto = registry.fromWireItem(item, { validate: true });
 
+      // MOS rule: id is optional; never force getId() just for logging.
+      let id: string | undefined;
+      try {
+        const anyDto = dto as any;
+        if (typeof anyDto.hasId === "function" && anyDto.hasId()) {
+          id = anyDto.getId();
+        }
+      } catch {
+        // If AuthDto.getId() chooses to be noisy when no id is set,
+        // we swallow here — logging must not convert success into failure.
+        id = undefined;
+      }
+
       this.ctx.set("authDto", dto);
       this.ctx.set("handlerStatus", "ok");
 
@@ -186,7 +206,7 @@ export class CreateAuthDtoHandler extends HandlerBase {
         {
           event: "execute_exit",
           dtoType,
-          id: (dto as any)?.getId?.(),
+          id,
         },
         "auth.createAuthDto: AuthDto (via Registry) hydrated successfully"
       );

@@ -40,7 +40,6 @@ import { createSvcClientForApp, createPromptsClientForApp } from "./appClients";
 export type AppBaseCtor = {
   service: string;
   version: number;
-  envName: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
   checkDb: boolean;
@@ -65,10 +64,12 @@ export abstract class AppBase extends ServiceBase {
     super({ service: opts.service });
 
     this.version = opts.version;
-    this.envName = opts.envName;
     this._envDto = opts.envDto;
     this.envReloader = opts.envReloader;
     this.checkDb = opts.checkDb;
+
+    // Single source of truth: logical env name comes from EnvServiceDto.
+    this.envName = this._envDto.getEnvName();
 
     this.app = express();
     this.initApp();

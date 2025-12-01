@@ -60,6 +60,11 @@ export class AuthDto extends DtoBase implements IDto {
   public homeLat?: number;
   public homeLng?: number;
 
+  /** Hardwired collection for this DTO. Registry seeds instances with this once. */
+  public static dbCollectionName(): string {
+    return "auth";
+  }
+
   /**
    * Accepts either the DtoBase secret (Registry path) OR meta (fromBody path).
    * This matches DtoBase’s `(secretOrArgs?: symbol | _DtoMeta)` contract.

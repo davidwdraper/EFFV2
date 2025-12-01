@@ -260,6 +260,11 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return this.tryEnvVar(name);
   }
 
+  /** Logical environment name accessor (single source of truth). */
+  public getEnvName(): string {
+    return this.env;
+  }
+
   // ─────────────── IDto contract ───────────────
 
   public getType(): string {

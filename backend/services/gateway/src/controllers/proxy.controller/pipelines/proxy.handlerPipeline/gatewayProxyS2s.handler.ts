@@ -36,7 +36,7 @@ export class GatewayProxyS2sHandler extends HandlerBase {
     const slug = this.ctx.get<string | undefined>("proxy.slug");
     const versionRaw = this.ctx.get<string | undefined>("proxy.version.raw");
     const method = this.ctx.get<HttpMethod | undefined>("proxy.method");
-    const pathSuffix = this.ctx.get<string | undefined>("proxy.pathSuffix");
+    const fullPath = this.ctx.get<string | undefined>("proxy.fullPath");
     const envRaw = this.ctx.get<string | undefined>("proxy.env");
     const body = this.ctx.get<unknown>("proxy.body");
 
@@ -85,6 +85,21 @@ export class GatewayProxyS2sHandler extends HandlerBase {
       return;
     }
 
+    if (!fullPath) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: "gateway_proxy_missing_full_path",
+        detail:
+          "Gateway proxy expected the full inbound path (including `/api`) on proxy.context but none was provided. Dev: ensure the controller seeds `proxy.fullPath` from req.originalUrl.",
+        status: 500,
+        code: "GATEWAY_PROXY_MISSING_FULL_PATH",
+        requestId,
+      });
+      return;
+    }
+
     const version = Number.parseInt(versionRaw, 10);
     if (!Number.isFinite(version)) {
       this.ctx.set("handlerStatus", "error");
@@ -102,21 +117,6 @@ export class GatewayProxyS2sHandler extends HandlerBase {
       return;
     }
 
-    if (!pathSuffix) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "gateway_proxy_missing_path_suffix",
-        detail:
-          "Gateway proxy expected a path suffix after `/api/:slug/v:version/`. Dev: ensure the inbound path includes an operation segment (e.g., `login`, `user/create`).",
-        status: 500,
-        code: "GATEWAY_PROXY_MISSING_PATH_SUFFIX",
-        requestId,
-      });
-      return;
-    }
-
     const env = envRaw ?? "unknown";
 
     const controller = this.controller as unknown as GatewayProxyController;
@@ -128,7 +128,7 @@ export class GatewayProxyS2sHandler extends HandlerBase {
         slug,
         version,
         method,
-        pathSuffix,
+        fullPath,
         body,
         requestId,
       });

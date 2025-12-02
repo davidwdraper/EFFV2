@@ -9,11 +9,14 @@
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
+import type { GatewayProxyController } from "../../proxy.controller";
 
 import { GatewayProxyS2sHandler } from "./gatewayProxyS2s.handler";
 
-export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
+export function getSteps(
+  ctx: HandlerContext,
+  controller: GatewayProxyController
+) {
   // No additional seeding here; controller already set all proxy.* keys.
   return [new GatewayProxyS2sHandler(ctx, controller)];
 }

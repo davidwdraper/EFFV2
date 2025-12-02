@@ -14,16 +14,16 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
-import { MirrorFilterHandler } from "./mirrorFilter.list.handler";
+import { ListAllFilterHandler } from "./listAllFilter.list.handler";
 import { DbReadListHandler } from "@nv/shared/http/handlers/dbRead.list.handler";
 
-export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
+export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed DTO ctor used by handlers (same as LIST)
   ctx.set("list.dtoCtor", SvcconfigDto);
 
   return [
-    // Mirror-specific, controller-local handler
-    new MirrorFilterHandler(ctx, controller),
+    // ListAll-specific, controller-local handler
+    new ListAllFilterHandler(ctx, controller),
     // Shared cross-service list reader
     new DbReadListHandler(ctx, controller),
   ];

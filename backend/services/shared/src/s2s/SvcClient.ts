@@ -193,12 +193,17 @@ export class SvcClient {
    *   and canonical S2S headers.
    *
    * Behavior:
+   * - Requires `fullPath`: the exact inbound path including `/api` and any query string
+   *   (e.g. `/api/auth/v1/auth/create?foo=bar`).
+   * - Applies "same path, different port": only host/port are changed using svcconfig.
    * - Never parses JSON.
    * - Never throws based on HTTP status (only network/timeout/errors).
    * - Returns { status, headers, bodyText }; callers decide how to handle it.
    */
   public async callRaw(params: SvcClientRawCallParams): Promise<RawResponse> {
     const requestId = params.requestId ?? this.requestIdProvider();
+
+    const fullPath = (params as any).fullPath as string | undefined;
 
     this.logger.debug("SvcClient.callRaw.begin", {
       requestId,
@@ -208,8 +213,21 @@ export class SvcClient {
       targetSlug: params.slug,
       targetVersion: params.version,
       method: params.method,
-      pathSuffix: params.pathSuffix,
+      fullPath,
     });
+
+    if (!fullPath || !fullPath.trim()) {
+      this.logger.error("SvcClient.callRaw.missingFullPath", {
+        requestId,
+        targetSlug: params.slug,
+        targetVersion: params.version,
+      });
+
+      throw new Error(
+        `SvcClient.callRaw requires 'fullPath' (inbound URL path including /api). ` +
+          `Caller="${this.callerSlug}" attempted raw call to "${params.slug}@v${params.version}" without fullPath.`
+      );
+    }
 
     const target = await this.svcconfigResolver.resolveTarget(
       params.env,
@@ -233,11 +251,11 @@ export class SvcClient {
       );
     }
 
-    const url = this.buildUrl(target.baseUrl, {
-      slug: params.slug,
-      version: params.version,
-      pathSuffix: params.pathSuffix,
-    });
+    const baseTrimmed = target.baseUrl.replace(/\/+$/, "");
+    const normalizedFullPath = fullPath.startsWith("/")
+      ? fullPath
+      : `/${fullPath}`;
+    const url = `${baseTrimmed}${normalizedFullPath}`;
 
     const headers: Record<string, string> = {
       "x-request-id": requestId,

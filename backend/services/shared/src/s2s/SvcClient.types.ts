@@ -94,6 +94,11 @@ export interface SvcClientCallParams {
  *
  * Intended primarily for the gateway edge, where the JSON payload must be
  * treated as opaque and forwarded unchanged.
+ *
+ * For gateway:
+ * - `fullPath` is the *entire* inbound path (starting with `/api/...`).
+ * - SvcClient.callRaw() will simply swap the host/port via svcconfig and
+ *   reuse this path as-is, avoiding any URL gymnastics.
  */
 export interface SvcClientRawCallParams {
   env: string;
@@ -101,10 +106,13 @@ export interface SvcClientRawCallParams {
   version: number; // API major version (1, 2, ...)
   method: "GET" | "PUT" | "PATCH" | "POST" | "DELETE";
   /**
-   * Path AFTER `/api/<slug>/v<version>/`
-   * e.g. for `/api/auth/v1/login`, pathSuffix = "login"
+   * Full inbound path including `/api`.
+   * Example: `/api/auth/v1/auth/create`
+   *
+   * Gateway passes this directly; SvcClient only changes the origin
+   * (scheme/host/port) based on svcconfig.
    */
-  pathSuffix: string;
+  fullPath: string;
   body?: unknown; // unmodified JSON or string from caller
   requestId?: string;
   extraHeaders?: Record<string, string>;

@@ -41,9 +41,10 @@
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
 import { DbReader } from "../../dto/persistence/DbReader";
+import { ControllerBase } from "../../base/controller/ControllerBase";
 
 export class DbReadListHandler extends HandlerBase {
-  constructor(ctx: HandlerContext, controller: any) {
+  constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }
 

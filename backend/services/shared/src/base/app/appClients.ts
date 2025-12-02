@@ -8,9 +8,15 @@
  * - Shared wiring for SvcClient and PromptsClient for AppBase.
  */
 
-import { SvcClient, type SvcTarget } from "@nv/shared/s2s/SvcClient";
+import {
+  SvcClient,
+  type SvcTarget,
+  type ISvcconfigResolver,
+  type ISvcClientLogger,
+} from "@nv/shared/s2s/SvcClient";
 import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
+import { SvcconfigResolverWithCache } from "@nv/shared/s2s/SvcconfigResolverWithCache";
 
 export function createSvcClientForApp(opts: {
   service: string;
@@ -19,33 +25,64 @@ export function createSvcClientForApp(opts: {
 }): SvcClient {
   const { service, version, log } = opts;
 
-  const svcconfigResolver = {
-    // NOTE: this is intentionally a stub until svcconfig rails are wired.
-    resolveTarget: async (
-      env: string,
-      slug: string,
-      targetVersion: number
-    ): Promise<SvcTarget> => {
-      const msg =
-        `[${service}] SvcClient resolver not wired. ` +
-        `Cannot resolve target="${slug}@v${targetVersion}" in env="${env}". ` +
-        "Ops: implement a svcconfig-backed resolver for this service before enabling S2S calls.";
-      log.error({ env, slug, version: targetVersion }, msg);
-      throw new Error(msg);
-    },
+  const loggerAdapter: ISvcClientLogger = {
+    debug: (msg, meta) => log.debug(meta ?? {}, msg),
+    info: (msg, meta) => log.info(meta ?? {}, msg),
+    warn: (msg, meta) => log.warn(meta ?? {}, msg),
+    error: (msg, meta) => log.error(meta ?? {}, msg),
   };
+
+  let resolver: ISvcconfigResolver;
+
+  // TTL from env, default 5 seconds if invalid/missing.
+  const ttlRaw = process.env.NV_SVCCONFIG_CACHE_TTL_MS;
+  const ttlParsed = ttlRaw ? Number(ttlRaw) : NaN;
+  const ttlMs = Number.isFinite(ttlParsed) && ttlParsed > 0 ? ttlParsed : 5000;
+
+  try {
+    resolver = new SvcconfigResolverWithCache({
+      logger: loggerAdapter,
+      ttlMs,
+    });
+
+    log.info(
+      {
+        ttlMs,
+      },
+      `[${service}] SvcClient: using svcconfig-backed resolver with TTL cache`
+    );
+  } catch (err) {
+    const msg =
+      `[${service}] SvcClient resolver not wired. ` +
+      `Cannot resolve svcconfig targets; NV_SVCCONFIG_URL is likely missing. ` +
+      "Ops: set NV_SVCCONFIG_URL for this process and ensure svcconfig is reachable.";
+    log.error(
+      {
+        error: (err as Error)?.message,
+      },
+      msg
+    );
+
+    // Hard-error resolver – this is still "real", just fails loudly until env is corrected.
+    resolver = {
+      async resolveTarget(
+        env: string,
+        slug: string,
+        targetVersion: number
+      ): Promise<SvcTarget> {
+        throw new Error(
+          `${msg} (env="${env}", slug="${slug}", version=${targetVersion})`
+        );
+      },
+    };
+  }
 
   return new SvcClient({
     callerSlug: service,
     callerVersion: version,
-    logger: {
-      debug: (msg, meta) => log.debug(meta ?? {}, msg),
-      info: (msg, meta) => log.info(meta ?? {}, msg),
-      warn: (msg, meta) => log.warn(meta ?? {}, msg),
-      error: (msg, meta) => log.error(meta ?? {}, msg),
-    },
-    svcconfigResolver,
-    requestIdProvider: () => `svcclient-${Date.now()}`,
+    logger: loggerAdapter,
+    svcconfigResolver: resolver,
+    requestIdProvider: () => `svcclient-${Date.now().toString(36)}`,
     tokenFactory: undefined,
   });
 }

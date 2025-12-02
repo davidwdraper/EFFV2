@@ -14,11 +14,12 @@
  * Purpose:
  * - Orchestrate "list-family" GET operations for svcconfig:
  *   - Standard list:  GET /api/svcconfig/v1/:dtoType/list
- *   - Mirror list:    GET /api/svcconfig/v1/:dtoType/mirror
+ *   - listAll:        GET /api/svcconfig/v1/:dtoType/listAll  (gateway env snapshot)
  *
  * Notes:
  * - Cursor pagination via ?limit=&cursor= for list.
- * - Mirror reuses the same DbReadListHandler but uses a server-controlled filter.
+ * - listAll reuses the shared DbReadListHandler but uses a server-controlled
+ *   filter and non-paged semantics at the HTTP level.
  * - DTO is the source of truth; serialization via toBody() (stamps meta).
  */
 
@@ -29,8 +30,8 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType for LIST)
 import * as SvcconfigListPipeline from "./pipelines/list.handlerPipeline";
-// Pipelines (one folder per dtoType for MIRROR — specialized list for gateway)
-import * as SvcconfigMirrorPipeline from "./pipelines/mirror.handlerPipeline";
+// Pipelines (one folder per dtoType for LIST ALL — specialized list for gateway / infra)
+import * as SvcconfigListAllPipeline from "./pipelines/listAll.handlerPipeline";
 
 // Future dtoType example (uncomment when adding a new type):
 // import * as MyNewDtoListPipeline from "./pipelines/myNewDto.list.handlerPipeline";
@@ -43,8 +44,8 @@ export class SvcconfigListController extends ControllerJsonBase {
   /**
    * Multi-op list:
    * - GET /api/svcconfig/v1/:dtoType/:op
-   *   - op = "list"   → standard list with query-based filters
-   *   - op = "mirror" → mirror list for gateway (server-side filter only)
+   *   - op = "list"    → standard list with query-based filters (paged)
+   *   - op = "listAll" → env-scoped snapshot (non-paged at HTTP layer)
    */
   public async get(req: Request, res: Response): Promise<void> {
     const dtoType = req.params.dtoType;
@@ -54,11 +55,18 @@ export class SvcconfigListController extends ControllerJsonBase {
     ctx.set("dtoType", dtoType);
     ctx.set("op", op);
 
+    // Seed caller identity from S2S headers (see LDD-19: S2S protocol).
+    const callerServiceName = req.header("x-service-name") || "";
+    if (callerServiceName) {
+      ctx.set("caller.serviceName", callerServiceName);
+    }
+
     this.log.debug(
       {
         event: "pipeline_select",
         op,
         dtoType,
+        callerServiceName: callerServiceName || undefined,
         requestId: ctx.get("requestId"),
       },
       "selecting svcconfig list-family pipeline"
@@ -76,8 +84,8 @@ export class SvcconfigListController extends ControllerJsonBase {
             break;
           }
 
-          case "mirror": {
-            const steps = SvcconfigMirrorPipeline.getSteps(ctx, this);
+          case "listAll": {
+            const steps = SvcconfigListAllPipeline.getSteps(ctx, this);
             await this.runPipeline(ctx, steps, { requireRegistry: false });
             break;
           }
@@ -97,6 +105,7 @@ export class SvcconfigListController extends ControllerJsonBase {
                 event: "pipeline_missing",
                 op,
                 dtoType,
+                callerServiceName: callerServiceName || undefined,
                 requestId: ctx.get("requestId"),
               },
               "no list-family pipeline registered for op"
@@ -130,6 +139,7 @@ export class SvcconfigListController extends ControllerJsonBase {
       //           event: "pipeline_missing",
       //           op,
       //           dtoType,
+      //           callerServiceName: callerServiceName || undefined,
       //           requestId: ctx.get("requestId"),
       //         },
       //         "no list-family pipeline registered for op"
@@ -154,6 +164,7 @@ export class SvcconfigListController extends ControllerJsonBase {
             event: "pipeline_missing",
             op,
             dtoType,
+            callerServiceName: callerServiceName || undefined,
             requestId: ctx.get("requestId"),
           },
           "no list-family pipeline registered for dtoType"

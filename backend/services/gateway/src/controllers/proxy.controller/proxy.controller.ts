@@ -19,18 +19,21 @@
  * - No DTO hydration.
  * - No payload mutation.
  * - Controller sets proxy context only; handler performs S2S call.
+ * - Finalization is raw via ControllerGatewayBase:
+ *   • Uses ctx["response.status"] and ctx["response.body"] directly.
+ *   • Does NOT depend on DtoBag or wire-bag semantics.
  */
 
 import type { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
+import { ControllerGatewayBase } from "../../base/ControllerGatewayBase";
 import * as GatewayProxyPipeline from "./pipelines/proxy.handlerPipeline";
 
-export class GatewayProxyController extends ControllerJsonBase {
+export class GatewayProxyController extends ControllerGatewayBase {
   private readonly svcClient: SvcClient;
 
   constructor(app: AppBase) {
@@ -60,14 +63,13 @@ export class GatewayProxyController extends ControllerJsonBase {
       | "POST"
       | "DELETE";
 
-    // Everything after `/api/:targetSlug/v:targetVersion/` becomes the pathSuffix.
-    // Example: /api/auth/v1/login → pathSuffix = "login"
-    //          /api/auth/v1/user/create → "user/create"
-    const basePrefix = `/api/${targetSlug}/v${targetVersionRaw}/`;
-    const fullPath = req.path.startsWith("/") ? req.path : `/${req.path}`;
-    const suffix = fullPath.startsWith(basePrefix)
-      ? fullPath.slice(basePrefix.length)
-      : "";
+    // We want the *full* inbound path including `/api/...` so SvcClient.callRaw
+    // can simply swap host/port and reuse it.
+    //
+    // Example:
+    //   Incoming URL: /api/auth/v1/auth/create
+    //   req.originalUrl: /api/auth/v1/auth/create
+    const fullPath = req.originalUrl || req.url || req.path;
 
     // Derive env label from svcEnv (ADR-0044), but allow handlers to override if needed.
     const svcEnv = ctx.get<EnvServiceDto | undefined>("svcEnv");
@@ -84,8 +86,8 @@ export class GatewayProxyController extends ControllerJsonBase {
     ctx.set("proxy.slug", targetSlug);
     ctx.set("proxy.version.raw", targetVersionRaw);
     ctx.set("proxy.method", method);
-    ctx.set("proxy.pathSuffix", suffix);
     ctx.set("proxy.env", envLabel);
+    ctx.set("proxy.fullPath", fullPath);
     ctx.set("proxy.body", req.body);
 
     const steps = GatewayProxyPipeline.getSteps(ctx, this);
@@ -95,6 +97,7 @@ export class GatewayProxyController extends ControllerJsonBase {
       requireRegistry: false,
     });
 
-    return super.finalize(ctx);
+    // Let ControllerGatewayBase perform raw finalize using ctx["response.*"].
+    await this.finalize(ctx);
   }
 }

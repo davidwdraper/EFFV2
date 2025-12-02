@@ -20,6 +20,7 @@
 
 import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
+import { assertValidEmail } from "../utils/emailCheck";
 
 // Wire-friendly shape
 export type UserJson = {
@@ -121,7 +122,9 @@ export class UserDto extends DtoBase {
     }
 
     if (typeof j.email === "string") {
-      dto.email = j.email.trim().toLowerCase();
+      dto.email = assertValidEmail(j.email, "UserDto.email");
+    } else if (opts?.validate) {
+      throw new Error("UserDto.email: field is required.");
     }
 
     if (typeof j.phone === "string") {
@@ -226,7 +229,7 @@ export class UserDto extends DtoBase {
     }
 
     if (json.email !== undefined && typeof json.email === "string") {
-      this.email = json.email.trim().toLowerCase();
+      this.email = assertValidEmail(json.email, "UserDto.patchFrom.email");
     }
 
     if (json.phone !== undefined) {

@@ -1,4 +1,4 @@
-// backend/services/xxx/src/app.ts
+// backend/services/user-auth/src/app.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -11,7 +11,7 @@
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - For xxx, DB/index ensure is ON (checkDb=true).
+ * - For user-auth, DB/index ensure is ON (checkDb=true).
  */
 
 import type { Express, Router } from "express";
@@ -22,7 +22,7 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
-import { buildXxxRouter } from "./routes/xxx.route";
+import { buildUserAuthRouter } from "./routes/user-auth.route";
 
 type CreateAppOptions = {
   slug: string;
@@ -37,7 +37,7 @@ type CreateAppOptions = {
   envReloader: () => Promise<EnvServiceDto>;
 };
 
-class xxxApp extends AppBase {
+class user-authApp extends AppBase {
   /** Concrete per-service DTO registry (explicit, no barrels). */
   private readonly registry: Registry;
 
@@ -48,9 +48,10 @@ class xxxApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
+      envName: opts.envName,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // xxx is DB-backed: requires NV_MONGO_* and index ensure at boot.
+      // user-auth is DB-backed: requires NV_MONGO_* and index ensure at boot.
       checkDb: true,
     });
 
@@ -70,7 +71,7 @@ class xxxApp extends AppBase {
       throw new Error("Base path missing — check AppBase.healthBasePath()");
     }
 
-    const r: Router = buildXxxRouter(this);
+    const r: Router = buildUserAuthRouter(this);
     this.app.use(base, r);
     this.log.info({ base, env: this.getEnvName() }, "routes mounted");
   }
@@ -80,7 +81,7 @@ class xxxApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new xxxApp(opts);
+  const app = new user-authApp(opts);
   // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
   await app.boot();
   return { app: app.instance };

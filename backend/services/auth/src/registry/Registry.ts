@@ -21,6 +21,7 @@
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
 import { AuthDto } from "@nv/shared/dto/auth.dto";
+import { UserAuthDto } from "@nv/shared/dto/user-auth.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
@@ -36,6 +37,7 @@ export class Registry extends ServiceRegistryBase {
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
       ["auth"]: AuthDto as unknown as DtoCtor<IDto>,
+      ["user-auth"]: UserAuthDto as unknown as DtoCtor<IDto>,
       // add new DTOs here as you grow the service:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,
     };
@@ -69,6 +71,25 @@ export class Registry extends ServiceRegistryBase {
   /** Hydrate an AuthDto from JSON (validates if requested). */
   public fromJsonAuth(json: unknown, opts?: { validate?: boolean }): AuthDto {
     const dto = AuthDto.fromBody(json, { validate: !!opts?.validate });
+    // MOS: no collection needed for auth v1.
+    // dto.setCollectionName(AuthDto.dbCollectionName());
+    return dto;
+  }
+
+  /** Create a new UserAuthDto instance. */
+  public newUserAuthDto(): UserAuthDto {
+    const dto = new UserAuthDto(this.secret);
+    // MOS: no collection needed for auth v1.
+    // dto.setCollectionName(AuthDto.dbCollectionName());
+    return dto;
+  }
+
+  /** Hydrate an AuthDto from JSON (validates if requested). */
+  public fromJsonUserAuth(
+    json: unknown,
+    opts?: { validate?: boolean }
+  ): UserAuthDto {
+    const dto = UserAuthDto.fromBody(json, { validate: !!opts?.validate });
     // MOS: no collection needed for auth v1.
     // dto.setCollectionName(AuthDto.dbCollectionName());
     return dto;

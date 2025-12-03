@@ -21,7 +21,7 @@
  *   • Optional per-field access rules for secure getters/setters.
  */
 
-import { randomUUID } from "crypto";
+import { newUuid, validateUUIDv4String } from "../utils/uuid";
 
 /**
  * UserType enum used for DTO access control.
@@ -127,40 +127,51 @@ export abstract class DtoBase {
 
   // ─────────────── ID Lifecycle ───────────────
 
+  /**
+   * Hydration-time setter; used by fromBody()/fromDb() to accept a wire `_id`.
+   *
+   * Rules:
+   * - Accepts only UUIDv4 values (validated via validateUUIDv4String()).
+   * - Normalizes to lowercase.
+   * - Refuses to overwrite an existing id unless it’s the same normalized value.
+   */
   public setIdOnce(id: string): void {
-    const trimmed = (id ?? "").trim();
-    if (!trimmed) {
-      throw new Error("DTO_ID_INVALID: `_id` must be a non-empty string.");
-    }
+    const normalized = validateUUIDv4String(id);
 
-    if (this._id && this._id !== trimmed.toLowerCase()) {
+    if (this._id && this._id !== normalized) {
       throw new Error(
-        `DTO_ID_IMMUTABLE: Attempt to overwrite existing _id '${this._id}' with '${trimmed}'.`
+        `DTO_ID_IMMUTABLE: Attempt to overwrite existing _id '${this._id}' with '${normalized}'.`
       );
     }
 
-    if (
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-        trimmed
-      )
-    ) {
-      throw new Error(
-        `DTO_ID_INVALID_SHAPE: Expected UUIDv4 string, got '${trimmed}'.`
-      );
-    }
-
-    this._id = trimmed.toLowerCase();
+    this._id = normalized;
   }
 
   /**
-   * Generate and set a UUIDv4 `_id` if none exists yet.
-   * Used by DbWriter BEFORE calling toBody().
+   * Ensure this DTO has a canonical UUIDv4 id.
+   *
+   * Behavior:
+   * - If id is already set:
+   *     • Re-validates and normalizes using validateUUIDv4String().
+   *     • Returns the normalized id.
+   * - If id is missing:
+   *     • Generates a new UUIDv4 via newUuid().
+   *     • Assigns and returns it.
+   *
+   * Used by:
+   * - DbWriter BEFORE toBody() in create flows.
+   * - MOS pipelines that need a stable id before coordinating parent/child writes.
    */
-  public ensureId(): void {
-    if (!this._id) {
-      const id = randomUUID();
-      this.setIdOnce(id);
+  public ensureId(): string {
+    if (this._id) {
+      const normalized = validateUUIDv4String(this._id);
+      this._id = normalized;
+      return normalized;
     }
+
+    const fresh = newUuid();
+    this._id = fresh;
+    return fresh;
   }
 
   /** Return the current `_id` or explode loudly if missing. */

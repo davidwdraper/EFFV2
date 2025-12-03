@@ -84,7 +84,7 @@ export class ExtractPasswordHandler extends HandlerBase {
       return;
     }
 
-    this.ctx.set("signup.password", password);
+    this.ctx.set("signup.passwordClear", password);
     this.ctx.set("handlerStatus", "ok");
 
     this.log.debug(

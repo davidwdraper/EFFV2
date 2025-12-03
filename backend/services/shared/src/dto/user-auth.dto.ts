@@ -149,6 +149,152 @@ export class UserAuthDto extends DtoBase {
     super(secretOrMeta);
   }
 
+  // ==== Validated Setters ===================================================
+
+  public setUserId(userId: string): this {
+    const v = typeof userId === "string" ? userId.trim() : "";
+    if (!v) {
+      throw new Error(
+        "UserAuthDto.setUserId: userId must be a non-empty string."
+      );
+    }
+    this.userId = v;
+    return this;
+  }
+
+  public setHash(hash: string): this {
+    const v = typeof hash === "string" ? hash.trim() : "";
+    if (!v) {
+      throw new Error("UserAuthDto.setHash: hash must be a non-empty string.");
+    }
+    this.hash = v;
+    return this;
+  }
+
+  public setHashAlgo(hashAlgo: string): this {
+    const v = typeof hashAlgo === "string" ? hashAlgo.trim() : "";
+    if (!v) {
+      throw new Error(
+        "UserAuthDto.setHashAlgo: hashAlgo must be a non-empty string (e.g., 'argon2id', 'bcrypt', 'scrypt')."
+      );
+    }
+    this.hashAlgo = v;
+    return this;
+  }
+
+  public setHashParamsJson(hashParamsJson: string | undefined | null): this {
+    if (
+      hashParamsJson === undefined ||
+      hashParamsJson === null ||
+      hashParamsJson === ""
+    ) {
+      this.hashParamsJson = undefined;
+      return this;
+    }
+
+    const v = hashParamsJson.trim();
+    if (!v) {
+      this.hashParamsJson = undefined;
+      return this;
+    }
+
+    // Validate that it is well-formed JSON for Ops sanity.
+    try {
+      JSON.parse(v);
+    } catch {
+      throw new Error(
+        "UserAuthDto.setHashParamsJson: value must be a valid JSON string describing hash parameters."
+      );
+    }
+
+    this.hashParamsJson = v;
+    return this;
+  }
+
+  public setFailedAttemptCount(count: number): this {
+    if (!Number.isFinite(count)) {
+      throw new Error(
+        "UserAuthDto.setFailedAttemptCount: count must be a finite number."
+      );
+    }
+    const n = Math.trunc(count);
+    if (n < 0) {
+      throw new Error(
+        "UserAuthDto.setFailedAttemptCount: count must be a non-negative integer."
+      );
+    }
+    this.failedAttemptCount = n;
+    return this;
+  }
+
+  public setLastFailedAt(iso: string | undefined | null): this {
+    if (!iso) {
+      this.lastFailedAt = undefined;
+      return this;
+    }
+    const v = iso.trim();
+    if (!v) {
+      this.lastFailedAt = undefined;
+      return this;
+    }
+    if (Number.isNaN(Date.parse(v))) {
+      throw new Error(
+        "UserAuthDto.setLastFailedAt: value must be an ISO-8601 timestamp string."
+      );
+    }
+    this.lastFailedAt = v;
+    return this;
+  }
+
+  public setLockedUntil(iso: string | undefined | null): this {
+    if (!iso) {
+      this.lockedUntil = undefined;
+      return this;
+    }
+    const v = iso.trim();
+    if (!v) {
+      this.lockedUntil = undefined;
+      return this;
+    }
+    if (Number.isNaN(Date.parse(v))) {
+      throw new Error(
+        "UserAuthDto.setLockedUntil: value must be an ISO-8601 timestamp string."
+      );
+    }
+    this.lockedUntil = v;
+    return this;
+  }
+
+  public setPasswordCreatedAt(iso: string): this {
+    const v = typeof iso === "string" ? iso.trim() : "";
+    if (!v || Number.isNaN(Date.parse(v))) {
+      throw new Error(
+        "UserAuthDto.setPasswordCreatedAt: value must be a non-empty ISO-8601 timestamp string."
+      );
+    }
+    this.passwordCreatedAt = v;
+    return this;
+  }
+
+  public setPasswordUpdatedAt(iso: string | undefined | null): this {
+    if (!iso) {
+      this.passwordUpdatedAt = undefined;
+      return this;
+    }
+    const v = iso.trim();
+    if (!v) {
+      this.passwordUpdatedAt = undefined;
+      return this;
+    }
+    if (Number.isNaN(Date.parse(v))) {
+      throw new Error(
+        "UserAuthDto.setPasswordUpdatedAt: value must be an ISO-8601 timestamp string."
+      );
+    }
+    this.passwordUpdatedAt = v;
+    return this;
+  }
+
   // ==== Construction ========================================================
 
   public static fromBody(
@@ -164,40 +310,39 @@ export class UserAuthDto extends DtoBase {
     }
 
     if (typeof j.userId === "string" && j.userId.trim()) {
-      dto.userId = j.userId.trim();
+      dto.setUserId(j.userId);
     }
 
     if (typeof j.hash === "string" && j.hash.trim()) {
-      dto.hash = j.hash;
+      dto.setHash(j.hash);
     }
 
     if (typeof j.hashAlgo === "string" && j.hashAlgo.trim()) {
-      dto.hashAlgo = j.hashAlgo;
+      dto.setHashAlgo(j.hashAlgo);
     }
 
-    if (typeof j.hashParamsJson === "string" && j.hashParamsJson.trim()) {
-      dto.hashParamsJson = j.hashParamsJson;
+    if (typeof j.hashParamsJson === "string") {
+      dto.setHashParamsJson(j.hashParamsJson);
     }
 
     if (typeof j.failedAttemptCount === "number") {
-      const n = Math.trunc(j.failedAttemptCount);
-      dto.failedAttemptCount = n >= 0 ? n : 0;
+      dto.setFailedAttemptCount(j.failedAttemptCount);
     }
 
-    if (typeof j.lastFailedAt === "string" && j.lastFailedAt.trim()) {
-      dto.lastFailedAt = j.lastFailedAt;
+    if (typeof j.lastFailedAt === "string") {
+      dto.setLastFailedAt(j.lastFailedAt);
     }
 
-    if (typeof j.lockedUntil === "string" && j.lockedUntil.trim()) {
-      dto.lockedUntil = j.lockedUntil;
+    if (typeof j.lockedUntil === "string") {
+      dto.setLockedUntil(j.lockedUntil);
     }
 
     if (typeof j.passwordCreatedAt === "string" && j.passwordCreatedAt.trim()) {
-      dto.passwordCreatedAt = j.passwordCreatedAt;
+      dto.setPasswordCreatedAt(j.passwordCreatedAt);
     }
 
-    if (typeof j.passwordUpdatedAt === "string" && j.passwordUpdatedAt.trim()) {
-      dto.passwordUpdatedAt = j.passwordUpdatedAt;
+    if (typeof j.passwordUpdatedAt === "string") {
+      dto.setPasswordUpdatedAt(j.passwordUpdatedAt);
     }
 
     dto.setMeta({
@@ -251,24 +396,28 @@ export class UserAuthDto extends DtoBase {
     // - We intentionally do NOT allow patching userId via patchFrom.
     //   Changing userId should be treated as an exceptional migration-only operation.
 
-    if (json.hash !== undefined && typeof json.hash === "string") {
-      this.hash = json.hash;
+    if (json.hash !== undefined) {
+      if (typeof json.hash === "string") {
+        this.setHash(json.hash);
+      } else {
+        throw new Error(
+          "UserAuthDto.patchFrom: hash must be a string when provided."
+        );
+      }
     }
 
-    if (json.hashAlgo !== undefined && typeof json.hashAlgo === "string") {
-      this.hashAlgo = json.hashAlgo;
+    if (json.hashAlgo !== undefined) {
+      if (typeof json.hashAlgo === "string") {
+        this.setHashAlgo(json.hashAlgo);
+      } else {
+        throw new Error(
+          "UserAuthDto.patchFrom: hashAlgo must be a string when provided."
+        );
+      }
     }
 
     if (json.hashParamsJson !== undefined) {
-      if (
-        json.hashParamsJson === null ||
-        json.hashParamsJson === undefined ||
-        json.hashParamsJson === ""
-      ) {
-        this.hashParamsJson = undefined;
-      } else if (typeof json.hashParamsJson === "string") {
-        this.hashParamsJson = json.hashParamsJson;
-      }
+      this.setHashParamsJson(json.hashParamsJson as string | undefined | null);
     }
 
     if (json.failedAttemptCount !== undefined) {
@@ -276,46 +425,39 @@ export class UserAuthDto extends DtoBase {
         typeof json.failedAttemptCount === "string"
           ? Number(json.failedAttemptCount)
           : json.failedAttemptCount;
-      if (Number.isFinite(raw)) {
-        const n = Math.trunc(raw as number);
-        this.failedAttemptCount = n >= 0 ? n : 0;
+      if (!Number.isFinite(raw)) {
+        throw new Error(
+          "UserAuthDto.patchFrom: failedAttemptCount must be a finite number or numeric string."
+        );
       }
+      this.setFailedAttemptCount(raw as number);
     }
 
     if (json.lastFailedAt !== undefined) {
-      if (typeof json.lastFailedAt === "string" && json.lastFailedAt.trim()) {
-        this.lastFailedAt = json.lastFailedAt;
-      } else {
-        this.lastFailedAt = undefined;
-      }
+      this.setLastFailedAt(json.lastFailedAt ?? null);
     }
 
     if (json.lockedUntil !== undefined) {
-      if (typeof json.lockedUntil === "string" && json.lockedUntil.trim()) {
-        this.lockedUntil = json.lockedUntil;
-      } else {
-        this.lockedUntil = undefined;
-      }
+      this.setLockedUntil(json.lockedUntil ?? null);
     }
 
     if (json.passwordCreatedAt !== undefined) {
       if (
-        typeof json.passwordCreatedAt === "string" &&
-        json.passwordCreatedAt.trim()
+        json.passwordCreatedAt === undefined ||
+        json.passwordCreatedAt === null
       ) {
-        this.passwordCreatedAt = json.passwordCreatedAt;
+        // Creation time should not normally be cleared; treat as a no-op.
+      } else if (typeof json.passwordCreatedAt === "string") {
+        this.setPasswordCreatedAt(json.passwordCreatedAt);
+      } else {
+        throw new Error(
+          "UserAuthDto.patchFrom: passwordCreatedAt must be a string when provided."
+        );
       }
     }
 
     if (json.passwordUpdatedAt !== undefined) {
-      if (
-        typeof json.passwordUpdatedAt === "string" &&
-        json.passwordUpdatedAt.trim()
-      ) {
-        this.passwordUpdatedAt = json.passwordUpdatedAt;
-      } else {
-        this.passwordUpdatedAt = undefined;
-      }
+      this.setPasswordUpdatedAt(json.passwordUpdatedAt ?? null);
     }
 
     return this;

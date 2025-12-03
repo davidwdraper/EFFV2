@@ -12,10 +12,13 @@
  * Purpose:
  * - Use the hydrated DtoBag<UserDto> from ctx["bag"] to call the `user`
  *   service's `create` operation via SvcClient.call().
+ * - On success, replace ctx["bag"] with the returned UserDto bag from the
+ *   user service so finalize() always responds with the canonical, persisted
+ *   view (including any server-generated fields).
  *
  * Invariants:
  * - Auth remains a MOS (no direct DB writes).
- * - On success, ctx["bag"] remains a UserDto bag for finalize().
+ * - On success, ctx["bag"] contains the returned DtoBag<UserDto>.
  * - On failure, sets handlerStatus="error" and a Problem+JSON payload.
  */
 
@@ -118,7 +121,7 @@ export class CallUserCreateHandler extends HandlerBase {
         method: string;
         bag: UserBag;
         requestId?: string;
-      }) => Promise<unknown>;
+      }) => Promise<UserBag>;
     };
 
     this.log.debug(
@@ -131,7 +134,7 @@ export class CallUserCreateHandler extends HandlerBase {
 
     try {
       // DTO-based path: user service CRUD rails.
-      await svcClient.call({
+      const returnedBag = await svcClient.call({
         env,
         slug: "user", // target worker service slug
         version: 1, // user service major version
@@ -142,9 +145,9 @@ export class CallUserCreateHandler extends HandlerBase {
         requestId,
       });
 
-      // We don't currently need the returned wire bag at the auth edge.
-      // Success == "user service wrote the profile"; finalize() will
-      // return the original UserDto bag to the client.
+      // Use the returned bag as the canonical view going forward.
+      this.ctx.set("bag", returnedBag);
+
       this.log.info(
         {
           requestId,

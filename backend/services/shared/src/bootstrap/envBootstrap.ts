@@ -13,16 +13,16 @@
  *
  * Responsibilities:
  * - Use SvcClient + SvcEnvClient to:
- *     1) Resolve the current env for { slug, version }.
- *     2) Fetch the EnvServiceDto config bag for (env, slug, version).
+ *     1) Resolve the current env label for { slug, version }.
+ *     2) Fetch the EnvServiceDto config bag for (envLabel, slug, version).
  * - Work in terms of DtoBag<EnvServiceDto> (no naked DTOs cross this boundary).
  * - Derive HTTP host/port from the primary DTO in the bag.
  * - Expose:
- *     • envName   (logical environment for this process; frozen for lifetime)
+ *     • envLabel (logical environment label for this process; frozen for lifetime)
  *     • a bag-based envReloader with the same env semantics.
  *
  * Invariants:
- * - No .env file parsing here except NV_ENV (logical environment) and NV_ENV_SERVICE_URL
+ * - No .env file parsing here except NV_ENV (logical environment label) and NV_ENV_SERVICE_URL
  *   for bootstrapping env-service location.
  * - All failures log concrete Ops guidance and terminate the process with exit code 1.
  */
@@ -64,11 +64,11 @@ export type EnvBootstrapOpts = {
 
 export type EnvBootstrapResult = {
   /**
-   * Logical environment name for this process (e.g., "dev", "stage", "prod").
+   * Logical environment label for this process (e.g., "dev", "stage", "prod").
    * - Derived once at boot from NV_ENV via SvcEnvClient.getCurrentEnv().
    * - Frozen for the lifetime of the process; envReloader reuses the same value.
    */
-  envName: string;
+  envLabel: string;
   envBag: DtoBag<EnvServiceDto>;
   envReloader: () => Promise<DtoBag<EnvServiceDto>>;
   host: string;
@@ -193,13 +193,13 @@ function fatal(logFile: string, message: string, err?: unknown): never {
  *     • BootstrapEnvSvcResolver (NV_ENV_SERVICE_URL → env-service baseUrl)
  *     • bootstrapRequestIdProvider
  * - Uses SvcEnvClient to:
- *     • getCurrentEnv({ slug, version })  → envName (once, frozen)
- *     • getConfig({ env: envName, slug, version }) → DtoBag<EnvServiceDto>
+ *     • getCurrentEnv({ slug, version })  → envLabel (once, frozen)
+ *     • getConfig({ env: envLabel, slug, version }) → DtoBag<EnvServiceDto>
  * - Derives host/port from the primary DTO in the bag.
  * - Returns:
- *     • envName    (logical env for this process)
+ *     • envLabel   (logical env label for this process)
  *     • envBag     (config bag)
- *     • envReloader (same env, fresh bag each call)
+ *     • envReloader (same env label, fresh bag each call)
  *     • host/port
  *     • checkDb    (echo of opts.checkDb for downstream boot logic)
  */
@@ -236,29 +236,29 @@ export async function envBootstrap(
     svcClient,
   });
 
-  // 2) Resolve current env for this service (once, frozen for process lifetime)
-  let envName: string;
+  // 2) Resolve current env label for this service (once, frozen for process lifetime)
+  let envLabel: string;
   try {
-    envName = await envClient.getCurrentEnv({ slug, version });
+    envLabel = await envClient.getCurrentEnv({ slug, version });
   } catch (err) {
     fatal(
       logFile,
-      "BOOTSTRAP_CURRENT_ENV_FAILED: Failed to resolve current logical env for " +
+      "BOOTSTRAP_CURRENT_ENV_FAILED: Failed to resolve current logical env label for " +
         `slug="${slug}", version=${version}. ` +
         "Ops: ensure NV_ENV is set (e.g., 'dev', 'stage', 'prod') for this service before start.",
       err
     );
   }
 
-  // 3) Fetch EnvServiceDto config bag for that env/slug/version
+  // 3) Fetch EnvServiceDto config bag for that envLabel/slug/version
   let envBag: DtoBag<EnvServiceDto>;
   try {
-    envBag = await envClient.getConfig({ env: envName, slug, version });
+    envBag = await envClient.getConfig({ env: envLabel, slug, version });
   } catch (err) {
     fatal(
       logFile,
       "BOOTSTRAP_ENV_CONFIG_FAILED: Failed to fetch EnvServiceDto bag from env-service. " +
-        `Ops: ensure a config document exists for env="${envName}", slug="${slug}", version=${version} ` +
+        `Ops: ensure a config document exists for env="${envLabel}", slug="${slug}", version=${version} ` +
         "and that env-service indexes allow fast lookup by (env, slug, version).",
       err
     );
@@ -301,23 +301,23 @@ export async function envBootstrap(
     );
   }
 
-  // 5) Bag-based reloader: same envName, same client, fresh bag each call.
+  // 5) Bag-based reloader: same envLabel, same client, fresh bag each call.
   const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
-    return envClient.getConfig({ env: envName, slug, version });
+    return envClient.getConfig({ env: envLabel, slug, version });
   };
 
   // eslint-disable-next-line no-console
   console.log("[bootstrap] envBootstrap complete", {
     slug,
     version,
-    envName,
+    envLabel,
     host,
     port,
     checkDb,
   });
 
   return {
-    envName,
+    envLabel,
     envBag,
     envReloader,
     host,

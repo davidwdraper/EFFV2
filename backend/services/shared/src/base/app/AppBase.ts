@@ -40,6 +40,11 @@ import { createSvcClientForApp, createPromptsClientForApp } from "./appClients";
 export type AppBaseCtor = {
   service: string;
   version: number;
+  /**
+   * Logical environment label for this service instance (e.g., "dev", "stage", "prod").
+   * - Optional: if omitted, derived from EnvServiceDto.getEnvLabel().
+   */
+  envLabel?: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
   checkDb: boolean;
@@ -50,7 +55,12 @@ export abstract class AppBase extends ServiceBase {
   private _booted = false;
 
   protected readonly version: number;
-  private readonly envName: string;
+
+  /**
+   * Logical environment label for this service instance.
+   * Source of truth: explicit ctor value when provided, otherwise derived from EnvServiceDto.
+   */
+  private readonly envLabel: string;
 
   private _envDto: EnvServiceDto;
   private readonly envReloader: () => Promise<EnvServiceDto>;
@@ -68,8 +78,9 @@ export abstract class AppBase extends ServiceBase {
     this.envReloader = opts.envReloader;
     this.checkDb = opts.checkDb;
 
-    // Single source of truth: logical env name comes from EnvServiceDto.
-    this.envName = this._envDto.getEnvName();
+    // Logical environment label: prefer explicit ctor value, otherwise derive from EnvServiceDto.
+    const labelFromDto = this._envDto.getEnvLabel();
+    this.envLabel = opts.envLabel ?? labelFromDto;
 
     this.app = express();
     this.initApp();
@@ -107,6 +118,11 @@ export abstract class AppBase extends ServiceBase {
     return this.promptsClient;
   }
 
+  /** SvcClient accessor for S2S calls. */
+  public getSvcClient(): SvcClient {
+    return this.svcClient;
+  }
+
   /** Convenience wrapper around PromptsClient.render(). */
   public async prompt(
     language: string,
@@ -117,18 +133,18 @@ export abstract class AppBase extends ServiceBase {
     return this.promptsClient.render(language, promptKey, params, meta);
   }
 
-  /** Logical environment accessor for callers needing env-aware behavior. */
-  public getEnvName(): string {
-    return this.envName;
+  /**
+   * Runtime environment label accessor.
+   * Controllers should always call this to fetch the environment tag.
+   */
+  public getEnvLabel(): string {
+    return this.envLabel;
   }
 
   /** DTO Registry accessor – concrete services MUST implement. */
   public abstract getDtoRegistry(): IDtoRegistry;
 
-  /**
-   * Optional svcconfig resolver hook (slug@version → _id).
-   * Derived classes may override to enable routePolicyGate.
-   */
+  /** Optional svcconfig resolver hook. */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected getSvcconfigResolver():
     | import("@nv/shared/middleware/policy/routePolicyGate").ISvcconfigResolver
@@ -136,17 +152,12 @@ export abstract class AppBase extends ServiceBase {
     return null;
   }
 
-  /**
-   * Default versioned base like `/api/<slug>/v<major>`.
-   * Kept for backward compatibility with existing app.ts implementations.
-   */
+  /** Versioned health base like `/api/<slug>/v<major>`. */
   protected healthBasePath(): string | null {
     return computeHealthBasePath(this.service, this.version);
   }
 
-  /**
-   * Async lifecycle entry – MUST be awaited before using `instance`.
-   */
+  /** Async lifecycle entry – MUST be awaited before using `instance`. */
   public async boot(): Promise<void> {
     if (this._booted) return;
 
@@ -159,15 +170,16 @@ export abstract class AppBase extends ServiceBase {
         base,
         service: this.service,
         version: this.version,
-        envName: this.envName,
+        envLabel: this.envLabel,
         log: this.log,
         readyCheck: this.readyCheck(),
       });
+
       mountEnvReloadRoute({
         app: this.app,
         base,
         log: this.log,
-        envName: this.envName,
+        envLabel: this.envLabel,
         getEnvDto: () => this._envDto,
         setEnvDto: (fresh) => {
           this._envDto = fresh;
@@ -186,7 +198,7 @@ export abstract class AppBase extends ServiceBase {
       service: this.service,
       log: this.log,
       resolver: this.getSvcconfigResolver(),
-      envName: this.envName,
+      envLabel: this.envLabel,
     });
 
     this.mountSecurity();
@@ -198,12 +210,15 @@ export abstract class AppBase extends ServiceBase {
     mountPostRoutingLayer({
       app: this.app,
       service: this.service,
-      envName: this.envName,
+      envLabel: this.envLabel,
       log: this.log,
     });
 
     this._booted = true;
-    this.log.info({ service: this.service, env: this.envName }, "app booted");
+    this.log.info(
+      { service: this.service, envLabel: this.envLabel },
+      "app booted"
+    );
   }
 
   // ─────────────── Hooks (override sparingly) ───────────────
@@ -213,7 +228,7 @@ export abstract class AppBase extends ServiceBase {
     const ctx: DbBootContext = {
       service: this.service,
       component: this.constructor.name,
-      envName: this.envName,
+      envLabel: this.envLabel,
       checkDb: this.checkDb,
       envDto: this._envDto,
       log: this.log,
@@ -222,16 +237,15 @@ export abstract class AppBase extends ServiceBase {
     await performDbBoot(ctx);
   }
 
-  /** Optional readiness function for health (override per service). */
+  /** Optional readiness function. */
   protected readyCheck(): (() => boolean | Promise<boolean>) | undefined {
     return undefined;
   }
 
-  /** Security layer (verifyS2S, CORS, rate limits, etc.). Default: no-op. */
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  /** Security layer (verifyS2S, CORS, rate limits…). Default: no-op. */
   protected mountSecurity(): void {}
 
-  /** Service routes (one-liners) or proxy – MUST be implemented by concrete app. */
+  /** Service routes – MUST be implemented by concrete service. */
   protected abstract mountRoutes(): void;
 
   /** Express instance after boot. */

@@ -261,7 +261,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
   }
 
   /** Logical environment name accessor (single source of truth). */
-  public getEnvName(): string {
+  public getEnvLabel(): string {
     return this.env;
   }
 

@@ -26,13 +26,13 @@ type HealthOpts = {
   base: string;
   service: string;
   version: number;
-  envName: string;
+  envLabel: string;
   log: IBoundLogger;
   readyCheck?: () => Promise<boolean> | boolean;
 };
 
 export function mountVersionedHealthRoute(opts: HealthOpts): void {
-  const { app, base, service, version, envName, log, readyCheck } = opts;
+  const { app, base, service, version, envLabel, log, readyCheck } = opts;
   const path = `${base}/health`;
 
   app.get(path, async (_req: Request, res: Response) => {
@@ -42,7 +42,7 @@ export function mountVersionedHealthRoute(opts: HealthOpts): void {
         ok: true,
         service,
         version,
-        env: envName,
+        env: envLabel,
         ready,
         ts: new Date().toISOString(),
       });
@@ -51,28 +51,28 @@ export function mountVersionedHealthRoute(opts: HealthOpts): void {
         ok: true,
         service,
         version,
-        env: envName,
+        env: envLabel,
         ready: false,
         ts: new Date().toISOString(),
       });
     }
   });
 
-  log.info({ path, env: envName }, "health mounted");
+  log.info({ path, env: envLabel }, "health mounted");
 }
 
 type EnvReloadOpts = {
   app: Express;
   base: string;
   log: IBoundLogger;
-  envName: string;
+  envLabel: string;
   getEnvDto: () => EnvServiceDto;
   setEnvDto: (fresh: EnvServiceDto) => void;
   envReloader: () => Promise<EnvServiceDto>;
 };
 
 export function mountEnvReloadRoute(opts: EnvReloadOpts): void {
-  const { app, base, log, envName, getEnvDto, setEnvDto, envReloader } = opts;
+  const { app, base, log, envLabel, getEnvDto, setEnvDto, envReloader } = opts;
   const path = `${base}/env/reload`;
 
   app.post(path, async (_req, res) => {
@@ -88,7 +88,7 @@ export function mountEnvReloadRoute(opts: EnvReloadOpts): void {
       return res.status(200).json({
         ok: true,
         reloadedAt: new Date().toISOString(),
-        processEnv: envName,
+        processEnv: envLabel,
         from: { env: fromEnv, slug: fromSlug, version: fromVersion },
         to: { env: fresh.env, slug: fresh.slug, version: fresh.version },
       });
@@ -104,5 +104,5 @@ export function mountEnvReloadRoute(opts: EnvReloadOpts): void {
     }
   });
 
-  log.info({ path, env: envName }, "env reload mounted");
+  log.info({ path, env: envLabel }, "env reload mounted");
 }

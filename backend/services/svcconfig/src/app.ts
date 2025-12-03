@@ -28,11 +28,11 @@ type CreateAppOptions = {
   slug: string;
   version: number;
   /**
-   * Logical environment name for this process (e.g., "dev", "stage", "prod").
-   * - Passed through from envBootstrap.envName.
+   * Logical environment label for this process (e.g., "dev", "stage", "prod").
+   * - Passed through from envBootstrap.envLabel.
    * - Any SvcClient created inside this service should use this value for `env`.
    */
-  envName: string;
+  envLabel: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 };
@@ -48,7 +48,7 @@ class SvcconfigApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
-      envName: opts.envName,
+      envLabel: opts.envLabel,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
       // svcconfig is DB-backed: requires NV_MONGO_* and index ensure at boot.
@@ -73,7 +73,7 @@ class SvcconfigApp extends AppBase {
 
     const r: Router = buildSvcconfigRouter(this);
     this.app.use(base, r);
-    this.log.info({ base, env: this.getEnvName() }, "routes mounted");
+    this.log.info({ base, env: this.getEnvLabel() }, "routes mounted");
   }
 }
 

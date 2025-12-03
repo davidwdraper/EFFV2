@@ -86,8 +86,8 @@ function requireEnv(name: string, logFile: string): string {
  * Bootstrap env-service:
  * - Reads DB config from env (NV_MONGO_URI / NV_MONGO_DB).
  * - Uses DbReader + EnvConfigReader.getEnv() to fetch:
- *     • rootBag: (env, slug="service-root", version)
- *     • svcBag : (env, slug=opts.slug,      version)
+ *     • rootBag: (envLabel, slug="service-root", version)
+ *     • svcBag : (envLabel, slug=opts.slug,      version)
  * - Uses EnvConfigReader.mergeEnvBags(rootBag, svcBag) to get a single merged bag.
  * - Derives HTTP host/port from the DTO inside the merged bag.
  * - Returns:
@@ -109,7 +109,10 @@ export async function envBootstrap(
   const mongoUri = requireEnv("NV_MONGO_URI", logFile);
   const mongoDb = requireEnv("NV_MONGO_DB", logFile);
 
-  // 2) Initialize DbReader (shared with handlers)
+  // 2) Determine current logical environment label (no fallbacks).
+  const envLabel = requireEnv("NV_ENV", logFile);
+
+  // 3) Initialize DbReader (shared with handlers)
   let dbReader: DbReader<EnvServiceDto>;
   try {
     dbReader = new DbReader<EnvServiceDto>({
@@ -126,14 +129,11 @@ export async function envBootstrap(
     );
   }
 
-  // 3) Determine current logical environment (default "dev")
-  const envName = (process.env.NV_ENV ?? "dev").trim() || "dev";
-
   // 4) Load root + service bags, then merge via EnvConfigReader.mergeEnvBags().
   let envBag: DtoBag<EnvServiceDto>;
   try {
     const rootBag = await EnvConfigReader.getEnv(dbReader, {
-      env: envName,
+      env: envLabel,
       slug: "service-root",
       version,
     }).catch((err) => {
@@ -150,7 +150,7 @@ export async function envBootstrap(
     });
 
     const svcBag = await EnvConfigReader.getEnv(dbReader, {
-      env: envName,
+      env: envLabel,
       slug,
       version,
     }).catch((err) => {
@@ -171,7 +171,7 @@ export async function envBootstrap(
     fatal(
       logFile,
       "BOOTSTRAP_ENV_CONFIG_FAILED: Failed to load/merge env-service configuration. " +
-        `Ops: ensure at least one env-service document exists for env="${envName}", slug in {"service-root","${slug}"}, version=${version}.`,
+        `Ops: ensure at least one env-service document exists for envLabel="${envLabel}", slug in {"service-root","${slug}"}, version=${version}.`,
       err
     );
   }
@@ -215,15 +215,16 @@ export async function envBootstrap(
 
   // 6) DtoBag-based reloader: same reader, same logic, fresh bag.
   const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
-    const nextEnvName = (process.env.NV_ENV ?? envName).trim() || envName;
+    const nextEnvLabel = requireEnv("NV_ENV", logFile);
+
     const nextRootBag = await EnvConfigReader.getEnv(dbReader, {
-      env: nextEnvName,
+      env: nextEnvLabel,
       slug: "service-root",
       version,
     }).catch(() => new DtoBag<EnvServiceDto>([])); // root still optional
 
     const nextSvcBag = await EnvConfigReader.getEnv(dbReader, {
-      env: nextEnvName,
+      env: nextEnvLabel,
       slug,
       version,
     }).catch(() => new DtoBag<EnvServiceDto>([])); // svc optional as long as root exists
@@ -232,7 +233,7 @@ export async function envBootstrap(
   };
 
   // eslint-disable-next-line no-console
-  console.log("[bootstrap] envBootstrap complete", { host, port });
+  console.log("[bootstrap] envBootstrap complete", { host, port, envLabel });
 
   return {
     envBag,

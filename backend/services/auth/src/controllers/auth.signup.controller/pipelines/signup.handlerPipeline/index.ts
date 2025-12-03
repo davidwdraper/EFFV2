@@ -26,6 +26,7 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 import { HydrateUserBagHandler } from "./hydrateUserBag.handler";
 import { ExtractPasswordHandler } from "./extractPassword.handler";
 import { MockSuccessHandler } from "./mockSuccess.handler";
+import { CallUserCreateHandler } from "./callUserCreate.handler";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // S2S metadata placeholders — real signup flow will use these.
@@ -37,6 +38,6 @@ export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   return [
     new HydrateUserBagHandler(ctx, controller),
     new ExtractPasswordHandler(ctx, controller),
-    new MockSuccessHandler(ctx, controller),
+    new CallUserCreateHandler(ctx, controller),
   ];
 }

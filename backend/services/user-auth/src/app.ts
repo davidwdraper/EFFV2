@@ -72,7 +72,7 @@ class UserAuthApp extends AppBase {
 
     const r: Router = buildUserAuthRouter(this);
     this.app.use(base, r);
-    this.log.info({ base, env: this.getEnvName() }, "routes mounted");
+    this.log.info({ base, env: this.getEnvLabel() }, "routes mounted");
   }
 }
 

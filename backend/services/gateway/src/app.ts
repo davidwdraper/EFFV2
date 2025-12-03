@@ -33,12 +33,14 @@ import { buildGatewayRouter } from "./routes/gateway.route";
 type CreateAppOptions = {
   slug: string;
   version: number;
+
   /**
-   * Logical environment name for this process (e.g., "dev", "stage", "prod").
-   * - Passed through from envBootstrap.envName.
-   * - Any SvcClient created inside this service should use this value for `env`.
+   * Logical environment label for this process (e.g., "dev", "stage", "prod").
+   * - Passed through from envBootstrap.getEnvLabel().
+   * - Any SvcClient created inside this service should use this value.
    */
-  envName: string;
+  envLabel: string;
+
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 };
@@ -54,13 +56,13 @@ class gatewayApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
-      envName: opts.envName,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
       // gateway is DB-backed: requires NV_MONGO_* and index ensure at boot.
       checkDb: true,
     });
 
+    // AppBase now sources envLabel from envDto; no need to pass it directly.
     this.registry = new Registry();
   }
 
@@ -83,7 +85,7 @@ class gatewayApp extends AppBase {
     const r: Router = buildGatewayRouter(this);
     this.app.use(base, r);
     this.log.info(
-      { base, env: this.getEnvName() },
+      { base, envLabel: this.getEnvLabel() },
       "gateway proxy routes mounted"
     );
   }

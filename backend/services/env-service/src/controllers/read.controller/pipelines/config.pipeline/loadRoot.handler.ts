@@ -21,11 +21,11 @@
  * - Construct DbReader<EnvServiceDto>.
  * - Load the *root* config bag for slug="service-root" (root is optional).
  * - Seed the HandlerContext bus with:
- *     • envConfig.env
+ *     • envConfig.env        (logical environment label)
  *     • envConfig.version
- *     • envConfig.targetSlug   (original requested slug)
- *     • envConfig.dbReader     (shared DbReader for later steps)
- *     • envConfig.rootBag      (DtoBag<EnvServiceDto>, may be empty)
+ *     • envConfig.targetSlug (original requested slug)
+ *     • envConfig.dbReader   (shared DbReader for later steps)
+ *     • envConfig.rootBag    (DtoBag<EnvServiceDto>, may be empty)
  *
  * Notes:
  * - Does NOT throw on missing root config; that is handled by merge step.
@@ -55,13 +55,8 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
       typeof query.version === "string" ? query.version.trim() : "";
     const envParam = typeof query.env === "string" ? query.env.trim() : "";
 
-    // Determine env with sane defaults (same as bootstrap).
-    const envName =
-      envParam ||
-      (typeof process.env.NV_ENV === "string"
-        ? process.env.NV_ENV.trim()
-        : "") ||
-      "dev";
+    // env (logical environment label) is required; no fallbacks.
+    const envLabel = envParam;
 
     let version: number | undefined;
     if (versionRaw) {
@@ -71,7 +66,7 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
       }
     }
 
-    // Validate slug (target service) and version; root is always "service-root".
+    // Validate slug (target service), version, and env.
     if (!slugRaw) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", 400);
@@ -79,7 +74,7 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
         code: "BAD_REQUEST_MISSING_SLUG",
         title: "Bad Request",
         detail:
-          "Query parameter 'slug' is required. Example: GET /api/env-service/v1/env-service/config?slug=gateway&version=1",
+          "Query parameter 'slug' is required. Example: GET /api/env-service/v1/env-service/config?slug=gateway&version=1&env=dev",
         requestId,
       });
       return;
@@ -92,7 +87,20 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
         code: "BAD_REQUEST_INVALID_VERSION",
         title: "Bad Request",
         detail:
-          "Query parameter 'version' is required and must be a positive integer. Example: GET /api/env-service/v1/env-service/config?slug=gateway&version=1",
+          "Query parameter 'version' is required and must be a positive integer. Example: GET /api/env-service/v1/env-service/config?slug=gateway&version=1&env=dev",
+        requestId,
+      });
+      return;
+    }
+
+    if (!envLabel) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 400);
+      this.ctx.set("response.body", {
+        code: "BAD_REQUEST_MISSING_ENV",
+        title: "Bad Request",
+        detail:
+          "Query parameter 'env' is required and must be a non-empty string. Example: GET /api/env-service/v1/env-service/config?slug=gateway&version=1&env=dev",
         requestId,
       });
       return;
@@ -159,7 +167,7 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
     this.log.debug(
       {
         event: "env_config_root_load_start",
-        env: envName,
+        envLabel,
         rootSlug,
         targetSlug: slugRaw,
         version,
@@ -171,7 +179,7 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
     let rootBag: DtoBag<EnvServiceDto>;
     try {
       rootBag = await EnvConfigReader.getEnv(dbReader, {
-        env: envName,
+        env: envLabel,
         slug: rootSlug,
         version,
       });
@@ -191,7 +199,7 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
       this.log.error(
         {
           event: "env_config_root_load_error",
-          env: envName,
+          envLabel,
           rootSlug,
           targetSlug: slugRaw,
           version,
@@ -207,7 +215,7 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
     this.log.debug(
       {
         event: "env_config_root_load_ok",
-        env: envName,
+        envLabel,
         rootSlug,
         targetSlug: slugRaw,
         version,
@@ -218,7 +226,7 @@ export class EnvServiceConfigLoadRootHandler extends HandlerBase {
     );
 
     // Seed the bus for downstream handlers.
-    this.ctx.set("envConfig.env", envName);
+    this.ctx.set("envConfig.env", envLabel);
     this.ctx.set("envConfig.version", version);
     this.ctx.set("envConfig.targetSlug", slugRaw);
     this.ctx.set("envConfig.dbReader", dbReader);

@@ -14,6 +14,7 @@
 
 import createApp from "./app";
 import { envBootstrap } from "./bootstrap/envBootstrap";
+import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 const SERVICE_SLUG = "env-service";
 const SERVICE_VERSION = 1;
@@ -25,31 +26,32 @@ const SERVICE_VERSION = 1;
       version: SERVICE_VERSION,
     });
 
-    // For now envBootstrap doesn’t return envName; if you want, you can derive it
-    // the same way envBootstrap does internally:
-    const envName = (process.env.NV_ENV ?? "dev").trim() || "dev";
+    // Select the primary EnvServiceDto from the merged bag.
+    const envDto: EnvServiceDto = (() => {
+      let primary: EnvServiceDto | undefined;
+      for (const dto of envBag as unknown as Iterable<EnvServiceDto>) {
+        primary = dto;
+        break;
+      }
+      if (!primary) {
+        throw new Error(
+          "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No EnvServiceDto returned " +
+            "from envBootstrap for env-service."
+        );
+      }
+      return primary;
+    })();
+
+    const envLabel = envDto.getEnvLabel();
 
     const { app } = await createApp({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
-      envName,
-      envDto: (() => {
-        let primary;
-        for (const dto of envBag as any as Iterable<any>) {
-          primary = dto;
-          break;
-        }
-        if (!primary) {
-          throw new Error(
-            "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No EnvServiceDto returned " +
-              "from envBootstrap for env-service."
-          );
-        }
-        return primary;
-      })(),
+      envLabel,
+      envDto,
       envReloader: async () => {
         const bag = await envReloader();
-        for (const dto of bag as any as Iterable<any>) {
+        for (const dto of bag as unknown as Iterable<EnvServiceDto>) {
           return dto;
         }
         throw new Error(
@@ -63,7 +65,7 @@ const SERVICE_VERSION = 1;
       console.info("[entrypoint] http_listening", {
         slug: SERVICE_SLUG,
         version: SERVICE_VERSION,
-        env: envName,
+        envLabel,
         host,
         port,
       });

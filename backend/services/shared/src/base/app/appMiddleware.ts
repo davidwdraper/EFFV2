@@ -30,7 +30,7 @@ export function mountRoutePolicyGateLayer(opts: {
   service: string;
   log: IBoundLogger;
   resolver: ISvcconfigResolver | null;
-  envName: string;
+  envLabel: string;
 }): void {
   const { app, service, log, resolver } = opts;
   if (!resolver) return;
@@ -60,10 +60,10 @@ export function mountParserLayer(opts: { app: Express }): void {
 export function mountPostRoutingLayer(opts: {
   app: Express;
   service: string;
-  envName: string;
+  envLabel: string;
   log: IBoundLogger;
 }): void {
-  const { app, service, envName, log } = opts;
+  const { app, service, envLabel, log } = opts;
 
   // Final error funnel.
   // NOTE: this is intentionally simple; Problem+JSON handling still sits
@@ -73,7 +73,7 @@ export function mountPostRoutingLayer(opts: {
     log.error(
       {
         service,
-        env: envName,
+        env: envLabel,
         error:
           err instanceof Error
             ? { message: err.message, stack: err.stack }

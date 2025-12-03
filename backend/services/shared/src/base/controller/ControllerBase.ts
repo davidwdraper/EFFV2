@@ -75,12 +75,59 @@ export abstract class ControllerBase {
     return reg as IDtoRegistry;
   }
 
+  /**
+   * EnvServiceDto accessor for controllers/handlers.
+   *
+   * Invariants:
+   * - Env DTO is owned by AppBase.
+   * - Preferred access is via AppBase.getSvcEnv().
+   * - Legacy direct field access (app.svcEnv) is supported as a temporary
+   *   compatibility path, but should be removed once all apps expose
+   *   getSvcEnv().
+   */
   public getSvcEnv(): EnvServiceDto {
-    const env = (this.app as any)?.svcEnv;
-    if (!env) {
-      throw new Error("EnvServiceDto not available from AppBase.");
+    const appAny = this.app as any;
+    const envDto = (
+      typeof appAny.getSvcEnv === "function"
+        ? appAny.getSvcEnv()
+        : appAny.svcEnv
+    ) as EnvServiceDto | undefined;
+
+    if (!envDto) {
+      throw new Error(
+        "EnvServiceDto not available from AppBase. " +
+          "Ops/Dev: ensure AppBase is constructed with a concrete EnvServiceDto " +
+          "and exposes it via getSvcEnv()."
+      );
     }
-    return env as EnvServiceDto;
+
+    return envDto;
+  }
+
+  /**
+   * Runtime environment label accessor.
+   *
+   * Invariants:
+   * - Single source of truth is AppBase (constructed from EN_ENV at boot).
+   * - Controllers use this to seed env into HandlerContext; handlers should
+   *   not read process.env directly.
+   *
+   * Expected AppBase surface:
+   *   - getEnvLabel(): string  // derived from EN_ENV
+   */
+  public getEnvLabel(): string {
+    const appAny = this.app as any;
+    const envLabel = appAny.getEnvLabel?.() as string | undefined;
+
+    if (!envLabel || typeof envLabel !== "string" || !envLabel.trim()) {
+      throw new Error(
+        "Environment label missing on AppBase. " +
+          "Expected AppBase.getEnvLabel() to return a non-empty string " +
+          'derived from EN_ENV (e.g., "dev", "stage", "prod").'
+      );
+    }
+
+    return envLabel;
   }
 
   public getLogger(): IBoundLogger {
@@ -130,6 +177,7 @@ export abstract class ControllerBase {
   // ───────────────────────────────────────────
   // Finalize hook (bag-or-error)
   // ───────────────────────────────────────────
+
   /**
    * Finalize the HTTP response from the populated HandlerContext.
    *

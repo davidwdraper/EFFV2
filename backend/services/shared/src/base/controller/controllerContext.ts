@@ -68,12 +68,30 @@ export function makeHandlerContext(
     });
   }
 
-  controller
-    .getLogger()
-    .debug(
-      { event: "make_context", requestId, hasSvcEnv: !!svcEnv },
-      "ControllerBase.makeContext"
-    );
+  // Seed the runtime environment label from the App, if available.
+  // Single source of truth is AppBase.getEnvLabel() surfaced via ControllerBase.getEnvLabel().
+  let envLabel: string | undefined;
+  try {
+    const label = (controller as any).getEnvLabel?.() as string | undefined;
+    if (label && label.trim()) {
+      envLabel = label;
+      ctx.set("svc.env", envLabel);
+    }
+  } catch {
+    // Intentionally ignore here; handlers that require env can enforce it
+    // and emit a focused Problem+JSON with Ops guidance.
+  }
+
+  controller.getLogger().debug(
+    {
+      event: "make_context",
+      requestId,
+      hasSvcEnv: !!svcEnv,
+      envLabel,
+    },
+    "ControllerBase.makeContext"
+  );
+
   return ctx;
 }
 

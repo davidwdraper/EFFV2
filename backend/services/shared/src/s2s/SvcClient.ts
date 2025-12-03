@@ -132,6 +132,16 @@ export class SvcClient {
 
     const body = this.buildDtoBody(params);
 
+    // Outbound body triage: prove exactly what we're putting on the wire.
+    this.logger.debug("SvcClient.call.outbound_body", {
+      requestId,
+      targetSlug: target.slug,
+      dtoType: params.dtoType,
+      op: params.op,
+      method: params.method,
+      bodySnippet: body ? body.slice(0, 512) : "<empty>",
+    });
+
     const { status, bodyText } = await this.fetchWithTimeout({
       url,
       method: params.method,
@@ -326,18 +336,6 @@ export class SvcClient {
 
   // ───────────────── COMPAT STUB ─────────────────
 
-  /**
-   * Temporary adapter for older code that expects a `callBySlug(...)` API.
-   *
-   * NOTE:
-   * - This is *intentionally* not implemented yet.
-   * - PromptsClient currently depends on the existence of this method at
-   *   type level; calling it will fail-fast until prompts routes are wired
-   *   properly using DTO-first SvcClient.call().
-   *
-   * DO NOT build new code against this signature. New S2S calls must use
-   * SvcClient.call() or SvcClient.callRaw().
-   */
   public async callBySlug(
     slug: string,
     version: string,
@@ -378,14 +376,6 @@ export class SvcClient {
     opts.headers["authorization"] = `Bearer ${token}`;
   }
 
-  /**
-   * Build the target URL based on the baseUrl and the route convention.
-   *
-   * Convention (SOP/LDD):
-   *   http(s)://host:port/api/<slug>/v<version>/<dtoType>/<op>
-   *
-   * Callers may override the suffix via `pathSuffix` for specialized endpoints.
-   */
   private buildUrl(
     baseUrl: string,
     params: {
@@ -414,18 +404,54 @@ export class SvcClient {
   /**
    * Build the JSON request body from the provided DtoBag, if applicable.
    *
-   * - For GET requests: no body is sent, regardless of bag presence.
+   * - For GET/HEAD requests: no body is sent, regardless of bag presence.
    * - For non-GET requests:
-   *   - If a bag is provided, we serialize bag.toBody().
-   *   - If no bag is provided, we send no body.
+   *   - A DtoBag is required; we serialize it to the canonical wire bag envelope.
    *
    * The wire format is defined by ADR-0050 (Wire Bag Envelope).
    */
   private buildDtoBody(params: SvcClientCallParams): string | undefined {
-    if (params.method === "GET") return undefined;
-    if (!params.bag) return undefined;
-    const json = params.bag.toBody();
-    return JSON.stringify(json);
+    const method = params.method.toUpperCase();
+
+    if (method === "GET" || method === "HEAD") {
+      return undefined;
+    }
+
+    if (!params.bag) {
+      // Fail-fast: DTO-based S2S calls must always provide a bag for non-GET.
+      throw new Error(
+        `SvcClient.call: DTO-based call with method="${method}" requires a DtoBag; none was provided.`
+      );
+    }
+
+    // Whatever the bag's notion of "body" is, normalize it into the canonical
+    // wire bag envelope: { items: [...], meta?: {...} }.
+    const raw = params.bag.toBody() as unknown;
+
+    let envelope: WireBagJson;
+
+    if (
+      raw &&
+      typeof raw === "object" &&
+      !Array.isArray(raw) &&
+      "items" in (raw as Record<string, unknown>)
+    ) {
+      // Already a wire bag envelope; trust it.
+      envelope = raw as WireBagJson;
+    } else if (Array.isArray(raw)) {
+      // Treat as "items" array with no meta.
+      envelope = { items: raw } as WireBagJson;
+    } else if (raw && typeof raw === "object") {
+      // Single DTO-like object; wrap it.
+      envelope = { items: [raw] } as WireBagJson;
+    } else {
+      // Completely unexpected; better to fail loudly than send junk.
+      throw new Error(
+        "SvcClient.call: DtoBag.toBody() returned an unsupported shape for DTO-based S2S call."
+      );
+    }
+
+    return JSON.stringify(envelope);
   }
 
   private async fetchWithTimeout(opts: {

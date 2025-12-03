@@ -42,7 +42,7 @@ export interface ServiceEntrypointOptions {
   createApp: (opts: {
     slug: string;
     version: number;
-    envName: string;
+    envLabel: string;
     envDto: EnvServiceDto;
     envReloader: () => Promise<EnvServiceDto>;
   }) => Promise<{
@@ -61,7 +61,7 @@ export async function runServiceEntrypoint(
 
   try {
     // Step 1: Bootstrap and load configuration (env-service-backed config)
-    const { envName, envBag, envReloader, host, port } = await envBootstrap({
+    const { envLabel, envBag, envReloader, host, port } = await envBootstrap({
       slug,
       version,
       logFile,
@@ -100,7 +100,7 @@ export async function runServiceEntrypoint(
     const { app } = await createApp({
       slug,
       version,
-      envName, // logical env for this process ("dev", "stage", "prod")
+      envLabel, // logical env label for this process ("dev", "stage", "prod", etc.)
       envDto: primary,
       envReloader: envReloaderForApp,
     });
@@ -111,7 +111,7 @@ export async function runServiceEntrypoint(
       console.info("[entrypoint] http_listening", {
         slug,
         version,
-        env: envName,
+        envLabel,
         host,
         port,
       });

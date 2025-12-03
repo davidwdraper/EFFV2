@@ -27,8 +27,12 @@ import { buildEnvServiceRouter } from "./routes/env-service.route";
 type CreateAppOptions = {
   slug: string;
   version: number;
-  /** Concrete environment label for this running instance (e.g., "dev", "staging", "prod"). */
-  envName: string;
+  /**
+   * Environment label for this running instance (e.g., "dev", "staging", "prod").
+   * Retained for diagnostics and external tooling, but *not* passed into AppBase.
+   */
+  envLabel: string;
+
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 };
@@ -44,7 +48,6 @@ class EnvServiceApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
-      envName: opts.envName,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
       // env-service is DB-backed: requires NV_MONGO_* and index ensure at boot.
@@ -52,6 +55,12 @@ class EnvServiceApp extends AppBase {
     });
 
     this.registry = new Registry();
+
+    // Optional: log the envLabel explicitly so operators get visibility
+    this.log.info(
+      { declaredEnvLabel: opts.envLabel, dtoEnvLabel: this.getEnvLabel() },
+      "env-service app constructed"
+    );
   }
 
   /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
@@ -69,7 +78,10 @@ class EnvServiceApp extends AppBase {
 
     const r: Router = buildEnvServiceRouter(this);
     this.app.use(base, r);
-    this.log.info({ base }, "routes mounted");
+    this.log.info(
+      { base, envLabel: this.getEnvLabel() },
+      "env-service routes mounted"
+    );
   }
 }
 

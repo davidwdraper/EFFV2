@@ -11,6 +11,7 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { GatewayProxyController } from "../../proxy.controller";
 
+import { NormalizeProxyHeadersHandler } from "./normalizeProxyHeaders.handler";
 import { GatewayProxyS2sHandler } from "./gatewayProxyS2s.handler";
 
 export function getSteps(
@@ -18,5 +19,8 @@ export function getSteps(
   controller: GatewayProxyController
 ) {
   // No additional seeding here; controller already set all proxy.* keys.
-  return [new GatewayProxyS2sHandler(ctx, controller)];
+  return [
+    new NormalizeProxyHeadersHandler(ctx, controller),
+    new GatewayProxyS2sHandler(ctx, controller),
+  ];
 }

@@ -282,6 +282,12 @@ export class SvcClient {
       headers,
     });
 
+    this.logger.debug("SvcClient.callRaw.outbound_headers", {
+      requestId,
+      targetSlug: target.slug,
+      headers,
+    });
+
     const {
       status,
       bodyText,

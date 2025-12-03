@@ -9,7 +9,7 @@
  *
  * Purpose:
  * - Single-responsibility handler that:
- *   - Reads proxy.* context seeded by the controller.
+ *   - Reads proxy.* context seeded by the controller and prior handlers.
  *   - Calls SvcClient.callRaw().
  *   - Copies status/body into ctx["response.*"] for ControllerBase.finalize().
  *
@@ -25,6 +25,8 @@ import type { GatewayProxyController } from "../../proxy.controller";
 
 type HttpMethod = "GET" | "PUT" | "PATCH" | "POST" | "DELETE";
 
+type ForwardHeaders = Record<string, string>;
+
 export class GatewayProxyS2sHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: GatewayProxyController) {
     super(ctx, controller);
@@ -39,6 +41,9 @@ export class GatewayProxyS2sHandler extends HandlerBase {
     const fullPath = this.ctx.get<string | undefined>("proxy.fullPath");
     const envRaw = this.ctx.get<string | undefined>("proxy.env");
     const body = this.ctx.get<unknown>("proxy.body");
+    const forwardHeaders = this.ctx.get<ForwardHeaders | undefined>(
+      "proxy.forwardHeaders"
+    );
 
     if (!slug) {
       this.ctx.set("handlerStatus", "error");
@@ -131,6 +136,7 @@ export class GatewayProxyS2sHandler extends HandlerBase {
         fullPath,
         body,
         requestId,
+        extraHeaders: forwardHeaders,
       });
 
       // Best-effort JSON parse; if it fails, return raw text.

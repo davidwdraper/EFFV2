@@ -83,6 +83,18 @@ export class GatewayProxyController extends ControllerGatewayBase {
       }
     }
 
+    // somewhere in GatewayProxyController.put/get/etc.
+    this.log.debug(
+      {
+        event: "gateway_proxy_inbound_headers",
+        passwordHeader: req.headers["x-nv-password"],
+        allHeaders: req.headers,
+      },
+      "Gateway proxy inbound headers"
+    );
+
+    // then:
+    ctx.set("proxy.headers", req.headers);
     ctx.set("proxy.slug", targetSlug);
     ctx.set("proxy.version.raw", targetVersionRaw);
     ctx.set("proxy.method", method);

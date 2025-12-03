@@ -44,7 +44,6 @@ SERVICES=(
   #"env-service|backend/services/env-service|pnpm dev"
   #"t_entity_crud|backend/services/t_entity_crud|pnpm dev"
   #"svcconfig|backend/services/svcconfig|pnpm dev"
-  #"prompt|backend/services/prompt|pnpm dev"
   "user-auth|backend/services/user-auth|pnpm dev"
   "auth|backend/services/auth|pnpm dev"
   #"user|backend/services/user|pnpm dev"

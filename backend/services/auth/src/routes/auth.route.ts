@@ -7,32 +7,31 @@
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
- *   - ADR-0056 (Typed routes use :dtoType on all CRUD operations)
+ *   - ADR-0056 (Typed routes use :dtoType on all CRUD-like operations)
  *
  * Purpose:
- * - Auth service CREATE endpoint only.
+ * - Auth service SIGNUP endpoint.
  * - Wires versioned RESTful route:
- *     PUT /api/auth/v1/:dtoType/create
+ *     PUT /api/auth/v1/:dtoType/signup
  *
  * Invariants:
  * - Router stays one-liner thin; no business logic.
  * - Controllers are constructed exactly once.
  * - :dtoType must be a valid registry key.
- * - All other CRUD routes intentionally omitted per session scope.
  */
 
 import { Router } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import { AuthCreateController } from "../controllers/auth.create.controller/auth.create.controller";
+import { AuthSignupController } from "../controllers/auth.signup.controller/auth.signup.controller";
 
 export function buildAuthRouter(app: AppBase): ReturnType<typeof Router> {
   const r = Router();
 
   // Controller constructed once only
-  const createCtl = new AuthCreateController(app);
+  const signupCtl = new AuthSignupController(app);
 
-  // CREATE (PUT /:dtoType/create)
-  r.put("/:dtoType/create", (req, res) => createCtl.put(req, res));
+  // SIGNUP (PUT /:dtoType/signup)
+  r.put("/:dtoType/signup", (req, res) => signupCtl.put(req, res));
 
   return r;
 }

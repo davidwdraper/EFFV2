@@ -22,14 +22,7 @@
 
 import type { Minter, MintOptions, MintResult, IJwtSigner } from "./Minter";
 import { createHash } from "node:crypto";
-
-/** Minimal logger to avoid tight coupling. */
-type LoggerLike = {
-  debug?: (o: Record<string, unknown>, msg?: string) => void;
-  info?: (o: Record<string, unknown>, msg?: string) => void;
-  warn?: (o: Record<string, unknown>, msg?: string) => void;
-  error?: (o: Record<string, unknown>, msg?: string) => void;
-};
+import type { IBoundLogger } from "../logger/Logger";
 
 /** Lightweight token types (inlined to avoid external interface file). */
 export type TokenTuple = {
@@ -68,7 +61,7 @@ export type MintProviderOptions = {
   /** Injected signer (for kid/alg in cache namespace). */
   signer: IJwtSigner;
   /** Optional logger and clock. */
-  log?: LoggerLike;
+  log?: IBoundLogger;
   now?: () => number; // epoch seconds
 };
 
@@ -83,7 +76,7 @@ export class MintProvider implements ITokenProvider {
   private readonly earlyRefreshSec: number;
   private readonly clockSkewSec: number;
   private readonly now: () => number;
-  private readonly log?: LoggerLike;
+  private readonly log?: IBoundLogger;
 
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inflight = new Map<string, Promise<MintResult>>();
@@ -97,7 +90,7 @@ export class MintProvider implements ITokenProvider {
     this.now = opts.now ?? (() => Math.floor(Date.now() / 1000));
     this.log = opts.log;
 
-    this.log?.info?.(
+    this.log?.info(
       {
         kid: this.signer.kid(),
         alg: this.signer.alg(),
@@ -119,13 +112,13 @@ export class MintProvider implements ITokenProvider {
     if (cached) {
       const { result } = cached;
       if (now < result.expiresAt - this.earlyRefreshSec) {
-        this.log?.debug?.(
+        this.log?.debug(
           { kid: this.signer.kid(), aud: req.aud, exp: result.expiresAt, now },
           "MintProvider: cache hit"
         );
         return this.asTokenResult(result);
       }
-      this.log?.debug?.(
+      this.log?.debug(
         { kid: this.signer.kid(), aud: req.aud, exp: result.expiresAt, now },
         "MintProvider: early refresh window — rotating"
       );
@@ -133,7 +126,7 @@ export class MintProvider implements ITokenProvider {
 
     const existing = this.inflight.get(key);
     if (existing) {
-      this.log?.debug?.({ key }, "MintProvider: awaiting in-flight mint");
+      this.log?.debug({ key }, "MintProvider: awaiting in-flight mint");
       const r = await existing;
       return this.asTokenResult(r);
     }
@@ -161,14 +154,14 @@ export class MintProvider implements ITokenProvider {
       ttlSec: 1,
     });
     this.cache.delete(key);
-    this.log?.info?.({ key }, "MintProvider: invalidated tuple");
+    this.log?.info({ key }, "MintProvider: invalidated tuple");
   }
 
   /** Optional admin hook: clear everything (e.g., after key rotation). */
   clearAll(): void {
     this.cache.clear();
     this.inflight.clear();
-    this.log?.warn?.({}, "MintProvider: cache cleared");
+    this.log?.warn({}, "MintProvider: cache cleared");
   }
 
   // ----------------
@@ -177,7 +170,7 @@ export class MintProvider implements ITokenProvider {
 
   private async mintFresh(req: TokenRequest): Promise<MintResult> {
     const started = this.now();
-    this.log?.debug?.(
+    this.log?.debug(
       {
         kid: this.signer.kid(),
         alg: this.signer.alg(),
@@ -198,7 +191,7 @@ export class MintProvider implements ITokenProvider {
     } as MintOptions);
 
     const ended = this.now();
-    this.log?.info?.(
+    this.log?.info(
       {
         kid: res.header.kid,
         alg: res.header.alg,

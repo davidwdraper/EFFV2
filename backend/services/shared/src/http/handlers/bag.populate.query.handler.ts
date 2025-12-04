@@ -22,7 +22,6 @@
  * - [targetKey]: DtoBag<TDto>
  * - "dbReader":  DbReader<TDto> (for logging/introspection if desired)
  * - "handlerStatus": "ok" | "error"
- * - "response.status" / "response.body" on error
  *
  * Notes:
  * - This is a **mid-pipeline** helper; it does not build wire payloads.
@@ -41,12 +40,25 @@ export class BagPopulateQueryHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_enter" }, "bag.populate.query enter");
+  /**
+   * One-sentence, ops-facing description of what this handler does.
+   */
+  protected handlerPurpose(): string {
+    return "Populate a DtoBag<TDto> from Mongo based on a filter and stash it on the ctx bus.";
+  }
 
-    const requestId =
-      (this.ctx.get<string>("requestId") as string | undefined) ?? "unknown";
+  protected override async execute(): Promise<void> {
+    const requestId = this.safeCtxGet<string>("requestId");
+    this.log.debug(
+      {
+        event: "execute_enter",
+        handler: this.constructor.name,
+        requestId,
+      },
+      "bag.populate.query enter"
+    );
 
+    // ---- Config from ctx ----------------------------------------------------
     const dtoCtor = this.ctx.get<any>("bag.query.dtoCtor");
     const filter =
       (this.ctx.get<Record<string, unknown>>("bag.query.filter") as
@@ -61,78 +73,88 @@ export class BagPopulateQueryHandler extends HandlerBase {
       this.ctx.get<boolean>("bag.query.ensureSingleton") ?? false;
 
     if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "BAG_QUERY_DTO_CTOR_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "bag_query_dto_ctor_missing",
         detail:
           "bag.query.dtoCtor missing or invalid. Dev: set ctx['bag.query.dtoCtor'] to the DTO class (with static fromBody/dbCollectionName).",
+        stage: "config.dtoCtor",
         requestId,
-      });
-      this.log.debug(
-        {
-          event: "execute_exit",
-          reason: "dtoCtor_missing",
-          targetKey,
-          requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
         },
-        "bag.populate.query exit"
-      );
+        issues: [
+          {
+            targetKey,
+            hasDtoCtor: !!dtoCtor,
+            hasFromBody: !!dtoCtor?.fromBody,
+          },
+        ],
+        logMessage:
+          "bag.populate.query — dtoCtor missing or invalid (bag.query.dtoCtor).",
+        logLevel: "error",
+      });
       return;
     }
 
     // ---- Env from ControllerBase (no ctx / no process.env) ----------------
     const svcEnv = (this.controller as any).getSvcEnv?.();
     if (!svcEnv) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "ENV_DTO_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "env_dto_missing",
         detail:
           "EnvServiceDto missing from ControllerJsonBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerJsonBase correctly.",
+        stage: "config.svcEnv",
         requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [],
+        logMessage:
+          "bag.populate.query — svcEnv missing from controller (EnvServiceDto).",
+        logLevel: "error",
       });
-      this.log.error(
-        { event: "env_missing", requestId },
-        "bag.populate.query — svcEnv missing"
-      );
       return;
     }
 
     const svcEnvAny: any = svcEnv;
-
-    // Explicit interface: EnvServiceDto stores vars in `_vars`.
     const envVars = svcEnvAny._vars as
       | Record<string, unknown>
       | undefined
       | null;
 
     if (!envVars || typeof envVars !== "object") {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "ENV_VARS_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "env_vars_missing",
         detail:
           "EnvServiceDto._vars missing or invalid. Ops: ensure EnvServiceDto carries a concrete _vars map for this service.",
+        stage: "config.envVars",
         requestId,
-      });
-      this.log.error(
-        {
-          event: "env_vars_missing",
-          svcEnvSlug: svcEnvAny?.slug,
-          svcEnvEnv: svcEnvAny?.env,
-          svcEnvVersion: svcEnvAny?.version,
-          hasVarsField: Object.prototype.hasOwnProperty.call(
-            svcEnvAny,
-            "_vars"
-          ),
-          requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+          service: svcEnvAny?.slug,
         },
-        "bag.populate.query — EnvServiceDto._vars missing/invalid"
-      );
+        issues: [
+          {
+            hasVars: !!envVars,
+            svcEnvSlug: svcEnvAny?.slug,
+            svcEnvEnv: svcEnvAny?.env,
+            svcEnvVersion: svcEnvAny?.version,
+            hasVarsField: Object.prototype.hasOwnProperty.call(
+              svcEnvAny,
+              "_vars"
+            ),
+          },
+        ],
+        logMessage:
+          "bag.populate.query — EnvServiceDto._vars missing or invalid.",
+        logLevel: "error",
+      });
       return;
     }
 
@@ -154,33 +176,37 @@ export class BagPopulateQueryHandler extends HandlerBase {
     const mongoDb = envVars["NV_MONGO_DB"] as string | undefined;
 
     if (!mongoUri || !mongoDb) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "MONGO_ENV_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "mongo_env_missing",
         detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in EnvServiceDto._vars for this service.",
-        hint: "Check env-service config for this slug/env/version and ensure NV_MONGO_URI and NV_MONGO_DB are present under vars.",
+          "Missing NV_MONGO_URI or NV_MONGO_DB in EnvServiceDto._vars for this service. Ops: check env-service config for this slug/env/version.",
+        stage: "config.mongoEnv",
         requestId,
-      });
-      this.log.error(
-        {
-          event: "mongo_env_missing",
-          hasSvcEnv: !!svcEnv,
-          mongoUriPresent: !!mongoUri,
-          mongoDbPresent: !!mongoDb,
-          svcEnvSlug: svcEnvAny?.slug,
-          svcEnvEnv: svcEnvAny?.env,
-          svcEnvVersion: svcEnvAny?.version,
-          varsKeys: Object.keys(envVars),
-          requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+          service: svcEnvAny?.slug,
         },
-        "bag.populate.query aborted — Mongo env config missing"
-      );
+        issues: [
+          {
+            mongoUriPresent: !!mongoUri,
+            mongoDbPresent: !!mongoDb,
+            svcEnvSlug: svcEnvAny?.slug,
+            svcEnvEnv: svcEnvAny?.env,
+            svcEnvVersion: svcEnvAny?.version,
+            varsKeys: Object.keys(envVars),
+          },
+        ],
+        logMessage:
+          "bag.populate.query aborted — Mongo env config missing (NV_MONGO_URI / NV_MONGO_DB).",
+        logLevel: "error",
+      });
       return;
     }
 
+    // ---- External edge: DB read (fine-grained try/catch) -------------------
+    let bag: DtoBag<IDto>;
     try {
       const reader = new DbReader<any>({
         dtoCtor,
@@ -188,77 +214,92 @@ export class BagPopulateQueryHandler extends HandlerBase {
         mongoDb,
         validateReads,
       });
+
       this.ctx.set("dbReader", reader);
 
-      const bag = (await reader.readOneBag({
+      bag = (await reader.readOneBag({
         filter,
       })) as DtoBag<IDto>;
-
-      this.ctx.set(targetKey, bag);
-
-      if (ensureSingleton) {
-        const items = Array.from(bag.items());
-        const size = items.length;
-
-        if (size !== 1) {
-          const status = size === 0 ? 404 : 500;
-          this.ctx.set("handlerStatus", "error");
-          this.ctx.set("response.status", status);
-          this.ctx.set("response.body", {
-            code:
-              size === 0 ? "BAG_QUERY_NOT_FOUND" : "BAG_QUERY_SINGLETON_BREACH",
-            title: size === 0 ? "Not Found" : "Internal Error",
-            detail:
-              size === 0
-                ? "No records matched the supplied filter."
-                : `Invariant breach: expected exactly 1 record for supplied filter; found ${size}.`,
-            requestId,
-            context: { targetKey, filter },
-          });
-          this.log.warn(
-            {
-              event: "singleton_breach",
-              targetKey,
-              size,
-              filter,
-              requestId,
-            },
-            "bag.populate.query — ensureSingleton failed"
-          );
-          return;
-        }
-      }
-
-      this.ctx.set("handlerStatus", "ok");
-      this.log.debug(
-        {
-          event: "execute_exit",
-          targetKey,
-          filterKeys: Object.keys(filter ?? {}),
-          requestId,
-        },
-        "bag.populate.query exit"
-      );
-    } catch (err: any) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "BAG_QUERY_FAILED",
-        title: "Internal Error",
-        detail: err?.message ?? String(err),
+    } catch (err) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "bag_query_failed",
+        detail:
+          "DbReader.readOneBag() failed while populating a query-based DtoBag. Ops: check Mongo availability, filter shape, and DTO collection configuration.",
+        stage: "db.readOneBag",
         requestId,
-        context: { targetKey, filter },
-      });
-      this.log.error(
-        {
-          event: "bag_query_failed",
-          err: err?.message,
-          targetKey,
-          filter,
-          requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
         },
-        "bag.populate.query — DbReader.readOneBag failed"
-      );
+        issues: [
+          {
+            targetKey,
+            filter,
+            validateReads,
+          },
+        ],
+        rawError: err,
+        logMessage:
+          "bag.populate.query — DbReader.readOneBag failed while populating bag.",
+        logLevel: "error",
+      });
+      return;
     }
+
+    this.ctx.set(targetKey, bag);
+
+    // ---- Business invariant: ensureSingleton (no extra try/catch needed) ---
+    if (ensureSingleton) {
+      const items = Array.from(bag.items());
+      const size = items.length;
+
+      if (size !== 1) {
+        const status = size === 0 ? 404 : 500;
+
+        this.failWithError({
+          httpStatus: status,
+          title:
+            size === 0 ? "bag_query_not_found" : "bag_query_singleton_breach",
+          detail:
+            size === 0
+              ? "No records matched the supplied filter."
+              : `Invariant breach: expected exactly 1 record for the supplied filter; found ${size}.`,
+          stage: "business.ensureSingleton",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [
+            {
+              targetKey,
+              filter,
+              size,
+            },
+          ],
+          logMessage:
+            size === 0
+              ? "bag.populate.query — no records matched filter (ensureSingleton)."
+              : "bag.populate.query — singleton invariant breached (ensureSingleton).",
+          logLevel: size === 0 ? "info" : "error",
+        });
+        return;
+      }
+    }
+
+    // Success
+    this.ctx.set("handlerStatus", "ok");
+    this.log.debug(
+      {
+        event: "execute_exit",
+        handler: this.constructor.name,
+        targetKey,
+        filterKeys: Object.keys(filter ?? {}),
+        ensureSingleton,
+        requestId,
+      },
+      "bag.populate.query exit"
+    );
   }
 }

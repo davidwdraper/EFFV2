@@ -22,10 +22,10 @@
  *   - Ensures a DtoBag is present on ctx["bag"] (may be empty).
  *   - Sets handlerStatus="ok".
  *   - Does NOT build a wire payload; ControllerBase.finalize() is responsible
- *     for mapping ctx → HTTP response (status/body).
+ *     for mapping ctx → HTTP response (status/body) using ctx["bag"] / ctx["error"].
  * - On error:
  *   - Sets handlerStatus="error".
- *   - Sets response.status and response.body (problem+json shape).
+ *   - Populates ctx["error"] (NvHandlerError) and ctx["status"].
  *
  * Assumptions:
  * - Canonical ids are UUIDv4 strings (validated via isValidUuidV4).
@@ -51,94 +51,129 @@ export class DbDeleteByIdHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_start" }, "dbDeleteById enter");
+  /**
+   * One-sentence, ops-facing description of what this handler does.
+   */
+  protected handlerPurpose(): string {
+    return "Delete a single document by UUIDv4 id using typed routes and the DtoRegistry for collection resolution.";
+  }
 
-    const requestId = this.ctx.get("requestId");
+  protected override async execute(): Promise<void> {
+    const requestId = this.safeCtxGet<string>("requestId");
+
+    this.log.debug(
+      {
+        event: "execute_start",
+        handler: this.constructor.name,
+        requestId,
+      },
+      "dbDeleteById enter"
+    );
 
     // ---- Extract required params -------------------------------------------
-    const params: any = this.ctx.get("params") ?? {};
+    const params: any = this.safeCtxGet<any>("params") ?? {};
     const rawId = typeof params.id === "string" ? params.id.trim() : "";
-    const dtoType = this.ctx.get<string>("dtoType") ?? "";
+    const dtoType = this.safeCtxGet<string>("dtoType") ?? "";
 
     if (!dtoType) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 400);
-      this.ctx.set("response.body", {
-        code: "BAD_REQUEST",
-        title: "Bad Request",
+      this.failWithError({
+        httpStatus: 400,
+        title: "bad_request_missing_dto_type",
         detail: "Missing required path parameter ':dtoType'.",
-        hint: "Call DELETE /api/:slug/v:version/:dtoType/delete/:id",
+        stage: "params.dtoType",
         requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            reason: "no_dtoType",
+          },
+        ],
+        logMessage:
+          "dbDeleteById — missing :dtoType for typed delete route (DELETE /api/:slug/v:version/:dtoType/delete/:id).",
+        logLevel: "warn",
       });
-      this.log.warn(
-        { event: "bad_request", reason: "no_dtoType" },
-        "dbDeleteById — missing :dtoType"
-      );
       return;
     }
 
     if (!rawId) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 400);
-      this.ctx.set("response.body", {
-        code: "BAD_REQUEST",
-        title: "Bad Request",
+      this.failWithError({
+        httpStatus: 400,
+        title: "bad_request_missing_id",
         detail: "Missing required path parameter ':id'.",
-        hint: "Call DELETE /api/:slug/v:version/:dtoType/delete/:id",
+        stage: "params.id",
         requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            reason: "no_id",
+          },
+        ],
+        logMessage:
+          "dbDeleteById — missing :id for typed delete route (DELETE /api/:slug/v:version/:dtoType/delete/:id).",
+        logLevel: "warn",
       });
-      this.log.warn(
-        { event: "bad_request", reason: "no_id" },
-        "dbDeleteById — missing :id"
-      );
       return;
     }
 
     if (!isValidUuidV4(rawId)) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 400);
-      this.ctx.set("response.body", {
-        code: "BAD_REQUEST_ID_FORMAT",
-        title: "Bad Request",
+      this.failWithError({
+        httpStatus: 400,
+        title: "bad_request_id_format",
         detail: `Invalid id format '${rawId}'. Expected a UUIDv4 string.`,
-        hint: "Use a UUIDv4 for the canonical DTO id.",
+        stage: "params.idFormat",
         requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            id: rawId,
+            expected: "uuidv4",
+          },
+        ],
+        logMessage:
+          "dbDeleteById — invalid id format; expected UUIDv4 for canonical DTO id.",
+        logLevel: "warn",
       });
-      this.log.warn(
-        { event: "bad_request", reason: "invalid_id_format", id: rawId },
-        "dbDeleteById — invalid id format"
-      );
       return;
     }
 
     const id = rawId;
 
     // ---- Registry for collection resolution --------------------------------
-    const registry = this.controller.getDtoRegistry?.();
+    const registry = (this.controller as any).getDtoRegistry?.();
 
     if (!registry) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "DELETE_SETUP_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "delete_setup_missing",
         detail:
           "DTO Registry missing. Ops: ensure the App exposes a per-service DtoRegistry; controller must extend ControllerBase correctly.",
-        hint: "AppBase owns the DtoRegistry; expose via getDtoRegistry().",
+        stage: "config.registry",
         requestId,
-      });
-      this.log.error(
-        {
-          event: "setup_missing",
-          hasRegistry: !!registry,
+        origin: {
+          file: __filename,
+          method: "execute",
         },
-        "dbDeleteById setup missing — registry not available"
-      );
+        issues: [
+          {
+            hasRegistry: !!registry,
+          },
+        ],
+        logMessage:
+          "dbDeleteById setup missing — controller.getDtoRegistry() returned null/undefined.",
+        logLevel: "error",
+      });
       return;
     }
 
-    // Resolve collection from dtoType
     let collectionName = "";
     try {
       if (typeof registry.dbCollectionNameByType !== "function") {
@@ -148,22 +183,30 @@ export class DbDeleteByIdHandler extends HandlerBase {
       if (!collectionName || !collectionName.trim()) {
         throw new Error(`No collection mapped for dtoType="${dtoType}"`);
       }
-    } catch (e: any) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 400);
-      this.ctx.set("response.body", {
-        code: "UNKNOWN_DTO_TYPE",
-        title: "Bad Request",
+    } catch (err) {
+      this.failWithError({
+        httpStatus: 400,
+        title: "unknown_dto_type",
         detail:
-          e?.message ??
+          (err as Error)?.message ??
           `Unable to resolve collection for dtoType "${dtoType}".`,
-        hint: "Verify the DtoRegistry contains this dtoType and exposes a collection.",
+        stage: "config.collectionFromDtoType",
         requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+          dtoType,
+        },
+        issues: [
+          {
+            dtoType,
+          },
+        ],
+        rawError: err,
+        logMessage:
+          "dbDeleteById — failed to resolve collection from dtoType via DtoRegistry.",
+        logLevel: "warn",
       });
-      this.log.warn(
-        { event: "dto_type_resolve_failed", dtoType, err: e?.message },
-        "dbDeleteById — failed to resolve collection from dtoType"
-      );
       return;
     }
 
@@ -172,28 +215,32 @@ export class DbDeleteByIdHandler extends HandlerBase {
     const mongoDb = this.getVar("NV_MONGO_DB");
 
     if (!mongoUri || !mongoDb) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "MONGO_ENV_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "mongo_env_missing",
         detail:
           "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        hint: "Check env-service NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
+        stage: "config.mongoEnv",
         requestId,
-      });
-      this.log.error(
-        {
-          event: "mongo_env_missing",
-          mongoUriPresent: !!mongoUri,
-          mongoDbPresent: !!mongoDb,
-          handler: this.constructor.name,
+        origin: {
+          file: __filename,
+          method: "execute",
+          collection: collectionName,
         },
-        "dbDeleteById aborted — Mongo env config missing"
-      );
+        issues: [
+          {
+            mongoUriPresent: !!mongoUri,
+            mongoDbPresent: !!mongoDb,
+          },
+        ],
+        logMessage:
+          "dbDeleteById aborted — Mongo env config missing (NV_MONGO_URI / NV_MONGO_DB).",
+        logLevel: "error",
+      });
       return;
     }
 
+    // ---- External edge: DB delete (fine-grained try/catch) -----------------
     try {
       const deleter = new DbDeleter({
         mongoUri,
@@ -201,7 +248,6 @@ export class DbDeleteByIdHandler extends HandlerBase {
         collectionName,
       });
 
-      // Introspection for parity with read/write logs
       const tgt = await deleter.targetInfo();
       this.log.debug(
         {
@@ -209,6 +255,7 @@ export class DbDeleteByIdHandler extends HandlerBase {
           collection: tgt.collectionName,
           id,
           dtoType,
+          requestId,
         },
         "dbDeleteById will target collection"
       );
@@ -216,50 +263,86 @@ export class DbDeleteByIdHandler extends HandlerBase {
       const { deleted } = await deleter.deleteById(id);
 
       if (deleted === 0) {
-        this.ctx.set("handlerStatus", "error");
-        this.ctx.set("response.status", 404);
-        this.ctx.set("response.body", {
-          code: "NOT_FOUND",
-          title: "Not Found",
+        this.failWithError({
+          httpStatus: 404,
+          title: "not_found",
           detail: "No document matched the supplied id.",
-          hint: "Verify the id or re-read before deleting.",
+          stage: "db.deleteById.notFound",
           requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+            collection: collectionName,
+          },
+          issues: [
+            {
+              id,
+              collection: collectionName,
+            },
+          ],
+          logMessage:
+            "dbDeleteById — deleteById completed but no document matched the supplied id.",
+          logLevel: "warn",
         });
-        this.log.warn(
-          { event: "delete_not_found", id },
-          "dbDeleteById: not found"
-        );
         return;
       }
 
       // ---- Success: ensure a DtoBag is present for finalize() --------------
-      // We intentionally do NOT rebuild the deleted DTO here. For DELETE,
-      // an empty bag is sufficient to satisfy the invariant that successful
-      // pipelines always attach a DtoBag at ctx["bag"].
-      let bag = this.ctx.get<DtoBag<any>>("bag");
+      let bag = this.safeCtxGet<DtoBag<any>>("bag");
       if (!bag) {
         bag = new DtoBag<any>([]);
         this.ctx.set("bag", bag);
       }
 
       this.ctx.set("handlerStatus", "ok");
-      this.log.info({ event: "delete_ok", id }, "dbDeleteById succeeded");
-    } catch (err: any) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "DB_OP_FAILED",
-        title: "Internal Error",
-        detail: err?.message ?? String(err),
-        hint: "Check svcenv NV_MONGO_URI/NV_MONGO_DB; confirm collection name from Registry; verify network/auth and Mongo health.",
-        requestId,
-      });
-      this.log.error(
-        { event: "delete_error", err: err?.message },
-        "dbDeleteById failed"
+
+      this.log.info(
+        {
+          event: "delete_ok",
+          id,
+          dtoType,
+          collection: collectionName,
+          deleted,
+          requestId,
+        },
+        "dbDeleteById succeeded"
       );
-    } finally {
-      this.log.debug({ event: "execute_end" }, "dbDeleteById exit");
+    } catch (err) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "db_op_failed",
+        detail:
+          (err as Error)?.message ??
+          "DbDeleter.deleteById() failed while attempting to delete a document by id.",
+        stage: "db.deleteById",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+          collection: collectionName,
+        },
+        issues: [
+          {
+            id,
+            dtoType,
+            collection: collectionName,
+          },
+        ],
+        rawError: err,
+        logMessage:
+          "dbDeleteById failed — unexpected error during DbDeleter.deleteById().",
+        logLevel: "error",
+      });
     }
+
+    this.log.debug(
+      {
+        event: "execute_end",
+        handler: this.constructor.name,
+        requestId,
+        handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "ok",
+      },
+      "dbDeleteById exit"
+    );
   }
 }

@@ -79,147 +79,202 @@ export class QueryBuildFilterHandler extends HandlerBase {
     this.idKeyJoinChar = opts.idKeyJoinChar ?? "@";
   }
 
-  protected async execute(): Promise<void> {
-    const params: any = this.ctx.get("params") ?? {};
-    const query: any = this.ctx.get("query") ?? {};
+  /**
+   * One-sentence, ops-facing description of what this handler does.
+   */
+  protected handlerPurpose(): string {
+    return "Build a dynamic Mongo filter from params/query/env/ctx and stash it on ctx['bag.query.filter'].";
+  }
+
+  protected override async execute(): Promise<void> {
+    const requestId = this.safeCtxGet<string>("requestId");
+
+    this.log.debug(
+      {
+        event: "execute_enter",
+        handler: this.constructor.name,
+        requestId,
+      },
+      "QueryBuildFilterHandler — execute enter"
+    );
+
+    const params: any = this.safeCtxGet<any>("params") ?? {};
+    const query: any = this.safeCtxGet<any>("query") ?? {};
 
     const filter: Record<string, unknown> = {};
     const idKeyParts: string[] = [];
 
-    for (const spec of this.fields) {
-      switch (spec.source) {
-        case "param": {
-          const key = spec.key ?? spec.target;
-          const raw = typeof params[key] === "string" ? params[key].trim() : "";
-          if (!raw) {
-            if (spec.required) {
-              this.markMissing(`:${key}`, spec.target, "path parameter");
-              return;
+    try {
+      for (const spec of this.fields) {
+        switch (spec.source) {
+          case "param": {
+            const key = spec.key ?? spec.target;
+            const raw =
+              typeof params[key] === "string" ? params[key].trim() : "";
+            if (!raw) {
+              if (spec.required) {
+                this.markMissing(`:${key}`, spec.target, "path parameter");
+                return;
+              }
+              // optional; skip
+            } else {
+              filter[spec.target] = raw;
             }
-            // optional; skip
-          } else {
-            filter[spec.target] = raw;
+            break;
           }
-          break;
-        }
 
-        case "query": {
-          const key = spec.key ?? spec.target;
-          const raw = typeof query[key] === "string" ? query[key].trim() : "";
-          if (!raw) {
-            if (spec.required) {
-              this.markMissing(key, spec.target, "query parameter");
-              return;
+          case "query": {
+            const key = spec.key ?? spec.target;
+            const raw = typeof query[key] === "string" ? query[key].trim() : "";
+            if (!raw) {
+              if (spec.required) {
+                this.markMissing(key, spec.target, "query parameter");
+                return;
+              }
+            } else {
+              filter[spec.target] = raw;
             }
-          } else {
-            filter[spec.target] = raw;
+            break;
           }
-          break;
-        }
 
-        case "envVar": {
-          const val = this.getVar(spec.key);
-          if (!val) {
-            if (spec.required) {
-              this.ctx.set("handlerStatus", "error");
-              this.ctx.set("status", 500);
-              this.ctx.set("error", {
-                code: "ENV_VAR_MISSING",
-                title: "Internal Error",
-                detail: `Missing required environment variable '${spec.key}' to build filter field '${spec.target}'.`,
-                hint: "Ops: ensure env-service is populated correctly for this service/env/slug/version.",
-              });
-              this.log.error(
-                {
-                  event: "filter_env_missing",
-                  envKey: spec.key,
-                  target: spec.target,
-                },
-                "QueryBuildFilterHandler — required envVar missing"
-              );
-              return;
+          case "envVar": {
+            const val = this.getVar(spec.key);
+            if (!val) {
+              if (spec.required) {
+                this.failWithError({
+                  httpStatus: 500,
+                  title: "env_var_missing",
+                  detail: `Missing required environment variable '${spec.key}' to build filter field '${spec.target}'. Ops: ensure env-service is populated correctly for this service/env/slug/version.`,
+                  stage: "buildFilter.envVar",
+                  requestId,
+                  origin: {
+                    file: __filename,
+                    method: "execute",
+                  },
+                  issues: [
+                    {
+                      envKey: spec.key,
+                      target: spec.target,
+                    },
+                  ],
+                  logMessage:
+                    "QueryBuildFilterHandler — required envVar missing while building filter.",
+                  logLevel: "error",
+                });
+                return;
+              }
+            } else {
+              filter[spec.target] = val;
             }
-          } else {
-            filter[spec.target] = val;
+            break;
           }
-          break;
-        }
 
-        case "ctx": {
-          const val = this.ctx.get<any>(spec.key);
-          if (val === undefined || val === null || val === "") {
-            if (spec.required) {
-              this.ctx.set("handlerStatus", "error");
-              this.ctx.set("status", 500);
-              this.ctx.set("error", {
-                code: "CTX_VALUE_MISSING",
-                title: "Internal Error",
-                detail: `Missing required context key '${spec.key}' to build filter field '${spec.target}'.`,
-                hint: "Dev: ensure controller/pipeline seeds the context key before this handler runs.",
-              });
-              this.log.error(
-                {
-                  event: "filter_ctx_missing",
-                  ctxKey: spec.key,
-                  target: spec.target,
-                },
-                "QueryBuildFilterHandler — required ctx value missing"
-              );
-              return;
+          case "ctx": {
+            const val = this.safeCtxGet<any>(spec.key);
+            if (val === undefined || val === null || val === "") {
+              if (spec.required) {
+                this.failWithError({
+                  httpStatus: 500,
+                  title: "ctx_value_missing",
+                  detail: `Missing required context key '${spec.key}' to build filter field '${spec.target}'. Dev: ensure controller/pipeline seeds the context key before this handler runs.`,
+                  stage: "buildFilter.ctx",
+                  requestId,
+                  origin: {
+                    file: __filename,
+                    method: "execute",
+                  },
+                  issues: [
+                    {
+                      ctxKey: spec.key,
+                      target: spec.target,
+                    },
+                  ],
+                  logMessage:
+                    "QueryBuildFilterHandler — required ctx value missing while building filter.",
+                  logLevel: "error",
+                });
+                return;
+              }
+            } else {
+              filter[spec.target] = val;
             }
-          } else {
-            filter[spec.target] = val;
+            break;
           }
-          break;
-        }
 
-        case "literal": {
-          filter[spec.target] = spec.value;
-          break;
-        }
+          case "literal": {
+            filter[spec.target] = spec.value;
+            break;
+          }
 
-        default: {
-          // Should never happen; defensive only.
-          this.log.error(
-            { event: "filter_spec_unknown_source", spec },
-            "QueryBuildFilterHandler — unknown filter source"
-          );
+          default: {
+            // Should never happen; defensive only.
+            this.log.error(
+              { event: "filter_spec_unknown_source", spec, requestId },
+              "QueryBuildFilterHandler — unknown filter source"
+            );
+          }
         }
       }
+
+      // Optional idKey for logging/trace: join selected filter fields.
+      if (this.idKeyFields.length > 0) {
+        for (const f of this.idKeyFields) {
+          const v = filter[f];
+          if (typeof v === "string" && v.trim() !== "") {
+            idKeyParts.push(v.trim());
+          }
+        }
+        if (idKeyParts.length > 0) {
+          const idKey = idKeyParts.join(this.idKeyJoinChar);
+          this.ctx.set("idKey", idKey);
+        }
+      }
+
+      // Primary output for query-based bag population:
+      // - bag.populate.query.handler reads ctx["bag.query.filter"].
+      this.ctx.set("bag.query.filter", filter);
+
+      // Secondary (optional) output for introspection/logging or legacy code:
+      this.ctx.set("query.filter", filter);
+
+      this.ctx.set("handlerStatus", "ok");
+
+      this.log.debug(
+        {
+          event: "filter_built",
+          filter,
+          idKey:
+            idKeyParts.length > 0
+              ? idKeyParts.join(this.idKeyJoinChar)
+              : undefined,
+          requestId,
+        },
+        "QueryBuildFilterHandler — built dynamic Mongo filter"
+      );
+    } catch (err) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "query_build_filter_failed",
+        detail:
+          "Dynamic filter construction failed unexpectedly. Ops: inspect handler fields spec and upstream ctx/query/params values.",
+        stage: "buildFilter.unhandled",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            fieldsLength: this.fields.length,
+            idKeyFields: this.idKeyFields,
+          },
+        ],
+        rawError: err,
+        logMessage:
+          "QueryBuildFilterHandler — unhandled exception while building dynamic Mongo filter.",
+        logLevel: "error",
+      });
     }
-
-    // Optional idKey for logging/trace: join selected filter fields.
-    if (this.idKeyFields.length > 0) {
-      for (const f of this.idKeyFields) {
-        const v = filter[f];
-        if (typeof v === "string" && v.trim() !== "") {
-          idKeyParts.push(v.trim());
-        }
-      }
-      if (idKeyParts.length > 0) {
-        const idKey = idKeyParts.join(this.idKeyJoinChar);
-        this.ctx.set("idKey", idKey);
-      }
-    }
-
-    // Primary output for query-based bag population:
-    // - bag.populate.query.handler reads ctx["bag.query.filter"].
-    this.ctx.set("bag.query.filter", filter);
-
-    // Secondary (optional) output for introspection/logging or legacy code:
-    this.ctx.set("query.filter", filter);
-
-    this.log.debug(
-      {
-        event: "filter_built",
-        filter,
-        idKey:
-          idKeyParts.length > 0
-            ? idKeyParts.join(this.idKeyJoinChar)
-            : undefined,
-      },
-      "QueryBuildFilterHandler — built dynamic Mongo filter"
-    );
   }
 
   private markMissing(
@@ -227,22 +282,27 @@ export class QueryBuildFilterHandler extends HandlerBase {
     target: string,
     kind: "path parameter" | "query parameter"
   ): void {
-    this.ctx.set("handlerStatus", "error");
-    this.ctx.set("status", 400);
-    this.ctx.set("error", {
-      code: "BAD_REQUEST",
-      title: "Bad Request",
+    const requestId = this.safeCtxGet<string>("requestId");
+    this.failWithError({
+      httpStatus: 400,
+      title: "bad_request",
       detail: `Missing required ${kind} '${key}' for filter field '${target}'.`,
-      hint: `Ensure the route/query string includes '${key}' with a non-empty value.`,
-    });
-    this.log.warn(
-      {
-        event: "filter_missing_input",
-        key,
-        target,
-        kind,
+      stage: "buildFilter.input",
+      requestId,
+      origin: {
+        file: __filename,
+        method: "markMissing",
       },
-      "QueryBuildFilterHandler — required input missing"
-    );
+      issues: [
+        {
+          key,
+          target,
+          kind,
+        },
+      ],
+      logMessage:
+        "QueryBuildFilterHandler — required input missing while building filter.",
+      logLevel: "warn",
+    });
   }
 }

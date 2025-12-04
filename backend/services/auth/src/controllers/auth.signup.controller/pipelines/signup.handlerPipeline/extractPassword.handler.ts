@@ -28,72 +28,133 @@ export class ExtractPasswordHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  protected async execute(): Promise<void> {
-    const requestId = this.ctx.get("requestId");
+  protected handlerPurpose(): string {
+    return "Extract a cleartext signup password from headers, validate its length, and stash it on the context without ever logging the secret.";
+  }
 
-    const headers = this.ctx.get<Record<string, unknown>>("headers") ?? {};
-
-    // Express lowercases header names.
-    const raw =
-      (headers["x-nv-password"] as string | undefined) ??
-      (headers["X-NV-PASSWORD"] as string | undefined);
-
-    if (typeof raw !== "string") {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 400);
-      this.ctx.set("response.body", {
-        code: "PASSWORD_MISSING",
-        title: "Bad Request",
-        detail:
-          "Signup password header is missing. Dev: send the cleartext password in the 'x-nv-password' HTTP header for auth.signup.",
-        requestId,
-      });
-
-      this.log.warn(
-        { event: "password_missing", requestId },
-        "signup.extractPassword: x-nv-password header is missing"
-      );
-      return;
-    }
-
-    const password = raw.trim();
-
-    const minLen = 8;
-    const maxLen = 256;
-
-    if (password.length < minLen || password.length > maxLen) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 400);
-      this.ctx.set("response.body", {
-        code: "PASSWORD_INVALID",
-        title: "Bad Request",
-        detail:
-          `Signup password does not meet length requirements (min ${minLen}, max ${maxLen}). ` +
-          "Dev: enforce password policy on the client before calling auth.signup.",
-        requestId,
-      });
-
-      this.log.warn(
-        {
-          event: "password_invalid_length",
-          requestId,
-          length: password.length,
-        },
-        "signup.extractPassword: password length out of bounds"
-      );
-      return;
-    }
-
-    this.ctx.set("signup.passwordClear", password);
-    this.ctx.set("handlerStatus", "ok");
+  protected override async execute(): Promise<void> {
+    const requestId = this.safeCtxGet<string>("requestId");
 
     this.log.debug(
       {
-        event: "password_extracted",
+        event: "execute_enter",
+        handler: this.constructor.name,
         requestId,
-        length: password.length,
       },
-      "signup.extractPassword: password extracted and stored on ctx['signup.password']"
+      "signup.extractPassword: enter handler"
+    );
+
+    try {
+      const headers = this.safeCtxGet<Record<string, unknown>>("headers") ?? {};
+
+      // Express lowercases header names in practice, but we defensively check both.
+      const raw =
+        (headers["x-nv-password"] as string | undefined) ??
+        (headers["X-NV-PASSWORD"] as string | undefined);
+
+      if (typeof raw !== "string") {
+        this.failWithError({
+          httpStatus: 400,
+          title: "password_missing",
+          detail:
+            "Signup password header is missing. Dev: send the cleartext password in the 'x-nv-password' HTTP header for auth.signup.",
+          stage: "extract.header",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [
+            {
+              hasLowercaseHeader: Object.prototype.hasOwnProperty.call(
+                headers,
+                "x-nv-password"
+              ),
+              hasUppercaseHeader: Object.prototype.hasOwnProperty.call(
+                headers,
+                "X-NV-PASSWORD"
+              ),
+            },
+          ],
+          logMessage:
+            "signup.extractPassword: x-nv-password header is missing or not a string.",
+          logLevel: "warn",
+        });
+        return;
+      }
+
+      const password = raw.trim();
+
+      const minLen = 8;
+      const maxLen = 256;
+
+      if (password.length < minLen || password.length > maxLen) {
+        this.failWithError({
+          httpStatus: 400,
+          title: "password_invalid",
+          detail:
+            `Signup password does not meet length requirements (min ${minLen}, max ${maxLen}). ` +
+            "Dev: enforce password policy on the client before calling auth.signup.",
+          stage: "validate.length",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [
+            {
+              length: password.length,
+              minLen,
+              maxLen,
+            },
+          ],
+          logMessage:
+            "signup.extractPassword: password length out of bounds (value not logged, length only).",
+          logLevel: "warn",
+        });
+        return;
+      }
+
+      // Store only the cleartext in a dedicated ctx slot; NEVER log the value.
+      // (Downstream handlers are responsible for hashing and then discarding it.)
+      this.ctx.set("signup.passwordClear", password);
+      this.ctx.set("handlerStatus", "ok");
+
+      this.log.debug(
+        {
+          event: "password_extracted",
+          requestId,
+          length: password.length,
+        },
+        "signup.extractPassword: password extracted and stored on ctx['signup.passwordClear']"
+      );
+    } catch (err) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "extract_password_handler_failure",
+        detail:
+          "Unhandled exception while extracting the signup password. Ops: inspect logs for requestId and stack frame.",
+        stage: "execute.unhandled",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        rawError: err,
+        logMessage:
+          "signup.extractPassword: unhandled exception in password extraction handler.",
+        logLevel: "error",
+      });
+    }
+
+    this.log.debug(
+      {
+        event: "execute_end",
+        handler: this.constructor.name,
+        requestId,
+        handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "ok",
+      },
+      "signup.extractPassword: exit handler"
     );
   }
 }

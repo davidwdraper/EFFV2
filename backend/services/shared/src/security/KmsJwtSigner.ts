@@ -23,14 +23,7 @@
 import { createHash } from "node:crypto";
 import { KeyManagementServiceClient } from "@google-cloud/kms";
 import type { IJwtSigner } from "./Minter";
-
-/** Minimal logger shape to avoid coupling. */
-type LoggerLike = {
-  debug?: (o: Record<string, unknown>, msg?: string) => void;
-  info?: (o: Record<string, unknown>, msg?: string) => void;
-  warn?: (o: Record<string, unknown>, msg?: string) => void;
-  error?: (o: Record<string, unknown>, msg?: string) => void;
-};
+import type { IBoundLogger } from "../logger/Logger";
 
 type KmsEnv = {
   KMS_PROJECT_ID: string;
@@ -45,7 +38,7 @@ type KmsSignerOptions = {
   /** Optional RPC timeout in milliseconds (applied to asymmetricSign call). */
   timeoutMs?: number;
   /** Optional logger; if omitted, signer is silent. */
-  log?: LoggerLike;
+  log?: IBoundLogger;
   /** Injected clock for testability (ms). */
   nowMs?: () => number;
 };
@@ -56,7 +49,7 @@ export class KmsJwtSigner implements IJwtSigner {
   private readonly algName: string;
   private readonly kidValue: string;
   private readonly timeoutMs?: number;
-  private readonly log?: LoggerLike;
+  private readonly log?: IBoundLogger;
   private readonly nowMs: () => number;
 
   constructor(env: KmsEnv, opts: KmsSignerOptions = {}) {
@@ -95,7 +88,7 @@ export class KmsJwtSigner implements IJwtSigner {
     this.log = opts.log;
     this.nowMs = opts.nowMs ?? (() => Date.now());
 
-    this.log?.info?.(
+    this.log?.info(
       {
         kid: this.kidValue,
         alg: this.algName,
@@ -128,13 +121,13 @@ export class KmsJwtSigner implements IJwtSigner {
     const hdrAlg = String((header as any).alg ?? "");
     const hdrKid = String((header as any).kid ?? "");
     if (hdrAlg && hdrAlg !== this.algName) {
-      this.log?.warn?.(
+      this.log?.warn(
         { headerAlg: hdrAlg, signerAlg: this.algName },
         "KmsJwtSigner: header.alg differs from signer.alg"
       );
     }
     if (hdrKid && hdrKid !== this.kidValue) {
-      this.log?.warn?.(
+      this.log?.warn(
         { headerKid: hdrKid, signerKid: this.kidValue },
         "KmsJwtSigner: header.kid differs from signer.kid"
       );
@@ -147,7 +140,7 @@ export class KmsJwtSigner implements IJwtSigner {
     const digest = createHash("sha256").update(data).digest();
     const began = this.nowMs();
 
-    this.log?.debug?.(
+    this.log?.debug(
       {
         kid: this.kidValue,
         alg: this.algName,
@@ -180,7 +173,7 @@ export class KmsJwtSigner implements IJwtSigner {
       const signature = sigBuf.toString("base64url");
       const tookMs = this.nowMs() - began;
 
-      this.log?.debug?.(
+      this.log?.debug(
         {
           kid: this.kidValue,
           tookMs,
@@ -201,7 +194,7 @@ export class KmsJwtSigner implements IJwtSigner {
           ? e.metadata.getMap()
           : undefined;
 
-      this.log?.error?.(
+      this.log?.error(
         {
           kid: this.kidValue,
           alg: this.algName,

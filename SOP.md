@@ -906,3 +906,5 @@ This doc represents the evolving user-facing + UX + engagement feature set.
 ## Proactively tell me when it's time to start a new session.
 
 ## Proactively suggest alternatives and better ways to solve problems if you disagree with my approach.
+
+## If, when building code you're unsure of an object or module's interface, ask for a code drop rather than guess on a function or approach.

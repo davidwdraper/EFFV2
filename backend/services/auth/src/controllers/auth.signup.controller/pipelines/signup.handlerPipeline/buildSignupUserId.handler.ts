@@ -31,37 +31,84 @@ export class BuildSignupUserIdHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  protected override async execute(): Promise<void> {
-    const requestId = this.ctx.get<string | undefined>("requestId");
-    const existing = this.ctx.get<string | undefined>("signup.userId");
+  protected handlerPurpose(): string {
+    return "Generate or reuse a stable UUIDv4 for a signup pipeline without ever overwriting an existing id.";
+  }
 
-    // Idempotency: never overwrite an existing id
-    if (existing && existing.trim().length > 0) {
+  protected override async execute(): Promise<void> {
+    const requestId = this.safeCtxGet<string>("requestId");
+
+    try {
+      const existing = this.safeCtxGet<string>("signup.userId");
+
+      // Idempotency: never overwrite an existing id
+      if (existing && existing.trim().length > 0) {
+        this.log.debug(
+          {
+            event: "signup_user_id_already_set",
+            requestId,
+          },
+          "auth.signup.buildSignupUserId: ctx['signup.userId'] already populated; leaving as-is"
+        );
+
+        this.ctx.set("handlerStatus", "ok");
+        return;
+      }
+
+      // Generate canonical UUIDv4 (ADR-0057)
+      let generated: string;
+      try {
+        generated = newUuid();
+      } catch (err) {
+        this.failWithError({
+          httpStatus: 500,
+          title: "uuid_generation_failed",
+          detail:
+            "Failed to generate a UUIDv4 for signup.userId. Ops: inspect shared utils or upstream entropy source.",
+          stage: "uuid.newUuid",
+          requestId,
+          rawError: err,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          logMessage:
+            "auth.signup.buildSignupUserId: newUuid() threw unexpectedly.",
+          logLevel: "error",
+        });
+        return;
+      }
+
+      this.ctx.set("signup.userId", generated);
+
       this.log.debug(
         {
-          event: "signup_user_id_already_set",
+          event: "signup_user_id_generated",
+          id: generated,
           requestId,
         },
-        "auth.signup.buildSignupUserId: ctx['signup.userId'] already populated; leaving as-is"
+        "auth.signup.buildSignupUserId: minted UUIDv4 via shared newUuid()"
       );
 
       this.ctx.set("handlerStatus", "ok");
-      return;
-    }
-
-    // Generate a canonical UUIDv4 via shared utils
-    const generated = newUuid(); // ADR-0057: normalized, validated, centralized
-
-    this.ctx.set("signup.userId", generated);
-
-    this.log.debug(
-      {
-        event: "signup_user_id_generated",
+    } catch (err) {
+      // Unexpected handler bug
+      this.failWithError({
+        httpStatus: 500,
+        title: "signup_user_id_handler_failure",
+        detail:
+          "Unhandled exception while minting signup.userId. Ops: inspect logs for requestId and stack frame.",
+        stage: "execute.unhandled",
         requestId,
-      },
-      "auth.signup.buildSignupUserId: minted UUIDv4 via shared newUuid()"
-    );
-
-    this.ctx.set("handlerStatus", "ok");
+        rawError: err,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        logMessage:
+          "auth.signup.buildSignupUserId: unhandled exception in handler.",
+        logLevel: "error",
+      });
+    }
   }
 }

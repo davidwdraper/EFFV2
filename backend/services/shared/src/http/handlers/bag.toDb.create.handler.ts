@@ -29,8 +29,7 @@
  * - "dbWriter.lastId": string (id used for the insert)
  * - "handlerStatus": "ok" | "error"
  * - On error only:
- *   - "response.status": number
- *   - "response.body": ProblemDetails-like object
+ *   - ctx["error"]: NvHandlerError (mapped to ProblemDetails by finalize)
  *
  * Invariants (Handler-level):
  * - No success payloads outside of a DtoBag.
@@ -52,9 +51,26 @@ export class BagToDbCreateHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_enter" }, "bag.toDb.create enter");
+  /**
+   * One-sentence, ops-facing description of what this handler does.
+   */
+  protected handlerPurpose(): string {
+    return "Persist a DtoBag<DtoBase> via DbWriter and expose the persisted bag on ctx['bag'].";
+  }
 
+  protected override async execute(): Promise<void> {
+    const requestId = this.safeCtxGet<string>("requestId");
+
+    this.log.debug(
+      {
+        event: "execute_enter",
+        handler: this.constructor.name,
+        requestId,
+      },
+      "bag.toDb.create enter"
+    );
+
+    // ---- Config / bag validation (no external edge) ------------------------
     const targetKey =
       (this.ctx.get<string>("bag.write.targetKey") as string | undefined) ??
       "bag";
@@ -63,82 +79,94 @@ export class BagToDbCreateHandler extends HandlerBase {
 
     const bag = this.ctx.get<DtoBag<DtoBase>>(targetKey);
     if (!bag) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "BAG_WRITE_BAG_MISSING",
-        title: "Internal Error",
-        detail: `No DtoBag found on ctx['${targetKey}']. Dev: ensure upstream handlers populated this entry.`,
-        requestId: this.ctx.get("requestId"),
+      this.failWithError({
+        httpStatus: 500,
+        title: "bag_write_bag_missing",
+        detail: `No DtoBag found on ctx['${targetKey}']. Dev: ensure upstream handlers populated this entry before bag.toDb.create.handler.`,
+        stage: "config.bag",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+          collection: undefined,
+        },
+        issues: [{ targetKey, hasBag: !!bag }],
+        logMessage:
+          "bag.toDb.create — required DtoBag missing from context at targetKey.",
+        logLevel: "error",
       });
-      this.log.debug(
-        { event: "execute_exit", reason: "bag_missing", targetKey },
-        "bag.toDb.create exit"
-      );
       return;
     }
 
     if (ensureSingleton) {
       const size = Array.from(bag.items()).length;
       if (size !== 1) {
-        this.ctx.set("handlerStatus", "error");
-        this.ctx.set("response.status", 400);
-        this.ctx.set("response.body", {
-          code: size === 0 ? "BAG_WRITE_EMPTY" : "BAG_WRITE_TOO_MANY_ITEMS",
-          title: "Bad Request",
+        const code =
+          size === 0 ? "BAG_WRITE_EMPTY" : "BAG_WRITE_TOO_MANY_ITEMS";
+
+        this.failWithError({
+          httpStatus: 400,
+          title: "bag_write_singleton_violation",
           detail:
             size === 0
               ? "Create requires exactly one item in the bag; received 0."
               : `Create requires exactly one item in the bag; received ${size}.`,
-          requestId: this.ctx.get("requestId"),
+          stage: "business.ensureSingleton",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [{ targetKey, size, code }],
+          logMessage:
+            "bag.toDb.create — singleton requirement failed for create operation.",
+          logLevel: "warn",
         });
-        this.log.warn(
-          { event: "bag_size_invalid", size, targetKey },
-          "bag.toDb.create — singleton requirement failed"
-        );
         return;
       }
     }
 
-    // ---- Env from HandlerBase.getVar (strict, no fallbacks) ---------------
+    // ---- Env from HandlerBase.getVar (strict, no fallbacks) ----------------
     const mongoUri = this.getVar("NV_MONGO_URI");
     const mongoDb = this.getVar("NV_MONGO_DB");
 
     if (!mongoUri || !mongoDb) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "MONGO_ENV_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "mongo_env_missing",
         detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
-        requestId: this.ctx.get("requestId"),
-      });
-      this.log.error(
-        {
-          event: "mongo_env_missing",
-          mongoUriPresent: !!mongoUri,
-          mongoDbPresent: !!mongoDb,
-          handler: this.constructor.name,
+          "Missing NV_MONGO_URI or NV_MONGO_DB in EnvServiceDto._vars for this service. Ops: ensure env-service config is populated for this slug/env/version.",
+        stage: "config.mongoEnv",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
         },
-        "bag.toDb.create aborted — Mongo env config missing"
-      );
+        issues: [
+          {
+            mongoUriPresent: !!mongoUri,
+            mongoDbPresent: !!mongoDb,
+          },
+        ],
+        logMessage:
+          "bag.toDb.create aborted — Mongo env config missing (NV_MONGO_URI / NV_MONGO_DB).",
+        logLevel: "error",
+      });
       return;
     }
 
-    // User identity (from JWT → ctx) used for meta stamping; may be undefined in tests.
-    const userId = this.ctx.get<string>("userId");
-
-    const writer = new DbWriter<DtoBase>({
-      bag: bag as DtoBag<DtoBase>,
-      mongoUri,
-      mongoDb,
-      log: this.log,
-      userId,
-    });
+    // ---- External edge: DB write (fine-grained try/catch) ------------------
+    const userId = this.safeCtxGet<string>("userId");
 
     try {
+      const writer = new DbWriter<DtoBase>({
+        bag: bag as DtoBag<DtoBase>,
+        mongoUri,
+        mongoDb,
+        log: this.log,
+        userId,
+      });
+
       const persistedBag = await writer.write();
       const persisted = persistedBag.getSingleton();
 
@@ -159,41 +187,63 @@ export class BagToDbCreateHandler extends HandlerBase {
       this.log.debug(
         {
           event: "execute_exit",
+          handler: this.constructor.name,
           targetKey,
           id: persisted.getId(),
           collection: persisted.requireCollectionName(),
+          requestId,
         },
         "bag.toDb.create exit"
       );
     } catch (err) {
       if (err instanceof DuplicateKeyError) {
-        this.ctx.set("handlerStatus", "error");
-        this.ctx.set("response.status", 409);
-        this.ctx.set("response.body", {
-          code: "DUPLICATE_KEY",
-          title: "Conflict",
-          detail: err.message,
-          requestId: this.ctx.get("requestId"),
+        this.failWithError({
+          httpStatus: 409,
+          title: "duplicate_key",
+          detail:
+            err.message ??
+            "Duplicate key encountered while attempting to create a new document.",
+          stage: "db.write.duplicateKey",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [
+            {
+              targetKey,
+            },
+          ],
+          rawError: err,
+          logMessage: "bag.toDb.create — duplicate key on DbWriter.write().",
+          logLevel: "warn",
         });
-        this.log.warn(
-          { event: "duplicate_key", detail: err.message },
-          "bag.toDb.create — duplicate key"
-        );
         return;
       }
 
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "BAG_WRITE_FAILED",
-        title: "Internal Error",
-        detail: (err as Error)?.message ?? "DbWriter.write() failed.",
-        requestId: this.ctx.get("requestId"),
+      this.failWithError({
+        httpStatus: 500,
+        title: "bag_write_failed",
+        detail:
+          (err as Error)?.message ??
+          "DbWriter.write() failed while persisting a DtoBag.",
+        stage: "db.write",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            targetKey,
+            hasBag: !!bag,
+          },
+        ],
+        rawError: err,
+        logMessage:
+          "bag.toDb.create — unexpected error during DbWriter.write().",
+        logLevel: "error",
       });
-      this.log.error(
-        { event: "write_failed", err: (err as Error)?.message },
-        "bag.toDb.create — write failed"
-      );
     }
   }
 }

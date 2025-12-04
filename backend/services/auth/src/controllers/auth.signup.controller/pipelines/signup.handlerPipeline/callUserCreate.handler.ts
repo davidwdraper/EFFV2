@@ -18,7 +18,10 @@
  * Invariants:
  * - Auth remains a MOS (no direct DB writes).
  * - This handler NEVER calls ctx.set("bag", ...).
- * - On failure, sets handlerStatus="error" and a Problem+JSON payload.
+ * - On failure, sets handlerStatus="error" via NvHandlerError on ctx["error"].
+ * - Additionally, this handler stamps an explicit signup.userCreateStatus flag
+ *   on the ctx bus so downstream transactional handlers (rollback, audit, etc.)
+ *   can reason about whether the user record was created.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -29,169 +32,296 @@ import type { UserDto } from "@nv/shared/dto/user.dto";
 
 type UserBag = DtoBag<UserDto>;
 
+type UserCreateStatus =
+  | {
+      ok: true;
+      userId?: string;
+    }
+  | {
+      ok: false;
+      code: string;
+      message: string;
+    };
+
 export class CallUserCreateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }
 
+  /**
+   * One-sentence, ops-facing description of what this handler does.
+   */
+  protected handlerPurpose(): string {
+    return "Call the user service create endpoint with the hydrated UserDto bag while leaving ctx['bag'] untouched.";
+  }
+
   protected override async execute(): Promise<void> {
-    const requestId = this.ctx.get<string>("requestId");
-    const bag = this.ctx.get<UserBag | undefined>("bag");
-
-    if (!bag) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "auth_signup_missing_user_bag",
-        detail:
-          "Auth signup pipeline expected ctx['bag'] to contain a DtoBag<UserDto> before calling user.create. " +
-          "Dev: ensure HydrateUserBagHandler ran and stored the bag under ctx['bag'].",
-        status: 500,
-        code: "AUTH_SIGNUP_MISSING_USER_BAG",
-        requestId,
-      });
-      return;
-    }
-
-    // Get AppBase and env label from the rails.
-    const controller = this.controller;
-    const app = controller.getApp() as {
-      getEnvLabel?: () => string;
-      getSvcClient?: () => unknown;
-    };
-
-    if (!app || typeof app.getEnvLabel !== "function") {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "auth_signup_env_unavailable",
-        detail:
-          "Auth signup could not resolve the environment label from AppBase. " +
-          "Dev/Ops: ensure AuthApp extends AppBase and that getEnvLabel() is exposed correctly.",
-        status: 500,
-        code: "AUTH_SIGNUP_ENV_UNAVAILABLE",
-        requestId,
-      });
-      return;
-    }
-
-    const env = app.getEnvLabel();
-    if (!env) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "auth_signup_env_empty",
-        detail:
-          "Auth signup resolved an empty environment label from AppBase.getEnvLabel(). " +
-          "Ops: verify envBootstrap/env-service configuration for this service.",
-        status: 500,
-        code: "AUTH_SIGNUP_ENV_EMPTY",
-        requestId,
-      });
-      return;
-    }
-
-    if (typeof app.getSvcClient !== "function") {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "auth_signup_svcclient_unavailable",
-        detail:
-          "Auth signup could not obtain SvcClient from the application rails. " +
-          "Dev: ensure AppBase wiring exposes getSvcClient() for MOS-style handlers.",
-        status: 500,
-        code: "AUTH_SIGNUP_SVCCLIENT_UNAVAILABLE",
-        requestId,
-      });
-      return;
-    }
-
-    const svcClient = app.getSvcClient() as {
-      call: (opts: {
-        env: string;
-        slug: string;
-        version: number;
-        dtoType: string;
-        op: string;
-        method: string;
-        bag: UserBag;
-        requestId?: string;
-      }) => Promise<UserBag>;
-    };
+    const requestId = this.safeCtxGet<string>("requestId");
 
     this.log.debug(
       {
+        event: "execute_enter",
+        handler: this.constructor.name,
         requestId,
-        env,
       },
-      "auth.signup.callUserCreate: calling user.create via SvcClient"
+      "auth.signup.callUserCreate: enter handler"
     );
 
+    let env: string | undefined;
+
     try {
-      // DTO-based path: user service CRUD rails.
-      const returnedBag = await svcClient.call({
-        env,
-        slug: "user", // target worker service slug
-        version: 1, // user service major version
-        dtoType: "user", // dtoType in URL: /api/user/v1/user/create
-        op: "create",
-        method: "PUT",
-        bag,
-        requestId,
-      });
+      const bag = this.safeCtxGet<UserBag>("bag");
 
-      // Immediate fix invariant:
-      // - HydrateUserBagHandler is the ONLY writer of ctx["bag"].
-      // - This handler must NOT reassign ctx["bag"].
-      //
-      // If SvcClient.call() mutates the passed-in bag instance, finalize()
-      // will already see the persisted view. If it returns a new instance,
-      // finalize() will still see the original hydrated view, which is
-      // acceptable for MOS v1.
-      void returnedBag;
+      if (!bag) {
+        const status: UserCreateStatus = {
+          ok: false,
+          code: "AUTH_SIGNUP_MISSING_USER_BAG",
+          message: "Ctx['bag'] was empty before user.create.",
+        };
+        this.ctx.set("signup.userCreateStatus", status);
 
-      this.log.info(
+        this.failWithError({
+          httpStatus: 500,
+          title: "auth_signup_missing_user_bag",
+          detail:
+            "Auth signup pipeline expected ctx['bag'] to contain a DtoBag<UserDto> before calling user.create. " +
+            "Dev: ensure HydrateUserBagHandler ran and stored the bag under ctx['bag'].",
+          stage: "inputs.userBag",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [{ hasBag: !!bag }],
+          logMessage:
+            "auth.signup.callUserCreate: ctx['bag'] missing before user.create.",
+          logLevel: "error",
+        });
+        return;
+      }
+
+      // Get AppBase and env label from the rails.
+      const controller = this.controller;
+      const app = controller.getApp() as {
+        getEnvLabel?: () => string;
+        getSvcClient?: () => unknown;
+      };
+
+      if (!app || typeof app.getEnvLabel !== "function") {
+        const status: UserCreateStatus = {
+          ok: false,
+          code: "AUTH_SIGNUP_ENV_UNAVAILABLE",
+          message: "AuthApp.getEnvLabel() was not available.",
+        };
+        this.ctx.set("signup.userCreateStatus", status);
+
+        this.failWithError({
+          httpStatus: 500,
+          title: "auth_signup_env_unavailable",
+          detail:
+            "Auth signup could not resolve the environment label from AppBase. " +
+            "Dev/Ops: ensure AuthApp extends AppBase and that getEnvLabel() is exposed correctly.",
+          stage: "config.app.envLabel",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [{ hasApp: !!app, hasGetEnvLabel: !!app?.getEnvLabel }],
+          logMessage:
+            "auth.signup.callUserCreate: getEnvLabel() not available on app.",
+          logLevel: "error",
+        });
+        return;
+      }
+
+      env = app.getEnvLabel();
+      if (!env) {
+        const status: UserCreateStatus = {
+          ok: false,
+          code: "AUTH_SIGNUP_ENV_EMPTY",
+          message: "AppBase.getEnvLabel() returned an empty env label.",
+        };
+        this.ctx.set("signup.userCreateStatus", status);
+
+        this.failWithError({
+          httpStatus: 500,
+          title: "auth_signup_env_empty",
+          detail:
+            "Auth signup resolved an empty environment label from AppBase.getEnvLabel(). " +
+            "Ops: verify envBootstrap/env-service configuration for this service.",
+          stage: "config.app.envLabel.empty",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [{ env }],
+          logMessage:
+            "auth.signup.callUserCreate: empty env label from getEnvLabel().",
+          logLevel: "error",
+        });
+        return;
+      }
+
+      if (typeof app.getSvcClient !== "function") {
+        const status: UserCreateStatus = {
+          ok: false,
+          code: "AUTH_SIGNUP_SVCCLIENT_UNAVAILABLE",
+          message: "AppBase.getSvcClient() was not available.",
+        };
+        this.ctx.set("signup.userCreateStatus", status);
+
+        this.failWithError({
+          httpStatus: 500,
+          title: "auth_signup_svcclient_unavailable",
+          detail:
+            "Auth signup could not obtain SvcClient from the application rails. " +
+            "Dev: ensure AppBase wiring exposes getSvcClient() for MOS-style handlers.",
+          stage: "config.app.svcClient",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [{ hasGetSvcClient: !!app.getSvcClient }],
+          logMessage:
+            "auth.signup.callUserCreate: getSvcClient() not available on app.",
+          logLevel: "error",
+        });
+        return;
+      }
+
+      // NOTE: SvcClient.call signature is intentionally a bit generic here so it
+      // can be reused by the rollback handler for delete operations.
+      const svcClient = app.getSvcClient() as {
+        call: <TBag>(opts: {
+          env: string;
+          slug: string;
+          version: number;
+          dtoType: string;
+          op: string;
+          method: string;
+          bag?: TBag;
+          id?: string;
+          requestId?: string;
+        }) => Promise<TBag>;
+      };
+
+      const signupUserId = this.safeCtxGet<string>("signup.userId");
+
+      this.log.debug(
         {
+          event: "svcclient_call_start",
           requestId,
           env,
+          signupUserId,
           slug: "user",
           op: "create",
         },
-        "auth.signup.callUserCreate: user.create succeeded"
+        "auth.signup.callUserCreate: calling user.create via SvcClient"
       );
 
-      this.ctx.set("handlerStatus", "success");
+      // ---- External S2S call to user worker --------------------------------
+      try {
+        const returnedBag = await svcClient.call<UserBag>({
+          env,
+          slug: "user", // target worker service slug
+          version: 1, // user service major version
+          dtoType: "user", // dtoType in URL: /api/user/v1/user/create
+          op: "create",
+          method: "PUT",
+          bag,
+          requestId,
+        });
+
+        // HydrateUserBagHandler is the ONLY writer of ctx["bag"].
+        // We explicitly do not reassign it here.
+        void returnedBag;
+
+        const status: UserCreateStatus = {
+          ok: true,
+          userId: signupUserId,
+        };
+        this.ctx.set("signup.userCreateStatus", status);
+
+        this.log.info(
+          {
+            event: "svcclient_call_ok",
+            requestId,
+            env,
+            slug: "user",
+            op: "create",
+            userId: signupUserId ?? null,
+          },
+          "auth.signup.callUserCreate: user.create succeeded"
+        );
+
+        this.ctx.set("handlerStatus", "ok");
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : String(err ?? "Unknown error");
+
+        const status: UserCreateStatus = {
+          ok: false,
+          code: "AUTH_SIGNUP_USER_CREATE_FAILED",
+          message,
+        };
+        this.ctx.set("signup.userCreateStatus", status);
+
+        this.failWithError({
+          httpStatus: 502,
+          title: "auth_signup_user_create_failed",
+          detail:
+            "Auth signup failed while calling the user service create endpoint. " +
+            "Ops: check user service health, svcconfig routing for slug='user', and Mongo connectivity.",
+          stage: "s2s.userCreate",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [
+            {
+              env,
+              slug: "user",
+              op: "create",
+            },
+          ],
+          rawError: err,
+          logMessage:
+            "auth.signup.callUserCreate: user.create S2S call failed.",
+          logLevel: "error",
+        });
+      }
     } catch (err) {
-      const message = (err as Error)?.message ?? "Unknown error";
-
-      this.log.error(
-        {
-          requestId,
-          env,
-          slug: "user",
-          op: "create",
-          error: message,
-        },
-        "auth.signup.callUserCreate: user.create failed"
-      );
-
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 502);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "auth_signup_user_create_failed",
+      // Catch-all for unexpected bugs inside the handler.
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_user_create_handler_failure",
         detail:
-          "Auth signup failed while calling the user service create endpoint. " +
-          "Ops: check user service health, svcconfig routing for slug='user', and Mongo connectivity.",
-        status: 502,
-        code: "AUTH_SIGNUP_USER_CREATE_FAILED",
+          "Unhandled exception while orchestrating auth signup user.create call. Ops: inspect logs for requestId and stack frame.",
+        stage: "execute.unhandled",
         requestId,
-        error: message,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        rawError: err,
+        logMessage:
+          "auth.signup.callUserCreate: unhandled exception in handler.",
+        logLevel: "error",
       });
     }
+
+    this.log.debug(
+      {
+        event: "execute_end",
+        handler: this.constructor.name,
+        requestId,
+        handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "ok",
+      },
+      "auth.signup.callUserCreate: exit handler"
+    );
   }
 }

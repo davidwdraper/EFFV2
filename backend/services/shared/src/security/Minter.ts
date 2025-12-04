@@ -15,14 +15,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-
-/** Minimal logger shape to avoid coupling. */
-type LoggerLike = {
-  debug?: (o: Record<string, unknown>, msg?: string) => void;
-  info?: (o: Record<string, unknown>, msg?: string) => void;
-  warn?: (o: Record<string, unknown>, msg?: string) => void;
-  error?: (o: Record<string, unknown>, msg?: string) => void;
-};
+import type { IBoundLogger } from "../logger/Logger";
 
 /** Contract for any JWT signer used by the Minter. */
 export interface IJwtSigner {
@@ -73,12 +66,12 @@ export type MintResult = {
 export class Minter {
   private readonly signer: IJwtSigner;
   private readonly now: () => number;
-  private readonly log?: LoggerLike;
+  private readonly log?: IBoundLogger;
 
   constructor(deps: {
     signer: IJwtSigner;
     now?: () => number;
-    log?: LoggerLike;
+    log?: IBoundLogger;
   }) {
     if (!deps || !deps.signer) throw new Error("[Minter] signer is required");
     this.signer = deps.signer;
@@ -126,7 +119,7 @@ export class Minter {
     // Merge extra claims without clobbering registered ones
     const claims = Object.freeze({ ...(opts.extra ?? {}), ...baseClaims });
 
-    this.log?.debug?.(
+    this.log?.debug(
       {
         kid: String(header.kid),
         alg: String(header.alg),
@@ -138,7 +131,7 @@ export class Minter {
 
     const jwt = await this.signer.sign(header, claims);
 
-    this.log?.info?.(
+    this.log?.info(
       {
         kid: String(header.kid),
         alg: String(header.alg),

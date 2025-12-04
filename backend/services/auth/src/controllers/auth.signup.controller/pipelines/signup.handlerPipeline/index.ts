@@ -7,36 +7,46 @@
  * - Define ordered handler steps for dtoType "user" SIGNUP.
  * - Auth acts as a MOS: it coordinates User + UserAuth, instead of owning its own DTO.
  *
- * Current Flow (MOS v1, with outbound S2S):
- *  1) HydrateUserBagHandler
+ * Flow (MOS v1, with outbound S2S + token mint + compensating rollback):
+ *  1) BuildSignupUserIdHandler
+ *     - Decide the canonical user id for signup; stash on ctx["signup.userId"].
+ *  2) HydrateUserBagHandler
  *     - Validate wire bag envelope; hydrate UserDto via Registry;
  *       put DtoBag<UserDto> on ctx["bag"].
- *  2) ExtractPasswordHandler
+ *  3) ExtractPasswordHandler
  *     - Read password from header; validate; stash safely on
  *       ctx["signup.password"] (or ctx["signup.passwordClear"], by convention).
- *  3) GeneratePasswordHashHandler
+ *  4) GeneratePasswordHashHandler
  *     - Derive hash + salt/params from the cleartext password.
  *     - Store on:
  *         ctx["signup.hash"]
  *         ctx["signup.hashAlgo"]
  *         ctx["signup.hashParamsJson"]
  *         ctx["signup.passwordCreatedAt"]
- *  4) CallUserCreateHandler
+ *  5) CallUserCreateHandler
  *     - Use the hydrated DtoBag<UserDto> on ctx["bag"] to call the `user`
  *       service's create operation via SvcClient.call().
  *     - On success, ctx["bag"] MUST still be a DtoBag<UserDto> so finalize()
  *       can return the user profile to the client.
- *  5) CallUserAuthCreateHandler
- *     - Use ctx["signup.userId"] (or id from the created UserDto bag) plus the
- *       hash metadata from step 3 to build a UserAuthDto via
- *       registry.newUserAuthDto() and its setters.
+ *     - Stamps ctx["signup.userCreateStatus"] with { ok: true/false, ... }.
+ *  6) CallUserAuthCreateHandler
+ *     - Use ctx["signup.userId"] plus the hash metadata from step 4 to build
+ *       a UserAuthDto via registry.newUserAuthDto() and its setters.
  *     - Wrap in a DtoBag<UserAuthDto> and call the `user-auth` worker's
  *       create operation via SvcClient.call().
  *     - Does NOT change ctx["bag"]; the edge response remains the UserDto bag.
- *
- * Future Flow (partial failure semantics):
- *  - If user-auth.create fails after user.create succeeds, future ADR will add a
- *    compensating delete on the user record and loud WAL/audit logs.
+ *     - Stamps ctx["signup.userAuthCreateStatus"] with { ok: true/false, ... }.
+ *  7) MintUserAuthTokenHandler
+ *     - If both user and user-auth create succeeded, mint a KMS-signed auth
+ *       JWT and stash it on ctx["signup.jwt"] + timing fields so the
+ *       controller/finalizer can surface it to the client.
+ *     - On failure, does NOT roll back persistence; it switches the pipeline
+ *       to error state and emits a Problem+JSON response.
+ *  8) RollbackUserOnAuthCreateFailureHandler
+ *     - If user.create succeeded but user-auth.create failed and the pipeline
+ *       is in an error state, perform a compensating user.delete via S2S call
+ *       to the user service and emit a Problem+JSON response that reflects the
+ *       rollback outcome.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -48,6 +58,8 @@ import { ExtractPasswordHandler } from "./extractPassword.handler";
 import { GeneratePasswordHashHandler } from "./generatePasswordHash.handler";
 import { CallUserCreateHandler } from "./callUserCreate.handler";
 import { CallUserAuthCreateHandler } from "./callUserAuthCreate.handler";
+import { MintUserAuthTokenHandler } from "./mintUserAuthToken.handler";
+import { RollbackUserOnAuthCreateFailureHandler } from "./rollbackUserOnAuthCreateFailure.handler";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // S2S metadata: used by handlers (or future policy gates) if needed.
@@ -63,5 +75,7 @@ export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
     new GeneratePasswordHashHandler(ctx, controller),
     new CallUserCreateHandler(ctx, controller),
     new CallUserAuthCreateHandler(ctx, controller),
+    new MintUserAuthTokenHandler(ctx, controller),
+    new RollbackUserOnAuthCreateFailureHandler(ctx, controller),
   ];
 }

@@ -30,8 +30,8 @@
  *   - MUST NOT set ctx["response.body"] on success.
  * - On error:
  *   - ctx["handlerStatus"] MUST be "error".
- *   - MUST set ctx["response.status"] (HTTP status code).
- *   - MUST set ctx["response.body"] (problem+json-style object).
+ *   - ctx["status"] MUST be set (HTTP status code).
+ *   - ctx["error"] MUST carry an NvHandlerError (ProblemDetails source).
  *
  * Notes:
  * - Env is obtained via HandlerBase.getVar("NV_MONGO_URI"/"NV_MONGO_DB"),
@@ -48,28 +48,49 @@ export class DbReadListHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_enter" }, "dbRead.list enter");
+  /**
+   * One-sentence, ops-facing description of what this handler does.
+   */
+  protected handlerPurpose(): string {
+    return "Read a deterministic list batch via DbReader and attach the resulting DtoBag to ctx['bag'] with cursor hints.";
+  }
 
-    const requestId =
-      (this.ctx.get<string>("requestId") as string | undefined) ?? "unknown";
+  protected override async execute(): Promise<void> {
+    const requestId = this.safeCtxGet<string>("requestId");
+
+    this.log.debug(
+      {
+        event: "execute_enter",
+        handler: this.constructor.name,
+        requestId,
+      },
+      "dbRead.list enter"
+    );
 
     // --- Required DTO ctor ---------------------------------------------------
-    const dtoCtor = this.ctx.get<any>("list.dtoCtor");
+    const dtoCtor = this.safeCtxGet<any>("list.dtoCtor");
     if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "DTO_CTOR_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "dto_ctor_missing",
         detail:
-          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromBody().",
+          "DTO constructor missing in ctx['list.dtoCtor'] or missing static fromBody(). Ops: upstream pipeline must set list.dtoCtor to the DTO class.",
+        stage: "config.dtoCtor",
         requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            hasDtoCtor: !!dtoCtor,
+            hasFromBody: !!dtoCtor?.fromBody,
+          },
+        ],
+        logMessage:
+          "dbRead.list — DTO ctor missing or invalid (ctx['list.dtoCtor']).",
+        logLevel: "error",
       });
-      this.log.error(
-        { event: "dtoCtor_missing", hasDtoCtor: !!dtoCtor, requestId },
-        "list setup missing DTO ctor"
-      );
       return;
     }
 
@@ -78,31 +99,34 @@ export class DbReadListHandler extends HandlerBase {
     const mongoDb = this.getVar("NV_MONGO_DB");
 
     if (!mongoUri || !mongoDb) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "MONGO_ENV_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "mongo_env_missing",
         detail:
           "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
+        stage: "config.mongoEnv",
         requestId,
-      });
-      this.log.error(
-        {
-          event: "mongo_env_missing",
-          mongoUriPresent: !!mongoUri,
-          mongoDbPresent: !!mongoDb,
-          requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
         },
-        "list aborted — Mongo env config missing"
-      );
+        issues: [
+          {
+            mongoUriPresent: !!mongoUri,
+            mongoDbPresent: !!mongoDb,
+          },
+        ],
+        logMessage:
+          "dbRead.list aborted — Mongo env config missing (NV_MONGO_URI / NV_MONGO_DB).",
+        logLevel: "error",
+      });
       return;
     }
 
     // --- Filter + pagination -------------------------------------------------
     const filter =
-      (this.ctx.get("list.filter") as Record<string, unknown>) ?? {};
-    const q = (this.ctx.get("query") as Record<string, unknown>) ?? {};
+      (this.safeCtxGet("list.filter") as Record<string, unknown>) ?? {};
+    const q = (this.safeCtxGet("query") as Record<string, unknown>) ?? {};
 
     const DEFAULT_LIMIT = 50;
     const MAX_LIMIT = 1000;
@@ -119,8 +143,9 @@ export class DbReadListHandler extends HandlerBase {
     const cursor =
       typeof q.cursor === "string" && q.cursor.trim() ? q.cursor.trim() : null;
 
+    // --- Reader + batch read (external edge) --------------------------------
+    let collectionName = "";
     try {
-      // --- Reader + batch read -----------------------------------------------
       const reader = new DbReader<any>({
         dtoCtor,
         mongoUri,
@@ -129,10 +154,12 @@ export class DbReadListHandler extends HandlerBase {
       });
 
       const tgt = await reader.targetInfo();
+      collectionName = tgt.collectionName;
+
       this.log.debug(
         {
           event: "list_target",
-          collection: tgt.collectionName,
+          collection: collectionName,
           limit,
           hasCursor: !!cursor,
           requestId,
@@ -152,15 +179,14 @@ export class DbReadListHandler extends HandlerBase {
       // Pagination hints for finalize().
       this.ctx.set("list.limitUsed", limit);
       if (nextCursor) {
-        // Namespaced + generic so finalize() and tests can see it.
         this.ctx.set("list.nextCursor", nextCursor);
         this.ctx.set("nextCursor", nextCursor);
       }
 
       const count =
-        typeof bag.count === "function"
-          ? bag.count()
-          : Array.from(bag.items?.() ?? []).length;
+        typeof (bag as any).count === "function"
+          ? (bag as any).count()
+          : Array.from((bag as any).items?.() ?? []).length;
 
       this.ctx.set("handlerStatus", "ok");
 
@@ -170,44 +196,64 @@ export class DbReadListHandler extends HandlerBase {
           count,
           hasNext: !!nextCursor,
           limit,
+          collection: collectionName,
           requestId,
         },
-        "list batch read complete"
+        "dbRead.list — batch read complete"
       );
-    } catch (err: any) {
-      const msg = err?.message ?? String(err ?? "");
+    } catch (err) {
+      const msg =
+        (err as Error)?.message ??
+        (typeof err === "string" ? err : String(err ?? ""));
 
       // Special-case bad cursor → client error, not server error.
       if (typeof msg === "string" && msg.startsWith("CURSOR_DECODE_INVALID")) {
-        this.ctx.set("handlerStatus", "error");
-        this.ctx.set("response.status", 400);
-        this.ctx.set("response.body", {
-          code: "INVALID_CURSOR",
-          title: "Invalid Cursor",
+        this.failWithError({
+          httpStatus: 400,
+          title: "invalid_cursor",
           detail: msg,
+          stage: "db.readBatch.cursorDecode",
           requestId,
-        });
-        this.log.warn(
-          {
-            event: "invalid_cursor",
-            requestId,
-            message: msg,
+          origin: {
+            file: __filename,
+            method: "execute",
+            collection: collectionName || undefined,
           },
-          "dbRead.list — invalid cursor rejected"
-        );
-      } else {
-        this.ctx.set("handlerStatus", "error");
-        this.ctx.set("response.status", 500);
-        this.ctx.set("response.body", {
-          code: "DB_READ_FAILED",
-          title: "Internal Error",
-          detail: msg,
-          requestId,
+          issues: [
+            {
+              cursor,
+              limit,
+            },
+          ],
+          rawError: err,
+          logMessage:
+            "dbRead.list — invalid cursor rejected (CURSOR_DECODE_INVALID...).",
+          logLevel: "warn",
         });
-        this.log.error(
-          { event: "list_read_error", err: msg, requestId },
-          "dbRead.list — read failed"
-        );
+      } else {
+        this.failWithError({
+          httpStatus: 500,
+          title: "db_read_failed",
+          detail: msg,
+          stage: "db.readBatch",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+            collection: collectionName || undefined,
+          },
+          issues: [
+            {
+              cursor,
+              limit,
+              filter,
+            },
+          ],
+          rawError: err,
+          logMessage:
+            "dbRead.list — unexpected error during DbReader.readBatch().",
+          logLevel: "error",
+        });
       }
     }
   }

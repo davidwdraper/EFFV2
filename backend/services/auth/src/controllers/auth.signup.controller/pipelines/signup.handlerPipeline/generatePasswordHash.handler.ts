@@ -34,98 +34,155 @@ export class GeneratePasswordHashHandler extends HandlerBase {
     super(ctx, controller);
   }
 
+  protected handlerPurpose(): string {
+    return "Derive a password hash, salt, and metadata from a cleartext signup password and stash only the hashed credentials on the context.";
+  }
+
   protected override async execute(): Promise<void> {
-    const requestId = this.ctx.get<string>("requestId");
-    const passwordClear = this.ctx.get<string | undefined>(
-      "signup.passwordClear"
-    );
+    const requestId = this.safeCtxGet<string>("requestId");
 
-    if (!passwordClear) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "auth_signup_missing_password",
-        detail:
-          "Auth signup pipeline expected ctx['signup.passwordClear'] to contain the cleartext password before hashing. " +
-          "Dev: ensure extractPassword.handler.ts ran and stored the password under ctx['signup.passwordClear'].",
-        status: 500,
-        code: "AUTH_SIGNUP_MISSING_PASSWORD",
-        requestId,
-      });
-      return;
-    }
-
-    // Do NOT log the password itself.
     this.log.debug(
       {
+        event: "execute_enter",
+        handler: this.constructor.name,
         requestId,
       },
-      "auth.signup.generatePasswordHash: deriving salt and hash"
+      "auth.signup.generatePasswordHash: enter handler"
     );
 
     try {
-      // 16 bytes of random salt, hex-encoded.
-      const saltBytes = randomBytes(16);
-      const saltHex = saltBytes.toString("hex");
+      const passwordClear =
+        this.safeCtxGet<string>("signup.passwordClear") ?? undefined;
 
-      // Derive a key using scrypt. Parameters are fixed so behavior is identical across envs.
-      const keyLen = 64;
-      const key = scryptSync(passwordClear, saltHex, keyLen);
-      const hashHex = key.toString("hex");
+      if (!passwordClear) {
+        this.failWithError({
+          httpStatus: 500,
+          title: "auth_signup_missing_password",
+          detail:
+            "Auth signup pipeline expected ctx['signup.passwordClear'] to contain the cleartext password before hashing. " +
+            "Dev: ensure ExtractPasswordHandler ran and stored the password under ctx['signup.passwordClear'].",
+          stage: "inputs.passwordClear",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [{ hasPasswordClear: !!passwordClear }],
+          logMessage:
+            "auth.signup.generatePasswordHash: ctx['signup.passwordClear'] missing before hashing.",
+          logLevel: "error",
+        });
+        return;
+      }
 
-      const hashAlgo = "scrypt";
-      const passwordCreatedAt = new Date().toISOString();
-
-      const hashParams = {
-        saltHex,
-        keyLen,
-        algo: hashAlgo,
-      };
-
-      const hashParamsJson = JSON.stringify(hashParams);
-
-      // Store results for downstream handlers.
-      this.ctx.set("signup.hash", hashHex);
-      this.ctx.set("signup.hashAlgo", hashAlgo);
-      this.ctx.set("signup.hashParamsJson", hashParamsJson);
-      this.ctx.set("signup.passwordCreatedAt", passwordCreatedAt);
-
-      // Optionally clear the cleartext password to reduce blast radius.
-      this.ctx.set("signup.passwordClear", undefined);
-
-      this.log.info(
+      // Do NOT log the password itself.
+      this.log.debug(
         {
+          event: "hash_start",
+          handler: this.constructor.name,
           requestId,
         },
-        "auth.signup.generatePasswordHash: password hash and metadata derived"
+        "auth.signup.generatePasswordHash: deriving salt and hash"
       );
 
-      this.ctx.set("handlerStatus", "success");
+      try {
+        // 16 bytes of random salt, hex-encoded.
+        const saltBytes = randomBytes(16);
+        const saltHex = saltBytes.toString("hex");
+
+        // Derive a key using scrypt. Parameters are fixed so behavior is identical across envs.
+        const keyLen = 64;
+        const key = scryptSync(passwordClear, saltHex, keyLen);
+        const hashHex = key.toString("hex");
+
+        const hashAlgo = "scrypt";
+        const passwordCreatedAt = new Date().toISOString();
+
+        const hashParams = {
+          saltHex,
+          keyLen,
+          algo: hashAlgo,
+        };
+
+        const hashParamsJson = JSON.stringify(hashParams);
+
+        // Store results for downstream handlers.
+        this.ctx.set("signup.hash", hashHex);
+        this.ctx.set("signup.hashAlgo", hashAlgo);
+        this.ctx.set("signup.hashParamsJson", hashParamsJson);
+        this.ctx.set("signup.passwordCreatedAt", passwordCreatedAt);
+
+        // Clear the cleartext password to reduce blast radius.
+        this.ctx.set("signup.passwordClear", undefined);
+
+        this.log.info(
+          {
+            event: "hash_complete",
+            handler: this.constructor.name,
+            requestId,
+            algo: hashAlgo,
+            keyLen,
+          },
+          "auth.signup.generatePasswordHash: password hash and metadata derived"
+        );
+
+        this.ctx.set("handlerStatus", "ok");
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : String(err ?? "Unknown error");
+
+        this.failWithError({
+          httpStatus: 500,
+          title: "auth_signup_hash_failed",
+          detail:
+            "Auth signup failed while hashing the supplied password. " +
+            "Ops: check Node crypto availability and container entropy sources.",
+          stage: "hash.derive",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          issues: [
+            {
+              algo: "scrypt",
+              keyLen: 64,
+            },
+          ],
+          rawError: err,
+          logMessage:
+            "auth.signup.generatePasswordHash: scrypt-based password hashing failed.",
+          logLevel: "error",
+        });
+      }
     } catch (err) {
-      const message = (err as Error)?.message ?? "Unknown error";
-
-      this.log.error(
-        {
-          requestId,
-          error: message,
-        },
-        "auth.signup.generatePasswordHash: hashing failed"
-      );
-
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "auth_signup_hash_failed",
+      // Catch-all for unexpected bugs inside the handler.
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_hash_handler_failure",
         detail:
-          "Auth signup failed while hashing the supplied password. " +
-          "Ops: check Node crypto availability and container entropy sources.",
-        status: 500,
-        code: "AUTH_SIGNUP_HASH_FAILED",
+          "Unhandled exception while deriving the password hash. Ops: inspect logs for requestId and stack frame.",
+        stage: "execute.unhandled",
         requestId,
-        error: message,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        rawError: err,
+        logMessage:
+          "auth.signup.generatePasswordHash: unhandled exception in handler.",
+        logLevel: "error",
       });
     }
+
+    this.log.debug(
+      {
+        event: "execute_end",
+        handler: this.constructor.name,
+        requestId,
+        handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "ok",
+      },
+      "auth.signup.generatePasswordHash: exit handler"
+    );
   }
 }

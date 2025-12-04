@@ -8,32 +8,24 @@
  *   - ADR-0043 (Finalize mapping; controller builds wire payload)
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="_id")
+ *   - ADR-0057 (ID Generation & Validation — UUIDv4 only)
+ *   - ADR-0063 (Auth Signup MOS Pipeline)
  *
  * Purpose:
- * - For auth.signup, hydrate a singleton DtoBag<UserDto> from the inbound wire bag.
- * - This handler is MOS-local and does NOT use the DTO registry; it calls
- *   UserDto.fromBody(...) directly because signup is always for users.
+ * - Hydrate a singleton DtoBag<UserDto> from the inbound wire bag.
+ * - Apply the canonical userId minted earlier in the pipeline (ctx["signup.userId"])
+ *   via UserDto.setIdOnce().
  *
- * Inputs (ctx):
- * - "dtoType": string (expected: "user")
- * - "body": {
- *     items: [ { type: "user", ...UserJson } ],
- *     meta?: object
- *   }
- *
- * Outputs (ctx on success):
- * - "bag": DtoBag<UserDto> (singleton)
- * - "handlerStatus": "ok"
- *
- * Errors (ctx):
- * - "handlerStatus": "error"
- * - "response.status": 4xx/5xx
- * - "response.body": ProblemDetails-like payload with Ops guidance
+ * Invariants:
+ * - Auth MOS owns id minting. UserDto never invents ids.
+ * - ctx["signup.userId"] MUST be set by BuildSignupUserIdHandler.
+ * - setIdOnce() enforces UUIDv4, immutability, and consistency across User/UserAuth.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { BagItemWire } from "@nv/shared/registry/RegistryBase";
+
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { UserDto, type UserJson } from "@nv/shared/dto/user.dto";
 
@@ -56,9 +48,40 @@ export class HydrateUserBagHandler extends HandlerBase {
       "signup.hydrateUserBag: enter handler"
     );
 
+    // ───────────────────────────────────────────────────────────────
+    // 0) Ensure signup.userId exists from BuildSignupUserIdHandler
+    // ───────────────────────────────────────────────────────────────
+    const userId = this.ctx.get<string | undefined>("signup.userId");
+
+    if (!userId) {
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", 500);
+      this.ctx.set("response.body", {
+        code: "SIGNUP_USER_ID_MISSING",
+        title: "Internal Server Error",
+        detail:
+          "Auth signup expected ctx['signup.userId'] to be populated before hydration. " +
+          "Dev: ensure BuildSignupUserIdHandler ran first in the pipeline.",
+        requestId,
+      });
+
+      this.log.error(
+        {
+          event: "signup_user_id_missing",
+          dtoType,
+          requestId,
+        },
+        "signup.hydrateUserBag: ctx['signup.userId'] missing before hydration"
+      );
+
+      return;
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // 1) Wire-bag shape validation
+    // ───────────────────────────────────────────────────────────────
     const body = this.ctx.get<any>("body");
 
-    // ───── Basic wire-bag shape checks ─────
     if (!body || !Array.isArray(body.items)) {
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", 400);
@@ -149,12 +172,16 @@ export class HydrateUserBagHandler extends HandlerBase {
       return;
     }
 
-    // ───── DTO hydration (direct UserDto.fromBody) ─────
+    // ───────────────────────────────────────────────────────────────
+    // 2) DTO hydration and id injection via setIdOnce()
+    // ───────────────────────────────────────────────────────────────
     try {
-      // Treat the wire item as UserJson; DTO handles validation and normalization.
       const dto = UserDto.fromBody(item as Partial<UserJson>, {
         validate: true,
       });
+
+      // Immutable id assignment (ADR-0057)
+      dto.setIdOnce(userId);
 
       const { bag } = BagBuilder.fromDtos([dto], {
         requestId,
@@ -173,12 +200,12 @@ export class HydrateUserBagHandler extends HandlerBase {
           requestId,
           bagSize: bag.size(),
         },
-        "signup.hydrateUserBag: populated ctx['bag'] with singleton UserDto bag"
+        "signup.hydrateUserBag: populated ctx['bag'] with singleton UserDto bag (id applied)"
       );
     } catch (err) {
       const message =
         (err as Error)?.message ??
-        "Failed to hydrate UserDto from inbound payload.";
+        "Failed to hydrate UserDto or apply id via setIdOnce().";
 
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", 400);
@@ -194,7 +221,7 @@ export class HydrateUserBagHandler extends HandlerBase {
           event: "user_dto_validation_failed",
           error: message,
         },
-        "signup.hydrateUserBag: UserDto.fromBody() validation failed"
+        "signup.hydrateUserBag: UserDto.fromBody() or setIdOnce() validation failed"
       );
     }
   }

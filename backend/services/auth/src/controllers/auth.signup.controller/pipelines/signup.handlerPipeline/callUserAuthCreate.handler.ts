@@ -25,7 +25,8 @@
  *   `user-auth` worker.
  * - DTO type `user-auth` MUST be registered in the DTO registry, and
  *   created via Registry.newUserAuthDto().
- * - On success, ctx["bag"] contains the returned DtoBag<UserAuthDto>.
+ * - This handler NEVER calls ctx.set("bag", ...); the edge response remains
+ *   the UserDto bag seeded by HydrateUserBagHandler.
  * - On failure, sets handlerStatus="error" and a Problem+JSON payload.
  */
 
@@ -256,8 +257,12 @@ export class CallUserAuthCreateHandler extends HandlerBase {
         requestId,
       });
 
-      // On success, treat the returned UserAuthDto bag as the canonical view.
-      this.ctx.set("bag", returnedBag);
+      // Immediate fix invariant:
+      // - HydrateUserBagHandler is the ONLY writer of ctx["bag"].
+      // - This MOS handler must NOT reassign ctx["bag"].
+      //
+      // The returned UserAuth bag is used purely as an internal S2S result.
+      void returnedBag;
 
       this.log.info(
         {

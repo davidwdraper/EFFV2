@@ -14,7 +14,8 @@
  * - Build deterministic filter for svcconfig listAll.
  * - Enforce:
  *     • Always: env + isEnabled:true
- *     • Only if caller is gateway: isGatewayTarget:true
+ *     • For non-gateway callers: isS2STarget:true
+ *     • Only if caller is gateway: isGatewayTarget:true (public edge routes)
  * - listAll remains fully server-controlled, no client filters applied.
  */
 
@@ -55,7 +56,7 @@ export class ListAllFilterHandler extends HandlerBase {
       return;
     }
 
-    // Determine if caller is the gateway (x-service-name propagated via SvcClient)
+    // Determine caller (x-service-name propagated via SvcClient)
     const callerServiceName =
       (this.ctx.get("caller.serviceName") as string | undefined) || undefined;
     const isGatewayCaller = callerServiceName === "gateway";
@@ -66,12 +67,18 @@ export class ListAllFilterHandler extends HandlerBase {
       isEnabled: true,
     };
 
-    // Only enforce gateway-targeted configs when caller *is* gateway
+    // For non-gateway callers we care about S2S targets (worker-to-worker rails)
+    if (!isGatewayCaller) {
+      filter.isS2STarget = true;
+    }
+
+    // For gateway, restrict to public gateway targets
     if (isGatewayCaller) {
       filter.isGatewayTarget = true;
     }
 
     if (version) {
+      // Version is optional and env-controlled; only apply if present
       filter.version = version;
     }
 
@@ -85,7 +92,8 @@ export class ListAllFilterHandler extends HandlerBase {
     // listAll → non-paged HTTP semantics; ensure large enough internal limit
     const q = (this.ctx.get("query") as Record<string, unknown>) ?? {};
     if (q.limit === undefined) {
-      q.limit = 1000; // bounded; DbReadListHandler enforces MAX_LIMIT safely
+      // bounded; DbReadListHandler enforces MAX_LIMIT safely
+      q.limit = 1000;
       this.ctx.set("query", q);
     }
 

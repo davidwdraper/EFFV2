@@ -42,6 +42,7 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
+import { BuildSignupUserIdHandler } from "./buildSignupUserId.handler";
 import { HydrateUserBagHandler } from "./hydrateUserBag.handler";
 import { ExtractPasswordHandler } from "./extractPassword.handler";
 import { GeneratePasswordHashHandler } from "./generatePasswordHash.handler";
@@ -56,6 +57,7 @@ export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   ctx.set("s2s.version.userAuth", "v1");
 
   return [
+    new BuildSignupUserIdHandler(ctx, controller),
     new HydrateUserBagHandler(ctx, controller),
     new ExtractPasswordHandler(ctx, controller),
     new GeneratePasswordHashHandler(ctx, controller),

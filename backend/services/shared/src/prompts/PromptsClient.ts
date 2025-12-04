@@ -1,4 +1,4 @@
-// backend/services/shared/src/prompts/PromptsClient.ts
+// backend/services/shared/src/prompt/PromptsClient.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -91,7 +91,7 @@ export class PromptsClient {
     this.svcClient = deps.svcClient;
     this.serviceSlug = deps.serviceSlug;
     this.getRequestId = deps.getRequestId;
-    this.promptsSlug = deps.promptsSlug ?? "prompts";
+    this.promptsSlug = deps.promptsSlug ?? "prompt";
     this.promptsVersion = deps.promptsVersion ?? "v1";
   }
 
@@ -237,7 +237,7 @@ export class PromptsClient {
       response = await this.svcClient.callBySlug(
         this.promptsSlug,
         this.promptsVersion,
-        "/api/prompts/v1/prompt/readByKey",
+        "/api/prompt/v1/prompt/readByKey",
         {
           promptKey,
           language,

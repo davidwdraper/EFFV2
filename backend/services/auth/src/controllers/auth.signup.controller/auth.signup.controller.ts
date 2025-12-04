@@ -40,12 +40,15 @@ export class AuthSignupController extends ControllerJsonBase {
     ctx.set("dtoType", dtoType);
     ctx.set("op", "signup");
 
-    this.log.debug(
+    const requestId = ctx.get("requestId");
+
+    // High-level pipeline selection trace (PIPELINE level)
+    this.log.pipeline(
       {
         event: "pipeline_select",
         op: "signup",
         dtoType,
-        requestId: ctx.get("requestId"),
+        requestId,
       },
       "auth.signup: selecting signup pipeline"
     );
@@ -53,9 +56,37 @@ export class AuthSignupController extends ControllerJsonBase {
     switch (dtoType) {
       case "user": {
         const steps = SignupPipeline.getSteps(ctx, this);
+
+        // Pipeline start: log handler list in execution order
+        this.log.pipeline(
+          {
+            event: "pipeline_start",
+            op: "signup",
+            dtoType,
+            requestId,
+            handlers: steps.map((h) => h.constructor.name),
+          },
+          "auth.signup: pipeline starting"
+        );
+
         await this.runPipeline(ctx, steps, {
           requireRegistry: true,
         });
+
+        // Pipeline completion trace with final handlerStatus
+        const handlerStatus = ctx.get("handlerStatus") ?? "success";
+
+        this.log.pipeline(
+          {
+            event: "pipeline_complete",
+            op: "signup",
+            dtoType,
+            requestId,
+            handlerStatus,
+          },
+          "auth.signup: pipeline complete"
+        );
+
         break;
       }
 
@@ -75,7 +106,7 @@ export class AuthSignupController extends ControllerJsonBase {
             event: "pipeline_missing",
             op: "signup",
             dtoType,
-            requestId: ctx.get("requestId"),
+            requestId,
           },
           "auth.signup: no signup pipeline registered for dtoType"
         );

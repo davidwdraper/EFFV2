@@ -76,6 +76,7 @@ export abstract class HandlerBase {
     // Expose request-scoped logger back into context (optional convenience)
     this.ctx.set("log", this.log);
 
+    // Construction is still DEBUG; pipeline-level traces focus on run()/execute()
     this.log.debug(
       {
         event: "construct",
@@ -92,24 +93,38 @@ export abstract class HandlerBase {
     const handlerStatus = this.ctx.get<string>("handlerStatus");
 
     if ((status && status >= 400) || handlerStatus === "error") {
-      this.log.debug(
-        { event: "short_circuit", reason: "prior_failure" },
-        "No-op after failure"
+      this.log.pipeline(
+        {
+          event: "short_circuit",
+          reason: "prior_failure",
+          handler: this.constructor.name,
+          status,
+          handlerStatus,
+        },
+        "Handler run() short-circuited due to prior failure"
       );
       return;
     }
 
-    this.log.debug({ event: "execute_start" }, "Handler execute() start");
+    this.log.pipeline(
+      {
+        event: "execute_start",
+        handler: this.constructor.name,
+      },
+      "Handler execute() start"
+    );
 
     try {
       await this.execute();
     } catch (err) {
-      this.log.debug(
+      // Throwing from a handler is serious enough to always surface as ERROR.
+      this.log.error(
         {
           event: "execute_catch",
+          handler: this.constructor.name,
           error: (err as Error)?.message ?? String(err),
         },
-        "Handler threw"
+        "Handler execute() threw"
       );
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("status", 400);
@@ -119,7 +134,15 @@ export abstract class HandlerBase {
       });
     }
 
-    this.log.debug({ event: "execute_end" }, "Handler execute() end");
+    this.log.pipeline(
+      {
+        event: "execute_end",
+        handler: this.constructor.name,
+        handlerStatus: this.ctx.get<string>("handlerStatus") ?? "ok",
+        status: this.ctx.get<number>("status") ?? 200,
+      },
+      "Handler execute() end"
+    );
   }
 
   /**

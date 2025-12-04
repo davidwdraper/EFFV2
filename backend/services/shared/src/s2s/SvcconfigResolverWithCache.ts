@@ -12,18 +12,20 @@
  * - svcconfig-backed ISvcconfigResolver implementation with an in-process TTL cache.
  * - Responsible for resolving (env, slug, majorVersion) → SvcTarget:
  *     baseUrl = "<scheme>://<host>:<targetPort>"
- * - Uses svcconfig’s own HTTP API:
- *     GET /api/svcconfig/v1/svcconfig/listAll?env=<env>
- *   to warm the cache by environment.
+ *
+ * Behavior:
+ * - Cache key: "env:slug:version".
+ * - TTL enforced per key; entries are "touched" (TTL reset) on successful reads.
+ * - On cache miss, only the missing (env, slug, version) entry is fetched
+ *   from svcconfig via the s2s-route endpoint; there is no full-env rewarm in
+ *   the hot path.
  *
  * Notes:
  * - Process-local only; **not** a distributed cache.
- * - Cache key: "env:slug:version".
- * - TTL is enforced per key; entries are "touched" (TTL reset) on successful reads.
- * - If NV_SVCCONFIG_URL is missing, construction fails fast (callers may catch and
- *   fall back to a stub, but gateway should treat this as fatal in real deployments).
- * - This resolver is intended for the gateway; it identifies itself to svcconfig
- *   via x-service-name: gateway so svcconfig can enforce gateway-specific filters.
+ * - NV_SVCCONFIG_URL must point at the svcconfig service base URL
+ *   (e.g., "http://127.0.0.1:4020").
+ * - warmEnv() remains available for explicit boot-time preloads, but is never
+ *   invoked from resolveTarget().
  */
 
 import { DtoBag } from "../dto/DtoBag";
@@ -34,6 +36,11 @@ import type {
   ISvcClientLogger,
   SvcTarget,
 } from "./SvcClient.types";
+
+type WireBagJson = {
+  items?: unknown[];
+  meta?: Record<string, unknown>;
+};
 
 type SvcconfigResolverOptions = {
   logger: ISvcClientLogger;
@@ -60,8 +67,8 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     if (!baseUrl) {
       throw new Error(
         "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is not set or empty. " +
-          "Ops: set NV_SVCCONFIG_URL to the base URL of svcconfig " +
-          '(e.g., "http://127.0.0.1:4003") before enabling S2S calls.'
+          'Ops: set NV_SVCCONFIG_URL to the base URL of svcconfig (e.g., "http://127.0.0.1:4020") ' +
+          "before enabling S2S calls."
       );
     }
 
@@ -69,7 +76,6 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
 
     this.cache = new DtoCache<SvcconfigDto>({
       ttlMs: this.ttlMs,
-      // DtoBag has no static helpers; we just construct a new bag from the array.
       bagFactory: (dtos) => new DtoBag<SvcconfigDto>(dtos),
     });
   }
@@ -85,39 +91,56 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
   ): Promise<SvcTarget> {
     const key = this.makeKey(env, slug, version);
 
-    // 1) Attempt cache hit
-    let bag = this.cache.getBag(key);
+    // 1) First attempt: read from cache
+    let bag = this.readFromCache(key);
 
-    // 2) On miss, warm the cache for this env, then retry
+    // 2) On miss: load just this key from svcconfig, then re-read cache
     if (!bag) {
-      await this.warmEnv(env);
-      bag = this.cache.getBag(key);
+      this.log.debug("svcconfigResolver.cacheMiss", { env, slug, version });
+
+      const dto = await this.loadCacheItemFromSvcconfig(env, slug, version);
+
+      if (!dto) {
+        this.log.warn("svcconfigResolver.miss.afterSingleFetch", {
+          env,
+          slug,
+          version,
+        });
+
+        return {
+          baseUrl: "",
+          slug,
+          version,
+          isAuthorized: false,
+          reasonIfNotAuthorized: "SVCCONFIG_NOT_FOUND",
+        };
+      }
+
+      // Re-read from cache to follow the explicit flow:
+      //   readFromCache → loadCacheItem → readFromCache
+      bag = this.readFromCache(key);
+
+      if (!bag) {
+        // Extremely defensive: we *just* put it; if we still can't see it,
+        // fall back to dto → SvcTarget without cache.
+        this.log.error("svcconfigResolver.cachePutOrReadFailed", {
+          env,
+          slug,
+          version,
+        });
+
+        return this.toSvcTarget(dto, env);
+      }
     }
 
-    if (!bag) {
-      this.log.warn("svcconfigResolver.miss.afterWarm", {
-        env,
-        slug,
-        version,
-      });
-      return {
-        baseUrl: "",
-        slug,
-        version,
-        isAuthorized: false,
-        reasonIfNotAuthorized: "SVCCONFIG_NOT_FOUND",
-      };
-    }
-
-    const items = (bag as any).items?.() as Iterable<SvcconfigDto> | undefined;
-    const dto = items ? first(items) : undefined;
-
+    const dto = this.pickSingleDtoFromBag(bag, env, slug, version);
     if (!dto) {
       this.log.warn("svcconfigResolver.emptyBag", {
         env,
         slug,
         version,
       });
+
       return {
         baseUrl: "",
         slug,
@@ -127,66 +150,10 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       };
     }
 
-    // "Touch" the entry to reset TTL based on access.
+    // 3) Touch entry to reset TTL
     this.cache.putBag(key, bag);
 
-    if (!dto.isEnabled || !dto.isS2STarget) {
-      const reason = !dto.isEnabled
-        ? "SVCCONFIG_DISABLED"
-        : "SVCCONFIG_NOT_S2S_TARGET";
-
-      this.log.info("svcconfigResolver.deniedByConfig", {
-        env,
-        slug,
-        version,
-        reason,
-      });
-
-      return {
-        baseUrl: "",
-        slug,
-        version,
-        isAuthorized: false,
-        reasonIfNotAuthorized: reason,
-      };
-    }
-
-    const targetPort = dto.targetPort;
-    if (!Number.isFinite(targetPort) || targetPort <= 0) {
-      this.log.error("svcconfigResolver.invalidPort", {
-        env,
-        slug,
-        version,
-        targetPort,
-      });
-
-      return {
-        baseUrl: "",
-        slug,
-        version,
-        isAuthorized: false,
-        reasonIfNotAuthorized: "SVCCONFIG_INVALID_PORT",
-      };
-    }
-
-    const { protocol, hostname } = this.parseBaseUrlHost();
-
-    const baseUrl = `${protocol}//${hostname}:${targetPort}`;
-
-    this.log.debug("svcconfigResolver.resolved", {
-      env,
-      slug,
-      version,
-      baseUrl,
-      targetPort,
-    });
-
-    return {
-      baseUrl,
-      slug,
-      version,
-      isAuthorized: true,
-    };
+    return this.toSvcTarget(dto, env);
   }
 
   // ────────────────────────────────────────────────────────────
@@ -197,9 +164,8 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
    * Warm the cache for a given environment by calling:
    *   GET /api/svcconfig/v1/svcconfig/listAll?env=<env>
    *
-   * This should be called:
-   * - Lazily on first miss (always).
-   * - Optionally from service boot for "warm at boot then fail-fast" semantics.
+   * Intended for boot-time / ops-triggered warmups on the gateway.
+   * NOT used from resolveTarget().
    */
   public async warmEnv(env: string): Promise<void> {
     const url = `${
@@ -252,15 +218,14 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       SvcconfigDto.fromBody(j, { validate: false })
     );
 
-    // Populate cache: one key per (env, slug, majorVersion)
     for (const dto of dtos) {
       const dEnv = dto.env || env;
-      const slug = dto.slug;
+      const dSlug = dto.slug;
       const major = dto.majorVersion;
 
-      if (!slug || !major) continue;
+      if (!dSlug || !major) continue;
 
-      const key = this.makeKey(dEnv, slug, major);
+      const key = this.makeKey(dEnv, dSlug, major);
       const singleBag = new DtoBag<SvcconfigDto>([dto]);
       this.cache.putBag(key, singleBag);
     }
@@ -272,11 +237,227 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
   }
 
   // ────────────────────────────────────────────────────────────
-  // Helpers
+  // Internal helpers
   // ────────────────────────────────────────────────────────────
 
   private makeKey(env: string, slug: string, version: number): DtoCacheKey {
     return `${env}:${slug}:${version}`;
+  }
+
+  private readFromCache(key: DtoCacheKey): DtoBag<SvcconfigDto> | undefined {
+    const bag = this.cache.getBag(key);
+    return bag ?? undefined; // <-- normalize null → undefined
+  }
+
+  /**
+   * Single-key load from svcconfig:
+   *   GET /api/svcconfig/v1/svcconfig/s2s-route?env=&slug=&majorVersion=
+   *
+   * On success:
+   * - Puts the resulting SvcconfigDto into the cache under its (env, slug, majorVersion) key.
+   * - Returns the DTO.
+   *
+   * On "no rows" it returns undefined; callers treat that as NOT_FOUND.
+   */
+  private async loadCacheItemFromSvcconfig(
+    env: string,
+    slug: string,
+    version: number
+  ): Promise<SvcconfigDto | undefined> {
+    const url =
+      `${this.baseUrl}/api/svcconfig/v1/svcconfig/s2s-route` +
+      `?env=${encodeURIComponent(env)}` +
+      `&slug=${encodeURIComponent(slug)}` +
+      `&majorVersion=${encodeURIComponent(String(version))}`;
+
+    this.log.debug("svcconfigResolver.singleFetch.begin", {
+      env,
+      slug,
+      version,
+      url,
+    });
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+      },
+    });
+
+    const bodyText = await response.text();
+
+    if (!response.ok) {
+      this.log.error("svcconfigResolver.singleFetch.httpError", {
+        env,
+        slug,
+        version,
+        status: response.status,
+        bodySnippet: bodyText.slice(0, 512),
+      });
+
+      throw new Error(
+        `SvcconfigResolverWithCache: s2s-route failed for env="${env}", slug="${slug}", version=${version}.`
+      );
+    }
+
+    let parsed: WireBagJson;
+    try {
+      parsed = (bodyText ? JSON.parse(bodyText) : {}) as WireBagJson;
+    } catch (err) {
+      this.log.error("svcconfigResolver.singleFetch.parseError", {
+        env,
+        slug,
+        version,
+        error: (err as Error)?.message,
+        bodySnippet: bodyText.slice(0, 512),
+      });
+      throw new Error(
+        "SvcconfigResolverWithCache: invalid JSON from svcconfig s2s-route response."
+      );
+    }
+
+    const items = Array.isArray(parsed.items) ? parsed.items : [];
+
+    if (items.length === 0) {
+      this.log.warn("svcconfigResolver.singleFetch.noEntry", {
+        env,
+        slug,
+        version,
+      });
+      return undefined;
+    }
+
+    if (items.length > 1) {
+      this.log.error("svcconfigResolver.singleFetch.multipleEntries", {
+        env,
+        slug,
+        version,
+        count: items.length,
+      });
+      throw new Error(
+        "SvcconfigResolverWithCache: svcconfig returned multiple entries for env/slug/majorVersion; expected exactly one."
+      );
+    }
+
+    const dto = SvcconfigDto.fromBody(items[0], { validate: false });
+
+    const dEnv = dto.env || env;
+    const dSlug = dto.slug;
+    const major = dto.majorVersion;
+
+    if (!dSlug || !major) {
+      this.log.error("svcconfigResolver.singleFetch.malformedDto", {
+        env,
+        slug,
+        version,
+        dtoEnv: dEnv,
+        dtoSlug: dSlug,
+        dtoVersion: major,
+      });
+      return undefined;
+    }
+
+    const key = this.makeKey(dEnv, dSlug, major);
+    const bag = new DtoBag<SvcconfigDto>([dto]);
+    this.cache.putBag(key, bag);
+
+    this.log.debug("svcconfigResolver.singleFetch.cached", {
+      env: dEnv,
+      slug: dSlug,
+      version: major,
+      key,
+    });
+
+    return dto;
+  }
+
+  private pickSingleDtoFromBag(
+    bag: DtoBag<SvcconfigDto>,
+    env: string,
+    slug: string,
+    version: number
+  ): SvcconfigDto | undefined {
+    for (const dto of bag as unknown as Iterable<SvcconfigDto>) {
+      return dto;
+    }
+
+    this.log.error("svcconfigResolver.emptyCachedBag", {
+      env,
+      slug,
+      version,
+    });
+
+    return undefined;
+  }
+
+  /**
+   * Convert SvcconfigDto into a SvcTarget with:
+   * - baseUrl: protocol/host from NV_SVCCONFIG_URL; port from targetPort.
+   * - isAuthorized: based on isEnabled + isS2STarget.
+   */
+  private toSvcTarget(dto: SvcconfigDto, env: string): SvcTarget {
+    const slug = dto.slug;
+    const version = dto.majorVersion;
+    const targetPort = dto.targetPort;
+
+    const isEnabled = dto.isEnabled;
+    const isS2S = dto.isS2STarget;
+
+    if (!isEnabled || !isS2S) {
+      const reason = !isEnabled
+        ? "SVCCONFIG_DISABLED"
+        : "SVCCONFIG_NOT_S2S_TARGET";
+
+      this.log.info("svcconfigResolver.deniedByConfig", {
+        env,
+        slug,
+        version,
+        reason,
+      });
+
+      return {
+        baseUrl: "",
+        slug,
+        version,
+        isAuthorized: false,
+        reasonIfNotAuthorized: reason,
+      };
+    }
+
+    if (!Number.isFinite(targetPort) || targetPort <= 0) {
+      this.log.error("svcconfigResolver.invalidPort", {
+        env,
+        slug,
+        version,
+        targetPort,
+      });
+
+      return {
+        baseUrl: "",
+        slug,
+        version,
+        isAuthorized: false,
+        reasonIfNotAuthorized: "SVCCONFIG_INVALID_PORT",
+      };
+    }
+
+    const { protocol, hostname } = this.parseBaseUrlHost();
+    const baseUrl = `${protocol}//${hostname}:${targetPort}`;
+
+    this.log.debug("svcconfigResolver.resolved", {
+      env,
+      slug,
+      version,
+      baseUrl,
+      targetPort,
+    });
+
+    return {
+      baseUrl,
+      slug,
+      version,
+      isAuthorized: true,
+    };
   }
 
   private parseBaseUrlHost(): { protocol: string; hostname: string } {
@@ -286,7 +467,6 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       const hostname = u.hostname || "127.0.0.1";
       return { protocol, hostname };
     } catch {
-      // Fallback: treat baseUrl as "http://127.0.0.1"
       return { protocol: "http:", hostname: "127.0.0.1" };
     }
   }

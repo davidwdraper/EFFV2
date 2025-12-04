@@ -87,6 +87,12 @@ export class SvcconfigResolver implements ISvcconfigResolver {
     slug: string,
     version: number
   ): Promise<SvcTarget> {
+    this.logger.error("******* svcconfig_resolver.resolve_target_called", {
+      env,
+      slug,
+      version,
+    });
+
     // Special-case svcconfig itself: use NV_SVCCONFIG_URL.
     if (slug === "svcconfig") {
       const raw = process.env.NV_SVCCONFIG_URL;
@@ -166,14 +172,17 @@ export class SvcconfigResolver implements ISvcconfigResolver {
   }
 
   /**
-   * Call svcconfig's list endpoint to locate the config entry for a given
+   * Call svcconfig's S2S route endpoint to locate the config entry for a given
    * (env, slug, majorVersion).
    *
-   * NOTE:
-   * - Assumes svcconfig exposes:
-   *     GET /api/svcconfig/v1/svcconfig/list?env=<env>&slug=<slug>&majorVersion=<version>
-   *   returning a standard WireBagJson with SvcconfigJson bodies.
-   * - If your actual svcconfig API differs, adjust this function accordingly.
+   * Contract:
+   * - GET /api/svcconfig/v1/svcconfig/s2s-route?env=&slug=&majorVersion=
+   * - Returns a standard WireBagJson envelope with:
+   *     items: [ SvcconfigJson ]  // exactly one item on success
+   *
+   * Invariants:
+   * - 0 items → treated as "no config" and throws with Ops guidance.
+   * - >1 items → treated as data corruption and throws loudly.
    */
   private async fetchFromSvcconfig(
     env: string,
@@ -182,7 +191,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
   ): Promise<SvcconfigDto> {
     const svcconfigBase = this.getSvcconfigBaseUrl(env);
     const url =
-      `${svcconfigBase}/api/svcconfig/v1/svcconfig/list` +
+      `${svcconfigBase}/api/svcconfig/v1/svcconfig/s2s-route` +
       `?env=${encodeURIComponent(env)}` +
       `&slug=${encodeURIComponent(slug)}` +
       `&majorVersion=${encodeURIComponent(String(version))}`;
@@ -212,8 +221,8 @@ export class SvcconfigResolver implements ISvcconfigResolver {
       });
 
       throw new Error(
-        `SvcconfigResolver: svcconfig list failed for env="${env}", slug="${slug}", version=${version}. ` +
-          "Ops: check svcconfig logs and ensure its list endpoint is healthy."
+        `SvcconfigResolver: svcconfig s2s-route failed for env="${env}", slug="${slug}", version=${version}. ` +
+          "Ops: check svcconfig logs and ensure its s2s-route endpoint is healthy."
       );
     }
 
@@ -229,7 +238,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
         bodySnippet: bodyText.slice(0, 512),
       });
       throw new Error(
-        "SvcconfigResolver: Failed to parse JSON from svcconfig list response. " +
+        "SvcconfigResolver: Failed to parse JSON from svcconfig s2s-route response. " +
           "Ops: verify svcconfig returns a standard WireBagJson envelope."
       );
     }
@@ -237,7 +246,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
     const items = Array.isArray(parsed.items) ? parsed.items : [];
     if (items.length === 0) {
       const msg =
-        "SvcconfigResolver: svcconfig returned no entries for env/slug/version. " +
+        "SvcconfigResolver: svcconfig returned no entries for env/slug/version on s2s-route lookup. " +
         "Ops: ensure a SvcconfigDto exists with matching env, slug, and majorVersion.";
       this.logger.warn("svcconfig_resolver.fetch.no_entries", {
         env,
@@ -250,9 +259,9 @@ export class SvcconfigResolver implements ISvcconfigResolver {
 
     if (items.length > 1) {
       const msg =
-        "SvcconfigResolver: svcconfig returned multiple entries for env/slug/version. " +
+        "SvcconfigResolver: svcconfig returned multiple entries for env/slug/version on s2s-route lookup. " +
         "Ops: there should be exactly one record per (env, slug, majorVersion); " +
-        "resolve data duplication before restarting gateway.";
+        "resolve data duplication before restarting services.";
       this.logger.error("svcconfig_resolver.fetch.multiple_entries", {
         env,
         slug,

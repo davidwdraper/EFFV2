@@ -23,6 +23,7 @@ import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
 import { SvcClient } from "@nv/shared/s2s/SvcClient";
+import type { IBoundLogger } from "@nv/shared/logger/Logger";
 import { performDbBoot, type DbBootContext } from "./appBoot";
 import {
   mountPreRoutingLayer,
@@ -111,6 +112,11 @@ export abstract class AppBase extends ServiceBase {
   /** Public accessor for the EnvServiceDto instance. */
   public get svcEnv(): EnvServiceDto {
     return this._envDto;
+  }
+
+  /** Public accessor for the bound logger singleton owned by this app. */
+  public getLogger(): IBoundLogger {
+    return this.log;
   }
 
   /** PromptsClient accessor for advanced usage. */

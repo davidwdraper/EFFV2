@@ -13,7 +13,7 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 
 import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
 import { DbReadByIdGetHandler } from "@nv/shared/http/handlers/dbRead.byId.get.handler";
-export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
+export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed required inputs for the read handler
   ctx.set("read.dtoCtor", SvcconfigDto);
 

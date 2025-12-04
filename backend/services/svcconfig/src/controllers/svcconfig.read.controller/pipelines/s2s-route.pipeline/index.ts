@@ -35,7 +35,7 @@ import { BagPopulateQueryHandler } from "@nv/shared/http/handlers/bag.populate.q
 
 export function getSteps(
   ctx: HandlerContext,
-  controller: ControllerBase
+  controller: ControllerJsonBase
 ): HandlerBase[] {
   const filterOpts: BuildFilterHandlerOptions = {
     fields: [

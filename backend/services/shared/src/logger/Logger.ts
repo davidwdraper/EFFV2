@@ -15,13 +15,16 @@
  *     log.info("msg", {meta})    OR  log.info({meta}, "msg")
  * - debug() adds origin capture (file/method/line).
  * - PROMPT is a first-class level for prompt/prompt-catalog events.
+ * - PIPELINE is a first-class level for controller/handler pipeline traces.
  *
  * Runtime Controls (strict, via SvcEnvDto only):
- * - LOG_LEVEL = debug | info | warn | error   (REQUIRED — no defaults)
+ * - LOG_LEVEL = debug | info | pipeline | warn | error   (REQUIRED — no defaults)
  *
  * Notes:
  * - Edge channel and debug-origin are always enabled (no flags, greenfield).
  * - PROMPT logs are gated like WARN (suppressed only when LOG_LEVEL=error).
+ * - PIPELINE logs sit between INFO and WARN and can be enabled independently
+ *   of INFO/DEBUG via LOG_LEVEL=pipeline.
  * - No process.env usage anywhere; fail-fast if SvcEnv not set.
  */
 
@@ -37,6 +40,13 @@ export interface ILogger {
 
   debug(msg: string, ...rest: unknown[]): void;
   debug(obj: Json, msg?: string, ...rest: unknown[]): void;
+
+  /**
+   * PIPELINE: used for controller/handler pipeline execution traces.
+   * Sits between INFO and WARN in seriousness.
+   */
+  pipeline(msg: string, ...rest: unknown[]): void;
+  pipeline(obj: Json, msg?: string, ...rest: unknown[]): void;
 
   /**
    * PROMPT: used for prompt-catalog / localization issues (e.g., missing prompts).
@@ -64,6 +74,12 @@ export interface IBoundLogger {
 
   debug(msg: string, ...rest: unknown[]): void;
   debug(obj: Json, msg?: string, ...rest: unknown[]): void;
+
+  /**
+   * PIPELINE: first-class level for controller/handler pipelines.
+   */
+  pipeline(msg: string, ...rest: unknown[]): void;
+  pipeline(obj: Json, msg?: string, ...rest: unknown[]): void;
 
   /**
    * PROMPT: first-class level for prompt/prompt-catalog events.
@@ -127,7 +143,9 @@ function tsLocal(): string {
 }
 
 /** Create a prefixed console writer for a given level tag. */
-function writer(tag: "EDGE" | "INFO" | "DEBUG" | "WARN" | "ERROR" | "PROMPT") {
+function writer(
+  tag: "EDGE" | "PIPELINE" | "INFO" | "DEBUG" | "WARN" | "ERROR" | "PROMPT"
+) {
   const c =
     tag === "ERROR"
       ? console.error
@@ -144,6 +162,8 @@ function writer(tag: "EDGE" | "INFO" | "DEBUG" | "WARN" | "ERROR" | "PROMPT") {
       ? "**WARN"
       : tag === "PROMPT"
       ? "PROMPT"
+      : tag === "PIPELINE"
+      ? "PIPELINE"
       : tag;
 
   return (obj: Json, msg?: string, ...rest: unknown[]) => {
@@ -157,6 +177,7 @@ function writer(tag: "EDGE" | "INFO" | "DEBUG" | "WARN" | "ERROR" | "PROMPT") {
 function normalizeRoot(logger: Partial<ILogger>): ILogger {
   // Fallback with prefixed, timestamped output
   const fbEdge = writer("EDGE");
+  const fbPipeline = writer("PIPELINE");
   const fbInfo = writer("INFO");
   const fbDebug = writer("DEBUG");
   const fbPrompt = writer("PROMPT");
@@ -211,6 +232,10 @@ function normalizeRoot(logger: Partial<ILogger>): ILogger {
       const [o, m, t] = toTriple(args);
       fbEdge(o, m, ...t);
     },
+    pipeline: (...args: unknown[]) => {
+      const [o, m, t] = toTriple(args);
+      fbPipeline(o, m, ...t);
+    },
     info: (...args: unknown[]) => {
       const [o, m, t] = toTriple(args);
       fbInfo(o, m, ...t);
@@ -235,6 +260,7 @@ function normalizeRoot(logger: Partial<ILogger>): ILogger {
 
   return {
     edge: logger.edge ?? fallback.edge,
+    pipeline: logger.pipeline ?? fallback.pipeline,
     info: logger.info ?? fallback.info,
     debug: logger.debug ?? fallback.debug,
     prompt: logger.prompt ?? fallback.prompt,
@@ -257,20 +283,28 @@ export function getLogger(
 // Level evaluation (strict) — from SvcEnv only
 // ────────────────────────────────────────────────────────────────────────────
 
-type LevelName = "debug" | "info" | "warn" | "error";
+type LevelName = "debug" | "info" | "pipeline" | "warn" | "error";
 const LEVEL_ORDER: Record<LevelName, number> = {
   debug: 10,
   info: 20,
+  pipeline: 25,
   warn: 30,
   error: 40,
 };
 
 function parseLevelStrict(): LevelName {
   const raw = getEnvStrict("LOG_LEVEL").toLowerCase().trim();
-  if (raw === "debug" || raw === "info" || raw === "warn" || raw === "error")
+  if (
+    raw === "debug" ||
+    raw === "info" ||
+    raw === "pipeline" ||
+    raw === "warn" ||
+    raw === "error"
+  ) {
     return raw;
+  }
   throw new Error(
-    `Logger: invalid LOG_LEVEL="${raw}". Use one of debug|info|warn|error.`
+    `Logger: invalid LOG_LEVEL="${raw}". Use one of debug|info|pipeline|warn|error.`
   );
 }
 
@@ -315,6 +349,19 @@ class BoundLogger implements IBoundLogger {
     const [obj0, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
     const obj = { ...obj0, origin: captureOrigin(2) };
     this.root().debug(obj, msg, ...tail);
+  };
+
+  // pipeline (honors LOG_LEVEL=pipeline and above)
+  public pipeline = (
+    arg1: unknown,
+    arg2?: unknown,
+    ...rest: unknown[]
+  ): void => {
+    if (!levelAllows("pipeline")) return;
+    const [obj0, msg, tail] = normalizeForBound(this.ctx, arg1, arg2, rest);
+    const obj = { ...obj0 };
+    if ((obj as any)["category"] == null) (obj as any).category = "pipeline";
+    this.root().pipeline(obj, msg, ...tail);
   };
 
   // PROMPT (honors LOG_LEVEL like WARN; suppressed only when LOG_LEVEL=error)

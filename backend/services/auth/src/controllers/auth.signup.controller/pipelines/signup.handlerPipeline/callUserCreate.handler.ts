@@ -12,13 +12,12 @@
  * Purpose:
  * - Use the hydrated DtoBag<UserDto> from ctx["bag"] to call the `user`
  *   service's `create` operation via SvcClient.call().
- * - On success, replace ctx["bag"] with the returned UserDto bag from the
- *   user service so finalize() always responds with the canonical, persisted
- *   view (including any server-generated fields).
+ * - On success, the existing ctx["bag"] remains the MOS edge view; this handler
+ *   MUST NOT reassign ctx["bag"] (hydrate is the sole writer).
  *
  * Invariants:
  * - Auth remains a MOS (no direct DB writes).
- * - On success, ctx["bag"] contains the returned DtoBag<UserDto>.
+ * - This handler NEVER calls ctx.set("bag", ...).
  * - On failure, sets handlerStatus="error" and a Problem+JSON payload.
  */
 
@@ -145,8 +144,15 @@ export class CallUserCreateHandler extends HandlerBase {
         requestId,
       });
 
-      // Use the returned bag as the canonical view going forward.
-      this.ctx.set("bag", returnedBag);
+      // Immediate fix invariant:
+      // - HydrateUserBagHandler is the ONLY writer of ctx["bag"].
+      // - This handler must NOT reassign ctx["bag"].
+      //
+      // If SvcClient.call() mutates the passed-in bag instance, finalize()
+      // will already see the persisted view. If it returns a new instance,
+      // finalize() will still see the original hydrated view, which is
+      // acceptable for MOS v1.
+      void returnedBag;
 
       this.log.info(
         {

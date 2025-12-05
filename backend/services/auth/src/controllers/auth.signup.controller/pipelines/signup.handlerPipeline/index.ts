@@ -52,14 +52,14 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
-import { BuildSignupUserIdHandler } from "./buildSignupUserId.handler";
-import { HydrateUserBagHandler } from "./hydrateUserBag.handler";
-import { ExtractPasswordHandler } from "./extractPassword.handler";
-import { GeneratePasswordHashHandler } from "./generatePasswordHash.handler";
-import { CallUserCreateHandler } from "./callUserCreate.handler";
-import { CallUserAuthCreateHandler } from "./callUserAuthCreate.handler";
-import { MintUserAuthTokenHandler } from "./mintUserAuthToken.handler";
-import { RollbackUserOnAuthCreateFailureHandler } from "./rollbackUserOnAuthCreateFailure.handler";
+import { CodeBuildUserIdHandler } from "./code.build.userId";
+import { ToBagUserHandler } from "./toBag.User";
+import { CodeExtractPasswordHandler } from "./code.extractPassword";
+import { CodePasswordHashHandler } from "./code.passwordHash";
+import { S2sUserCreateHandler } from "./s2s.user.create";
+import { S2sUserAuthCreateHandler } from "./s2s.userAuth.create";
+import { CodeMintUserAuthTokenHandler } from "./code.mintUserAuthToken";
+import { S2sUserDeleteOnFailureHandler } from "./s2s.user.delete.onFailure";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // S2S metadata: used by handlers (or future policy gates) if needed.
@@ -69,13 +69,13 @@ export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   ctx.set("s2s.version.userAuth", "v1");
 
   return [
-    new BuildSignupUserIdHandler(ctx, controller),
-    new HydrateUserBagHandler(ctx, controller),
-    new ExtractPasswordHandler(ctx, controller),
-    new GeneratePasswordHashHandler(ctx, controller),
-    new CallUserCreateHandler(ctx, controller),
-    new CallUserAuthCreateHandler(ctx, controller),
-    new MintUserAuthTokenHandler(ctx, controller),
-    new RollbackUserOnAuthCreateFailureHandler(ctx, controller),
+    new CodeBuildUserIdHandler(ctx, controller),
+    new ToBagUserHandler(ctx, controller),
+    new CodeExtractPasswordHandler(ctx, controller),
+    new CodePasswordHashHandler(ctx, controller),
+    new S2sUserCreateHandler(ctx, controller),
+    new S2sUserAuthCreateHandler(ctx, controller),
+    new CodeMintUserAuthTokenHandler(ctx, controller),
+    new S2sUserDeleteOnFailureHandler(ctx, controller),
   ];
 }

@@ -13,7 +13,7 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 
 import { UserAuthDto } from "@nv/shared/dto/user-auth.dto";
 import { QueryListHandler } from "./query.list.handler";
-import { DbReadListHandler } from "@nv/shared/http/handlers/dbRead.list.handler";
+import { DbReadListHandler } from "@nv/shared/http/handlers/db.read.list";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
   // Seed DTO ctor used by handlers

@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/rollbackUserOnAuthCreateFailure.handler.ts
+// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/s2s.user.delete.onFailure.ts
 /**
  * Docs:
  * - SOP: DTO-first persistence via worker services.
@@ -44,7 +44,7 @@ type UserAuthCreateStatus =
   | { ok: true }
   | { ok: false; code: string; message: string };
 
-export class RollbackUserOnAuthCreateFailureHandler extends HandlerBase {
+export class S2sUserDeleteOnFailureHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }

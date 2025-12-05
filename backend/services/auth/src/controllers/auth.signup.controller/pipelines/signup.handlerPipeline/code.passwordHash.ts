@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/generatePasswordHash.handler.ts
+// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/code.passwordHash.ts
 /**
  * Docs:
  * - ADR-0040 (DTO-Only Persistence via Managers)
@@ -29,7 +29,7 @@ import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 
-export class GeneratePasswordHashHandler extends HandlerBase {
+export class CodePasswordHashHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }

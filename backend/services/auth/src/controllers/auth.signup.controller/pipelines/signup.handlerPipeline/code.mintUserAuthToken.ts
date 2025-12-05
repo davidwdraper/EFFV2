@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/mintUserAuthToken.handler.ts
+// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/code.mintUserAuthToken.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -170,7 +170,7 @@ function getOrCreateTokenProvider(
   return tokenProvider;
 }
 
-export class MintUserAuthTokenHandler extends HandlerBase {
+export class CodeMintUserAuthTokenHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }

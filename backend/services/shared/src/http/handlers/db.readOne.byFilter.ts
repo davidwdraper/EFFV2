@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/handlers/bag.populate.query.handler.ts
+// backend/services/shared/src/http/handlers/db.readOne.byFilter.ts
 /**
  * Docs:
  * - SOP: DTO-only persistence; bag-centric reads
@@ -35,7 +35,7 @@ import { DbReader } from "@nv/shared/dto/persistence/DbReader";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { IDto } from "@nv/shared/dto/IDto";
 
-export class BagPopulateQueryHandler extends HandlerBase {
+export class DbReadOneByFilterHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
     super(ctx, controller);
   }

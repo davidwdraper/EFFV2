@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/callUserAuthCreate.handler.ts
+// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/s2s.userAuth.create.ts
 /**
  * Docs:
  * - SOP: DTO-first persistence via worker services.
@@ -48,7 +48,7 @@ type UserAuthCreateStatus =
   | { ok: true }
   | { ok: false; code: string; message: string };
 
-export class CallUserAuthCreateHandler extends HandlerBase {
+export class S2sUserAuthCreateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }

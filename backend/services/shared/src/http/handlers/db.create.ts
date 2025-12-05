@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/handlers/bag.toDb.create.handler.ts
+// backend/services/shared/src/http/handlers/db.create.ts
 /**
  * Docs:
  * - SOP: DTO-only persistence; bag-centric writes
@@ -46,7 +46,7 @@ import {
   DuplicateKeyError,
 } from "@nv/shared/dto/persistence/DbWriter";
 
-export class BagToDbCreateHandler extends HandlerBase {
+export class DbCreateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
     super(ctx, controller);
   }

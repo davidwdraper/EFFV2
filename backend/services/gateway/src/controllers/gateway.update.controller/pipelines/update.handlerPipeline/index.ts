@@ -12,7 +12,7 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 // Shared preflight
-import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get.handler";
+import { BagPopulateGetHandler } from "@nv/shared/http/handlers/toBag";
 
 // DTO ctor for downstream
 import { GatewayDto } from "@nv/shared/dto/gateway.dto";

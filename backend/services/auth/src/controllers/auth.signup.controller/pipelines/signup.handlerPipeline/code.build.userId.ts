@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/buildSignupUserId.handler.ts
+// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/code.build.userId.ts
 /**
  * Docs:
  * - SOP: Explicit id generation; DTOs consume ids, they do not invent them.
@@ -26,7 +26,7 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 // Centralized UUIDv4 generator (ADR-0057)
 import { newUuid } from "@nv/shared/utils/uuid";
 
-export class BuildSignupUserIdHandler extends HandlerBase {
+export class CodeBuildUserIdHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }

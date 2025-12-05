@@ -40,7 +40,7 @@
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
 
-export class S2sClientCallHandler extends HandlerBase {
+export class S2sCallHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
     super(ctx, controller);
   }

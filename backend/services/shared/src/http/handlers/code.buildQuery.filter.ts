@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/handlers/query.buildFilter.handler.ts
+// backend/services/shared/src/http/handlers/code.buildQueryFilter.ts
 /**
  * Docs:
  * - ADR-0041 (Per-route controllers; single-purpose handlers)
@@ -63,7 +63,7 @@ export type BuildFilterHandlerOptions = {
   idKeyJoinChar?: string;
 };
 
-export class QueryBuildFilterHandler extends HandlerBase {
+export class CodeBuildQueryFilterHandler extends HandlerBase {
   private readonly fields: FilterFieldSpec[];
   private readonly idKeyFields: string[];
   private readonly idKeyJoinChar: string;

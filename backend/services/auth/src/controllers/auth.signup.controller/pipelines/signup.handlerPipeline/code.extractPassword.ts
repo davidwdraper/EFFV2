@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/extractPassword.handler.ts
+// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/code.extractPassword.ts
 /**
  * Docs:
  * - SOP: DTO-only bodies; secrets never live in DTOs
@@ -23,7 +23,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-export class ExtractPasswordHandler extends HandlerBase {
+export class CodeExtractPasswordHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
     super(ctx, controller);
   }

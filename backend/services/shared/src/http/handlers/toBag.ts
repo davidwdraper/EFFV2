@@ -11,7 +11,7 @@
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - Populate a DtoBag from a wire bag envelope (one or many).
+ * - Populate a DtoBag from a wire bag json envelope (one or many).
  * - Hydrates DTOs via Registry.resolveCtorByType(type).fromBody(json, { validate }).
  * - Sets instance collectionName on each DTO using Registry.dbCollectionNameByType(type).
  *
@@ -29,13 +29,13 @@ import type { HandlerContext } from "./HandlerContext";
 import type { IDtoRegistry } from "../../registry/RegistryBase";
 import { BagBuilder } from "../../dto/wire/BagBuilder";
 
-export class BagPopulateGetHandler extends HandlerBase {
+export class ToBagHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
     super(ctx, controller);
   }
 
   protected handlerPurpose(): string {
-    return "Populates a bagged DTO from wire bag envelope.";
+    return "Populates a bagged DTO from wire bag json envelope.";
   }
 
   protected async execute(): Promise<void> {

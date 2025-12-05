@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/handlers/dbRead.byId.get.handler.ts
+// backend/services/shared/src/http/handlers/db.read.byId.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -45,7 +45,7 @@ type DtoCtorWithCollection<T> = {
   name?: string;
 };
 
-export class DbReadByIdGetHandler extends HandlerBase {
+export class DbReadByIdHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
     super(ctx, controller);
   }

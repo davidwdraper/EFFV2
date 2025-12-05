@@ -12,8 +12,8 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 // Reuse your existing handlers (single-handler example is fine)
-import { BagPopulateGetHandler } from "@nv/shared/http/handlers/bag.populate.get.handler";
-import { BagToDbCreateHandler } from "@nv/shared/http/handlers/bag.toDb.create.handler";
+import { BagPopulateGetHandler } from "@nv/shared/http/handlers/toBag";
+import { BagToDbCreateHandler } from "@nv/shared/http/handlers/db.create";
 
 // If you later need different steps per dtoType, this file is where you change the order.
 export function getSteps(ctx: HandlerContext, controller: ControllerBase) {

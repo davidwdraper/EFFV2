@@ -15,7 +15,7 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 
 import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
 import { ListAllFilterHandler } from "./listAllFilter.list.handler";
-import { DbReadListHandler } from "@nv/shared/http/handlers/dbRead.list.handler";
+import { DbReadListHandler } from "@nv/shared/http/handlers/db.read.list";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed DTO ctor used by handlers (same as LIST)

@@ -30,8 +30,8 @@ import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import {
   QueryBuildFilterHandler,
   type BuildFilterHandlerOptions,
-} from "@nv/shared/http/handlers/query.buildFilter.handler";
-import { BagPopulateQueryHandler } from "@nv/shared/http/handlers/bag.populate.query.handler";
+} from "@nv/shared/http/handlers/code.buildQuery.filter";
+import { BagPopulateQueryHandler } from "@nv/shared/http/handlers/db.readOne.byFilter";
 
 export function getSteps(
   ctx: HandlerContext,

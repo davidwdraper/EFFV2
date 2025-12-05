@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/hydrateUserBag.handler.ts
+// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/toBag.user.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -29,7 +29,7 @@ import type { BagItemWire } from "@nv/shared/registry/RegistryBase";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { UserDto, type UserJson } from "@nv/shared/dto/user.dto";
 
-export class HydrateUserBagHandler extends HandlerBase {
+export class ToBagUserHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
     super(ctx, controller);
   }

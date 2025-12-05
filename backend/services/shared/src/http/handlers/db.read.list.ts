@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/handlers/dbRead.list.handler.ts
+// backend/services/shared/src/http/handlers/db.read.list.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)

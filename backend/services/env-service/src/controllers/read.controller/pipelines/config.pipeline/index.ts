@@ -9,27 +9,22 @@
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - Define the handler pipeline for:
- *     GET /api/env-service/v1/env-service/config?slug=&version=&env=&level=
+ * - Read root env follwed by merging service's env
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
-import { EnvServiceConfigLoadRootHandler } from "./loadRoot.handler";
-import { EnvServiceConfigLoadServiceHandler } from "./config.loadService.handler";
-import { EnvServiceConfigMergeHandler } from "./config.merge.handler";
+import { DbReadRootHandler } from "./db.readRoot";
+import { DbReadHandler } from "./db.read";
+import { CodeMergeHandler } from "./code.merge";
 
 export function getSteps(
   ctx: HandlerContext,
-  controller: ControllerBase
-): Array<
-  | EnvServiceConfigLoadRootHandler
-  | EnvServiceConfigLoadServiceHandler
-  | EnvServiceConfigMergeHandler
-> {
+  controller: ControllerJsonBase
+): Array<DbReadRootHandler | DbReadHandler | CodeMergeHandler> {
   return [
-    new EnvServiceConfigLoadRootHandler(ctx, controller),
-    new EnvServiceConfigLoadServiceHandler(ctx, controller),
-    new EnvServiceConfigMergeHandler(ctx, controller),
+    new DbReadRootHandler(ctx, controller),
+    new DbReadHandler(ctx, controller),
+    new CodeMergeHandler(ctx, controller),
   ];
 }

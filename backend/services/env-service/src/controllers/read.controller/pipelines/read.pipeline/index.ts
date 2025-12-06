@@ -14,21 +14,9 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { DbReadGetHandler } from "./handlers/dbRead.get.handler";
 
-export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
+export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed required inputs for the read handler
   ctx.set("read.dtoCtor", EnvServiceDto);
 
   return [new DbReadGetHandler(ctx, controller)];
 }
-
-/**
- * Future pattern for a new dtoType (create a sibling folder with matching surface):
- *
- *   // ./pipelines/myNewDto.read.handlerPipeline/index.ts
- *   import { MyNewDto } from "@nv/shared/dto/my-new-dto.dto";
- *   import { DbReadGetHandler } from "../../handlers/dbRead.get.handler";
- *   export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
- *     ctx.set("read.dtoCtor", MyNewDto);
- *     return [ new DbReadGetHandler(ctx, controller) ];
- *   }
- */

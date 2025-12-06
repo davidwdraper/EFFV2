@@ -15,20 +15,20 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
-import { EnvServiceCloneBuildFilterHandler } from "./clone.buildFilter.handler";
-import { BagPopulateQueryHandler } from "@nv/shared/http/handlers/db.readOne.byFilter";
-import { EnvServiceClonePatchHandler } from "./clone.patch.handler";
-import { BagToDbCreateHandler } from "@nv/shared/http/handlers/db.create";
+import { CodeCloneHandler } from "./code.clone";
+import { DbReadOneByFilterHandler } from "@nv/shared/http/handlers/db.readOne.byFilter";
+import { CodePatchHandler } from "./code.patch";
+import { DbCreateHandler } from "@nv/shared/http/handlers/db.create";
 
-export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
+export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   return [
     // 1) Decode slug@version@env → bag.query.* config.
-    new EnvServiceCloneBuildFilterHandler(ctx, controller),
+    new CodeCloneHandler(ctx, controller),
     // 2) Generic DB → bag handler; writes clone.existingBag.
-    new BagPopulateQueryHandler(ctx, controller),
+    new DbReadOneByFilterHandler(ctx, controller),
     // 3) Clone + patch new slug, re-bag to ctx["bag"].
-    new EnvServiceClonePatchHandler(ctx, controller),
+    new CodeCloneHandler(ctx, controller),
     // 4) Shared create write (DbWriter via BagToDbCreateHandler).
-    new BagToDbCreateHandler(ctx, controller),
+    new DbCreateHandler(ctx, controller),
   ];
 }

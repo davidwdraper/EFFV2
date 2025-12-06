@@ -12,15 +12,15 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 // Reuse your existing handlers (single-handler example is fine)
-import { BagPopulateGetHandler } from "@nv/shared/http/handlers/toBag";
-import { BagToDbCreateHandler } from "@nv/shared/http/handlers/db.create";
+import { ToBagHandler } from "@nv/shared/http/handlers/toBag";
+import { DbCreateHandler } from "@nv/shared/http/handlers/db.create";
 
 // If you later need different steps per dtoType, this file is where you change the order.
-export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
+export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   return [
     // 1) Hydrate a DtoBag<IDto> from the JSON body (shared handler)
-    new BagPopulateGetHandler(ctx, controller),
+    new ToBagHandler(ctx, controller),
     // 2) Enforce single-item create and write to DB
-    new BagToDbCreateHandler(ctx, controller),
+    new DbCreateHandler(ctx, controller),
   ];
 }

@@ -12,29 +12,15 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import { QueryListHandler } from "./query.handler";
-import { DbReadListHandler } from "./dbRead.handler";
+import { CodeBuildFilterHandler } from "./code.buildFilter";
+import { DbReadListHandler } from "./db.read.list";
 
-export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
+export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed DTO ctor used by handlers
   ctx.set("list.dtoCtor", EnvServiceDto);
 
   return [
-    new QueryListHandler(ctx, controller),
+    new CodeBuildFilterHandler(ctx, controller),
     new DbReadListHandler(ctx, controller),
   ];
 }
-
-/**
- * Future pattern for a new dtoType (create a sibling folder with matching surface):
- *
- *   // ./pipelines/myNewDto.list.handlerPipeline/index.ts
- *   import { MyNewDto } from "@nv/shared/dto/my-new-dto.dto";
- *   import { QueryListHandler } from "../../handlers/query.list.handler";
- *   import { DbReadListHandler } from "../../handlers/dbRead.list.handler";
- *
- *   export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
- *     ctx.set("list.dtoCtor", MyNewDto);
- *     return [ new QueryListHandler(ctx, controller), new DbReadListHandler(ctx, controller) ];
- *   }
- */

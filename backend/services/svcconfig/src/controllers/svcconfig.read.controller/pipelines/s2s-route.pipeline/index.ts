@@ -28,10 +28,10 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 
 import {
-  QueryBuildFilterHandler,
+  CodeBuildQueryFilterHandler,
   type BuildFilterHandlerOptions,
 } from "@nv/shared/http/handlers/code.buildQuery.filter";
-import { BagPopulateQueryHandler } from "@nv/shared/http/handlers/db.readOne.byFilter";
+import { DbReadOneByFilterHandler } from "@nv/shared/http/handlers/db.readOne.byFilter";
 
 export function getSteps(
   ctx: HandlerContext,
@@ -63,7 +63,7 @@ export function getSteps(
   };
 
   return [
-    new QueryBuildFilterHandler(ctx, controller, filterOpts),
-    new BagPopulateQueryHandler(ctx, controller),
+    new CodeBuildQueryFilterHandler(ctx, controller, filterOpts),
+    new DbReadOneByFilterHandler(ctx, controller),
   ];
 }

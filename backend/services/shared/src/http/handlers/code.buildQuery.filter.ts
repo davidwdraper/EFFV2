@@ -80,22 +80,37 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
   }
 
   /**
+   * Handler naming convention:
+   * - code.<primaryFunction>[.<sub>...]
+   *
+   * This handler is generic across services:
+   * - Primary function: query.build-filter
+   */
+  public handlerName(): string {
+    return "code.query.build-filter";
+  }
+
+  /**
    * One-sentence, ops-facing description of what this handler does.
    */
-  protected handlerPurpose(): string {
+  public handlerPurpose(): string {
     return "Build a dynamic Mongo filter from params/query/env/ctx and stash it on ctx['bag.query.filter'].";
   }
 
   protected override async execute(): Promise<void> {
-    const requestId = this.safeCtxGet<string>("requestId");
+    const requestId =
+      this.safeCtxGet<string>("requestId") &&
+      typeof this.safeCtxGet("requestId") === "string"
+        ? (this.safeCtxGet("requestId") as string)
+        : "unknown";
 
     this.log.debug(
       {
         event: "execute_enter",
-        handler: this.constructor.name,
+        handler: this.handlerName(),
         requestId,
       },
-      "QueryBuildFilterHandler — execute enter"
+      "CodeBuildQueryFilterHandler.execute enter"
     );
 
     const params: any = this.safeCtxGet<any>("params") ?? {};
@@ -158,7 +173,7 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
                     },
                   ],
                   logMessage:
-                    "QueryBuildFilterHandler — required envVar missing while building filter.",
+                    "CodeBuildQueryFilterHandler — required envVar missing while building filter.",
                   logLevel: "error",
                 });
                 return;
@@ -190,7 +205,7 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
                     },
                   ],
                   logMessage:
-                    "QueryBuildFilterHandler — required ctx value missing while building filter.",
+                    "CodeBuildQueryFilterHandler — required ctx value missing while building filter.",
                   logLevel: "error",
                 });
                 return;
@@ -209,8 +224,13 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
           default: {
             // Should never happen; defensive only.
             this.log.error(
-              { event: "filter_spec_unknown_source", spec, requestId },
-              "QueryBuildFilterHandler — unknown filter source"
+              {
+                event: "filter_spec_unknown_source",
+                spec,
+                handler: this.handlerName(),
+                requestId,
+              },
+              "CodeBuildQueryFilterHandler — unknown filter source"
             );
           }
         }
@@ -242,6 +262,7 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
       this.log.debug(
         {
           event: "filter_built",
+          handler: this.handlerName(),
           filter,
           idKey:
             idKeyParts.length > 0
@@ -249,7 +270,7 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
               : undefined,
           requestId,
         },
-        "QueryBuildFilterHandler — built dynamic Mongo filter"
+        "CodeBuildQueryFilterHandler — built dynamic Mongo filter"
       );
     } catch (err) {
       this.failWithError({
@@ -271,7 +292,7 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
         ],
         rawError: err,
         logMessage:
-          "QueryBuildFilterHandler — unhandled exception while building dynamic Mongo filter.",
+          "CodeBuildQueryFilterHandler — unhandled exception while building dynamic Mongo filter.",
         logLevel: "error",
       });
     }
@@ -282,7 +303,12 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
     target: string,
     kind: "path parameter" | "query parameter"
   ): void {
-    const requestId = this.safeCtxGet<string>("requestId");
+    const requestId =
+      this.safeCtxGet<string>("requestId") &&
+      typeof this.safeCtxGet("requestId") === "string"
+        ? (this.safeCtxGet("requestId") as string)
+        : "unknown";
+
     this.failWithError({
       httpStatus: 400,
       title: "bad_request",
@@ -301,7 +327,7 @@ export class CodeBuildQueryFilterHandler extends HandlerBase {
         },
       ],
       logMessage:
-        "QueryBuildFilterHandler — required input missing while building filter.",
+        "CodeBuildQueryFilterHandler — required input missing while building filter.",
       logLevel: "warn",
     });
   }

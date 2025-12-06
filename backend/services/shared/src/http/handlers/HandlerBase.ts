@@ -25,7 +25,7 @@
  * ----------------------------------------------
  *
  * protected override async execute(): Promise<void> {
- *   const requestId = this.safeCtxGet<string>("requestId");
+ *   const requestId = this.getRequestId();
  *
  *   try {
  *     // WORK SECTION — code that may throw
@@ -293,6 +293,23 @@ export abstract class HandlerBase {
       );
       return undefined;
     }
+  }
+
+  /**
+   * Best-effort, normalized requestId string for logging and errors.
+   * - Reads via safeCtxGet("requestId").
+   * - Guarantees a non-empty string; falls back to "unknown".
+   * - Never throws.
+   */
+  protected getRequestId(): string {
+    const raw = this.safeCtxGet<any>("requestId");
+    if (typeof raw === "string") {
+      const trimmed = raw.trim();
+      if (trimmed !== "") {
+        return trimmed;
+      }
+    }
+    return "unknown";
   }
 
   /**

@@ -21,13 +21,7 @@ import { Minter as _Minter } from "./Minter";
 import { KmsJwtSigner } from "./KmsJwtSigner";
 import { MinterEnv } from "./MinterEnv";
 import { MintProvider } from "./MintProvider";
-
-type LoggerLike = {
-  debug?: (o: Record<string, unknown>, msg?: string) => void;
-  info?: (o: Record<string, unknown>, msg?: string) => void;
-  warn?: (o: Record<string, unknown>, msg?: string) => void;
-  error?: (o: Record<string, unknown>, msg?: string) => void;
-};
+import { type IBoundLogger } from "../logger/Logger";
 
 let _provider: MintProvider | undefined;
 
@@ -37,20 +31,24 @@ function requireInt(
   { allowZero = false }: { allowZero?: boolean } = {}
 ): number {
   if (v == null || v.trim() === "") {
-    throw new Error(`[getBearerToken] missing required env ${name}`);
+    // Ops guidance: this is configuration, not code — fix env-service / svcenv for the calling service.
+    throw new Error(
+      `[getBearerToken] missing required env ${name}; ensure it is provided by env-service for this service/env`
+    );
   }
   const n = Number(v);
   if (!Number.isFinite(n) || (!allowZero && n <= 0) || (allowZero && n < 0)) {
+    // Ops guidance: value is present but invalid; fix the numeric value in env-service.
     throw new Error(
       `[getBearerToken] env ${name} must be a ${
         allowZero ? "non-negative" : "positive"
-      } integer`
+      } integer; update its value in env-service`
     );
   }
   return Math.floor(n);
 }
 
-function resolveIssuer(explicitIss?: string, logger?: LoggerLike): string {
+function resolveIssuer(explicitIss?: string, logger?: IBoundLogger): string {
   const iss = explicitIss?.trim();
   if (iss) return iss;
 
@@ -59,19 +57,20 @@ function resolveIssuer(explicitIss?: string, logger?: LoggerLike): string {
 
   const svcName = (process.env.NV_SERVICE_NAME ?? "").trim();
   if (svcName) {
-    logger?.info?.(
+    logger?.info(
       { iss: svcName },
-      "getBearerToken: using NV_SERVICE_NAME as issuer"
+      "getBearerToken: using NV_SERVICE_NAME as issuer; set NV_ISSUER to override per service/env"
     );
     return svcName;
   }
 
+  // Ops guidance: this is a hard configuration miss; env-service / deployment must be fixed.
   throw new Error(
-    "[getBearerToken] issuer is required: set NV_ISSUER or NV_SERVICE_NAME, or pass opts.iss"
+    "[getBearerToken] issuer is required: set NV_ISSUER or NV_SERVICE_NAME, or pass opts.iss; check env-service config for this service/env"
   );
 }
 
-function ensureProvider(logger?: LoggerLike): MintProvider {
+function ensureProvider(logger?: IBoundLogger): MintProvider {
   if (_provider) return _provider;
 
   // 1) Build signer + minter (MinterEnv.assert() fails fast if misconfigured)
@@ -98,10 +97,16 @@ function ensureProvider(logger?: LoggerLike): MintProvider {
     log: logger,
   });
 
-  logger?.info?.(
-    { earlyRefreshSec, clockSkewSec, kid: signer.kid(), alg: signer.alg() },
-    "getBearerToken: MintProvider initialized"
+  logger?.info(
+    {
+      earlyRefreshSec,
+      clockSkewSec,
+      kid: signer.kid(),
+      alg: signer.alg(),
+    },
+    "getBearerToken: MintProvider initialized; verify S2S clock skew and refresh settings in env-service if tokens misbehave"
   );
+
   return _provider;
 }
 
@@ -114,13 +119,19 @@ export async function getBearerToken(opts: {
   ttlSec: number;
   iss?: string; // optional; if absent, derives from NV_ISSUER or NV_SERVICE_NAME
   sub?: string;
-  logger?: LoggerLike;
+  logger?: IBoundLogger;
 }): Promise<string> {
   if (!opts?.aud || typeof opts.aud !== "string") {
-    throw new Error("[getBearerToken] aud is required");
+    // Ops guidance: caller bug — ensure SvcClient passes a non-empty slug as aud.
+    throw new Error(
+      "[getBearerToken] aud is required and must be a non-empty string; check SvcClient call sites for a valid service slug"
+    );
   }
   if (!(opts.ttlSec > 0)) {
-    throw new Error("[getBearerToken] ttlSec must be > 0");
+    // Ops guidance: caller bug or misconfig — ttlSec should be a sane positive value for S2S tokens.
+    throw new Error(
+      "[getBearerToken] ttlSec must be > 0; ensure callers pass a positive TTL in seconds (e.g., 60–900)"
+    );
   }
 
   const provider = ensureProvider(opts.logger);

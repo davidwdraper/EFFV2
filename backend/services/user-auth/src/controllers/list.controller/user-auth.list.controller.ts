@@ -1,4 +1,4 @@
-// backend/services/user-auth/src/controllers/user-auth.list.controller/user-auth.list.controller.ts
+// backend/services/t_entity_crud/src/controllers/xxx.list.controller/xxx.list.controller.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -12,12 +12,12 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *
  * Purpose:
- * - Orchestrate GET /api/user-auth/v1/:dtoType/list
+ * - Orchestrate GET /api/xxx/v1/:dtoType/list
  * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  *
  * Notes:
  * - Cursor pagination via ?limit=&cursor=.
- * - DTO is the source of truth; serialization via toJson() (stamps meta).
+ * - DTO is the source of truth; serialization via toBody() (stamps meta).
  */
 
 import { Request, Response } from "express";
@@ -53,8 +53,8 @@ export class UserAuthListController extends ControllerJsonBase {
     );
 
     switch (dtoType) {
-      case "user-auth": {
-        this.seedHydrator(ctx, "user-auth", { validate: false }); // <== don't need to validate
+      case "xxx": {
+        this.seedHydrator(ctx, "xxx", { validate: false }); // <== don't need to validate
         const steps = UserAuthListPipeline.getSteps(ctx, this);
         await this.runPipeline(ctx, steps, { requireRegistry: false });
         break;

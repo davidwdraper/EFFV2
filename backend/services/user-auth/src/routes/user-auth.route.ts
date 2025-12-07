@@ -25,7 +25,7 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { UserAuthCreateController } from "../controllers/create.controller/user-auth.create.controller";
 import { UserAuthReadController } from "../controllers/read.controller/user-auth.read.controller";
 import { UserAuthDeleteController } from "../controllers/delete.controller/user-auth.delete.controller";
-import { UserAuthUpdateController } from "../controllers/user-auth.update.controller/user-auth.update.controller";
+import { UserAuthUpdateController } from "../controllers/update.controller/user-auth.update.controller";
 import { UserAuthListController } from "../controllers/list.controller/user-auth.list.controller";
 
 export function buildUserAuthRouter(app: AppBase): ReturnType<typeof Router> {

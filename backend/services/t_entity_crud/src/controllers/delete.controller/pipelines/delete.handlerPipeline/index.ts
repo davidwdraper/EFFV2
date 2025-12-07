@@ -15,6 +15,6 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 // just adjust this import path.
 import { DbDeleteByIdHandler } from "@nv/shared/http/handlers/db.delete.byId";
 
-export function getSteps(ctx: HandlerContext, controller: ControllerBase) {
+export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   return [new DbDeleteByIdHandler(ctx, controller)];
 }

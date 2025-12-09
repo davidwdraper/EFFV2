@@ -31,7 +31,7 @@ import type { DtoBase } from "@nv/shared/dto/DtoBase";
 import {
   DbWriter,
   DuplicateKeyError,
-} from "@nv/shared/dto/persistence/DbWriter";
+} from "@nv/shared/dto/persistence/dbWriter/DbWriter";
 
 export class DbUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {

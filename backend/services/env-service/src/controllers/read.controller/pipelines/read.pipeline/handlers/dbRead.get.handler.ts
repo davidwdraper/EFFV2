@@ -30,7 +30,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { IDto } from "@nv/shared/dto/IDto";
-import { DbReader } from "@nv/shared/dto/persistence/DbReader";
+import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 
 export class DbReadGetHandler extends HandlerBase {

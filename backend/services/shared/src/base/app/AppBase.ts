@@ -9,11 +9,15 @@
  *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
+ *   - ADR-0072 (Edge Mode Factory — Root Env Switches)
  *
  * Purpose:
  * - Orchestrator for Express composition across ALL services.
  * - Delegates concrete concerns (boot, health, middleware, S2S clients, prompts)
  *   into focused helpers in this folder.
+ * - Holds the resolved EdgeMode (prod / future mock modes) as a boot-time decision
+ *   so downstream wiring can choose appropriate edge helpers (DbWriter, DbReader, etc.)
+ *   without re-reading env on each call.
  */
 
 import type { Express } from "express";
@@ -37,6 +41,8 @@ import {
   mountEnvReloadRoute,
 } from "./appHealth";
 import { createSvcClientForApp, createPromptsClientForApp } from "./appClients";
+// NOTE: AppBase lives in shared, so use a relative import for EdgeMode.
+import { EdgeMode } from "../../env/edgeModeFactory";
 
 export type AppBaseCtor = {
   service: string;
@@ -49,6 +55,19 @@ export type AppBaseCtor = {
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
   checkDb: boolean;
+  /**
+   * Effective edge mode for this process:
+   * - EdgeMode.Prod      => production edge helpers
+   * - EdgeMode.FullMock  => future full-mock mode
+   * - EdgeMode.DbMock    => future DB-mock mode
+   *
+   * NOTE:
+   * - This is intended to be resolved once at boot (e.g., from the root
+   *   "service-root" env-service record via the edgeModeFactory) and then
+   *   treated as immutable for the lifetime of the process.
+   * - If omitted, AppBase defaults to EdgeMode.Prod.
+   */
+  edgeMode?: EdgeMode;
 };
 
 export abstract class AppBase extends ServiceBase {
@@ -71,6 +90,13 @@ export abstract class AppBase extends ServiceBase {
   protected readonly svcClient: SvcClient;
   protected readonly promptsClient: PromptsClient;
 
+  /**
+   * Effective edge mode for this process (resolved at boot).
+   * - For now, all services should run with EdgeMode.Prod behavior; non-prod
+   *   modes will be wired in via follow-up ADRs.
+   */
+  private readonly edgeMode: EdgeMode;
+
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
 
@@ -82,6 +108,9 @@ export abstract class AppBase extends ServiceBase {
     // Logical environment label: prefer explicit ctor value, otherwise derive from EnvServiceDto.
     const labelFromDto = this._envDto.getEnvLabel();
     this.envLabel = opts.envLabel ?? labelFromDto;
+
+    // Edge mode is a boot-time decision. If not provided, default to production behavior.
+    this.edgeMode = opts.edgeMode ?? EdgeMode.Prod;
 
     this.app = express();
     this.initApp();
@@ -145,6 +174,17 @@ export abstract class AppBase extends ServiceBase {
    */
   public getEnvLabel(): string {
     return this.envLabel;
+  }
+
+  /**
+   * Effective edge mode accessor.
+   * - Downstream wiring (DbWriter/DbReader/DbDeleter, SvcClient variants, etc.)
+   *   should use this to decide which concrete helpers to construct.
+   * - This value is resolved once at boot and remains immutable for the
+   *   lifetime of the process.
+   */
+  public getEdgeMode(): EdgeMode {
+    return this.edgeMode;
   }
 
   /** DTO Registry accessor – concrete services MUST implement. */
@@ -222,7 +262,11 @@ export abstract class AppBase extends ServiceBase {
 
     this._booted = true;
     this.log.info(
-      { service: this.service, envLabel: this.envLabel },
+      {
+        service: this.service,
+        envLabel: this.envLabel,
+        edgeMode: this.edgeMode,
+      },
       "app booted"
     );
   }

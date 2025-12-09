@@ -910,3 +910,7 @@ This doc represents the evolving user-facing + UX + engagement feature set.
 ## If, when building code you're unsure of an object or module's interface, ask for a code drop rather than guess on a function or approach.
 
 ## Don't want to see the extention 'Like' in any of the code.
+
+## All ADR are created as .md files with a download link - always.
+
+## For the 1st ADR in a session, ask for the ADR number to use.

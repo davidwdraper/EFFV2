@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/persistence/DbDeleter.ts
+// backend/services/shared/src/dto/persistence/dbDeleter/DbDeleter.mongoWorker.ts
 /**
  * Docs:
  * - SOP: DTO-first; single-concern helpers live in @nv/shared
@@ -9,14 +9,13 @@
  *   - ADR-0056 (DELETE uses <DtoTypeKey>; controller resolves collection)
  *
  * Purpose:
- * - Shared deleter that mirrors DbWriter/DbReader connectivity rules.
- * - Delete by canonical id (UUIDv4 string). `_id` is a string end-to-end.
+ * - Mongo-backed implementation of the deleter.
+ * - Encapsulates Mongo connectivity and deletion semantics.
+ * - DbDeleter facade delegates to this worker by default.
  *
  * Invariants:
  * - Canonical wire id field is `_id` (UUIDv4 string).
- * - No defaults: mongoUri/mongoDb must be provided explicitly by the caller
- *   (typically via EnvServiceDto.getEnvVar()).
- * - No DTO/Bag requirement; callers provide the explicit collection name.
+ * - No defaults: mongoUri/mongoDb must be provided explicitly.
  */
 
 import { MongoClient, Collection, Db, Document } from "mongodb";
@@ -25,6 +24,7 @@ import { MongoClient, Collection, Db, Document } from "mongodb";
 type WireDoc = Document & { _id: string };
 
 /* ----------------- minimal pooled client (per-process) ----------------- */
+
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
@@ -66,32 +66,31 @@ async function getExplicitCollection<T extends Document = WireDoc>(
   return (_db as Db).collection<T>(collectionName);
 }
 
-/* --------------------------- Deleter ----------------------------------- */
+/* --------------------------- Worker ----------------------------------- */
 
-export class DbDeleter {
-  private readonly _mongoUri: string;
-  private readonly _mongoDb: string;
-  private readonly _collectionName: string;
+export interface IDbDeleterWorker {
+  targetInfo(): Promise<{ collectionName: string }>;
+  deleteById(id: string): Promise<{ deleted: number; id: string }>;
+}
 
-  /**
-   * Construct a deleter bound to a specific collection.
-   * Callers pass:
-   *  - mongoUri / mongoDb (usually sourced from EnvServiceDto.getEnvVar)
-   *  - collectionName (resolved upstream e.g. via Registry.dbCollectionNameByType()).
-   */
+export class MongoDbDeleterWorker implements IDbDeleterWorker {
+  private readonly mongoUri: string;
+  private readonly mongoDb: string;
+  private readonly collectionName: string;
+
   constructor(params: {
     mongoUri: string;
     mongoDb: string;
     collectionName: string;
   }) {
-    this._mongoUri = params.mongoUri;
-    this._mongoDb = params.mongoDb;
-    this._collectionName = params.collectionName;
+    this.mongoUri = params.mongoUri;
+    this.mongoDb = params.mongoDb;
+    this.collectionName = params.collectionName;
   }
 
   /** Introspection hook for handlers to log target collection. */
   public async targetInfo(): Promise<{ collectionName: string }> {
-    return { collectionName: this._collectionName };
+    return { collectionName: this.collectionName };
   }
 
   /**
@@ -109,49 +108,15 @@ export class DbDeleter {
     }
 
     const coll = await getExplicitCollection<WireDoc>(
-      this._mongoUri,
-      this._mongoDb,
-      this._collectionName
+      this.mongoUri,
+      this.mongoDb,
+      this.collectionName
     );
 
     const res = await coll.deleteOne({ _id: String(id) } as Partial<WireDoc>);
     const deleted =
       typeof res?.deletedCount === "number" ? res.deletedCount : 0;
 
-    return { deleted, id };
-  }
-
-  /**
-   * Convenience one-shot: delete by id without keeping an instance around.
-   * Exactly mirrors deleteById() semantics.
-   */
-  public static async deleteOne(params: {
-    mongoUri: string;
-    mongoDb: string;
-    collectionName: string;
-    id: string;
-  }): Promise<{ deleted: number; id: string }> {
-    const { mongoUri, mongoDb, collectionName, id } = params;
-    if (!collectionName?.trim()) {
-      throw new Error(
-        "DBDELETER_NO_COLLECTION: deleteOne requires a non-empty collectionName."
-      );
-    }
-    if (typeof id !== "string" || id.trim() === "") {
-      throw new Error(
-        "DBDELETER_BAD_ID: deleteOne requires a non-empty string id. " +
-          "Caller: validate inputs before persistence."
-      );
-    }
-
-    const coll = await getExplicitCollection<WireDoc>(
-      mongoUri,
-      mongoDb,
-      collectionName
-    );
-    const res = await coll.deleteOne({ _id: String(id) } as Partial<WireDoc>);
-    const deleted =
-      typeof res?.deletedCount === "number" ? res.deletedCount : 0;
     return { deleted, id };
   }
 }

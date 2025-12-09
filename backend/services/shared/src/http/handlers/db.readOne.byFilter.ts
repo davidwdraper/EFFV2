@@ -31,7 +31,7 @@
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { DbReader } from "@nv/shared/dto/persistence/DbReader";
+import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { IDto } from "@nv/shared/dto/IDto";
 

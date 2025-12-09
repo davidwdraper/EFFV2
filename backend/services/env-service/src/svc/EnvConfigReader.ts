@@ -21,7 +21,7 @@
  */
 
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { DbReader } from "@nv/shared/dto/persistence/DbReader";
+import type { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 export type EnvConfigKey = {

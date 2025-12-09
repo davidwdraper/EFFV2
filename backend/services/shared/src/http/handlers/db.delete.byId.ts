@@ -42,7 +42,7 @@
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { DbDeleter } from "@nv/shared/dto/persistence/DbDeleter";
+import { DbDeleter } from "@nv/shared/dto/persistence/dbDeleter/DbDeleter";
 import { isValidUuidV4 } from "@nv/shared/utils/uuid";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 

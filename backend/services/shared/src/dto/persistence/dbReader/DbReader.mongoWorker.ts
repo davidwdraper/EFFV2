@@ -1,23 +1,17 @@
-// backend/services/shared/src/dto/persistence/DbReader.ts
+// backend/services/shared/src/dto/persistence/dbReader/DbReader.mongoWorker.ts
 /**
  * Docs:
  * - SOP: DTO-only persistence; reads hydrate DTOs with validate=false by default
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
- *   - ADR-0048 (Revised) — **All reads return DtoBag** (singleton or empty)
+ *   - ADR-0048 (Revised) — All reads return DtoBag (singleton or empty)
  *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
  *
  * Purpose:
- * - Read one/many records from Mongo and hydrate DTOs.
- * - **Bag-centric contract**: every read returns a DtoBag (0..N). No naked DTOs cross this boundary.
- * - Collection name is resolved from the DTO CLASS via dbCollectionName() (hard-wired per DTO, DB-agnostic).
- *
- * Invariants:
- * - Wire primary key is `_id` (string); DTO internals store the same value via DtoBase.
- * - Service code treats ids as opaque strings at the edges.
- * - No implicit fallbacks; Dev == Prod. Missing config → fail fast.
- * - DTOs persist their collection identity as class data; reader does not mutate instances post-hydration.
+ * - Mongo-backed implementation of IDbReaderWorker<TDto>.
+ * - Encapsulates all direct Mongo connectivity and cursor logic.
+ * - DbReader<TDto> delegates to this worker by default.
  */
 
 import type { OrderSpec } from "@nv/shared/db/orderSpec";
@@ -29,39 +23,20 @@ import {
   toMongoSeekFilter,
 } from "@nv/shared/db/cursor";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import { coerceForMongoQuery } from "./adapters/mongo/queryHelper";
+import { coerceForMongoQuery } from "../adapters/mongo/queryHelper";
 import { MongoClient, Collection, Db, Document } from "mongodb";
-
-type DtoCtorWithCollection<T> = {
-  fromBody: (j: unknown, opts?: { validate?: boolean }) => T;
-  dbCollectionName: () => string; // hard-wired per DTO near indexHints
-  name?: string;
-};
-
-type DbReaderOptions<T> = {
-  dtoCtor: DtoCtorWithCollection<T>;
-  mongoUri: string;
-  mongoDb: string;
-  validateReads?: boolean; // default false
-};
-
-export type ReadBatchArgs = {
-  filter?: Record<string, unknown>;
-  order?: OrderSpec; // default: ORDER_STABLE_ID_ASC
-  limit: number;
-  cursor?: string | null;
-  rev?: boolean;
-};
-
-export type ReadBatchResult<TDto> = {
-  bag: DtoBag<TDto>;
-  nextCursor?: string;
-};
+import type {
+  DbReaderOptions,
+  IDbReaderWorker,
+  ReadBatchArgs,
+  ReadBatchResult,
+} from "./DbReader";
 
 /** Canonical wire id field for this codebase. */
 const WIRE_ID_FIELD = "_id";
 
 /* ----------------- minimal pooled client (per-process) ----------------- */
+
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
@@ -105,10 +80,20 @@ async function getExplicitCollection<T extends Document = WireDoc>(
   return (_db as Db).collection<T>(collectionName);
 }
 
+/* ----------------- internal helpers ----------------- */
+
+function ordersEqual(a: OrderSpec, b: OrderSpec): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].field !== b[i].field || a[i].dir !== b[i].dir) return false;
+  }
+  return true;
+}
+
 /* ---------------------------------------------------------------------- */
 
-export class DbReader<TDto> {
-  private readonly dtoCtor: DtoCtorWithCollection<TDto>;
+export class MongoDbReaderWorker<TDto> implements IDbReaderWorker<TDto> {
+  private readonly dtoCtor: DbReaderOptions<TDto>["dtoCtor"];
   private readonly mongoUri: string;
   private readonly mongoDb: string;
   private readonly validateReads: boolean;
@@ -151,7 +136,7 @@ export class DbReader<TDto> {
     return { collectionName };
   }
 
-  private _hydrateDto(raw: WireDoc): TDto {
+  private hydrateDto(raw: WireDoc): TDto {
     // Raw Mongo doc → DTO via DTO.fromBody; DTO is responsible for handling `_id`.
     return this.dtoCtor.fromBody(raw, {
       validate: this.validateReads,
@@ -160,7 +145,7 @@ export class DbReader<TDto> {
 
   /* ======================= BAG-CENTRIC READS ======================= */
 
-  /** Read a single record by primary key; returns a **bag** (size 0 or 1). */
+  /** Read a single record by primary key; returns a bag (size 0 or 1). */
   public async readOneBagById(opts: { id: string }): Promise<DtoBag<TDto>> {
     const col = await this.collection();
 
@@ -172,11 +157,11 @@ export class DbReader<TDto> {
     // UUIDv4 string primary key — query directly by `_id` as a string.
     const raw = await col.findOne({ [WIRE_ID_FIELD]: dtoId } as any);
     if (!raw) return new DtoBag<TDto>([]);
-    const dto = this._hydrateDto(raw as WireDoc);
+    const dto = this.hydrateDto(raw as WireDoc);
     return new DtoBag<TDto>([dto] as readonly TDto[]);
   }
 
-  /** Read the first record that matches a filter; returns a **bag** (size 0 or 1). */
+  /** Read the first record that matches a filter; returns a bag (size 0 or 1). */
   public async readOneBag(opts: {
     filter: Record<string, unknown>;
   }): Promise<DtoBag<TDto>> {
@@ -187,11 +172,11 @@ export class DbReader<TDto> {
     >;
     const raw = await col.findOne(q as any);
     if (!raw) return new DtoBag<TDto>([]);
-    const dto = this._hydrateDto(raw as WireDoc);
+    const dto = this.hydrateDto(raw as WireDoc);
     return new DtoBag<TDto>([dto] as readonly TDto[]);
   }
 
-  /** Read many by filter with a simple limit; returns a **bag** (0..N). */
+  /** Read many by filter with a simple limit; returns a bag (0..N). */
   public async readManyBag(opts: {
     filter: Record<string, unknown>;
     limit?: number;
@@ -213,12 +198,12 @@ export class DbReader<TDto> {
       .limit(limit);
     const dtos: TDto[] = [];
     for await (const raw of cur) {
-      dtos.push(this._hydrateDto(raw as WireDoc));
+      dtos.push(this.hydrateDto(raw as WireDoc));
     }
     return new DtoBag<TDto>(dtos as readonly TDto[]);
   }
 
-  /** Batch read with keyset pagination; returns a **bag** (0..N) plus optional nextCursor. */
+  /** Batch read with keyset pagination; returns a bag (0..N) plus optional nextCursor. */
   public async readBatch(args: ReadBatchArgs): Promise<ReadBatchResult<TDto>> {
     const order = args.order ?? ORDER_STABLE_ID_ASC;
     const baseFilter = args.filter ?? {};
@@ -266,7 +251,7 @@ export class DbReader<TDto> {
       })());
 
     const slice = docs.slice(0, limit);
-    const dtos = slice.map((raw) => this._hydrateDto(raw));
+    const dtos = slice.map((raw) => this.hydrateDto(raw));
     const bag = new DtoBag<TDto>(dtos as readonly TDto[]);
 
     let nextCursor: string | undefined;
@@ -278,14 +263,4 @@ export class DbReader<TDto> {
 
     return { bag, nextCursor };
   }
-}
-
-/* ----------------- internal helpers ----------------- */
-
-function ordersEqual(a: OrderSpec, b: OrderSpec): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].field !== b[i].field || a[i].dir !== b[i].dir) return false;
-  }
-  return true;
 }

@@ -34,7 +34,7 @@
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
-import { DbReader } from "../../dto/persistence/DbReader";
+import { DbReader } from "../../dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "../../dto/DtoBag";
 import type { DtoBase } from "../../dto/DtoBase";
 import { isValidUuidV4 } from "../../utils/uuid";

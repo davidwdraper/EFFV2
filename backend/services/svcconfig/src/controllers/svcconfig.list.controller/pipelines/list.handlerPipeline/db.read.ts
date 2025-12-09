@@ -36,7 +36,7 @@
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { DbReader } from "@nv/shared/dto/persistence/DbReader";
+import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 
 export class DbReadHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {

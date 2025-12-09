@@ -40,7 +40,7 @@
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
-import { DbReader } from "../../dto/persistence/DbReader";
+import { DbReader } from "../../dto/persistence/dbReader/DbReader";
 import { ControllerBase } from "../../base/controller/ControllerBase";
 
 export class DbReadListHandler extends HandlerBase {

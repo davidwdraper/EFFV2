@@ -35,7 +35,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
-import { DbReader } from "@nv/shared/dto/persistence/DbReader";
+import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { EnvConfigReader } from "../../../../svc/EnvConfigReader";

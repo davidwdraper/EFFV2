@@ -36,7 +36,7 @@ import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import {
   DbWriter,
   DuplicateKeyError,
-} from "@nv/shared/dto/persistence/DbWriter";
+} from "@nv/shared/dto/persistence/dbWriter/DbWriter";
 
 export class DbUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {

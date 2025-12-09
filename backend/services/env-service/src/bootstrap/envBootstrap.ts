@@ -31,7 +31,7 @@ import fs from "fs";
 import path from "path";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import { DbReader } from "@nv/shared/dto/persistence/DbReader";
+import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { EnvConfigReader } from "../svc/EnvConfigReader";
 
 type BootstrapOpts = {

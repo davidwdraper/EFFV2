@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/persistence/DbWriter.ts
+// backend/services/shared/src/dto/persistence/dbWriter/DbWriter.mongoWorker.ts
 /**
  * Docs:
  * - ADR-0040/41/42/43 (DTO-first, handlers, context bus, failure propagation)
@@ -8,48 +8,31 @@
  * - ADR-0057 (IDs are UUIDv4; assign BEFORE toBody; immutable thereafter)
  *
  * Purpose:
- * - Persist DTOs from a **DtoBag** with explicit Mongo connectivity.
- * - On create (write): always **insertOne** (no upsert). Singleton bag only.
- * - On _id duplicate: **clone()**, ensure a NEW UUIDv4 via DtoBase, retry (max 3).
- *
- * Meta rules:
- * - Create:
- *     • createdAt: stamped only if missing (DTO can pre-set it).
- *     • ownerUserId: stamped only once, from userId when present.
- *     • updatedAt: always stamped.
- *     • updatedByUserId: set only when userId is provided.
- * - Update:
- *     • createdAt / ownerUserId: left unchanged.
- *     • updatedAt / updatedByUserId: refreshed each update (from userId when present).
- *
- * Returns:
- * - For write(): a **singleton DtoBag<TDto>** containing the exact DTO that was inserted
- *   (either the original instance or the clone used on retry).
- * - For writeMany(): a **DtoBag<TDto>** containing every DTO that was inserted.
- *
- * Ground rules (ID handling):
- * - Internally, DTOs manage their canonical id via DtoBase’s `_id` / setIdOnce()/ensureId().
- * - Outbound wire JSON from DTOs includes `_id` (string). There is no separate DB-only id.
- * - Writer does **no** id mapping: it inserts the DTO’s JSON as-is and trusts `_id`.
+ * - Mongo-backed implementation of IDbWriterWorker<TDto>.
+ * - Encapsulates all direct Mongo connectivity and duplicate handling.
+ * - DbWriter<TDto> delegates to this worker by default; future mock workers
+ *   can be injected via constructor without changing handler call sites.
  */
 
-import type { DtoBase } from "../DtoBase";
-import type { ILogger } from "../../logger/Logger";
 import { MongoClient, Collection, Db } from "mongodb";
-import { DtoBag } from "../../dto/DtoBag";
+import type { DtoBase } from "../../DtoBase";
+import type { ILogger } from "../../../logger/Logger";
+import { DtoBag } from "../../../dto/DtoBag";
 import {
   parseDuplicateKey,
   DuplicateKeyError,
-} from "./adapters/mongo/dupeKeyError";
+} from "../adapters/mongo/dupeKeyError";
+import type { IDbWriterWorker } from "./DbWriter";
 
 /* ----------------- minimal pooled client (per-process) ----------------- */
+
 let _client: MongoClient | null = null;
 let _db: Db | null = null;
 let _dbNamePinned: string | null = null;
 let _uriPinned: string | null = null;
 
 /** internal: tiny console-backed logger if none is provided */
-function consoleLogger(ctx: Record<string, unknown> = {}): ILogger {
+export function consoleLogger(ctx: Record<string, unknown> = {}): ILogger {
   const wrap =
     (level: "debug" | "info" | "warn" | "error") =>
     (meta?: unknown, msg?: string) => {
@@ -156,32 +139,34 @@ function isIdDuplicate(dup: any): boolean {
   return false;
 }
 
-/* ---------------------------------------------------------------------- */
+/* ---------------------- worker class ------------------------- */
 
-export class DbWriter<TDto extends DtoBase> {
-  private readonly _bag: DtoBag<TDto>;
-  private readonly _mongoUri: string;
-  private readonly _mongoDb: string;
-  private readonly _userId?: string;
+export class MongoDbWriterWorker<TDto extends DtoBase>
+  implements IDbWriterWorker<TDto>
+{
+  private readonly bag: DtoBag<TDto>;
+  private readonly mongoUri: string;
+  private readonly mongoDb: string;
+  private readonly userId?: string;
   private readonly log: ILogger;
 
   constructor(params: {
     bag: DtoBag<TDto>;
     mongoUri: string;
     mongoDb: string;
-    log?: ILogger;
+    log: ILogger;
     userId?: string;
   }) {
-    this._bag = params.bag;
-    this._mongoUri = params.mongoUri;
-    this._mongoDb = params.mongoDb;
-    this._userId = params.userId;
-    this.log = params.log ?? consoleLogger({ component: "DbWriter" });
+    this.bag = params.bag;
+    this.mongoUri = params.mongoUri;
+    this.mongoDb = params.mongoDb;
+    this.userId = params.userId;
+    this.log = params.log;
   }
 
   /** Introspection hook for handlers to log target collection. */
   public async targetInfo(): Promise<{ collectionName: string }> {
-    const dto = requireSingleton(this._bag, "write");
+    const dto = requireSingleton(this.bag, "write");
     const collectionName = (dto as DtoBase).requireCollectionName();
     return { collectionName };
   }
@@ -191,11 +176,11 @@ export class DbWriter<TDto extends DtoBase> {
    * Assign meta + id BEFORE toBody.
    */
   public async write(): Promise<DtoBag<TDto>> {
-    let dto = requireSingleton(this._bag, "write");
+    let dto = requireSingleton(this.bag, "write");
     let collectionName = (dto as DtoBase).requireCollectionName();
     let coll = await getExplicitCollection(
-      this._mongoUri,
-      this._mongoDb,
+      this.mongoUri,
+      this.mongoDb,
       collectionName
     );
 
@@ -205,8 +190,8 @@ export class DbWriter<TDto extends DtoBase> {
 
         // Meta first: createdAt/ownerUserId (one-shot), updatedAt/updatedByUserId.
         base.stampCreatedAt();
-        base.stampOwnerUserId(this._userId);
-        base.stampUpdatedAt(this._userId);
+        base.stampOwnerUserId(this.userId);
+        base.stampUpdatedAt(this.userId);
 
         // Ensure id BEFORE toBody (DtoBase handles generation/validation)
         base.ensureId();
@@ -273,8 +258,8 @@ export class DbWriter<TDto extends DtoBase> {
 
           // Fresh meta + id on the clone.
           cloned.stampCreatedAt();
-          cloned.stampOwnerUserId(this._userId);
-          cloned.stampUpdatedAt(this._userId);
+          cloned.stampOwnerUserId(this.userId);
+          cloned.stampUpdatedAt(this.userId);
           cloned.ensureId();
 
           dto = cloned as TDto;
@@ -288,8 +273,8 @@ export class DbWriter<TDto extends DtoBase> {
             );
             collectionName = nextCollection;
             coll = await getExplicitCollection(
-              this._mongoUri,
-              this._mongoDb,
+              this.mongoUri,
+              this.mongoDb,
               collectionName
             );
           }
@@ -313,16 +298,15 @@ export class DbWriter<TDto extends DtoBase> {
    * Returns a DtoBag containing all successfully inserted DTOs (with any retried clones).
    */
   public async writeMany(bag?: DtoBag<TDto>): Promise<DtoBag<TDto>> {
-    const source = bag ?? this._bag;
-
+    const source = bag ?? this.bag;
     const inserted: TDto[] = [];
 
     for (const _item of source.items()) {
       let dto = _item as TDto;
       let collectionName = (dto as DtoBase).requireCollectionName();
       let coll = await getExplicitCollection(
-        this._mongoUri,
-        this._mongoDb,
+        this.mongoUri,
+        this.mongoDb,
         collectionName
       );
 
@@ -336,8 +320,8 @@ export class DbWriter<TDto extends DtoBase> {
           const base = dto as DtoBase;
 
           base.stampCreatedAt();
-          base.stampOwnerUserId(this._userId);
-          base.stampUpdatedAt(this._userId);
+          base.stampOwnerUserId(this.userId);
+          base.stampUpdatedAt(this.userId);
           base.ensureId();
 
           const json = base.toBody() as Record<string, unknown>;
@@ -398,8 +382,8 @@ export class DbWriter<TDto extends DtoBase> {
             assertCloneInvariants(dto as DtoBase, cloned as DtoBase);
 
             cloned.stampCreatedAt();
-            cloned.stampOwnerUserId(this._userId);
-            cloned.stampUpdatedAt(this._userId);
+            cloned.stampOwnerUserId(this.userId);
+            cloned.stampUpdatedAt(this.userId);
             cloned.ensureId();
 
             dto = cloned as TDto;
@@ -412,8 +396,8 @@ export class DbWriter<TDto extends DtoBase> {
               );
               collectionName = nextCollection;
               coll = await getExplicitCollection(
-                this._mongoUri,
-                this._mongoDb,
+                this.mongoUri,
+                this.mongoDb,
                 collectionName
               );
             }
@@ -430,11 +414,11 @@ export class DbWriter<TDto extends DtoBase> {
 
   /** Update by canonical id (no id mutation). */
   public async update(): Promise<{ id: string }> {
-    const dto = requireSingleton(this._bag, "update");
+    const dto = requireSingleton(this.bag, "update");
     const collectionName = (dto as DtoBase).requireCollectionName();
     const coll = await getExplicitCollection(
-      this._mongoUri,
-      this._mongoDb,
+      this.mongoUri,
+      this.mongoDb,
       collectionName
     );
 
@@ -444,7 +428,7 @@ export class DbWriter<TDto extends DtoBase> {
     const rawId = base.getId();
 
     // Refresh update meta only; createdAt/ownerUserId stay as-is.
-    base.stampUpdatedAt(this._userId);
+    base.stampUpdatedAt(this.userId);
 
     const json = base.toBody() as Record<string, unknown>;
     const { _id, id: _wireId, ...rest } = json as Record<string, unknown>;
@@ -473,4 +457,4 @@ export class DbWriter<TDto extends DtoBase> {
   }
 }
 
-export { DuplicateKeyError };
+export { DuplicateKeyError } from "../adapters/mongo/dupeKeyError";

@@ -1,4 +1,4 @@
-// backend/services/user/src/registry/Registry.ts
+// backend/services/test-runner/src/registry/Registry.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -19,7 +19,7 @@
  */
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
-import { UserDto } from "@nv/shared/dto/user.dto";
+import { TestRunnerDto } from "@nv/shared/dto/test-runner.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
@@ -30,11 +30,11 @@ export class Registry extends ServiceRegistryBase {
 
   /**
    * Explicit map of registry type keys → DTO constructors.
-   * Keys are the stable wire/type identifiers (e.g., "user").
+   * Keys are the stable wire/type identifiers (e.g., "test-runner").
    */
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
-      ["user"]: UserDto as unknown as DtoCtor<IDto>,
+      ["test-runner"]: TestRunnerDto as unknown as DtoCtor<IDto>,
       // Add new DTOs here as the service grows:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,
     };
@@ -44,7 +44,7 @@ export class Registry extends ServiceRegistryBase {
    * Hook for attaching UserType (and other per-request security context)
    * to a DTO instance.
    *
-   * The user template does not apply field-level security by default,
+   * The test-runner template does not apply field-level security by default,
    * so this implementation is a strict pass-through.
    */
   protected applyUserType<T extends IDto = IDto>(dto: T): T {
@@ -53,19 +53,22 @@ export class Registry extends ServiceRegistryBase {
 
   // ─────────────── Convenience constructors (optional) ───────────────
 
-  /** Create a new UserDto instance with a seeded collection. */
-  public newUserDto(): UserDto {
-    const dto = new UserDto(this.secret);
-    dto.setCollectionName(UserDto.dbCollectionName());
+  /** Create a new TestRunnerDto instance with a seeded collection. */
+  public newTestRunnerDto(): TestRunnerDto {
+    const dto = new TestRunnerDto(this.secret);
+    dto.setCollectionName(TestRunnerDto.dbCollectionName());
     return dto;
   }
 
-  /** Hydrate an UserDto from JSON (validates if requested) and seed collection. */
-  public fromJsonUser(json: unknown, opts?: { validate?: boolean }): UserDto {
-    const dto = UserDto.fromBody(json, {
+  /** Hydrate an TestRunnerDto from JSON (validates if requested) and seed collection. */
+  public fromJsonTestRunner(
+    json: unknown,
+    opts?: { validate?: boolean }
+  ): TestRunnerDto {
+    const dto = TestRunnerDto.fromBody(json, {
       validate: !!opts?.validate,
     });
-    dto.setCollectionName(UserDto.dbCollectionName());
+    dto.setCollectionName(TestRunnerDto.dbCollectionName());
     return dto;
   }
 }

@@ -1,4 +1,4 @@
-// backend/services/user/src/controllers/user.create.controller/user.create.controller.ts
+// backend/services/test-runner/src/controllers/run.controller/test-runner.run.controller.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -8,15 +8,16 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
- *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
+ *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *
  * Purpose:
- * - Orchestrate PUT /api/user/v1/:dtoType/create
+ * - Orchestrate POST /api/test-runner/v1/:dtoType/run-test
  * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  *
  * Invariants:
- * - Edges are bag-only (payload { items:[{ type:"<dtoType>", ...}] } ).
- * - Create requires exactly 1 DTO item; enforced in pipeline handlers.
+ * - Edges are bag-only for service APIs; test-runner itself may evolve to hydrate
+ *   a TestRootDto bag from discovery results.
+ * - Controller does orchestration only; no test execution or file-system logic here.
  */
 
 import { Request, Response } from "express";
@@ -25,44 +26,48 @@ import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBas
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
-import * as UserCreatePipeline from "./pipelines/create.handlerPipeline";
+import * as TestRunnerRunPipeline from "./pipelines/run.handlerPipeline";
 // Future dtoType example (uncomment when adding a new type):
-// import * as MyNewDtoCreatePipeline from "./pipelines/myNewDto.create.handlerPipeline";
+// import * as MyNewDtoRunPipeline from "./pipelines/myNewDto.run.handlerPipeline";
 
-export class UserCreateController extends ControllerJsonBase {
+export class TestRunnerRunController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }
 
-  public async put(req: Request, res: Response): Promise<void> {
+  public async post(req: Request, res: Response): Promise<void> {
     const dtoType = req.params.dtoType;
 
     const ctx: HandlerContext = this.makeContext(req, res);
     ctx.set("dtoType", dtoType);
-    ctx.set("op", "create");
+    ctx.set("op", "run");
 
     this.log.debug(
       {
         event: "pipeline_select",
-        op: "create",
+        op: "run",
         dtoType,
         requestId: ctx.get("requestId"),
       },
-      "selecting create pipeline"
+      "test-runner.run: selecting run pipeline"
     );
 
     switch (dtoType) {
-      case "user": {
-        this.seedHydrator(ctx, "user", { validate: true });
-        const steps = UserCreatePipeline.getSteps(ctx, this);
-        await this.runPipeline(ctx, steps, { requireRegistry: true });
+      case "test-runner": {
+        // For now, the run pipeline starts with CodeTreeWalkerHandler,
+        // which discovers pipelines. Future handlers will hydrate a
+        // TestRootDto and bag for wire output.
+        const steps = TestRunnerRunPipeline.getSteps(ctx, this);
+        await this.runPipeline(ctx, steps, {
+          // Tree-walker does not require the DTO registry; later stages may.
+          requireRegistry: false,
+        });
         break;
       }
 
       // Future dtoType example:
       // case "myNewDto": {
-      //   this.seedHydrator(ctx, "MyNewDto", { validate: true });
-      //   const steps = MyNewDtoCreatePipeline.getSteps(ctx, this);
+      //   const steps = MyNewDtoRunPipeline.getSteps(ctx, this);
       //   await this.runPipeline(ctx, steps, { requireRegistry: true });
       //   break;
       // }
@@ -74,18 +79,18 @@ export class UserCreateController extends ControllerJsonBase {
         ctx.set("response.body", {
           code: "NOT_IMPLEMENTED",
           title: "Not Implemented",
-          detail: `No create pipeline for dtoType='${dtoType}'`,
+          detail: `No run pipeline for dtoType='${dtoType}'`,
           requestId: ctx.get("requestId"),
         });
 
         this.log.warn(
           {
             event: "pipeline_missing",
-            op: "create",
+            op: "run",
             dtoType,
             requestId: ctx.get("requestId"),
           },
-          "no create pipeline registered for dtoType"
+          "test-runner.run: no run pipeline registered for dtoType"
         );
       }
     }

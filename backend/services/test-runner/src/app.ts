@@ -1,4 +1,4 @@
-// backend/services/user/src/app.ts
+// backend/services/test-runner/src/app.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -11,7 +11,7 @@
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - For user, DB/index ensure is ON (checkDb=true).
+ * - For TestRunner, DB/index ensure is ON (checkDb=true).
  */
 
 import type { Express, Router } from "express";
@@ -22,7 +22,7 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
-import { buildUserRouter } from "./routes/user.route";
+import { buildTestRunnerRouter } from "./routes/test-runner.route";
 
 type CreateAppOptions = {
   slug: string;
@@ -37,7 +37,7 @@ type CreateAppOptions = {
   envReloader: () => Promise<EnvServiceDto>;
 };
 
-class userApp extends AppBase {
+class TestRunnerApp extends AppBase {
   /** Concrete per-service DTO registry (explicit, no barrels). */
   private readonly registry: Registry;
 
@@ -51,12 +51,15 @@ class userApp extends AppBase {
       envLabel: opts.envLabel,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // user is DB-backed: requires NV_MONGO_* and index ensure at boot.
+      // TestRunner is DB-backed: requires NV_MONGO_* and index ensure at boot.
       checkDb: true,
     });
 
     this.registry = new Registry();
   }
+
+  // This is a MOS service with underlying DB
+  protected readonly checkDb = false;
 
   /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
   public override getDtoRegistry(): IDtoRegistry {
@@ -71,7 +74,7 @@ class userApp extends AppBase {
       throw new Error("Base path missing — check AppBase.healthBasePath()");
     }
 
-    const r: Router = buildUserRouter(this);
+    const r: Router = buildTestRunnerRouter(this);
     this.app.use(base, r);
     this.log.info({ base, env: this.getEnvLabel() }, "routes mounted");
   }
@@ -81,7 +84,7 @@ class userApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new userApp(opts);
+  const app = new TestRunnerApp(opts);
   // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
   await app.boot();
   return { app: app.instance };

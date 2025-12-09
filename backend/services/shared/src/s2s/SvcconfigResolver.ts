@@ -24,8 +24,12 @@
  * Notes:
  * - This resolver is SvcClient-specific; it is *not* the same resolver type
  *   used by routePolicyGate (which has its own contract).
- * - Protocol/host for targets come from the current service's env config
- *   (svcenv / EnvServiceDto); port comes from SvcconfigDto.targetPort.
+ * - For normal targets:
+ *   • `baseUrl` is taken **directly from SvcconfigDto.baseUrl`.
+ *   • `targetPort` is still stored for gateway and ops, but SvcClient does
+ *     not derive URLs from it.
+ * - If a record lacks a usable baseUrl, we treat it as a misconfiguration
+ *   and refuse to authorize the call (no "smart" defaults).
  */
 
 import type {
@@ -46,7 +50,10 @@ type SvcconfigResolverOptions = {
   /**
    * Base protocol/host used for *worker* services.
    * - Example (dev): "http://127.0.0.1"
-   * - Port comes from SvcconfigDto.targetPort.
+   * - Historically, port came from SvcconfigDto.targetPort.
+   * - With baseUrl on SvcconfigDto, this is primarily used for:
+   *   • svcconfig self-resolution (via NV_SVCCONFIG_URL), and
+   *   • diagnostics / potential fallback logging.
    */
   workerBaseHost: string;
   /**
@@ -79,14 +86,14 @@ export class SvcconfigResolver implements ISvcconfigResolver {
    * Resolve a SvcTarget using svcconfig + TTL cache.
    *
    * Special-case:
-   * - slug === "svcconfig" → base URL comes from NV_SVCCONFIG_URL so we don't
-   *   depend on svcconfig to resolve itself.
+   * - slug === "svcconfig" → base URL comes from NV_SVCCONFIG_URL.
    */
   public async resolveTarget(
     env: string,
     slug: string,
     version: number
   ): Promise<SvcTarget> {
+    // You can drop this debug once you’re happy:
     this.logger.error("******* svcconfig_resolver.resolve_target_called", {
       env,
       slug,
@@ -300,17 +307,28 @@ export class SvcconfigResolver implements ISvcconfigResolver {
   }
 
   /**
-   * Convert SvcconfigDto into a SvcTarget with:
-   * - baseUrl: protocol/host from workerBaseHost; port from targetPort.
-   * - isAuthorized: based on isEnabled + isS2STarget.
+   * Convert SvcconfigDto into a SvcTarget.
+   *
+   * Rules:
+   * - If isEnabled=false or isS2STarget=false:
+   *     • Do NOT authorize.
+   *     • Still return a best-effort baseUrl for diagnostics (workerBaseHost + port),
+   *       but SvcClient should see `isAuthorized=false` and refuse the call.
+   * - Else:
+   *     • Require a non-empty dto.baseUrl.
+   *     • If baseUrl is blank/invalid, treat as misconfiguration and refuse to authorize.
    */
   private toSvcTarget(dto: SvcconfigDto, env: string): SvcTarget {
     const slug = dto.slug;
     const version = dto.majorVersion;
     const targetPort = dto.targetPort;
+    const baseUrlFromDto = (dto.baseUrl ?? "").trim();
 
     const isEnabled = dto.isEnabled;
     const isS2S = dto.isS2STarget;
+
+    // Helper for "diagnostic" base URL when we aren't actually authorizing.
+    const diagnosticBaseUrl = `${this.workerBaseHost}:${targetPort || 0}`;
 
     if (!isEnabled || !isS2S) {
       const reasonParts: string[] = [];
@@ -326,7 +344,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
       });
 
       return {
-        baseUrl: `${this.workerBaseHost}:${targetPort}`,
+        baseUrl: diagnosticBaseUrl,
         slug,
         version,
         isAuthorized: false,
@@ -334,13 +352,34 @@ export class SvcconfigResolver implements ISvcconfigResolver {
       };
     }
 
-    const baseUrl = `${this.workerBaseHost}:${targetPort}`;
+    if (!baseUrlFromDto) {
+      const reason =
+        "SVCCONFIG_BASEURL_MISSING: svcconfig entry has no baseUrl for enabled S2S target.";
+      this.logger.error("svcconfig_resolver.baseurl_missing_for_target", {
+        env,
+        slug,
+        version,
+        targetPort,
+        hint: reason,
+      });
+
+      return {
+        baseUrl: diagnosticBaseUrl,
+        slug,
+        version,
+        isAuthorized: false,
+        reasonIfNotAuthorized: "SVCCONFIG_BASEURL_MISSING",
+      };
+    }
+
+    const baseUrl = baseUrlFromDto.replace(/\/+$/, "");
 
     this.logger.debug("svcconfig_resolver.target_resolved", {
       env,
       slug,
       version,
       baseUrl,
+      targetPort,
     });
 
     return {

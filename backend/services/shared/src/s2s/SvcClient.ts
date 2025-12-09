@@ -107,12 +107,16 @@ export class SvcClient {
       );
     }
 
+    const pathSuffix = this.buildCrudSuffix(params);
+
     const url = this.buildUrl(target.baseUrl, {
       slug: params.slug,
       version: params.version,
+      pathSuffix,
+      // dtoType/op remain for legacy callers that might not pass pathSuffix,
+      // but we always pass an explicit suffix for CRUD rails now.
       dtoType: params.dtoType,
       op: params.op,
-      pathSuffix: params.pathSuffix,
     });
 
     const headers: Record<string, string> = {
@@ -376,6 +380,85 @@ export class SvcClient {
     opts.headers["authorization"] = `Bearer ${token}`;
   }
 
+  /**
+   * Build the CRUD path suffix for typed routes.
+   *
+   * Rules (worker CRUD rails):
+   * - PUT    create → /:dtoType/create
+   * - PATCH  update → /:dtoType/update/:id
+   * - GET    read   → /:dtoType/read/:id
+   * - DELETE delete → /:dtoType/delete/:id
+   * - GET    list   → /:dtoType/list
+   *
+   * If params.pathSuffix is provided, it wins (for non-CRUD/custom routes).
+   * Otherwise we derive the suffix from method/op/dtoType/id.
+   */
+  private buildCrudSuffix(params: SvcClientCallParams): string {
+    if (params.pathSuffix && params.pathSuffix.trim().length > 0) {
+      // Caller is explicitly overriding the suffix; trust it.
+      const trimmed = params.pathSuffix.trim();
+      return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+    }
+
+    const method = params.method.toUpperCase();
+    const op = (params.op ?? "").toLowerCase();
+    const dtoType = (params.dtoType ?? "").trim();
+    const id = (params as any).id as string | undefined;
+
+    if (!dtoType) {
+      throw new Error(
+        `SvcClient.buildCrudSuffix: dtoType is required for DTO-based S2S calls (slug="${params.slug}", op="${params.op}", method="${params.method}").`
+      );
+    }
+
+    const encType = encodeURIComponent(dtoType);
+    const encId = id ? encodeURIComponent(id) : undefined;
+
+    // CREATE: PUT /:dtoType/create
+    if (method === "PUT" && op === "create") {
+      return `/${encType}/create`;
+    }
+
+    // UPDATE: PATCH /:dtoType/update/:id
+    if (method === "PATCH" && op === "update") {
+      if (!encId) {
+        throw new Error(
+          `SvcClient.buildCrudSuffix: PATCH update requires 'id' for dtoType="${dtoType}".`
+        );
+      }
+      return `/${encType}/update/${encId}`;
+    }
+
+    // READ: GET /:dtoType/read/:id
+    if (method === "GET" && op === "read") {
+      if (!encId) {
+        throw new Error(
+          `SvcClient.buildCrudSuffix: GET read requires 'id' for dtoType="${dtoType}".`
+        );
+      }
+      return `/${encType}/read/${encId}`;
+    }
+
+    // DELETE: DELETE /:dtoType/delete/:id
+    if (method === "DELETE" && op === "delete") {
+      if (!encId) {
+        throw new Error(
+          `SvcClient.buildCrudSuffix: DELETE delete requires 'id' for dtoType="${dtoType}".`
+        );
+      }
+      return `/${encType}/delete/${encId}`;
+    }
+
+    // LIST: GET /:dtoType/list
+    if (method === "GET" && op === "list") {
+      return `/${encType}/list`;
+    }
+
+    // Fallback: preserve legacy behavior for non-CRUD ops.
+    const encOp = encodeURIComponent(params.op ?? "");
+    return `/${encType}/${encOp}`;
+  }
+
   private buildUrl(
     baseUrl: string,
     params: {
@@ -395,6 +478,7 @@ export class SvcClient {
       suffix = `${encodeURIComponent(dtoType)}/${encodeURIComponent(op)}`;
     }
 
+    // Allow callers to pass a suffix that starts with "/" or not.
     const normalizedSuffix = suffix.replace(/^\/+/, "");
     return `${trimmedBase}/api/${encodeURIComponent(params.slug)}/v${
       params.version
@@ -405,22 +489,30 @@ export class SvcClient {
    * Build the JSON request body from the provided DtoBag, if applicable.
    *
    * - For GET/HEAD requests: no body is sent, regardless of bag presence.
-   * - For non-GET requests:
+   * - For DELETE delete-by-id (canonical CRUD): no body is sent; id in path is sufficient.
+   * - For other non-GET methods:
    *   - A DtoBag is required; we serialize it to the canonical wire bag envelope.
    *
    * The wire format is defined by ADR-0050 (Wire Bag Envelope).
    */
   private buildDtoBody(params: SvcClientCallParams): string | undefined {
     const method = params.method.toUpperCase();
+    const op = (params.op ?? "").toLowerCase();
 
+    // No body for safe/idempotent reads.
     if (method === "GET" || method === "HEAD") {
       return undefined;
     }
 
+    // For canonical DELETE-by-id CRUD route, we do not send a body.
+    if (method === "DELETE" && op === "delete") {
+      return undefined;
+    }
+
     if (!params.bag) {
-      // Fail-fast: DTO-based S2S calls must always provide a bag for non-GET.
+      // Fail-fast for all other non-GET/HEAD methods that require a bag (create, update, etc).
       throw new Error(
-        `SvcClient.call: DTO-based call with method="${method}" requires a DtoBag; none was provided.`
+        `SvcClient.call: DTO-based call with method="${method}" and op="${params.op}" requires a DtoBag; none was provided.`
       );
     }
 

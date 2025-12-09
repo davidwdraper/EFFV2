@@ -12,12 +12,15 @@
  * Purpose:
  * - Concrete DTO for the svcconfig service.
  * - Represents a single configuration slot for a given (env, slug, majorVersion).
- * - Provides the target port for gateway proxying and S2S calls.
+ * - Provides the target connection info for gateway proxying and S2S calls.
+ *   • baseUrl: full scheme://host:port used by SvcClient and internal callers.
+ *   • targetPort: convenience for the gateway and other port-based logic.
  * - Encodes per-field access rules for admin-only mutation.
  *
  * Notes:
- * - Gateway endpoint and target service endpoint are identical except for port.
- *   Protocol/host come from environment config (svcenv), not from this DTO.
+ * - We do **not** attempt to derive baseUrl from other fields at runtime:
+ *   if a record is missing baseUrl, resolvers treat it as a misconfiguration
+ *   and refuse to authorize calls using that entry.
  * - Admins can:
  *   • Disable a service via `isEnabled`.
  *   • Set a minimum UserType via `minUserType` (numeric, per UserType enum).
@@ -40,6 +43,10 @@ type SvcconfigJson = {
   slug?: string;
   majorVersion?: number;
 
+  // Full scheme://host:port for S2S / worker calls.
+  baseUrl?: string;
+
+  // Convenience for gateway and any port-only logic.
   targetPort?: number;
 
   isGatewayTarget?: boolean;
@@ -78,6 +85,10 @@ export class SvcconfigDto extends DtoBase {
     majorVersion: {
       read: UserType.Anon,
       write: UserType.AdminDomain,
+    },
+    baseUrl: {
+      read: UserType.Anon,
+      write: UserType.AdminRoot,
     },
     targetPort: {
       read: UserType.Anon,
@@ -142,8 +153,14 @@ export class SvcconfigDto extends DtoBase {
   private _majorVersion = 1;
 
   /**
-   * Target service port. Gateway will proxy to this port; S2S callers will
-   * also resolve to this port. Host/protocol come from environment config.
+   * Full base URL for worker/S2S calls, including scheme/host/port.
+   * Example: "http://127.0.0.1:4040".
+   */
+  private _baseUrl = "";
+
+  /**
+   * Target service port. Gateway will proxy to this port; S2S callers may
+   * also use it for diagnostics/ops, but the canonical S2S URL is `baseUrl`.
    */
   private _targetPort = 0;
 
@@ -192,6 +209,14 @@ export class SvcconfigDto extends DtoBase {
     this.writeField("majorVersion", Math.trunc(value));
   }
 
+  public get baseUrl(): string {
+    return this.readField<string>("baseUrl");
+  }
+
+  public set baseUrl(value: string) {
+    this.writeField("baseUrl", value.trim());
+  }
+
   public get targetPort(): number {
     return this.readField<number>("targetPort");
   }
@@ -237,7 +262,7 @@ export class SvcconfigDto extends DtoBase {
   /** Wire hydration (strict `_id` only). */
   public static fromBody(
     json: unknown,
-    opts?: { validate?: boolean }
+    _opts?: { validate?: boolean }
   ): SvcconfigDto {
     const dto = new SvcconfigDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<SvcconfigJson>;
@@ -253,6 +278,10 @@ export class SvcconfigDto extends DtoBase {
     if (typeof j.slug === "string") dto._slug = j.slug;
     if (typeof j.majorVersion === "number") {
       dto._majorVersion = Math.trunc(j.majorVersion);
+    }
+
+    if (typeof j.baseUrl === "string") {
+      dto._baseUrl = j.baseUrl.trim();
     }
 
     if (typeof j.targetPort === "number") {
@@ -279,8 +308,8 @@ export class SvcconfigDto extends DtoBase {
       updatedByUserId: j.updatedByUserId,
     });
 
-    // Any strict validation (required env/slug/majorVersion/targetPort) should
-    // be enforced by the contract layer when opts?.validate is true.
+    // Any strict validation (required env/slug/majorVersion/baseUrl/targetPort)
+    // should be enforced by the contract layer if/when you turn it on.
     return dto;
   }
 
@@ -297,6 +326,7 @@ export class SvcconfigDto extends DtoBase {
       slug: this._slug,
       majorVersion: this._majorVersion,
 
+      baseUrl: this._baseUrl,
       targetPort: this._targetPort,
 
       isGatewayTarget: this._isGatewayTarget,
@@ -328,6 +358,10 @@ export class SvcconfigDto extends DtoBase {
           ? Number(json.majorVersion)
           : json.majorVersion;
       if (Number.isFinite(n)) this.majorVersion = Math.trunc(n as number);
+    }
+
+    if (json.baseUrl !== undefined && typeof json.baseUrl === "string") {
+      this.baseUrl = json.baseUrl;
     }
 
     if (json.targetPort !== undefined) {

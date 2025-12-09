@@ -9,6 +9,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
+ *   - ADR-0071 (Auth Signup JWT Placement — ctx + meta.tokens.userAuth)
  *
  * Purpose (single concern):
  * - Mint a client-facing auth JWT for a successfully created user + user-auth
@@ -19,7 +20,7 @@
  * - ctx["signup.userCreateStatus"]      → { ok: true/false, ... }
  * - ctx["signup.userAuthCreateStatus"]  → { ok: true/false, ... }
  *
- * Env (from svcEnv, NOT process.env):
+ * Env (from env-service via svcEnv.getVar, NOT process.env):
  * - KMS_PROJECT_ID
  * - KMS_LOCATION_ID
  * - KMS_KEY_RING_ID
@@ -34,10 +35,13 @@
  * - NV_AUTH_TOKEN_CLOCK_SKEW_SEC
  *
  * Outputs (on ctx):
- * - ctx["signup.jwt"]            → compact JWT string
+ * - ctx["signup.jwt"]            → compact JWT string (internal trace)
  * - ctx["signup.jwtHeader"]      → { alg, kid }
  * - ctx["signup.jwtIssuedAt"]    → epoch seconds
  * - ctx["signup.jwtExpiresAt"]   → epoch seconds
+ *
+ * Canonical JWT placement (ADR-0071):
+ * - ctx["jwt.userAuth"]          → compact JWT string for finalizer
  *
  * Invariants:
  * - Does NOT mutate ctx["bag"]; edge response remains the UserDto bag.
@@ -51,7 +55,7 @@ import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 
-import { MinterEnv } from "@nv/shared/security/MinterEnv";
+import { MinterEnv, type MinterEnvShape } from "@nv/shared/security/MinterEnv";
 import { Minter } from "@nv/shared/security/Minter";
 import {
   MintProvider,
@@ -59,8 +63,8 @@ import {
   type TokenResult,
 } from "@nv/shared/security/MintProvider";
 import { KmsJwtSigner } from "@nv/shared/security/KmsJwtSigner";
-import type { IBoundLogger } from "@nv/shared/logger/Logger";
 
+// Status summaries from upstream handlers
 type UserCreateStatus =
   | { ok: true; userId?: string }
   | { ok: false; code: string; message: string };
@@ -73,103 +77,6 @@ type UserAuthCreateStatus =
 // KMS client is expensive; we want to reuse it and cache tokens by tuple.
 let tokenProvider: MintProvider | null = null;
 
-// Tiny helper to pull env vars from svcEnv (DTO), not process.env.
-type SvcEnvLike =
-  | {
-      getVar?: (key: string) => string | undefined;
-      _vars?: Record<string, string | undefined>;
-    }
-  | undefined;
-
-function getVarStrict(
-  svcEnv: SvcEnvLike,
-  key: string,
-  requestId: string | undefined
-): string {
-  const fromGetter =
-    svcEnv && typeof svcEnv.getVar === "function"
-      ? svcEnv.getVar(key)
-      : undefined;
-  const fromMap =
-    !fromGetter && svcEnv && svcEnv._vars ? svcEnv._vars[key] : undefined;
-
-  const value = fromGetter ?? fromMap;
-
-  if (!value || value.trim() === "") {
-    const idPart = requestId ? ` (requestId=${requestId})` : "";
-    throw new Error(
-      `[AuthMint] Required svcEnv var '${key}' is missing or empty${idPart}`
-    );
-  }
-
-  return value;
-}
-
-function getOrCreateTokenProvider(
-  svcEnv: SvcEnvLike,
-  log: IBoundLogger,
-  requestId: string | undefined
-): MintProvider {
-  if (tokenProvider) {
-    return tokenProvider;
-  }
-
-  // Validate/signing env via MinterEnv (no process.env reads here).
-  const envShape = {
-    KMS_PROJECT_ID: getVarStrict(svcEnv, "KMS_PROJECT_ID", requestId),
-    KMS_LOCATION_ID: getVarStrict(svcEnv, "KMS_LOCATION_ID", requestId),
-    KMS_KEY_RING_ID: getVarStrict(svcEnv, "KMS_KEY_RING_ID", requestId),
-    KMS_KEY_ID: getVarStrict(svcEnv, "KMS_KEY_ID", requestId),
-    KMS_KEY_VERSION: getVarStrict(svcEnv, "KMS_KEY_VERSION", requestId),
-    KMS_JWT_ALG: getVarStrict(svcEnv, "KMS_JWT_ALG", requestId),
-    NV_ISSUER: getVarStrict(svcEnv, "NV_ISSUER", requestId),
-  };
-
-  const minterEnv = MinterEnv.assert(envShape as NodeJS.ProcessEnv);
-
-  const signer = new KmsJwtSigner(
-    {
-      KMS_PROJECT_ID: minterEnv.KMS_PROJECT_ID,
-      KMS_LOCATION_ID: minterEnv.KMS_LOCATION_ID,
-      KMS_KEY_RING_ID: minterEnv.KMS_KEY_RING_ID,
-      KMS_KEY_ID: minterEnv.KMS_KEY_ID,
-      KMS_KEY_VERSION: minterEnv.KMS_KEY_VERSION,
-      KMS_JWT_ALG: minterEnv.KMS_JWT_ALG,
-    },
-    { log }
-  );
-
-  const minter = new Minter({ signer, log });
-
-  const earlyRefreshSec = Number(
-    getVarStrict(svcEnv, "NV_AUTH_TOKEN_EARLY_REFRESH_SEC", requestId)
-  );
-  const clockSkewSec = Number(
-    getVarStrict(svcEnv, "NV_AUTH_TOKEN_CLOCK_SKEW_SEC", requestId)
-  );
-
-  if (!Number.isFinite(earlyRefreshSec) || earlyRefreshSec <= 0) {
-    throw new Error(
-      "[AuthMint] NV_AUTH_TOKEN_EARLY_REFRESH_SEC must be a positive number (sec)"
-    );
-  }
-  if (!Number.isFinite(clockSkewSec) || clockSkewSec < 0) {
-    throw new Error(
-      "[AuthMint] NV_AUTH_TOKEN_CLOCK_SKEW_SEC must be a non-negative number (sec)"
-    );
-  }
-
-  tokenProvider = new MintProvider({
-    earlyRefreshSec,
-    clockSkewSec,
-    minter,
-    signer,
-    log,
-  });
-
-  return tokenProvider;
-}
-
 export class CodeMintUserAuthTokenHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
@@ -180,7 +87,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
   }
 
   protected override async execute(): Promise<void> {
-    const requestId = this.safeCtxGet<string>("requestId");
+    const requestId = this.getRequestId();
 
     const userCreateStatus = this.safeCtxGet<UserCreateStatus>(
       "signup.userCreateStatus"
@@ -239,43 +146,19 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
       return;
     }
 
-    const controller = this.controller as ControllerBase;
-    const app = controller.getApp?.() as
-      | {
-          getEnvLabel?: () => string;
-          getSvcEnv?: () => unknown;
+    // Best-effort env label for error context
+    let envLabel: string | undefined;
+    try {
+      const appAny = this.app as any;
+      if (typeof appAny.getEnvLabel === "function") {
+        const label = appAny.getEnvLabel();
+        if (typeof label === "string" && label.trim() !== "") {
+          envLabel = label.trim();
         }
-      | undefined;
-
-    if (!app || typeof app.getSvcEnv !== "function") {
-      this.failWithError({
-        httpStatus: 500,
-        title: "auth_signup_mint_svcenv_unavailable",
-        detail:
-          "Auth signup could not access svcEnv when minting an auth token. " +
-          "Dev: ensure AuthApp extends AppBase and exposes getSvcEnv().",
-        stage: "svcenv.resolve",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasApp: !!app,
-            hasGetSvcEnv: !!app && typeof app.getSvcEnv === "function",
-          },
-        ],
-        logMessage:
-          "auth.signup.mintUserAuthToken: AppBase.getSvcEnv() unavailable",
-        logLevel: "error",
-      });
-      return;
+      }
+    } catch {
+      // Ignore, this is only for diagnostics.
     }
-
-    const svcEnv = app.getSvcEnv() as SvcEnvLike;
-    const envLabel =
-      typeof app.getEnvLabel === "function" ? app.getEnvLabel() : undefined;
 
     let provider: MintProvider;
     let aud: string;
@@ -284,21 +167,98 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
 
     // ───────────────────────────────────────────────────────────────
     // 1) Build MintProvider (KMS client, Minter) and env knobs
+    //    using HandlerBase.getVar(key, required:true)
     // ───────────────────────────────────────────────────────────────
     try {
-      provider = getOrCreateTokenProvider(svcEnv, this.log, requestId);
+      if (!tokenProvider) {
+        const algRaw = this.getVar("KMS_JWT_ALG", true);
 
-      aud = getVarStrict(svcEnv, "NV_AUTH_TOKEN_AUD", requestId);
-      const ttlSecRaw = getVarStrict(
-        svcEnv,
-        "NV_AUTH_TOKEN_TTL_SEC",
-        requestId
-      );
-      const nbfSkewRaw = getVarStrict(
-        svcEnv,
-        "NV_AUTH_TOKEN_NBF_SKEW_SEC",
-        requestId
-      );
+        // Runtime guard to satisfy both TS and Ops
+        if (
+          algRaw !== "RS256" &&
+          algRaw !== "RS384" &&
+          algRaw !== "RS512" &&
+          algRaw !== "ES256" &&
+          algRaw !== "ES384" &&
+          algRaw !== "ES512"
+        ) {
+          throw new Error(
+            `[AuthMint] KMS_JWT_ALG must be one of RS256, RS384, RS512, ES256, ES384, ES512 (got '${algRaw}')`
+          );
+        }
+
+        const envShape: MinterEnvShape = {
+          KMS_PROJECT_ID: this.getVar("KMS_PROJECT_ID", true),
+          KMS_LOCATION_ID: this.getVar("KMS_LOCATION_ID", true),
+          KMS_KEY_RING_ID: this.getVar("KMS_KEY_RING_ID", true),
+          KMS_KEY_ID: this.getVar("KMS_KEY_ID", true),
+          KMS_KEY_VERSION: this.getVar("KMS_KEY_VERSION", true),
+          KMS_JWT_ALG: algRaw as MinterEnvShape["KMS_JWT_ALG"],
+          NV_ISSUER: this.getVar("NV_ISSUER", true),
+        };
+
+        const minterEnv = MinterEnv.assert(envShape);
+
+        const signer = new KmsJwtSigner(
+          {
+            KMS_PROJECT_ID: minterEnv.KMS_PROJECT_ID,
+            KMS_LOCATION_ID: minterEnv.KMS_LOCATION_ID,
+            KMS_KEY_RING_ID: minterEnv.KMS_KEY_RING_ID,
+            KMS_KEY_ID: minterEnv.KMS_KEY_ID,
+            KMS_KEY_VERSION: minterEnv.KMS_KEY_VERSION,
+            KMS_JWT_ALG: minterEnv.KMS_JWT_ALG,
+          },
+          { log: this.log }
+        );
+
+        const minter = new Minter({ signer, log: this.log });
+
+        const earlyRefreshSecRaw = this.getVar(
+          "NV_AUTH_TOKEN_EARLY_REFRESH_SEC",
+          true
+        );
+        const clockSkewSecRaw = this.getVar(
+          "NV_AUTH_TOKEN_CLOCK_SKEW_SEC",
+          true
+        );
+
+        const earlyRefreshSec = Number(earlyRefreshSecRaw);
+        const clockSkewSec = Number(clockSkewSecRaw);
+
+        if (!Number.isFinite(earlyRefreshSec) || earlyRefreshSec <= 0) {
+          throw new Error(
+            "[AuthMint] NV_AUTH_TOKEN_EARLY_REFRESH_SEC must be a positive number (sec)"
+          );
+        }
+        if (!Number.isFinite(clockSkewSec) || clockSkewSec < 0) {
+          throw new Error(
+            "[AuthMint] NV_AUTH_TOKEN_CLOCK_SKEW_SEC must be a non-negative number (sec)"
+          );
+        }
+
+        tokenProvider = new MintProvider({
+          earlyRefreshSec,
+          clockSkewSec,
+          minter,
+          signer,
+          log: this.log,
+        });
+
+        this.log.info(
+          {
+            event: "mint_provider_init",
+            kid: `kms:${minterEnv.KMS_PROJECT_ID}:${minterEnv.KMS_LOCATION_ID}:${minterEnv.KMS_KEY_RING_ID}:${minterEnv.KMS_KEY_ID}:v${minterEnv.KMS_KEY_VERSION}`,
+            alg: minterEnv.KMS_JWT_ALG,
+          },
+          "MintProvider: initialized"
+        );
+      }
+
+      provider = tokenProvider!;
+
+      aud = this.getVar("NV_AUTH_TOKEN_AUD", true);
+      const ttlSecRaw = this.getVar("NV_AUTH_TOKEN_TTL_SEC", true);
+      const nbfSkewRaw = this.getVar("NV_AUTH_TOKEN_NBF_SKEW_SEC", true);
 
       ttlSec = Number(ttlSecRaw);
       nbfSkewSec = Number(nbfSkewRaw);
@@ -314,11 +274,6 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
         );
       }
     } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Unknown env/KMS configuration error";
-
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_mint_env_invalid",
@@ -347,9 +302,11 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
     // ───────────────────────────────────────────────────────────────
     // 2) Construct token request and call MintProvider
     // ───────────────────────────────────────────────────────────────
+    const iss = this.getVar("NV_ISSUER", true);
+
     const req: TokenRequest = {
       aud,
-      iss: getVarStrict(svcEnv, "NV_ISSUER", requestId),
+      iss,
       sub: userId,
       ttlSec,
       nbfSkewSec,
@@ -375,10 +332,14 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
     try {
       const result: TokenResult = await provider.getToken(req);
 
+      // Internal trace fields for diagnostics
       this.ctx.set("signup.jwt", result.jwt);
       this.ctx.set("signup.jwtHeader", result.header);
       this.ctx.set("signup.jwtIssuedAt", result.issuedAt);
       this.ctx.set("signup.jwtExpiresAt", result.expiresAt);
+
+      // Canonical placement for user auth JWT (ADR-0071)
+      this.ctx.set("jwt.userAuth", result.jwt);
 
       this.log.info(
         {
@@ -395,8 +356,6 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
       // On success we intentionally do NOT touch handlerStatus.
       // Persistence has already succeeded; minting is an edge concern.
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_mint_failed",
@@ -422,6 +381,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
           "auth.signup.mintUserAuthToken: token mint FAILED via MintProvider.getToken().",
         logLevel: "error",
       });
+      return;
     }
 
     this.log.debug(

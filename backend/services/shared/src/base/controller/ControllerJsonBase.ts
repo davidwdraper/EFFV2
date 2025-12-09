@@ -13,6 +13,7 @@
  *   - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics)
+ *   - ADR-0071 (Auth Signup Token Placement — ctx["jwt.userAuth"] → meta.tokens.userAuth)
  *
  * Purpose:
  * - JSON/Problem+JSON concrete controller base.
@@ -92,10 +93,8 @@ export abstract class ControllerJsonBase extends ControllerBase {
 
           let mappedCode: string;
           if (idxLower === "_id_") {
-            // Primary key duplicate
             mappedCode = "DUPLICATE_ID";
           } else if (/^ux_.*_business$/i.test(idxLower)) {
-            // Any per-service business unique index (ux_xxx_business, ux_gateway_business, etc.)
             mappedCode = "DUPLICATE_CONTENT";
           } else {
             mappedCode = "DUPLICATE_KEY";
@@ -206,7 +205,7 @@ export abstract class ControllerJsonBase extends ControllerBase {
     const op = ctx.get<string>("op");
     const idKey = ctx.get<string>("idKey");
 
-    // Cursor & paging hints from list handlers (e.g., DbReadListHandler)
+    // Cursor & paging hints
     const nextCursor = ctx.get<string>("list.nextCursor");
     const limitUsed = ctx.get<number>("list.limitUsed");
 
@@ -220,10 +219,30 @@ export abstract class ControllerJsonBase extends ControllerBase {
       meta.limitUsed = limitUsed;
     }
 
-    // bag-only success envelope
+    // Merge any handler-supplied success metadata
+    const extraMeta = ctx.get<Record<string, unknown>>("response.meta");
+    if (extraMeta && typeof extraMeta === "object") {
+      for (const [key, value] of Object.entries(extraMeta)) {
+        if (value !== undefined) {
+          meta[key] = value;
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────
+    // ADR-0071 — Surface JWT if present
+    // ctx["jwt.userAuth"] → meta.tokens.userAuth
+    // ─────────────────────────────────────────────
+    const jwtUserAuth = ctx.get<string>("jwt.userAuth");
+    if (typeof jwtUserAuth === "string" && jwtUserAuth.trim() !== "") {
+      const tokens = (meta.tokens as Record<string, unknown> | undefined) ?? {};
+      tokens.userAuth = jwtUserAuth;
+      meta.tokens = tokens;
+    }
+
+    // Final success envelope
     const body: any = { ok: true, items, meta };
 
-    // Keyset pagination: expose cursor at the top level
     if (typeof nextCursor === "string" && nextCursor.trim()) {
       body.nextCursor = nextCursor.trim();
     }
@@ -368,9 +387,9 @@ async function buildProblemJsonWithPrompts(
           requestId,
           code,
           promptKey: effectivePromptKey,
-          err: log.serializeError
-            ? log.serializeError(e)
-            : (e as Error)?.message ?? String(e),
+          err:
+            log.serializeError?.(e) ??
+            (e instanceof Error ? e.message : String(e)),
         },
         "buildProblemJsonWithPrompts — falling back"
       );
@@ -406,10 +425,8 @@ function resolveLanguage(acceptLanguageHeader: string): string {
   if (!acceptLanguageHeader || typeof acceptLanguageHeader !== "string") {
     return "en";
   }
-
   const first = acceptLanguageHeader.split(",")[0]?.trim();
-  if (!first) return "en";
-  return first;
+  return first || "en";
 }
 
 function defaultPromptKeyForStatus(

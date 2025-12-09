@@ -67,9 +67,27 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     if (!baseUrl) {
       throw new Error(
         "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is not set or empty. " +
-          'Ops: set NV_SVCCONFIG_URL to the base URL of svcconfig (e.g., "http://127.0.0.1:4020") ' +
+          'Ops: set NV_SVCCONFIG_URL to the base URL of svcconfig (e.g., "http://svcconfig.internal:4020") ' +
           "before enabling S2S calls."
       );
+    }
+
+    // Fail-fast if the URL is malformed; no localhost fallbacks.
+    try {
+      // Just to validate; we still store the trimmed string.
+      // Any malformed value should abort boot.
+      // eslint-disable-next-line no-new
+      new URL(baseUrl);
+    } catch (err) {
+      const msg =
+        "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is not a valid absolute URL. " +
+        'Ops: set NV_SVCCONFIG_URL to a full base URL for svcconfig (e.g., "http://svcconfig.internal:4020").';
+      this.log.error("svcconfigResolver.invalidNvSvcconfigUrl", {
+        baseUrl,
+        error: err instanceof Error ? err.message : String(err),
+        hint: msg,
+      });
+      throw new Error(msg);
     }
 
     this.baseUrl = baseUrl.replace(/\/+$/, "");
@@ -246,7 +264,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
 
   private readFromCache(key: DtoCacheKey): DtoBag<SvcconfigDto> | undefined {
     const bag = this.cache.getBag(key);
-    return bag ?? undefined; // <-- normalize null → undefined
+    return bag ?? undefined; // normalize null → undefined
   }
 
   /**
@@ -392,8 +410,11 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
 
   /**
    * Convert SvcconfigDto into a SvcTarget with:
-   * - baseUrl: protocol/host from NV_SVCCONFIG_URL; port from targetPort.
+   * - baseUrl: protocol/host derived strictly from NV_SVCCONFIG_URL; port from targetPort.
    * - isAuthorized: based on isEnabled + isS2STarget.
+   *
+   * Any malformed NV_SVCCONFIG_URL will have already caused a hard failure
+   * in the constructor or here via parseBaseUrlHost().
    */
   private toSvcTarget(dto: SvcconfigDto, env: string): SvcTarget {
     const slug = dto.slug;
@@ -402,27 +423,6 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
 
     const isEnabled = dto.isEnabled;
     const isS2S = dto.isS2STarget;
-
-    if (!isEnabled || !isS2S) {
-      const reason = !isEnabled
-        ? "SVCCONFIG_DISABLED"
-        : "SVCCONFIG_NOT_S2S_TARGET";
-
-      this.log.info("svcconfigResolver.deniedByConfig", {
-        env,
-        slug,
-        version,
-        reason,
-      });
-
-      return {
-        baseUrl: "",
-        slug,
-        version,
-        isAuthorized: false,
-        reasonIfNotAuthorized: reason,
-      };
-    }
 
     if (!Number.isFinite(targetPort) || targetPort <= 0) {
       this.log.error("svcconfigResolver.invalidPort", {
@@ -442,6 +442,28 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     }
 
     const { protocol, hostname } = this.parseBaseUrlHost();
+
+    if (!isEnabled || !isS2S) {
+      const reason = !isEnabled
+        ? "SVCCONFIG_DISABLED"
+        : "SVCCONFIG_NOT_S2S_TARGET";
+
+      this.log.info("svcconfigResolver.deniedByConfig", {
+        env,
+        slug,
+        version,
+        reason,
+      });
+
+      return {
+        baseUrl: `${protocol}//${hostname}:${targetPort}`,
+        slug,
+        version,
+        isAuthorized: false,
+        reasonIfNotAuthorized: reason,
+      };
+    }
+
     const baseUrl = `${protocol}//${hostname}:${targetPort}`;
 
     this.log.debug("svcconfigResolver.resolved", {
@@ -460,14 +482,43 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     };
   }
 
+  /**
+   * Strictly parse NV_SVCCONFIG_URL to derive protocol/hostname.
+   *
+   * Invariants:
+   * - No fallbacks to 127.0.0.1 or "http:".
+   * - Any malformed value is treated as a fatal configuration error.
+   */
   private parseBaseUrlHost(): { protocol: string; hostname: string } {
     try {
       const u = new URL(this.baseUrl);
-      const protocol = u.protocol || "http:";
-      const hostname = u.hostname || "127.0.0.1";
+      const protocol = u.protocol;
+      const hostname = u.hostname;
+
+      if (!protocol || !hostname) {
+        const msg =
+          "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is malformed; missing protocol or hostname. " +
+          'Ops: set NV_SVCCONFIG_URL to a full base URL for svcconfig (e.g., "http://svcconfig.internal:4020").';
+        this.log.error("svcconfigResolver.invalidBaseUrl_components", {
+          baseUrl: this.baseUrl,
+          protocol,
+          hostname,
+          hint: msg,
+        });
+        throw new Error(msg);
+      }
+
       return { protocol, hostname };
-    } catch {
-      return { protocol: "http:", hostname: "127.0.0.1" };
+    } catch (err) {
+      const msg =
+        "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is not a valid absolute URL. " +
+        'Ops: set NV_SVCCONFIG_URL to a full base URL for svcconfig (e.g., "http://svcconfig.internal:4020").';
+      this.log.error("svcconfigResolver.invalidBaseUrl", {
+        baseUrl: this.baseUrl,
+        error: err instanceof Error ? err.message : String(err),
+        hint: msg,
+      });
+      throw new Error(msg);
     }
   }
 }

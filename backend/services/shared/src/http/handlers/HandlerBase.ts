@@ -18,7 +18,7 @@
  * Invariants:
  * - Controllers MUST pass `this` into handler constructors.
  * - No reading plumbing from ctx (no ctx.get('app'), etc).
- * - getVar() reads only from ControllerBase.getSvcEnv()._vars
+ * - getVar() reads only from ControllerBase.getSvcEnv().getVar()
  *   (never from ctx or process.env)
  *
  * Standard try/catch usage template for handlers
@@ -167,8 +167,19 @@ export abstract class HandlerBase {
   protected abstract handlerPurpose(): string;
 
   /**
+   * Escape hatch for compensating handlers / WAL / cleanup:
+   * - Default: false → handler is skipped after a prior failure.
+   * - Override in derived handlers that MUST run even when status>=400 or
+   *   handlerStatus="error" (e.g., S2sUserDeleteOnFailureHandler).
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  protected canRunAfterError(): boolean {
+    return false;
+  }
+
+  /**
    * Framework entrypoint called by controllers.
-   * - Short-circuits on prior failure.
+   * - Short-circuits on prior failure unless canRunAfterError() is true.
    * - Wraps execute() in a generic try/catch that records a structured
    *   UNHANDLED_HANDLER_EXCEPTION on ctx["error"].
    */
@@ -176,7 +187,10 @@ export abstract class HandlerBase {
     const status = this.ctx.get<number>("status");
     const handlerStatus = this.ctx.get<string>("handlerStatus");
 
-    if ((status && status >= 400) || handlerStatus === "error") {
+    const hasPriorFailure =
+      (status !== undefined && status >= 400) || handlerStatus === "error";
+
+    if (hasPriorFailure && !this.canRunAfterError()) {
       this.log.pipeline(
         {
           event: "short_circuit",
@@ -184,6 +198,7 @@ export abstract class HandlerBase {
           handler: this.constructor.name,
           status,
           handlerStatus,
+          canRunAfterError: false,
         },
         "Handler run() short-circuited due to prior failure"
       );
@@ -229,48 +244,122 @@ export abstract class HandlerBase {
 
   /**
    * Strict accessor for per-service environment variables.
-   * - Reads from ControllerBase.getSvcEnv()._vars only.
-   * - Logs WARN if the key or vars bag is missing.
+   *
+   * Overloads:
+   * - getVar(key)                    → string | undefined  (optional env var)
+   * - getVar(key, false)             → string | undefined  (same as above)
+   * - getVar(key, true)              → string              (required; throws if missing/empty)
+   *
+   * Semantics:
+   * - Reads ONLY from ControllerBase.getSvcEnv().getVar(key).
    * - Never falls back to process.env or ctx.
+   * - When required=false (default):
+   *     • Logs WARN if svcEnv/getVar is unavailable or value is missing/empty.
+   *     • Returns undefined.
+   * - When required=true:
+   *     • Logs ERROR with the missing key and svcEnv context.
+   *     • Throws Error("[EnvVarMissing] Required svc env var '<key>' is missing or empty").
+   *
+   * This keeps minters and other critical rails strict, while allowing
+   * callers to probe optional vars without blowing up the handler.
    */
-  protected getVar(key: string): string | undefined {
-    const svcEnv = (this.controller as any)?.getSvcEnv?.();
-    const vars = svcEnv?._vars as Record<string, unknown> | undefined;
+  protected getVar(key: string): string | undefined;
+  protected getVar(key: string, required: false): string | undefined;
+  protected getVar(key: string, required: true): string;
+  protected getVar(key: string, required: boolean = false): string | undefined {
+    const svcEnv: unknown = (this.controller as any)?.getSvcEnv?.();
 
-    if (!svcEnv || !vars || typeof vars !== "object") {
-      this.log.warn(
-        {
-          event: "getVar_no_vars",
+    let value: string | undefined;
+
+    try {
+      const svcEnvAny = svcEnv as any;
+      const hasGetter = svcEnvAny && typeof svcEnvAny.getVar === "function";
+
+      if (!hasGetter) {
+        const payload = {
+          event: required
+            ? "getVar_no_svcenv_required"
+            : "getVar_no_svcenv_optional",
           handler: this.constructor.name,
           key,
           hasSvcEnv: !!svcEnv,
-          svcEnvSlug: svcEnv?.slug,
-          svcEnvEnv: svcEnv?.env,
-          svcEnvVersion: svcEnv?.version,
-        },
-        `getVar('${key}') — svcEnv or _vars missing`
-      );
-      return undefined;
-    }
+        };
 
-    const val = vars[key];
-    if (typeof val === "string" && val.trim() !== "") {
-      return val;
-    }
+        if (required) {
+          this.log.error(
+            payload,
+            `getVar('${key}', true) — svcEnv or getVar() missing`
+          );
+          throw new Error(
+            `[EnvVarMissing] Required svc env var '${key}' is missing (no svcEnv/getVar).`
+          );
+        } else {
+          this.log.warn(
+            payload,
+            `getVar('${key}') — svcEnv or getVar() missing`
+          );
+          return undefined;
+        }
+      }
 
-    this.log.warn(
-      {
-        event: "getVar_missing",
+      // IMPORTANT: call getVar with the correct `this` binding
+      value = svcEnvAny.getVar(key);
+    } catch (err) {
+      const payload = {
+        event: required
+          ? "getVar_getter_threw_required"
+          : "getVar_getter_threw_optional",
         handler: this.constructor.name,
         key,
-        svcEnvSlug: svcEnv?.slug,
-        svcEnvEnv: svcEnv?.env,
-        svcEnvVersion: svcEnv?.version,
-        varsKeys: Object.keys(vars),
-      },
-      `getVar('${key}') — key missing or empty`
-    );
-    return undefined;
+        hasSvcEnv: !!svcEnv,
+        error: err instanceof Error ? err.message : String(err),
+      };
+
+      if (required) {
+        this.log.error(
+          payload,
+          `getVar('${key}', true) — svcEnv.getVar() threw`
+        );
+        throw new Error(
+          `[EnvVarMissing] Required svc env var '${key}' could not be read (getter threw).`
+        );
+      } else {
+        this.log.warn(
+          payload,
+          `getVar('${key}') — svcEnv.getVar() threw; returning undefined`
+        );
+        return undefined;
+      }
+    }
+
+    const trimmed = typeof value === "string" ? value.trim() : "";
+
+    if (trimmed === "") {
+      const payload = {
+        event: required ? "getVar_missing_required" : "getVar_missing_optional",
+        handler: this.constructor.name,
+        key,
+        hasSvcEnv: !!svcEnv,
+      };
+
+      if (required) {
+        this.log.error(
+          payload,
+          `getVar('${key}', true) — required svc env var missing or empty`
+        );
+        throw new Error(
+          `[EnvVarMissing] Required svc env var '${key}' is missing or empty`
+        );
+      } else {
+        this.log.warn(
+          payload,
+          `getVar('${key}') — optional svc env var missing or empty`
+        );
+        return undefined;
+      }
+    }
+
+    return trimmed;
   }
 
   /**

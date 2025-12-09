@@ -1,0 +1,28 @@
+{
+  "_id": "f89fe6b6-01be-4048-b4d1-2855954c652f",
+  "type": "auth",
+  "env": "dev",
+  "slug": "auth",
+  "version": 1,
+  "vars": {
+    "NV_HTTP_HOST": "127.0.0.1",
+    "NV_HTTP_PORT": "4030",
+    "KMS_PROJECT_ID": "nowvibin",
+    "KMS_LOCATION_ID": "us",
+    "KMS_KEY_RING_ID": "nowvibin-us",
+    "KMS_KEY_ID": "nowvibin-sign-rs256",
+    "KMS_KEY_VERSION": "1",
+    "KMS_JWT_ALG": "RS256",
+    "NV_ISSUER": "auth",
+    "NV_JWKS_CACHE_TTL_MS": "60000",
+    "NV_AUTH_TOKEN_AUD": "nv-client",
+    "NV_AUTH_TOKEN_TTL_SEC": "3600",
+    "NV_AUTH_TOKEN_NBF_SKEW_SEC": "30",
+    "NV_AUTH_TOKEN_EARLY_REFRESH_SEC": "10",
+    "NV_AUTH_TOKEN_CLOCK_SKEW_SEC": "5"
+  },
+  "createdAt": "2025-11-09T06:15:18.120Z",
+  "updatedAt": "2025-11-24T23:33:04.095Z",
+  "updatedByUserId": "clone-script",
+  "ownerUserId": null
+}

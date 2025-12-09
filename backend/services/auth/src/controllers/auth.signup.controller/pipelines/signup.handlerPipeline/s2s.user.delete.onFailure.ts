@@ -18,12 +18,12 @@
  * - Auth remains a MOS (no direct DB writes).
  * - This handler never mutates ctx["bag"]; it only calls the user service.
  * - This handler relies on upstream handlers to set:
- *     ctx["signup.userCreateStatus"]      (CallUserCreateHandler)
- *     ctx["signup.userAuthCreateStatus"]  (CallUserAuthCreateHandler)
+ *     ctx["signup.userCreateStatus"]      (S2sUserCreateHandler)
+ *     ctx["signup.userAuthCreateStatus"]  (S2sUserAuthCreateHandler)
  *
  * Behavior:
  * - If userCreateStatus.ok !== true → no-op (nothing to roll back).
- * - If handlerStatus !== "error"    → no-op (pipeline is still healthy).
+ * - If pipeline is not in an error state → no-op (nothing to compensate).
  * - If userAuthCreateStatus.ok === true → no-op (no auth failure).
  * - Else:
  *   - Try to delete user via SvcClient.call() using signup.userId.
@@ -35,6 +35,10 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import type { DtoBag } from "@nv/shared/dto/DtoBag";
+import type { UserDto } from "@nv/shared/dto/user.dto";
+
+type UserBag = DtoBag<UserDto>;
 
 type UserCreateStatus =
   | { ok: true; userId?: string }
@@ -53,10 +57,66 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
     return "Compensating transaction: delete the created User when user-auth.create fails during signup.";
   }
 
+  /**
+   * Special run() override:
+   * - This handler is *allowed* to run even when prior handlers failed.
+   * - We still rely on execute() gates to decide whether to actually attempt
+   *   rollback (userCreateStatus, userAuthCreateStatus, signup.userId, etc).
+   */
+  public override async run(): Promise<void> {
+    const status = this.safeCtxGet<number>("status");
+    const handlerStatus = this.safeCtxGet<string>("handlerStatus");
+    const priorFailure =
+      (typeof status === "number" && status >= 400) ||
+      handlerStatus === "error";
+
+    // If no prior failure, just use the normal HandlerBase behavior.
+    if (!priorFailure) {
+      return super.run();
+    }
+
+    // Otherwise, we intentionally *bypass* the short-circuit to attempt a
+    // compensating transaction.
+    this.log.pipeline(
+      {
+        event: "execute_start",
+        handler: this.constructor.name,
+        status,
+        handlerStatus,
+        priorFailure,
+        overrideGate: true,
+      },
+      "S2sUserDeleteOnFailureHandler.run: enter (ignoring prior-failure gate)"
+    );
+
+    try {
+      await this.execute();
+    } catch (err) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_rollback_handler_failure",
+        detail:
+          "Unhandled exception while attempting user.delete rollback after user-auth.create failure.",
+        stage: "rollback.handler_unhandled",
+        rawError: err,
+        logMessage:
+          "auth.signup.rollbackUserOnAuthCreateFailure: unhandled exception in rollback handler",
+      });
+    }
+
+    this.log.pipeline(
+      {
+        event: "execute_end",
+        handler: this.constructor.name,
+        handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "error",
+        status: this.safeCtxGet<number>("status") ?? 500,
+      },
+      "S2sUserDeleteOnFailureHandler.run: exit"
+    );
+  }
+
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
-    const handlerStatus = this.safeCtxGet<string>("handlerStatus");
-
     const userCreateStatus = this.safeCtxGet<UserCreateStatus>(
       "signup.userCreateStatus"
     );
@@ -79,20 +139,7 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
       return;
     }
 
-    // --- Gate 2: pipeline is not in an error state → no rollback ---------------
-    if (handlerStatus !== "error") {
-      this.log.debug(
-        {
-          event: "rollback_skip_pipeline_ok",
-          requestId,
-          handlerStatus,
-        },
-        "auth.signup.rollbackUserOnAuthCreateFailure: handlerStatus !== 'error' — no rollback"
-      );
-      return;
-    }
-
-    // --- Gate 3: if userAuthCreateStatus is explicitly ok, do NOT rollback -----
+    // --- Gate 2: if userAuthCreateStatus is explicitly ok, do NOT rollback -----
     if (userAuthCreateStatus && userAuthCreateStatus.ok === true) {
       this.log.debug(
         {
@@ -106,7 +153,6 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
 
     // At this point the only reasonable interpretation is:
     // - user.create succeeded,
-    // - the pipeline is in an error state,
     // - user-auth.create failed or did not complete.
     if (!signupUserId || signupUserId.trim().length === 0) {
       this.failWithError({
@@ -129,6 +175,37 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
         ],
         logMessage:
           "auth.signup.rollbackUserOnAuthCreateFailure: missing signup.userId; cannot safely rollback user",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    // We stay DTO-only: reuse the MOS DtoBag<UserDto> from ctx["bag"].
+    const userBag = this.safeCtxGet<UserBag>("bag");
+
+    if (!userBag) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_rollback_user_bag_missing",
+        detail:
+          "Auth signup attempted to rollback a previously created user after auth failure, " +
+          "but ctx['bag'] did not contain the expected DtoBag<UserDto>. " +
+          "Ops: the user record may exist without credentials; inspect the user service for " +
+          "orphaned records and correct manually.",
+        stage: "rollback.user_bag_missing",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            hasUserBag: !!userBag,
+            userId: signupUserId,
+          },
+        ],
+        logMessage:
+          "auth.signup.rollbackUserOnAuthCreateFailure: ctx['bag'] missing; cannot construct DtoBag for user.delete",
         logLevel: "error",
       });
       return;
@@ -248,8 +325,8 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
     );
 
     try {
-      // Rely on the standard CRUD rails: DELETE /api/user/v1/user/delete/:id
-      await svcClient.call<void>({
+      // DTO-only rails: pass a DtoBag<UserDto> plus id for the delete.
+      const _ignored = await svcClient.call<UserBag>({
         env,
         slug: "user",
         version: 1,
@@ -257,8 +334,10 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
         op: "delete",
         method: "DELETE",
         id: signupUserId,
+        bag: userBag,
         requestId,
       });
+      void _ignored;
 
       this.log.info(
         {

@@ -262,19 +262,48 @@ export class S2sUserCreateHandler extends HandlerBase {
         const message =
           err instanceof Error ? err.message : String(err ?? "Unknown error");
 
+        // ─────────────────────────────────────────────────────────────
+        // Map known business failures (e.g., duplicate user 409) to a
+        // client-visible 4xx instead of a generic 502.
+        //
+        // Today SvcClient throws a plain Error with a message like:
+        //   "SvcClient: Non-success response from target=\"user\" (status=409). ..."
+        // so we conservatively parse the status code out of the message.
+        // When SvcClient grows a structured error type, this logic can
+        // be switched over to use err.status / err.problem directly.
+        // ─────────────────────────────────────────────────────────────
+        let downstreamStatus: number | undefined;
+        if (err instanceof Error) {
+          const m = err.message.match(/status=(\d{3})/);
+          if (m && m[1]) {
+            const n = Number(m[1]);
+            if (Number.isFinite(n)) {
+              downstreamStatus = n;
+            }
+          }
+        }
+
+        const isDuplicate = downstreamStatus === 409;
+
+        const httpStatus = isDuplicate ? 409 : 502;
         const status: UserCreateStatus = {
           ok: false,
-          code: "AUTH_SIGNUP_USER_CREATE_FAILED",
+          code: isDuplicate
+            ? "AUTH_SIGNUP_USER_DUPLICATE"
+            : "AUTH_SIGNUP_USER_CREATE_FAILED",
           message,
         };
         this.ctx.set("signup.userCreateStatus", status);
 
         this.failWithError({
-          httpStatus: 502,
-          title: "auth_signup_user_create_failed",
-          detail:
-            "Auth signup failed while calling the user service create endpoint. " +
-            "Ops: check user service health, svcconfig routing for slug='user', and Mongo connectivity.",
+          httpStatus,
+          title: isDuplicate
+            ? "auth_signup_user_duplicate"
+            : "auth_signup_user_create_failed",
+          detail: isDuplicate
+            ? "Auth signup failed because the user service reported a duplicate user (likely email already in use). Front-end: treat this as a 409 duplicate signup."
+            : "Auth signup failed while calling the user service create endpoint. " +
+              "Ops: check user service health, svcconfig routing for slug='user', and Mongo connectivity.",
           stage: "s2s.userCreate",
           requestId,
           origin: {
@@ -286,12 +315,14 @@ export class S2sUserCreateHandler extends HandlerBase {
               env,
               slug: "user",
               op: "create",
+              downstreamStatus,
             },
           ],
           rawError: err,
-          logMessage:
-            "auth.signup.callUserCreate: user.create S2S call failed.",
-          logLevel: "error",
+          logMessage: isDuplicate
+            ? "auth.signup.callUserCreate: user.create returned duplicate (mapped to 409)."
+            : "auth.signup.callUserCreate: user.create S2S call failed.",
+          logLevel: isDuplicate ? "warn" : "error",
         });
       }
     } catch (err) {

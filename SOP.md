@@ -908,3 +908,5 @@ This doc represents the evolving user-facing + UX + engagement feature set.
 ## Proactively suggest alternatives and better ways to solve problems if you disagree with my approach.
 
 ## If, when building code you're unsure of an object or module's interface, ask for a code drop rather than guess on a function or approach.
+
+## Don't want to see the extention 'Like' in any of the code.

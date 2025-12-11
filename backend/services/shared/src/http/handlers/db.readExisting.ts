@@ -104,38 +104,11 @@ export class DbReadExistingHandler extends HandlerBase {
       return;
     }
 
-    // --- Env via HandlerBase.getVar (svcenv/envBootstrap) -------------------
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
+    // ---- Missing DB config throws ------------------------
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     const svcEnv = this.controller.getSvcEnv?.();
     const hasSvcEnv = !!svcEnv;
-
-    if (!mongoUri || !mongoDb) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "mongo_env_missing",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service slug/env/version.",
-        stage: "config.mongoEnv",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasSvcEnv,
-            mongoUriPresent: !!mongoUri,
-            mongoDbPresent: !!mongoDb,
-          },
-        ],
-        logMessage:
-          "db.readExisting aborted — Mongo env config missing (NV_MONGO_URI / NV_MONGO_DB).",
-        logLevel: "error",
-      });
-      return;
-    }
 
     const validateReads =
       this.ctx.get<boolean>("update.validateReads") ?? false;

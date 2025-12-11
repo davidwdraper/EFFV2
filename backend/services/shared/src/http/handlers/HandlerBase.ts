@@ -6,6 +6,7 @@
  * - ADR-0043 (Hydration + Failure Propagation)
  * - ADR-0049 (DTO Registry & Wire Discrimination)
  * - ADR-0058 (HandlerBase.getVar — Strict Env Accessor)
+ * - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  *
  * Purpose:
  * - Abstract base for handlers:
@@ -13,48 +14,12 @@
  *   • Access to App, Registry, Logger via controller getters
  *   • Short-circuit on prior failure
  *   • Standardized instrumentation via bound logger
- *   • Provides getVar(key) — strict per-service env accessor
+ *   • Thin wrappers over env + error helpers
  *
  * Invariants:
  * - Controllers MUST pass `this` into handler constructors.
  * - No reading plumbing from ctx (no ctx.get('app'), etc).
- * - getVar() reads only from ControllerBase.getSvcEnv().getVar()
- *   (never from ctx or process.env)
- *
- * Standard try/catch usage template for handlers
- * ----------------------------------------------
- *
- * protected override async execute(): Promise<void> {
- *   const requestId = this.getRequestId();
- *
- *   try {
- *     // WORK SECTION — code that may throw
- *     // const bag = this.ctx.get(...);
- *     // const svcClient = this.app.getSvcClient();
- *     // const result = await svcClient.call({...});
- *   } catch (err) {
- *     this.failWithError({
- *       httpStatus: 500, // or 400/502/etc
- *       title: "some_human_readable_title",
- *       detail:
- *         "Explain what failed and what Ops should check. " +
- *         "Keep it specific to this handler.",
- *       stage: "short-label-describing-where-it-failed",
- *       rawError: err,
- *       // origin properties are optional; HandlerBase will best-effort fill:
- *       // You can still override fields explicitly if needed:
- *       origin: {
- *            file: __filename
- *            //   pipeline → ctx["pipeline"]
- *            //   dtoType  → ctx["dtoType"]
- *            //   slug     → app.getSlug() or ctx["slug"]
- *        }
- *     });
- *     return;
- *   }
- *
- *   this.ctx.set("handlerStatus", "success");
- * }
+ * - Env reads go through controller.getSvcEnv().getVar() via helpers.
  */
 
 import { HandlerContext } from "./HandlerContext";
@@ -62,44 +27,18 @@ import { getLogger, type IBoundLogger } from "../../logger/Logger";
 import type { AppBase } from "../../base/app/AppBase";
 import type { IDtoRegistry } from "../../registry/RegistryBase";
 import type { ControllerBase } from "../../base/controller/ControllerBase";
+import {
+  getEnvVarFromSvcEnv,
+  resolveMongoConfigWithDbState,
+} from "./handlerBaseExt/envHelpers";
+import {
+  logAndAttachHandlerError,
+  type NvHandlerError,
+  type FailWithErrorInput,
+} from "./handlerBaseExt/errorHelpers";
 
-/**
- * Structured handler error shape used on ctx["error"].
- * Codes are simple strings for now; origin carries rich context
- * for Ops triage (service, handler, purpose, stage, dtoType, etc).
- */
-export type NvHandlerError = {
-  httpStatus: number;
-  title: string;
-  detail: string;
-  requestId?: string;
-  promptKey?: string;
-  issues?: unknown[];
-  origin?: {
-    service?: string;
-    controller?: string;
-    handler?: string;
-    pipeline?: string;
-    file?: string;
-    method?: string;
-    stage?: string;
-    purpose?: string;
-    dtoType?: string;
-    collection?: string;
-    slug?: string;
-    version?: string | number;
-    line?: number;
-    column?: number;
-  };
-};
-
-type FirstFrame = {
-  frame: string;
-  file?: string;
-  line?: number;
-  column?: number;
-  functionName?: string;
-};
+// Re-export NvHandlerError so existing imports from HandlerBase remain valid.
+export type { NvHandlerError } from "./handlerBaseExt/errorHelpers";
 
 export abstract class HandlerBase {
   protected readonly ctx: HandlerContext;
@@ -181,7 +120,8 @@ export abstract class HandlerBase {
    * Framework entrypoint called by controllers.
    * - Short-circuits on prior failure unless canRunAfterError() is true.
    * - Wraps execute() in a generic try/catch that records a structured
-   *   UNHANDLED_HANDLER_EXCEPTION on ctx["error"].
+   *   UNHANDLED_HANDLER_EXCEPTION on ctx["error"] if no handler-level error
+   *   was already recorded.
    */
   public async run(): Promise<void> {
     const status = this.ctx.get<number>("status");
@@ -216,8 +156,21 @@ export abstract class HandlerBase {
     try {
       await this.execute();
     } catch (err) {
-      // Throwing from a handler without its own catch is serious enough
-      // that we always surface a structured internal error here.
+      // If a lower-level helper (e.g., getMongoConfig) already called
+      // failWithError(), handlerStatus will be "error". In that case we do
+      // NOT want to wrap it again and overwrite the more specific error.
+      const afterStatus = this.ctx.get<string>("handlerStatus");
+      if (afterStatus === "error") {
+        this.log.pipeline(
+          {
+            event: "execute_exception_after_handler_error",
+            handler: this.constructor.name,
+          },
+          "Handler threw after recording structured error; skipping secondary failWithError"
+        );
+        return;
+      }
+
       this.failWithError({
         httpStatus: 500,
         title: "internal_handler_error",
@@ -251,115 +204,66 @@ export abstract class HandlerBase {
    * - getVar(key, true)              → string              (required; throws if missing/empty)
    *
    * Semantics:
-   * - Reads ONLY from ControllerBase.getSvcEnv().getVar(key).
+   * - Reads ONLY from ControllerBase.getSvcEnv().getVar(key) via helper.
    * - Never falls back to process.env or ctx.
-   * - When required=false (default):
-   *     • Logs WARN if svcEnv/getVar is unavailable or value is missing/empty.
-   *     • Returns undefined.
-   * - When required=true:
-   *     • Logs ERROR with the missing key and svcEnv context.
-   *     • Throws Error("[EnvVarMissing] Required svc env var '<key>' is missing or empty").
-   *
-   * This keeps minters and other critical rails strict, while allowing
-   * callers to probe optional vars without blowing up the handler.
    */
   protected getVar(key: string): string | undefined;
   protected getVar(key: string, required: false): string | undefined;
   protected getVar(key: string, required: true): string;
   protected getVar(key: string, required: boolean = false): string | undefined {
-    const svcEnv: unknown = (this.controller as any)?.getSvcEnv?.();
+    return getEnvVarFromSvcEnv({
+      controller: this.controller,
+      log: this.log,
+      handlerName: this.constructor.name,
+      key,
+      required,
+    });
+  }
 
-    let value: string | undefined;
-
+  /**
+   * Canonical Mongo config accessor for handlers.
+   *
+   * Usage pattern in handlers:
+   *
+   *   const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+   *
+   * Behavior:
+   * - On success: returns { uri, dbName }.
+   * - On failure:
+   *   • Calls failWithError() with a detailed mongo_config_error.
+   *   • Throws, so callers do NOT need to write 19 truthy checks.
+   */
+  protected getMongoConfig(): { uri: string; dbName: string } {
     try {
-      const svcEnvAny = svcEnv as any;
-      const hasGetter = svcEnvAny && typeof svcEnvAny.getVar === "function";
-
-      if (!hasGetter) {
-        const payload = {
-          event: required
-            ? "getVar_no_svcenv_required"
-            : "getVar_no_svcenv_optional",
-          handler: this.constructor.name,
-          key,
-          hasSvcEnv: !!svcEnv,
-        };
-
-        if (required) {
-          this.log.error(
-            payload,
-            `getVar('${key}', true) — svcEnv or getVar() missing`
-          );
-          throw new Error(
-            `[EnvVarMissing] Required svc env var '${key}' is missing (no svcEnv/getVar).`
-          );
-        } else {
-          this.log.warn(
-            payload,
-            `getVar('${key}') — svcEnv or getVar() missing`
-          );
-          return undefined;
-        }
-      }
-
-      // IMPORTANT: call getVar with the correct `this` binding
-      value = svcEnvAny.getVar(key);
+      return resolveMongoConfigWithDbState({
+        controller: this.controller,
+        log: this.log,
+        handlerName: this.constructor.name,
+      });
     } catch (err) {
-      const payload = {
-        event: required
-          ? "getVar_getter_threw_required"
-          : "getVar_getter_threw_optional",
-        handler: this.constructor.name,
-        key,
-        hasSvcEnv: !!svcEnv,
-        error: err instanceof Error ? err.message : String(err),
-      };
+      const msg =
+        err instanceof Error ? err.message : String(err ?? "unknown error");
 
-      if (required) {
-        this.log.error(
-          payload,
-          `getVar('${key}', true) — svcEnv.getVar() threw`
-        );
-        throw new Error(
-          `[EnvVarMissing] Required svc env var '${key}' could not be read (getter threw).`
-        );
-      } else {
-        this.log.warn(
-          payload,
-          `getVar('${key}') — svcEnv.getVar() threw; returning undefined`
-        );
-        return undefined;
-      }
+      this.failWithError({
+        httpStatus: 500,
+        title: "mongo_config_error",
+        detail:
+          msg +
+          " Ops: verify NV_MONGO_URI, NV_MONGO_DB, DB_STATE, and the env-service configuration document for this service/version. " +
+          "Infra DBs must end with `_infra`; domain DBs require a valid DB_STATE.",
+        stage: `${this.handlerPurpose()}:mongo.config`,
+        rawError: err,
+        origin: {
+          method: "getMongoConfig",
+        },
+        logMessage:
+          "mongo_config_error: failure resolving Mongo configuration; aborting handler.",
+        logLevel: "error",
+      });
+
+      // Throw so handler.execute() stops immediately.
+      throw err;
     }
-
-    const trimmed = typeof value === "string" ? value.trim() : "";
-
-    if (trimmed === "") {
-      const payload = {
-        event: required ? "getVar_missing_required" : "getVar_missing_optional",
-        handler: this.constructor.name,
-        key,
-        hasSvcEnv: !!svcEnv,
-      };
-
-      if (required) {
-        this.log.error(
-          payload,
-          `getVar('${key}', true) — required svc env var missing or empty`
-        );
-        throw new Error(
-          `[EnvVarMissing] Required svc env var '${key}' is missing or empty`
-        );
-      } else {
-        this.log.warn(
-          payload,
-          `getVar('${key}') — optional svc env var missing or empty`
-        );
-        return undefined;
-      }
-    }
-
-    return trimmed;
   }
 
   /**
@@ -439,211 +343,28 @@ export abstract class HandlerBase {
   }
 
   /**
-   * Build a structured NvHandlerError object from the supplied fields.
-   * Does NOT log or touch ctx; callers decide how to use the error.
-   */
-  protected buildHandlerError(input: {
-    httpStatus: number;
-    title: string;
-    detail: string;
-    requestId?: string;
-    promptKey?: string;
-    issues?: unknown[];
-    origin?: Partial<NvHandlerError["origin"]>;
-  }): NvHandlerError {
-    const handlerName = this.constructor.name;
-
-    return {
-      httpStatus: input.httpStatus,
-      title: input.title,
-      detail: input.detail,
-      requestId: input.requestId,
-      promptKey: input.promptKey,
-      issues: input.issues,
-      origin: {
-        handler: handlerName,
-        purpose: this.handlerPurpose(),
-        ...(input.origin ?? {}),
-      },
-    };
-  }
-
-  /**
    * High-level helper for use in handler try/catch blocks:
    * - Derives requestId from ctx if not supplied.
-   * - Extracts first stack frame (file/line/column/function) from rawError, if present.
-   * - Enriches origin with pipeline/dtoType/slug when not supplied by caller.
-   * - Calls buildHandlerError() to construct NvHandlerError, augmenting origin with firstFrame data.
-   * - Logs with structured origin.
-   * - Writes ctx["error"], ctx["handlerStatus"] = "error", ctx["status"] = httpStatus.
-   *
-   * Returns the NvHandlerError in case callers want to propagate or inspect it.
+   * - Delegates to errorHelpers to build/log/attach NvHandlerError.
    */
-  protected failWithError(input: {
-    httpStatus: number;
-    title: string;
-    detail: string;
-    stage?: string;
-    requestId?: string;
-    promptKey?: string;
-    issues?: unknown[];
-    origin?: Partial<NvHandlerError["origin"]>;
-    rawError?: unknown; // original thrown value, for logs only
-    logMessage?: string; // override log message
-    logLevel?: "error" | "warn" | "info" | "debug";
-  }): NvHandlerError {
+  protected failWithError(input: FailWithErrorInput): NvHandlerError {
     const requestId = input.requestId ?? this.safeCtxGet<string>("requestId");
 
-    const firstFrame = this.extractFirstStackFrame(input.rawError);
-
-    // Start from caller-supplied origin (if any)
-    const mergedOrigin: NvHandlerError["origin"] = {
-      ...(input.origin ?? {}),
-      stage: input.stage ?? input.origin?.stage,
-    };
-
-    // Best-effort context from rails, but only if caller didn't set them
-    if (!mergedOrigin.pipeline) {
-      mergedOrigin.pipeline = this.safePipeline();
-    }
-    if (!mergedOrigin.dtoType) {
-      mergedOrigin.dtoType = this.safeDtoType();
-    }
-    if (!mergedOrigin.slug) {
-      mergedOrigin.slug = this.safeServiceSlug();
-    }
-    if (!mergedOrigin.service && mergedOrigin.slug) {
-      mergedOrigin.service = mergedOrigin.slug;
-    }
-
-    // First-frame location enrichment (file/line/column/method)
-    if (firstFrame) {
-      if (!mergedOrigin.file && firstFrame.file) {
-        mergedOrigin.file = firstFrame.file;
-      }
-      if (!mergedOrigin.method && firstFrame.functionName) {
-        mergedOrigin.method = firstFrame.functionName;
-      }
-      if (mergedOrigin.line === undefined && firstFrame.line !== undefined) {
-        mergedOrigin.line = firstFrame.line;
-      }
-      if (
-        mergedOrigin.column === undefined &&
-        firstFrame.column !== undefined
-      ) {
-        mergedOrigin.column = firstFrame.column;
-      }
-    }
-
-    const error = this.buildHandlerError({
-      httpStatus: input.httpStatus,
-      title: input.title,
-      detail: input.detail,
+    return logAndAttachHandlerError({
+      ctx: this.ctx,
+      log: this.log,
+      handlerName: this.constructor.name,
+      handlerPurpose: this.handlerPurpose(),
       requestId,
-      promptKey: input.promptKey,
-      issues: input.issues,
-      origin: mergedOrigin,
+      input,
+      safe: {
+        pipeline: () => this.safePipeline(),
+        dtoType: () => this.safeDtoType(),
+        slug: () => this.safeServiceSlug(),
+      },
     });
-
-    const logPayload: Record<string, unknown> = {
-      event: "handler_fail",
-      handler: this.constructor.name,
-      requestId,
-      httpStatus: error.httpStatus,
-      origin: error.origin,
-    };
-
-    if (firstFrame) {
-      logPayload.firstFrame = firstFrame;
-    }
-
-    if (input.rawError) {
-      if (input.rawError instanceof Error) {
-        logPayload.rawError = {
-          name: input.rawError.name,
-          message: input.rawError.message,
-        };
-      } else {
-        logPayload.rawError = input.rawError;
-      }
-    }
-
-    const msg =
-      input.logMessage ??
-      `Handler failure in ${error.origin?.handler ?? "unknown handler"}`;
-
-    const level = input.logLevel ?? "error";
-    if (level === "debug") {
-      this.log.debug(logPayload, msg);
-    } else if (level === "info") {
-      this.log.info(logPayload, msg);
-    } else if (level === "warn") {
-      this.log.warn(logPayload, msg);
-    } else {
-      this.log.error(logPayload, msg);
-    }
-
-    // Record the error on the context. We intentionally allow newer, more
-    // specific errors from later handlers to overwrite generic ones.
-    this.ctx.set("error", error);
-    this.ctx.set("handlerStatus", "error");
-    this.ctx.set("status", error.httpStatus);
-
-    return error;
   }
 
-  /**
-   * Extract the first useful stack frame from a rawError (if any),
-   * parsing file, line, column, and function name where possible.
-   *
-   * Example stack lines we handle:
-   *   at SomeHandler.execute (/path/to/file.js:87:24)
-   *   at /path/to/file.js:87:24
-   */
-  private extractFirstStackFrame(rawError: unknown): FirstFrame | undefined {
-    if (!(rawError instanceof Error)) return undefined;
-    const stack = rawError.stack;
-    if (!stack || typeof stack !== "string") return undefined;
-
-    const lines = stack.split("\n").map((l) => l.trim());
-    const frameLine = lines.find((l) => l.startsWith("at "));
-    if (!frameLine) return undefined;
-
-    // Patterns:
-    // 1) at FunctionName (path:line:column)
-    // 2) at path:line:column
-    const withFunc =
-      /^at\s+(?<fn>.+?)\s+\((?<file>.+):(?<line>\d+):(?<col>\d+)\)$/;
-    const noFunc = /^at\s+(?<file>.+):(?<line>\d+):(?<col>\d+)$/;
-
-    let match = frameLine.match(withFunc);
-    if (match && match.groups) {
-      const { fn, file, line, col } = match.groups;
-      return {
-        frame: frameLine,
-        functionName: fn,
-        file,
-        line: Number(line),
-        column: Number(col),
-      };
-    }
-
-    match = frameLine.match(noFunc);
-    if (match && match.groups) {
-      const { file, line, col } = match.groups;
-      return {
-        frame: frameLine,
-        file,
-        line: Number(line),
-        column: Number(col),
-      };
-    }
-
-    // Fallback: we at least return the raw frame text.
-    return {
-      frame: frameLine,
-    };
-  }
-
+  /** Service routes must implement this in concrete handlers. */
   protected abstract execute(): Promise<void>;
 }

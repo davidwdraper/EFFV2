@@ -6,6 +6,7 @@
  *   - ADR-0049 (DTO Registry & canonical id)
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
+ *   - ADR-0074 (DB_STATE-aware DB selection via getDbVar)
  *
  * Purpose:
  * - Service-level Registry base that **extends** RegistryBase with:
@@ -28,7 +29,7 @@ import type { ILogger } from "../logger/Logger";
 import {
   ensureIndexesForDtos,
   type DtoCtorWithIndexes,
-  type EnvLike,
+  type SvcEnvConfig,
 } from "../dto/persistence/indexes/ensureIndexes";
 
 type Hydrator<T extends IDto = IDto> = (json: unknown) => T;
@@ -83,9 +84,11 @@ export abstract class ServiceRegistryBase extends RegistryBase {
    * Delegate: collect registered DTO CLASSES that declare indexHints and
    * pass them to the shared ensureIndexes routine. No index logic lives here.
    *
-   * `env` is typically an EnvServiceDto instance implementing getEnvVar(name: string): string.
+   * `env` is typically an EnvServiceDto instance implementing:
+   *   - getEnvVar(name: string): string
+   *   - getDbVar(name: string): string   (DB_STATE-aware)
    */
-  public async ensureIndexes(env: EnvLike, log: ILogger): Promise<void> {
+  public async ensureIndexes(env: SvcEnvConfig, log: ILogger): Promise<void> {
     const map = this.ctorByType();
 
     const dtos: DtoCtorWithIndexes[] = [];

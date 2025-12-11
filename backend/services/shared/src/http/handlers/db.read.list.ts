@@ -94,34 +94,8 @@ export class DbReadListHandler extends HandlerBase {
       return;
     }
 
-    // --- Env from HandlerBase.getVar (strict, no fallbacks) -----------------
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
-
-    if (!mongoUri || !mongoDb) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "mongo_env_missing",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        stage: "config.mongoEnv",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            mongoUriPresent: !!mongoUri,
-            mongoDbPresent: !!mongoDb,
-          },
-        ],
-        logMessage:
-          "dbRead.list aborted — Mongo env config missing (NV_MONGO_URI / NV_MONGO_DB).",
-        logLevel: "error",
-      });
-      return;
-    }
+    // ---- Missing DB config throws ------------------------
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // --- Filter + pagination -------------------------------------------------
     const filter =

@@ -110,46 +110,8 @@ export class DbReadHandler extends HandlerBase {
       return;
     }
 
-    // --- Env from HandlerBase.getVar (strict, no fallbacks) -----------------
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
-
-    if (!mongoUri || !mongoDb) {
-      const error = this.failWithError({
-        httpStatus: 500,
-        title: "internal_error",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        stage: "list.dbRead.env",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            keyUri: "NV_MONGO_URI",
-            keyDb: "NV_MONGO_DB",
-            mongoUriPresent: !!mongoUri,
-            mongoDbPresent: !!mongoDb,
-          },
-        ],
-        logMessage:
-          "DbReadHandler.execute Mongo env config missing for list read",
-        logLevel: "error",
-      });
-
-      this.ctx.set("response.status", error.httpStatus);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: error.title,
-        detail: error.detail,
-        status: error.httpStatus,
-        code: "MONGO_ENV_MISSING",
-        requestId,
-      });
-      return;
-    }
+    // ---- Missing DB config throws ------------------------
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // --- Filter + pagination -------------------------------------------------
     const filterRaw = this.safeCtxGet<unknown>("list.filter");

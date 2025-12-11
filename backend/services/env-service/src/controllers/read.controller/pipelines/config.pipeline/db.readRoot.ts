@@ -163,31 +163,8 @@ export class DbReadRootHandler extends HandlerBase {
         return;
       }
 
-      let mongoUri: string;
-      let mongoDb: string;
-      try {
-        mongoUri = svcEnv.getEnvVar("NV_MONGO_URI");
-        mongoDb = svcEnv.getEnvVar("NV_MONGO_DB");
-      } catch (err) {
-        this.failWithError({
-          httpStatus: 500,
-          title: "service_db_config_missing",
-          detail:
-            (err as Error)?.message ??
-            "Missing NV_MONGO_URI/NV_MONGO_DB in env-service configuration. Ops: ensure these keys exist and are valid.",
-          stage: "config.readRoot.svcEnv.vars",
-          requestId,
-          rawError: err,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          logMessage:
-            "env-service.config.db.readRoot: svcEnv.getEnvVar(NV_MONGO_URI/NV_MONGO_DB) threw.",
-          logLevel: "error",
-        });
-        return;
-      }
+      // ---- Missing DB config throws ------------------------
+      const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
       // ---- Construct DbReader<EnvServiceDto> --------------------------------
       let dbReader: DbReader<EnvServiceDto>;

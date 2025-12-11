@@ -8,6 +8,7 @@
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
  *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  *
  * Purpose:
  * - Consume the UPDATED **singleton DtoBag** from ctx["bag"] and execute an update().
@@ -35,58 +36,93 @@ export class BagToDbUpdateHandler extends HandlerBase {
     super(ctx, controller);
   }
 
+  /**
+   * Ops-facing one-liner for logs and errors.
+   */
+  protected handlerPurpose(): string {
+    return "user-auth.update.bagToDb: persist updated singleton DtoBag via DbWriter.update()";
+  }
+
   protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_enter" }, "bagToDb.update enter");
+    const requestId = this.getRequestId();
+
+    this.log.debug(
+      { event: "execute_enter", requestId },
+      "bagToDb.update enter"
+    );
 
     // --- Required context ----------------------------------------------------
     const bag = this.ctx.get<DtoBag<any>>("bag");
     if (!bag) {
-      return this._badRequest(
-        "BAG_MISSING",
-        "Updated DtoBag missing. Ensure ApplyPatchUpdateHandler ran."
-      );
+      this.failWithError({
+        httpStatus: 400,
+        title: "bad_request_bag_missing",
+        detail:
+          "Updated DtoBag missing on ctx['bag']. Ops: ensure ApplyPatchUpdateHandler (or equivalent) ran and populated ctx['bag'] before BagToDbUpdateHandler.",
+        stage: "bagToDb.update.setup.bag",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        logMessage:
+          "user-auth.update.bagToDb: ctx['bag'] missing; cannot perform update().",
+        logLevel: "warn",
+      });
+      return;
     }
 
     const items = Array.from(bag.items());
     if (items.length !== 1) {
-      return this._badRequest(
-        items.length === 0 ? "EMPTY_ITEMS" : "TOO_MANY_ITEMS",
+      const code =
         items.length === 0
-          ? "Update requires exactly one item; received 0."
-          : "Update requires exactly one item; received more than 1."
-      );
+          ? "empty_bag_for_update"
+          : "too_many_items_for_update";
+
+      this.failWithError({
+        httpStatus: 400,
+        title: "bad_request_invalid_bag_size",
+        detail:
+          items.length === 0
+            ? "Update requires exactly one item in ctx['bag']; received 0."
+            : `Update requires exactly one item in ctx['bag']; received ${items.length}.`,
+        stage: "bagToDb.update.setup.bag_size",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            path: "bag.items",
+            code,
+            message: "Update operations must be singleton.",
+          },
+        ],
+        logMessage:
+          "user-auth.update.bagToDb: invalid bag size for update (must be singleton).",
+        logLevel: "warn",
+      });
+      return;
     }
 
-    // --- Env via HandlerBase.getVar (aligned with BagToDbCreateHandler) -----
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
+    // ---- Missing DB config throws via HandlerBase.getMongoConfig() ---------
+    // Any failure here will:
+    // - call failWithError(...) with a mongo_config_error
+    // - throw, which HandlerBase.run() treats as already-handled
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // Optional: diagnose whether ControllerBase is actually holding svcEnv.
     const svcEnv = this.controller.getSvcEnv?.();
     const hasSvcEnv = !!svcEnv;
-
-    if (!mongoUri || !mongoDb) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "MONGO_ENV_MISSING",
-        title: "Internal Error",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
-      });
-      this.log.error(
-        {
-          event: "mongo_env_missing",
-          hasSvcEnv,
-          mongoUriPresent: !!mongoUri,
-          mongoDbPresent: !!mongoDb,
-          handler: this.constructor.name,
-        },
-        "update aborted — Mongo env config missing"
-      );
-      return;
-    }
+    this.log.debug(
+      {
+        event: "svcenv_check",
+        requestId,
+        hasSvcEnv,
+      },
+      "bagToDb.update: svcEnv presence check"
+    );
 
     // --- Writer (bag-centric; use DtoBase for DbWriter contract) ------------
     const baseBag = bag as unknown as DtoBag<DtoBase>;
@@ -102,16 +138,25 @@ export class BagToDbUpdateHandler extends HandlerBase {
         collectionName: "<unknown>",
       };
       this.log.debug(
-        { event: "update_target", collection: collectionName },
-        "update will write to collection"
+        {
+          event: "update_target",
+          collection: collectionName,
+          requestId,
+        },
+        "bagToDb.update: update will write to collection"
       );
 
       // Bag-centric update; writer determines the id from the DTO inside the bag.
       const { id } = await writer.update();
 
       this.log.debug(
-        { event: "update_complete", id, collection: collectionName },
-        "update complete"
+        {
+          event: "update_complete",
+          id,
+          collection: collectionName,
+          requestId,
+        },
+        "bagToDb.update: update complete"
       );
 
       this.ctx.set("updatedId", id);
@@ -120,37 +165,29 @@ export class BagToDbUpdateHandler extends HandlerBase {
       this.ctx.set("handlerStatus", "ok");
     } catch (err) {
       if (err instanceof DuplicateKeyError) {
-        const keyObj = (err as DuplicateKeyError).key ?? {};
+        const keyObj = err.key ?? {};
         const keyPath = Object.keys(keyObj).join(",");
 
         const warning = {
           code: "DUPLICATE",
           message: "Unique constraint violation (duplicate key).",
           detail: (err as Error).message,
-          index: (err as DuplicateKeyError).index,
-          key: (err as DuplicateKeyError).key,
+          index: err.index,
+          key: err.key,
         };
         this.ctx.set("warnings", [
           ...(this.ctx.get<any[]>("warnings") ?? []),
           warning,
         ]);
 
-        this.log.warn(
-          {
-            event: "duplicate_key",
-            index: (err as DuplicateKeyError).index,
-            key: (err as DuplicateKeyError).key,
-            detail: (err as Error).message,
-          },
-          "update duplicate — returning 409"
-        );
-
-        this.ctx.set("status", 409);
-        this.ctx.set("handlerStatus", "error");
-        this.ctx.set("error", {
-          code: "DUPLICATE",
-          title: "Conflict",
-          detail: (err as Error).message,
+        this.failWithError({
+          httpStatus: 409,
+          title: "duplicate_key_conflict",
+          detail:
+            "Update failed due to a unique constraint violation (duplicate key). " +
+            "Ops: inspect the conflict index/key in the error payload and ensure user-auth uniqueness rules are satisfied.",
+          stage: "bagToDb.update.db.duplicate",
+          requestId,
           issues: keyPath
             ? [
                 {
@@ -160,25 +197,36 @@ export class BagToDbUpdateHandler extends HandlerBase {
                 },
               ]
             : undefined,
+          origin: {
+            file: __filename,
+            method: "execute",
+          },
+          rawError: err,
+          logMessage:
+            "user-auth.update.bagToDb: DuplicateKeyError during DbWriter.update(); returning 409 Conflict.",
+          logLevel: "warn",
         });
       } else {
-        this.log.error(
-          {
-            event: "db_update_failed",
-            error: (err as Error).message,
+        this.failWithError({
+          httpStatus: 500,
+          title: "db_update_failed",
+          detail:
+            "Database update failed while persisting the updated user-auth record. " +
+            "Ops: inspect logs for this requestId, validate Mongo connectivity, DB_STATE mapping, and user-auth collection indexes.",
+          stage: "bagToDb.update.db.generic",
+          requestId,
+          origin: {
+            file: __filename,
+            method: "execute",
           },
-          "update failed unexpectedly"
-        );
-        throw err;
+          rawError: err,
+          logMessage:
+            "user-auth.update.bagToDb: DbWriter.update() threw unexpected error.",
+          logLevel: "error",
+        });
       }
     }
 
-    this.log.debug({ event: "execute_exit" }, "bagToDb.update exit");
-  }
-
-  private _badRequest(code: string, detail: string): void {
-    this.ctx.set("handlerStatus", "error");
-    this.ctx.set("status", 400);
-    this.ctx.set("error", { code, title: "Bad Request", detail });
+    this.log.debug({ event: "execute_exit", requestId }, "bagToDb.update exit");
   }
 }

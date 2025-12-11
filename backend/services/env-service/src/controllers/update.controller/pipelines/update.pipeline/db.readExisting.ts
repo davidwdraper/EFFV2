@@ -128,43 +128,8 @@ export class DbReadExistingHandler extends HandlerBase {
         return;
       }
 
-      let mongoUri: string;
-      let mongoDb: string;
-      try {
-        mongoUri = svcEnv.getEnvVar("NV_MONGO_URI");
-        mongoDb = svcEnv.getEnvVar("NV_MONGO_DB");
-      } catch (err) {
-        this.failWithError({
-          httpStatus: 500,
-          title: "service_db_config_missing",
-          detail:
-            (err as Error)?.message ??
-            "Missing NV_MONGO_URI/NV_MONGO_DB in env-service configuration. Ops: ensure these keys exist and are valid.",
-          stage: "update.readExisting.svcEnv.vars",
-          requestId,
-          rawError: err,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          logMessage:
-            "env-service.update.db.readExisting: failed to resolve DB config from svcEnv.",
-          logLevel: "error",
-        });
-
-        this.log.error(
-          {
-            event: "service_db_config_missing",
-            requestId,
-            err:
-              err instanceof Error
-                ? { message: err.message, stack: err.stack }
-                : err,
-          },
-          "env-service.update.db.readExisting: failed to resolve DB config from svcEnv"
-        );
-        return;
-      }
+      // ---- Missing DB config throws ------------------------
+      const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
       // --- Reader + fetch as **BAG** ----------------------------------------
       const validateReads =

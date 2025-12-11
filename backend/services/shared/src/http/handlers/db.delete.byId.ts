@@ -210,35 +210,8 @@ export class DbDeleteByIdHandler extends HandlerBase {
       return;
     }
 
-    // ---- Env / Mongo config via HandlerBase.getVar (SvcEnv-driven) ---------
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
-
-    if (!mongoUri || !mongoDb) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "mongo_env_missing",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        stage: "config.mongoEnv",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-          collection: collectionName,
-        },
-        issues: [
-          {
-            mongoUriPresent: !!mongoUri,
-            mongoDbPresent: !!mongoDb,
-          },
-        ],
-        logMessage:
-          "dbDeleteById aborted — Mongo env config missing (NV_MONGO_URI / NV_MONGO_DB).",
-        logLevel: "error",
-      });
-      return;
-    }
+    // ---- Missing DB config throws ------------------------
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // ---- External edge: DB delete (fine-grained try/catch) -----------------
     try {

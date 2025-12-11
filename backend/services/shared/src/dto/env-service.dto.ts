@@ -9,12 +9,16 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *   - ADR-0053 (Instantiation discipline via DtoBase secret)
  *   - ADR-0057 (ID Generation & Validation — id is a string (UUIDv4 or 24-hex Mongo id); immutable; WARN on overwrite attempt)
+ *   - ADR-0074 (DB_STATE-aware DB selection via getDbVar)
  *
  * Purpose:
  * - Concrete DTO for env-service configuration records.
  * - Represents a single environment configuration document:
  *     • one document per (env, slug, version)
  *     • vars is a bag of env-style key/value pairs
+ * - Also acts as the canonical adapter for DB_STATE-aware DB configuration:
+ *     • Non-DB vars are accessed via getEnvVar()/tryEnvVar().
+ *     • DB vars are accessed via getDbVar(), which applies DB_STATE rules.
  */
 
 import { DtoBase, DtoValidationError } from "./DtoBase";
@@ -72,10 +76,13 @@ export class EnvServiceDto extends DtoBase implements IDto {
   /**
    * Bag of environment-style key/value pairs.
    * Example keys:
+   * - NV_HTTP_HOST
+   * - NV_HTTP_PORT
    * - NV_MONGO_URI
    * - NV_MONGO_DB
    * - NV_MONGO_COLLECTION
    * - NV_COLLECTION_ENV_SERVICE_VALUES
+   * - DB_STATE
    */
   private _vars: Record<string, string> = {};
 
@@ -224,9 +231,96 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return this.patchFrom(other);
   }
 
-  // ─────────────── ADR-0044: Generic Key/Value API ───────────────
+  // ─────────────── Internal helpers: DB_STATE semantics ───────────────
 
+  /** Keys that are considered DB-related and must go through getDbVar(). */
+  private static readonly dbKeys: ReadonlySet<string> = new Set([
+    "NV_MONGO_URI",
+    "NV_MONGO_DB",
+    "NV_MONGO_COLLECTION",
+    "NV_MONGO_USER",
+    "NV_MONGO_PASS",
+    "NV_MONGO_OPTIONS",
+  ]);
+
+  private static readonly dbStateKey = "DB_STATE";
+
+  private isDbKey(name: string): boolean {
+    return EnvServiceDto.dbKeys.has(name);
+  }
+
+  /**
+   * Resolve DB_STATE for this DTO.
+   *
+   * Invariants:
+   * - DB_STATE must be non-empty either in vars or process.env.
+   * - No silent default; failure is explicit with Ops guidance.
+   */
+  private resolveDbState(): string {
+    const fromVars = this._vars[EnvServiceDto.dbStateKey];
+    const fromEnv =
+      typeof process.env.DB_STATE === "string"
+        ? process.env.DB_STATE.trim()
+        : "";
+
+    const value = (fromVars ?? fromEnv ?? "").trim();
+
+    if (!value) {
+      throw new Error(
+        `ENV_DBSTATE_MISSING: DB_STATE is not defined for env="${this.env}", ` +
+          `slug="${this.slug}", version=${this.version}. ` +
+          "Ops: set DB_STATE in env-service vars or process.env for this service " +
+          "(e.g., 'dev', 'smoke', 'prod') so DB selection can be deterministic."
+      );
+    }
+
+    return value;
+  }
+
+  /**
+   * Apply DB_STATE to a base DB name.
+   *
+   * Rules:
+   * - If base ends with '_infra' → state-invariant, returned as-is.
+   * - Otherwise → `${base}_${DB_STATE}`.
+   */
+  private decorateDbName(base: string): string {
+    const trimmed = base.trim();
+    if (!trimmed) {
+      throw new Error(
+        `ENV_DBNAME_INVALID: NV_MONGO_DB is empty for env="${this.env}", ` +
+          `slug="${this.slug}", version=${this.version}. ` +
+          "Ops: set NV_MONGO_DB to a non-empty base name (e.g., 'nv', 'env-service_infra')."
+      );
+    }
+
+    if (trimmed.toLowerCase().endsWith("_infra")) {
+      // State-invariant DB (e.g., env-service_infra).
+      return trimmed;
+    }
+
+    const state = this.resolveDbState();
+    return `${trimmed}_${state}`;
+  }
+
+  // ─────────────── ADR-0044/0074: Key/Value + DB-aware API ───────────────
+
+  /**
+   * Generic non-DB env accessor.
+   *
+   * Invariants:
+   * - DB-related keys (NV_MONGO_*, DB collection keys) are forbidden here and must
+   *   go through getDbVar() to ensure DB_STATE rules are applied consistently.
+   */
   public getEnvVar(name: string): string {
+    if (this.isDbKey(name)) {
+      throw new Error(
+        `ENV_DBVAR_USE_GETDBVAR: "${name}" is DB-related and must be accessed via getDbVar("${name}"). ` +
+          `Context: env="${this.env}", slug="${this.slug}", version=${this.version}. ` +
+          "Ops: update callers to use getDbVar() so DB_STATE-aware naming and guardrails are enforced."
+      );
+    }
+
     const v = this._vars[name];
     if (v === undefined) {
       throw new Error(
@@ -238,7 +332,20 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return v;
   }
 
+  /**
+   * Best-effort non-DB env accessor.
+   *
+   * Note:
+   * - Returns undefined for missing keys.
+   * - Still enforces DB key guardrail; DB vars must go through getDbVar().
+   */
   public tryEnvVar(name: string): string | undefined {
+    if (this.isDbKey(name)) {
+      throw new Error(
+        `ENV_DBVAR_USE_GETDBVAR: "${name}" is DB-related and must be accessed via getDbVar("${name}"). ` +
+          `Context: env="${this.env}", slug="${this.slug}", version=${this.version}.`
+      );
+    }
     return this._vars[name];
   }
 
@@ -250,12 +357,77 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return Object.keys(this._vars).sort();
   }
 
-  /** @deprecated — use getEnvVar(name). */
+  /**
+   * DB-aware accessor.
+   *
+   * Supported keys (for now):
+   * - NV_MONGO_URI
+   * - NV_MONGO_DB  (DB_STATE applied unless name ends with '_infra')
+   * - NV_MONGO_COLLECTION
+   * - NV_MONGO_USER
+   * - NV_MONGO_PASS
+   * - NV_MONGO_OPTIONS
+   *
+   * Options:
+   * - required (default: true) — if false, missing keys return undefined.
+   */
+  public getDbVar(
+    name: string,
+    opts?: { required?: boolean }
+  ): string | undefined {
+    const required = opts?.required !== false;
+
+    if (!this.isDbKey(name)) {
+      throw new Error(
+        `ENV_DBVAR_NON_DB_KEY: "${name}" is not registered as a DB-related key. ` +
+          "Ops: use getEnvVar() for non-DB keys, or extend EnvServiceDto.dbKeys if this is truly DB-related."
+      );
+    }
+
+    const raw = this._vars[name];
+    if (raw === undefined || raw === null || `${raw}`.trim() === "") {
+      if (!required) return undefined;
+      throw new Error(
+        `ENV_DBVAR_MISSING: "${name}" is not defined or empty for env="${this.env}", ` +
+          `slug="${this.slug}", version=${this.version}. ` +
+          "Ops: ensure this DB config key exists and holds a non-empty value in env-service."
+      );
+    }
+
+    const value = `${raw}`.trim();
+
+    if (name === "NV_MONGO_DB") {
+      return this.decorateDbName(value);
+    }
+
+    // For URI / user / pass / options we currently return the raw value.
+    // If future ADRs define state-aware URIs, that logic can live here.
+    return value;
+  }
+
+  /**
+   * Convenience accessor for the resolved DB name after DB_STATE is applied.
+   * Equivalent to getDbVar("NV_MONGO_DB").
+   */
+  public getResolvedDbName(): string {
+    const name = this.getDbVar("NV_MONGO_DB");
+    if (!name) {
+      throw new Error(
+        `ENV_DBNAME_MISSING: NV_MONGO_DB could not be resolved for env="${this.env}", ` +
+          `slug="${this.slug}", version=${this.version}. ` +
+          "Ops: ensure NV_MONGO_DB and DB_STATE are configured correctly."
+      );
+    }
+    return name;
+  }
+
+  /** @deprecated — use getEnvVar(name) for non-DB keys or getDbVar(name) for DB keys. */
   public getVar(name: string): string {
+    // Preserve legacy behavior but still enforce DB guardrails.
     return this.getEnvVar(name);
   }
 
-  /** @deprecated — use tryEnvVar(name). */
+  /** @deprecated — use tryEnvVar(name) for non-DB keys or getDbVar(name, { required:false }) for DB keys. */
   public maybeVar(name: string): string | undefined {
     return this.tryEnvVar(name);
   }

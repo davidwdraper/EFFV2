@@ -138,54 +138,12 @@ export class DbReadExistingHandler extends HandlerBase {
       return;
     }
 
-    // --- Env via HandlerBase.getVar (same as BagToDbCreateHandler) ----------
-    // Prefer the centralized env wiring (svcenv/envBootstrap) over any ctx spelunking.
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
+    // ---- Missing DB config throws ------------------------
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // Optional: diagnose whether ControllerBase is actually holding svcEnv.
     const svcEnv = (this.controller as any).getSvcEnv?.();
     const hasSvcEnv = !!svcEnv;
-
-    if (!mongoUri || !mongoDb) {
-      const error = this.failWithError({
-        httpStatus: 500,
-        title: "internal_error",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        stage: "svcconfig.update.readExisting.env",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            keyUri: "NV_MONGO_URI",
-            keyDb: "NV_MONGO_DB",
-            mongoUriPresent: !!mongoUri,
-            mongoDbPresent: !!mongoDb,
-            hasSvcEnv,
-          },
-        ],
-        logMessage:
-          "DbReadExistingHandler.execute Mongo env config missing for svcconfig update",
-        logLevel: "error",
-      });
-
-      this.ctx.set("response.status", error.httpStatus);
-      this.ctx.set("response.body", {
-        type: "about:blank",
-        title: "Internal Error",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        status: error.httpStatus,
-        code: "MONGO_ENV_MISSING",
-        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
-        requestId,
-      });
-      return;
-    }
 
     // --- Reader + fetch as **BAG** ------------------------------------------
     const validateReads =

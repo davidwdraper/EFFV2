@@ -10,6 +10,7 @@
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0048 (DbReader contract)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id is DTO.id)
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  *
  * Purpose:
  * - Single-record read by **primary key only** ("id", string).
@@ -38,29 +39,40 @@ export class DbReadGetHandler extends HandlerBase {
     super(ctx, controller);
   }
 
+  /**
+   * Ops-facing one-liner for logs and errors.
+   */
+  protected handlerPurpose(): string {
+    return "env-service.read.dbRead.get: single-record read by id";
+  }
+
   protected async execute(): Promise<void> {
-    // svcEnv comes from the controller (no ctx lookups for it)
-    const svcEnv = this.controller.getSvcEnv();
+    const requestId = this.getRequestId();
 
     // dtoCtor is intentionally per-route seed via ctx (controller/pipeline decides which DTO)
     const dtoCtor = this.ctx.get<any>("read.dtoCtor");
 
     if (!dtoCtor) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "READ_SETUP_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "read_setup_missing",
         detail:
-          "Required context missing (read.dtoCtor). Ops: verify the read pipeline seeds the DTO constructor.",
+          "Required context missing (read.dtoCtor). " +
+          "Ops: verify the env-service read pipeline seeds the DTO constructor into ctx['read.dtoCtor'] before DbReadGetHandler runs.",
+        stage: "dbRead.get.setup",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        logMessage:
+          "env-service.read.dbRead.get: missing ctx['read.dtoCtor']; cannot construct DbReader.",
       });
       return;
     }
 
     const params = (this.ctx.get("params") as Record<string, unknown>) ?? {};
     const query = (this.ctx.get("query") as Record<string, unknown>) ?? {};
-    const requestId =
-      (this.ctx.get<string>("requestId") as string) || "unknown";
 
     const id =
       (typeof params["id"] === "string" && params["id"].trim()) ||
@@ -68,21 +80,32 @@ export class DbReadGetHandler extends HandlerBase {
       "";
 
     if (!id) {
+      // 400 is still treated as a direct response here to avoid surprising behavior changes.
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", 400);
       this.ctx.set("response.body", {
         code: "BAD_REQUEST_MISSING_ID",
         title: "Bad Request",
         detail:
-          "Route requires an 'id' path or query parameter. Example: GET /api/env-service/v1/:dtoType/read/<id>",
+          "Route requires an 'id' path or query parameter. " +
+          "Example: GET /api/env-service/v1/:dtoType/read/<id>.",
         requestId,
       });
+      this.log.warn(
+        {
+          event: "read_missing_id",
+          handler: this.constructor.name,
+        },
+        "env-service.read.dbRead.get: missing 'id' in path or query"
+      );
       return;
     }
 
-    // Extract concrete DB params from svcEnv (per ADR-0044)
-    const mongoUri = svcEnv.getEnvVar("NV_MONGO_URI");
-    const mongoDb = svcEnv.getEnvVar("NV_MONGO_DB");
+    // ─────────────── Mongo config (DB_STATE-aware) ───────────────
+    // Any failure here will:
+    // - call failWithError(...) with a mongo_config_error
+    // - throw, which HandlerBase.run() will see and avoid double-wrapping
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     const reader = new DbReader<any>({
       dtoCtor,
@@ -95,11 +118,15 @@ export class DbReadGetHandler extends HandlerBase {
     try {
       const t = await reader.targetInfo();
       this.log.debug(
-        { event: "read_target", collection: t.collectionName, pk: "id" },
-        "read will query collection"
+        {
+          event: "read_target",
+          collection: t.collectionName,
+          pk: "id",
+        },
+        "env-service.read.dbRead.get: read will query collection"
       );
     } catch {
-      /* ignore — target info is best-effort */
+      // target info is best-effort; do not fail handler for this
     }
 
     try {
@@ -116,8 +143,11 @@ export class DbReadGetHandler extends HandlerBase {
           meta: { cursor: null, limit: 1, total: 0, requestId },
         });
         this.log.debug(
-          { event: "read_one_by_id_not_found", id },
-          "no record by id"
+          {
+            event: "read_one_by_id_not_found",
+            id,
+          },
+          "env-service.read.dbRead.get: no record by id"
         );
         return;
       }
@@ -135,22 +165,30 @@ export class DbReadGetHandler extends HandlerBase {
       this.ctx.set("response.body", { items: itemJson, meta });
       this.ctx.set("handlerStatus", "ok");
       this.log.debug(
-        { event: "read_one_by_id", id },
-        "read one by id complete"
+        {
+          event: "read_one_by_id",
+          id,
+        },
+        "env-service.read.dbRead.get: read one by id complete"
       );
     } catch (err: any) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", 500);
-      this.ctx.set("response.body", {
-        code: "DB_OP_FAILED",
-        title: "Internal Error",
-        detail: err?.message ?? String(err),
+      // 500: use standardized HandlerBase error semantics
+      this.failWithError({
+        httpStatus: 500,
+        title: "db_read_failed",
+        detail:
+          "Database read failed while trying to fetch an env-service record by id. " +
+          "Ops: inspect this handler's logs using requestId and confirm Mongo connectivity, indexes, and collection wiring.",
+        stage: "dbRead.get.db.read",
         requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        rawError: err,
+        logMessage:
+          "env-service.read.dbRead.get: DbReader.readOneBagById threw",
       });
-      this.log.error(
-        { event: "read_error", err: err?.message, id },
-        "Read failed"
-      );
     }
   }
 }

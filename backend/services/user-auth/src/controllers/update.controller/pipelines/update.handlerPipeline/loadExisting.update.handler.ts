@@ -4,6 +4,7 @@
  * - ADR-0040 (DTO-only persistence via Managers)
  * - ADR-0041/42/43/44
  * - ADR-0048 (Revised — bag-centric reads)
+ * - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  *
  * Purpose:
  * - Build DbReader<UserAuthDto> and load existing doc by canonical ctx["id"].
@@ -29,82 +30,92 @@ export class LoadExistingUpdateHandler extends HandlerBase {
     super(ctx, controller);
   }
 
+  /**
+   * Ops-facing one-liner for logs and errors.
+   */
+  protected handlerPurpose(): string {
+    return "user-auth.update.loadExisting: load existing record by id into ctx['existingBag']";
+  }
+
   protected async execute(): Promise<void> {
-    this.log.debug({ event: "execute_enter" }, "loadExisting.update enter");
+    const requestId = this.getRequestId();
+
+    this.log.debug(
+      { event: "execute_enter", requestId },
+      "loadExisting.update enter"
+    );
 
     // --- Required id ---------------------------------------------------------
-    const id = String(this.ctx.get("id") ?? "").trim();
+    const rawId = this.ctx.get("id");
+    const id = String(rawId ?? "").trim();
+
     if (!id) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 400);
-      this.ctx.set("error", {
-        code: "MISSING_ID",
-        title: "Bad Request",
-        detail: "Path param :id is required.",
-        hint: "PATCH /api/user-auth/v1/<id> with JSON body of fields to update.",
+      this.failWithError({
+        httpStatus: 400,
+        title: "missing_id",
+        detail:
+          "Path param :id is required for user-auth update. " +
+          "Ops: verify the controller is seeding ctx['id'] from the URL path parameter.",
+        stage: "loadExisting.update.id",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            path: "id",
+            code: "required",
+            message: "Path param :id is required.",
+          },
+        ],
+        logMessage:
+          "user-auth.update.loadExisting: ctx['id'] missing or empty; cannot read existing record.",
+        logLevel: "warn",
       });
-      this.log.debug(
-        { event: "execute_exit", reason: "missing_id" },
-        "loadExisting.update exit"
-      );
       return;
     }
 
     // --- Required dtoCtor ----------------------------------------------------
     const dtoCtor = this.ctx.get<any>("update.dtoCtor");
     if (!dtoCtor || typeof dtoCtor.fromJson !== "function") {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "DTO_CTOR_MISSING",
-        title: "Internal Error",
+      this.failWithError({
+        httpStatus: 500,
+        title: "dto_ctor_missing",
         detail:
-          "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromJson().",
-      });
-      this.log.debug(
-        { event: "execute_exit", reason: "dtoCtor_missing" },
-        "loadExisting.update exit"
-      );
-      return;
-    }
-
-    // --- Env via HandlerBase.getVar (same as BagToDbCreateHandler) ----------
-    // Prefer the centralized env wiring (svcenv/envBootstrap) over any ctx spelunking.
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
-
-    // Optional: diagnose whether ControllerBase is actually holding svcEnv.
-    const svcEnv = this.controller.getSvcEnv?.();
-    const hasSvcEnv = !!svcEnv;
-
-    if (!mongoUri || !mongoDb) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "MONGO_ENV_MISSING",
-        title: "Internal Error",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
-      });
-      this.log.error(
-        {
-          event: "mongo_env_missing",
-          hasSvcEnv,
-          mongoUriPresent: !!mongoUri,
-          mongoDbPresent: !!mongoDb,
-          handler: this.constructor.name,
-          id,
+          "DTO constructor missing in ctx['update.dtoCtor'] or missing required static hydration method. " +
+          "Ops: ensure the user-auth update pipeline seeds ctx['update.dtoCtor'] with the correct DTO class before LoadExistingUpdateHandler runs.",
+        stage: "loadExisting.update.dtoCtor",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
         },
-        "loadExisting.update aborted — Mongo env config missing"
-      );
+        issues: [
+          {
+            path: "update.dtoCtor",
+            code: "required",
+            message:
+              "DTO constructor with static fromJson()/fromBody() must be provided.",
+          },
+        ],
+        logMessage:
+          "user-auth.update.loadExisting: missing or invalid ctx['update.dtoCtor']; cannot construct DbReader.",
+        logLevel: "error",
+      });
       return;
     }
 
-    // --- Reader + fetch as **BAG** ------------------------------------------
+    // ---- Missing DB config throws via HandlerBase.getMongoConfig() ---------
+    // Any failure here will:
+    // - call failWithError(...) with a mongo_config_error
+    // - throw, which HandlerBase.run() treats as already-handled
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+
     const validateReads =
       this.ctx.get<boolean>("update.validateReads") ?? false;
 
+    // --- Reader + fetch as **BAG** ------------------------------------------
     const reader = new DbReader<any>({
       dtoCtor,
       mongoUri,
@@ -113,43 +124,93 @@ export class LoadExistingUpdateHandler extends HandlerBase {
     });
     this.ctx.set("dbReader", reader);
 
-    const existingBag = await reader.readOneBagById({ id });
-    this.ctx.set("existingBag", existingBag as DtoBag<IDto>);
-
-    const size = Array.from(existingBag.items()).length;
-    if (size === 0) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 404);
-      this.ctx.set("error", {
-        code: "NOT_FOUND",
-        title: "Not Found",
-        detail: "No document found for supplied :id.",
-        hint: "Confirm the id from create/read response; ensure same collection.",
+    let existingBag: DtoBag<IDto>;
+    try {
+      existingBag = (await reader.readOneBagById({ id })) as DtoBag<IDto>;
+    } catch (err) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "db_read_failed",
+        detail:
+          "Database read failed while trying to load the existing user-auth record for update. " +
+          "Ops: inspect logs for this requestId, verify Mongo connectivity, DB_STATE mapping, and user-auth collection indexes.",
+        stage: "loadExisting.update.db.read",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        rawError: err,
+        logMessage:
+          "user-auth.update.loadExisting: DbReader.readOneBagById threw.",
+        logLevel: "error",
       });
-      this.log.debug(
-        { event: "execute_exit", reason: "not_found", id },
-        "loadExisting.update exit"
-      );
       return;
     }
-    if (size > 1) {
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("status", 500);
-      this.ctx.set("error", {
-        code: "MULTIPLE_MATCHES",
-        title: "Internal Error",
+
+    this.ctx.set("existingBag", existingBag);
+
+    const size = Array.from(existingBag.items()).length;
+
+    if (size === 0) {
+      this.failWithError({
+        httpStatus: 404,
+        title: "not_found",
         detail:
-          "Invariant breach: multiple records matched primary key lookup.",
-        hint: "Check unique index on _id and upstream normalization.",
+          "No user-auth document found for the supplied :id. " +
+          "Ops: confirm the id came from a prior create/read response and that DB_STATE is pointing at the expected database.",
+        stage: "loadExisting.update.not_found",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            path: "id",
+            code: "not_found",
+            message: "No document found for supplied id.",
+          },
+        ],
+        logMessage:
+          "user-auth.update.loadExisting: no record found for id; returning 404.",
+        logLevel: "warn",
       });
-      this.log.warn(
-        { event: "pk_multiple_matches", id, count: size },
-        "expected singleton bag for id read"
-      );
+      return;
+    }
+
+    if (size > 1) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "multiple_matches",
+        detail:
+          "Invariant breach: multiple user-auth records matched a primary key lookup. " +
+          "Ops: check unique index on _id and confirm there are no duplicate documents.",
+        stage: "loadExisting.update.multiple_matches",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            path: "id",
+            code: "duplicate_pk",
+            message:
+              "More than one record matched a supposedly unique primary key.",
+          },
+        ],
+        logMessage:
+          "user-auth.update.loadExisting: multiple records matched id; invariant violated.",
+        logLevel: "error",
+      });
       return;
     }
 
     this.ctx.set("handlerStatus", "ok");
-    this.log.debug({ event: "execute_exit", id }, "loadExisting.update exit");
+    this.log.debug(
+      { event: "execute_exit", requestId, id },
+      "loadExisting.update exit"
+    );
   }
 }

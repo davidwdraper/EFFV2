@@ -172,38 +172,8 @@ export class DbReadOneByFilterHandler extends HandlerBase {
       "bag.populate.query — svcEnv snapshot"
     );
 
-    const mongoUri = envVars["NV_MONGO_URI"] as string | undefined;
-    const mongoDb = envVars["NV_MONGO_DB"] as string | undefined;
-
-    if (!mongoUri || !mongoDb) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "mongo_env_missing",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in EnvServiceDto._vars for this service. Ops: check env-service config for this slug/env/version.",
-        stage: "config.mongoEnv",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-          service: svcEnvAny?.slug,
-        },
-        issues: [
-          {
-            mongoUriPresent: !!mongoUri,
-            mongoDbPresent: !!mongoDb,
-            svcEnvSlug: svcEnvAny?.slug,
-            svcEnvEnv: svcEnvAny?.env,
-            svcEnvVersion: svcEnvAny?.version,
-            varsKeys: Object.keys(envVars),
-          },
-        ],
-        logMessage:
-          "bag.populate.query aborted — Mongo env config missing (NV_MONGO_URI / NV_MONGO_DB).",
-        logLevel: "error",
-      });
-      return;
-    }
+    // ---- Missing DB config throws ------------------------
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // ---- External edge: DB read (fine-grained try/catch) -------------------
     let bag: DtoBag<IDto>;

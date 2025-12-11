@@ -4,6 +4,7 @@
  * - ADR-0040/41 (DTO-only persistence)
  * - ADR-0044 (Env DTO as Key/Value Contract)
  * - ADR-0045 (Index Hints — burn-after-read & boot ensure)
+ * - ADR-0074 (DB_STATE + _infra database invariants)
  *
  * Purpose:
  * - Deterministically ensure Mongo indexes for a set of DTOs at service boot.
@@ -12,8 +13,11 @@
  *   not passed in from the caller.
  *
  * Notes:
- * - Historically this used SvcEnvDto; the dependency is now a generic env-like
- *   object exposing getEnvVar(name: string): string (e.g. EnvServiceDto).
+ * - Historically this used SvcEnvDto; the dependency is now a generic env
+ *   contract exposing:
+ *     • getEnvVar(name: string): string
+ *     • getDbVar(name: string): string  (DB_STATE-aware)
+ *   (e.g. EnvServiceDto).
  */
 
 import type { IndexHint } from "../../persistence/index-hints";
@@ -22,10 +26,12 @@ import { MongoClient } from "mongodb";
 
 /**
  * Minimal contract for env DTOs used here.
- * Any DTO that can supply Mongo connection strings via getEnvVar is acceptable.
+ * Any DTO that can supply Mongo connection strings via getEnvVar/getDbVar
+ * is acceptable (typically EnvServiceDto).
  */
-export type EnvLike = {
+export type SvcEnvConfig = {
   getEnvVar: (name: string) => string;
+  getDbVar: (name: string) => string; // DB_STATE + _infra aware
 };
 
 /**
@@ -45,11 +51,11 @@ export interface EnsureIndexesOptions {
   /** Array of DTO CLASSES that declare indexHints and can resolve their collection */
   dtos: DtoCtorWithIndexes[];
   /**
-   * Env-like config carrier (typically EnvServiceDto) that can supply:
-   *  - NV_MONGO_URI
-   *  - NV_MONGO_DB
+   * Env config carrier (typically EnvServiceDto) that can supply:
+   *  - NV_MONGO_URI via getDbVar()   (DB_STATE-aware)
+   *  - NV_MONGO_DB  via getDbVar()   (DB_STATE-aware)
    */
-  env: EnvLike;
+  env: SvcEnvConfig;
   log: ILogger;
 }
 
@@ -61,15 +67,16 @@ export async function ensureIndexesForDtos(
   let uri: string;
   let dbName: string;
   try {
-    uri = env.getEnvVar("NV_MONGO_URI");
-    dbName = env.getEnvVar("NV_MONGO_DB");
+    // ADR-0074: both URI and DB name are DB_STATE-aware and must be read via getDbVar()
+    uri = env.getDbVar("NV_MONGO_URI");
+    dbName = env.getDbVar("NV_MONGO_DB");
   } catch (e) {
     const msg =
       (e as Error)?.message ??
       "Missing required Mongo env vars NV_MONGO_URI/NV_MONGO_DB.";
     log.error(
       { err: msg },
-      "ensureIndexes: failed to read NV_MONGO_URI/NV_MONGO_DB from env DTO"
+      "ensureIndexes: failed to read NV_MONGO_URI/NV_MONGO_DB from svc env config"
     );
     throw new Error(
       `${msg} Ops: ensure env-service configuration document for this service includes NV_MONGO_URI and NV_MONGO_DB as non-empty strings.`

@@ -123,47 +123,12 @@ export class DbReadExistingHandler extends HandlerBase {
       return;
     }
 
-    // --- Env via HandlerBase.getVar (same as BagToDbCreateHandler) ----------
-    // Prefer the centralized env wiring (svcenv/envBootstrap) over any ctx spelunking.
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
+    // ---- Missing DB config throws ------------------------
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // Optional: diagnose whether ControllerBase is actually holding svcEnv.
     const svcEnv = this.controller.getSvcEnv?.();
     const hasSvcEnv = !!svcEnv;
-
-    if (!mongoUri || !mongoDb) {
-      const status = 500;
-
-      const problem = {
-        type: "about:blank",
-        title: "Internal Error",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        status,
-        code: "MONGO_ENV_MISSING",
-        requestId,
-        hint: "Check env-service for NV_MONGO_URI/NV_MONGO_DB for this slug/env/version.",
-      };
-
-      this.ctx.set("handlerStatus", "error");
-      this.ctx.set("response.status", status);
-      this.ctx.set("response.body", problem);
-      this.ctx.set("error", problem);
-
-      this.log.error(
-        {
-          event: "mongo_env_missing",
-          hasSvcEnv,
-          mongoUriPresent: !!mongoUri,
-          mongoDbPresent: !!mongoDb,
-          handler: this.handlerName(),
-          id,
-        },
-        "DbReadExistingHandler.execute aborted — Mongo env config missing"
-      );
-      return;
-    }
 
     // --- Reader + fetch as **BAG** ------------------------------------------
     const validateReads =

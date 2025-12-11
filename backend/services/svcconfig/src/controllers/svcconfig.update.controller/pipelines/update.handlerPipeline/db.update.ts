@@ -119,41 +119,12 @@ export class DbUpdateHandler extends HandlerBase {
       return;
     }
 
-    // --- Env via HandlerBase.getVar (aligned with BagToDbCreateHandler) -----
-    const mongoUri = this.getVar("NV_MONGO_URI");
-    const mongoDb = this.getVar("NV_MONGO_DB");
+    // ---- Missing DB config throws ------------------------
+    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // Optional: diagnose whether ControllerBase is actually holding svcEnv.
     const svcEnv = (this.controller as any).getSvcEnv?.();
     const hasSvcEnv = !!svcEnv;
-
-    if (!mongoUri || !mongoDb) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "internal_error",
-        detail:
-          "Missing NV_MONGO_URI or NV_MONGO_DB in environment configuration. Ops: ensure env-service config is populated for this service.",
-        stage: "svcconfig.update.dbUpdate.env",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            keyUri: "NV_MONGO_URI",
-            keyDb: "NV_MONGO_DB",
-            mongoUriPresent: !!mongoUri,
-            mongoDbPresent: !!mongoDb,
-            hasSvcEnv,
-          },
-        ],
-        logMessage:
-          "DbUpdateHandler.execute Mongo env config missing for svcconfig update",
-        logLevel: "error",
-      });
-      return;
-    }
 
     // --- Writer (bag-centric; use DtoBase for DbWriter contract) ------------
     const baseBag = bag as unknown as DtoBag<DtoBase>;

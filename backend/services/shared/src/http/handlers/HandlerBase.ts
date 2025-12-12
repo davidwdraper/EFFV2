@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/HandlerBase.ts
+// backend/services/shared/src/http/handlers/HandlerBase.ts
 /**
  * Docs:
  * - ADR-0041 (Per-route controllers; single-purpose handlers)

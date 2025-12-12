@@ -13,16 +13,37 @@
  *
  * Invariants:
  * - Handlers are single-purpose and constructed per request via this factory.
+ * - Guard runs first; logging runs last.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
+import { CodeGuardDbStateAndMockModeHandler } from "./code.guard.dbStateAndMockMode";
 import { CodeTreeWalkerHandler } from "./code.treeWalker";
+import { CodePlanRunsHandler } from "./code.planRuns";
+import { CodeLoadTestsHandler } from "./code.loadTests";
+import { CodeExecutePlanHandler } from "./code.executePlan";
+import { S2sLogToTestLogHandler } from "./s2s.logToTestLog";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   return [
+    // 0) Hard guard: DB_STATE / DB_MOCKING safety + mockMode selection.
+    new CodeGuardDbStateAndMockModeHandler(ctx, controller),
+
     // 1) Walk the code tree to discover pipelines/handlers suitable for testing.
     new CodeTreeWalkerHandler(ctx, controller),
+
+    // 2) Plan which runs to execute based on discovered tests and request input.
+    new CodePlanRunsHandler(ctx, controller),
+
+    // 3) Load tests into DTO/bag structures for execution.
+    new CodeLoadTestsHandler(ctx, controller),
+
+    // 4) Execute the planned tests/pipelines.
+    new CodeExecutePlanHandler(ctx, controller),
+
+    // 5) Emit S2S log entry summarizing the test run to the log/test-log service.
+    new S2sLogToTestLogHandler(ctx, controller),
   ];
 }

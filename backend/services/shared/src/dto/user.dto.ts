@@ -16,19 +16,23 @@
  *     givenName, lastName, email, phone, homeLat, homeLng
  * - Extended with basic address fields for global use:
  *     address1, address2, city, state, pcode, notes
+ *
+ * Design:
+ * - All domain fields are private, accessed via getters + setters.
+ * - Setters accept an optional `{ validate?: boolean }` flag:
+ *     • validate=false → normalize only.
+ *     • validate=true  → enforce required/format rules and throw on violations.
+ * - Name-like fields use DtoBase.normalizeRequiredName(...) for shared rules.
  */
 
 import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
 import { assertValidEmail } from "../utils/emailCheck";
 
-// Wire-friendly shape
 export type UserJson = {
-  // Entity canonical id on the wire for CRUD services.
   _id?: string;
   type?: "user";
 
-  // Auth-compatible identity basics
   givenName: string;
   lastName: string;
   email: string;
@@ -36,29 +40,28 @@ export type UserJson = {
   homeLat?: number;
   homeLng?: number;
 
-  // Address / profile extensions
   address1?: string;
   address2?: string;
   city?: string;
   state?: string;
-  pcode?: string; // postal code, not "zip", for global usage
+  pcode?: string;
   notes?: string;
 
-  // Meta fields stamped via DtoBase
   createdAt?: string;
   updatedAt?: string;
   updatedByUserId?: string;
+  ownerUserId?: string;
 };
+
+export interface UserFieldOptions {
+  validate?: boolean;
+}
 
 export class UserDto extends DtoBase {
   public static dbCollectionName(): string {
     return "user";
   }
 
-  // Index strategy:
-  // - Email is globally unique per user (login / identity).
-  // - Name lookup supports basic search (lastName + givenName).
-  // Additional geo / locality indexes can be added once query patterns stabilize.
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
     {
       kind: "unique",
@@ -72,28 +75,31 @@ export class UserDto extends DtoBase {
     },
   ];
 
-  // ─────────────── Instance: Domain Fields ───────────────
+  // ─────────────── Instance: Domain Fields (private) ───────────────
 
-  // Identity basics (aligned with AuthDto)
-  public givenName = "";
-  public lastName = "";
-  public email = "";
-  public phone?: string;
-  public homeLat?: number;
-  public homeLng?: number;
+  private _givenName = "";
+  private _lastName = "";
+  private _email = "";
+  private _phone?: string;
+  private _homeLat?: number;
+  private _homeLng?: number;
 
-  // Address / profile
-  public address1?: string;
-  public address2?: string;
-  public city?: string;
-  public state?: string;
-  public pcode?: string;
-  public notes?: string;
+  private _address1?: string;
+  private _address2?: string;
+  private _city?: string;
+  private _state?: string;
+  private _pcode?: string;
+  private _notes?: string;
 
   public constructor(
     secretOrMeta?:
       | symbol
-      | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
+      | {
+          createdAt?: string;
+          updatedAt?: string;
+          updatedByUserId?: string;
+          ownerUserId?: string;
+        }
   ) {
     super(secretOrMeta);
   }
@@ -107,208 +113,275 @@ export class UserDto extends DtoBase {
     const dto = new UserDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<UserJson>;
 
-    // Canonical entity id for CRUD services lives in `_id`.
     if (typeof j._id === "string" && j._id.trim()) {
       dto.setIdOnce(j._id.trim());
     }
 
-    // Required-ish identity fields (formal validation via contract layer later)
-    if (typeof j.givenName === "string") {
-      dto.givenName = j.givenName.trim();
-    }
+    dto.setGivenName(j.givenName, { validate: opts?.validate });
+    dto.setLastName(j.lastName, { validate: opts?.validate });
+    dto.setEmail(j.email, { validate: opts?.validate });
 
-    if (typeof j.lastName === "string") {
-      dto.lastName = j.lastName.trim();
-    }
+    dto.setPhone(j.phone, { validate: opts?.validate });
+    dto.setHomeLat(j.homeLat, { validate: opts?.validate });
+    dto.setHomeLng(j.homeLng, { validate: opts?.validate });
 
-    if (typeof j.email === "string") {
-      dto.email = assertValidEmail(j.email, "UserDto.email");
-    } else if (opts?.validate) {
-      throw new Error("UserDto.email: field is required.");
-    }
+    dto.setAddress1(j.address1, { validate: opts?.validate });
+    dto.setAddress2(j.address2, { validate: opts?.validate });
+    dto.setCity(j.city, { validate: opts?.validate });
+    dto.setState(j.state, { validate: opts?.validate });
+    dto.setPcode(j.pcode, { validate: opts?.validate });
+    dto.setNotes(j.notes, { validate: opts?.validate });
 
-    if (typeof j.phone === "string") {
-      const trimmed = j.phone.trim();
-      dto.phone = trimmed.length ? trimmed : undefined;
-    }
-
-    // homeLat / homeLng: accept number or numeric string; ignore NaN.
-    if (j.homeLat !== undefined) {
-      const n = typeof j.homeLat === "string" ? Number(j.homeLat) : j.homeLat;
-      if (Number.isFinite(n as number)) {
-        dto.homeLat = n as number;
-      }
-    }
-
-    if (j.homeLng !== undefined) {
-      const n = typeof j.homeLng === "string" ? Number(j.homeLng) : j.homeLng;
-      if (Number.isFinite(n as number)) {
-        dto.homeLng = n as number;
-      }
-    }
-
-    // Address / profile fields (simple string normalization)
-    if (typeof j.address1 === "string") {
-      const trimmed = j.address1.trim();
-      dto.address1 = trimmed.length ? trimmed : undefined;
-    }
-
-    if (typeof j.address2 === "string") {
-      const trimmed = j.address2.trim();
-      dto.address2 = trimmed.length ? trimmed : undefined;
-    }
-
-    if (typeof j.city === "string") {
-      const trimmed = j.city.trim();
-      dto.city = trimmed.length ? trimmed : undefined;
-    }
-
-    if (typeof j.state === "string") {
-      const trimmed = j.state.trim();
-      dto.state = trimmed.length ? trimmed : undefined;
-    }
-
-    if (typeof j.pcode === "string") {
-      const trimmed = j.pcode.trim();
-      dto.pcode = trimmed.length ? trimmed : undefined;
-    }
-
-    if (typeof j.notes === "string") {
-      const trimmed = j.notes.trim();
-      dto.notes = trimmed.length ? trimmed : undefined;
-    }
-
-    // Meta (for DtoBase._finalizeToJson)
     dto.setMeta({
       createdAt: j.createdAt,
       updatedAt: j.updatedAt,
       updatedByUserId: j.updatedByUserId,
+      ownerUserId: j.ownerUserId,
     });
-
-    // opts?.validate hook: Zod contract goes here when defined.
-    void opts;
 
     return dto;
   }
 
-  // ─────────────── Instance: Wire Shape ───────────────
+  // ─────────────── Getters / Setters ───────────────
+
+  public get givenName(): string {
+    return this._givenName;
+  }
+
+  public setGivenName(value: unknown, opts?: UserFieldOptions): this {
+    this._givenName = DtoBase.normalizeRequiredName(
+      value,
+      "UserDto.givenName",
+      { validate: opts?.validate }
+    );
+    return this;
+  }
+
+  public get lastName(): string {
+    return this._lastName;
+  }
+
+  public setLastName(value: unknown, opts?: UserFieldOptions): this {
+    this._lastName = DtoBase.normalizeRequiredName(value, "UserDto.lastName", {
+      validate: opts?.validate,
+    });
+    return this;
+  }
+
+  public get email(): string {
+    return this._email;
+  }
+
+  public setEmail(value: unknown, opts?: UserFieldOptions): this {
+    const raw =
+      typeof value === "string"
+        ? value.trim()
+        : value == null
+        ? ""
+        : String(value).trim();
+
+    if (!opts?.validate) {
+      this._email = raw;
+      return this;
+    }
+
+    if (!raw) {
+      throw new Error("UserDto.email: field is required.");
+    }
+
+    this._email = assertValidEmail(raw, "UserDto.email");
+    return this;
+  }
+
+  public get phone(): string | undefined {
+    return this._phone;
+  }
+
+  public setPhone(value: unknown, _opts?: UserFieldOptions): this {
+    if (value === undefined || value === null) {
+      this._phone = undefined;
+      return this;
+    }
+
+    const trimmed =
+      typeof value === "string" ? value.trim() : String(value).trim();
+    this._phone = trimmed.length ? trimmed : undefined;
+    return this;
+  }
+
+  public get homeLat(): number | undefined {
+    return this._homeLat;
+  }
+
+  public setHomeLat(value: unknown, _opts?: UserFieldOptions): this {
+    if (value === undefined || value === null || value === "") {
+      this._homeLat = undefined;
+      return this;
+    }
+
+    const n =
+      typeof value === "string"
+        ? Number(value)
+        : typeof value === "number"
+        ? value
+        : NaN;
+
+    if (Number.isFinite(n)) {
+      this._homeLat = n;
+    }
+    return this;
+  }
+
+  public get homeLng(): number | undefined {
+    return this._homeLng;
+  }
+
+  public setHomeLng(value: unknown, _opts?: UserFieldOptions): this {
+    if (value === undefined || value === null || value === "") {
+      this._homeLng = undefined;
+      return this;
+    }
+
+    const n =
+      typeof value === "string"
+        ? Number(value)
+        : typeof value === "number"
+        ? value
+        : NaN;
+
+    if (Number.isFinite(n)) {
+      this._homeLng = n;
+    }
+    return this;
+  }
+
+  public get address1(): string | undefined {
+    return this._address1;
+  }
+
+  public setAddress1(value: unknown, _opts?: UserFieldOptions): this {
+    this._address1 = this.normalizeOptionalString(value);
+    return this;
+  }
+
+  public get address2(): string | undefined {
+    return this._address2;
+  }
+
+  public setAddress2(value: unknown, _opts?: UserFieldOptions): this {
+    this._address2 = this.normalizeOptionalString(value);
+    return this;
+  }
+
+  public get city(): string | undefined {
+    return this._city;
+  }
+
+  public setCity(value: unknown, _opts?: UserFieldOptions): this {
+    this._city = this.normalizeOptionalString(value);
+    return this;
+  }
+
+  public get state(): string | undefined {
+    return this._state;
+  }
+
+  public setState(value: unknown, _opts?: UserFieldOptions): this {
+    this._state = this.normalizeOptionalString(value);
+    return this;
+  }
+
+  public get pcode(): string | undefined {
+    return this._pcode;
+  }
+
+  public setPcode(value: unknown, _opts?: UserFieldOptions): this {
+    this._pcode = this.normalizeOptionalString(value);
+    return this;
+  }
+
+  public get notes(): string | undefined {
+    return this._notes;
+  }
+
+  public setNotes(value: unknown, _opts?: UserFieldOptions): this {
+    this._notes = this.normalizeOptionalString(value);
+    return this;
+  }
+
+  private normalizeOptionalString(value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    const trimmed =
+      typeof value === "string" ? value.trim() : String(value).trim();
+    return trimmed.length ? trimmed : undefined;
+  }
+
+  // ─────────────── Wire Shape ───────────────
 
   public toBody(): UserJson {
     const body: UserJson = {
-      // DO NOT generate id here — DbWriter ensures id BEFORE calling toBody().
       _id: this.hasId() ? this.getId() : undefined,
       type: "user",
 
-      givenName: this.givenName,
-      lastName: this.lastName,
-      email: this.email,
-      phone: this.phone,
-      homeLat: this.homeLat,
-      homeLng: this.homeLng,
+      givenName: this._givenName,
+      lastName: this._lastName,
+      email: this._email,
+      phone: this._phone,
+      homeLat: this._homeLat,
+      homeLng: this._homeLng,
 
-      address1: this.address1,
-      address2: this.address2,
-      city: this.city,
-      state: this.state,
-      pcode: this.pcode,
-      notes: this.notes,
+      address1: this._address1,
+      address2: this._address2,
+      city: this._city,
+      state: this._state,
+      pcode: this._pcode,
+      notes: this._notes,
     };
 
     return this._finalizeToJson(body);
   }
 
-  // ─────────────── Instance: Patch Helper ───────────────
+  // ─────────────── Patch Helper ───────────────
 
-  public patchFrom(json: Partial<UserJson>): this {
-    if (json.givenName !== undefined && typeof json.givenName === "string") {
-      this.givenName = json.givenName.trim();
+  public patchFrom(
+    json: Partial<UserJson>,
+    opts?: { validate?: boolean }
+  ): this {
+    if (json.givenName !== undefined) {
+      this.setGivenName(json.givenName, { validate: opts?.validate });
     }
-
-    if (json.lastName !== undefined && typeof json.lastName === "string") {
-      this.lastName = json.lastName.trim();
+    if (json.lastName !== undefined) {
+      this.setLastName(json.lastName, { validate: opts?.validate });
     }
-
-    if (json.email !== undefined && typeof json.email === "string") {
-      this.email = assertValidEmail(json.email, "UserDto.patchFrom.email");
+    if (json.email !== undefined) {
+      this.setEmail(json.email, { validate: opts?.validate });
     }
-
     if (json.phone !== undefined) {
-      if (typeof json.phone === "string") {
-        const trimmed = json.phone.trim();
-        this.phone = trimmed.length ? trimmed : undefined;
-      } else {
-        this.phone = undefined;
-      }
+      this.setPhone(json.phone, { validate: opts?.validate });
     }
-
     if (json.homeLat !== undefined) {
-      const n =
-        typeof json.homeLat === "string" ? Number(json.homeLat) : json.homeLat;
-      if (Number.isFinite(n as number)) {
-        this.homeLat = n as number;
-      }
+      this.setHomeLat(json.homeLat, { validate: opts?.validate });
     }
-
     if (json.homeLng !== undefined) {
-      const n =
-        typeof json.homeLng === "string" ? Number(json.homeLng) : json.homeLng;
-      if (Number.isFinite(n as number)) {
-        this.homeLng = n as number;
-      }
+      this.setHomeLng(json.homeLng, { validate: opts?.validate });
     }
-
     if (json.address1 !== undefined) {
-      if (typeof json.address1 === "string") {
-        const trimmed = json.address1.trim();
-        this.address1 = trimmed.length ? trimmed : undefined;
-      } else {
-        this.address1 = undefined;
-      }
+      this.setAddress1(json.address1, { validate: opts?.validate });
     }
-
     if (json.address2 !== undefined) {
-      if (typeof json.address2 === "string") {
-        const trimmed = json.address2.trim();
-        this.address2 = trimmed.length ? trimmed : undefined;
-      } else {
-        this.address2 = undefined;
-      }
+      this.setAddress2(json.address2, { validate: opts?.validate });
     }
-
     if (json.city !== undefined) {
-      if (typeof json.city === "string") {
-        const trimmed = json.city.trim();
-        this.city = trimmed.length ? trimmed : undefined;
-      } else {
-        this.city = undefined;
-      }
+      this.setCity(json.city, { validate: opts?.validate });
     }
-
     if (json.state !== undefined) {
-      if (typeof json.state === "string") {
-        const trimmed = json.state.trim();
-        this.state = trimmed.length ? trimmed : undefined;
-      } else {
-        this.state = undefined;
-      }
+      this.setState(json.state, { validate: opts?.validate });
     }
-
     if (json.pcode !== undefined) {
-      if (typeof json.pcode === "string") {
-        const trimmed = json.pcode.trim();
-        this.pcode = trimmed.length ? trimmed : undefined;
-      } else {
-        this.pcode = undefined;
-      }
+      this.setPcode(json.pcode, { validate: opts?.validate });
     }
-
     if (json.notes !== undefined) {
-      if (typeof json.notes === "string") {
-        const trimmed = json.notes.trim();
-        this.notes = trimmed.length ? trimmed : undefined;
-      } else {
-        this.notes = undefined;
-      }
+      this.setNotes(json.notes, { validate: opts?.validate });
     }
 
     return this;

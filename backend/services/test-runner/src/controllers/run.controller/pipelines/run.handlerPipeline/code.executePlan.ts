@@ -47,7 +47,7 @@ import {
 import {
   HandlerTestBase,
   type HandlerTestResult,
-} from "../../../../testing/HandlerTestBase";
+} from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
 export class CodeExecutePlanHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {

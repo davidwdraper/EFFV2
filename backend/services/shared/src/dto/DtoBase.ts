@@ -83,6 +83,50 @@ export abstract class DtoBase {
     return DtoBase.INSTANTIATION_SECRET;
   }
 
+  // ─────────────── Shared Normalizers ───────────────
+
+  /**
+   * Shared helper for normalized "name-like" fields:
+   * - Trims input.
+   * - When validate=true:
+   *     • requires non-empty string
+   *     • enforces /^[A-Za-z][A-Za-z\s'-]*$/ pattern
+   *
+   * Can be used by givenName, lastName, actName, businessName, etc.
+   */
+  public static normalizeRequiredName(
+    value: unknown,
+    fieldLabel: string,
+    opts?: { validate?: boolean }
+  ): string {
+    const raw =
+      typeof value === "string"
+        ? value.trim()
+        : value == null
+        ? ""
+        : String(value).trim();
+
+    if (!opts?.validate) {
+      // Non-validating paths (e.g. from DB) just get trimmed text.
+      return raw;
+    }
+
+    if (!raw) {
+      throw new Error(
+        `${fieldLabel}: field is required and must not be empty.`
+      );
+    }
+
+    const pattern = /^[A-Za-z][A-Za-z\s'-]*$/;
+    if (!pattern.test(raw)) {
+      throw new Error(
+        `${fieldLabel}: must contain only letters, spaces, apostrophes, or hyphens; digits and other characters are not allowed.`
+      );
+    }
+
+    return raw;
+  }
+
   // ─────────────── Identity & Meta ───────────────
 
   /** Canonical wire id; UUIDv4, immutable once set. */
@@ -127,14 +171,6 @@ export abstract class DtoBase {
 
   // ─────────────── ID Lifecycle ───────────────
 
-  /**
-   * Hydration-time setter; used by fromBody()/fromDb() to accept a wire `_id`.
-   *
-   * Rules:
-   * - Accepts only UUIDv4 values (validated via validateUUIDv4String()).
-   * - Normalizes to lowercase.
-   * - Refuses to overwrite an existing id unless it’s the same normalized value.
-   */
   public setIdOnce(id: string): void {
     const normalized = validateUUIDv4String(id);
 
@@ -147,21 +183,6 @@ export abstract class DtoBase {
     this._id = normalized;
   }
 
-  /**
-   * Ensure this DTO has a canonical UUIDv4 id.
-   *
-   * Behavior:
-   * - If id is already set:
-   *     • Re-validates and normalizes using validateUUIDv4String().
-   *     • Returns the normalized id.
-   * - If id is missing:
-   *     • Generates a new UUIDv4 via newUuid().
-   *     • Assigns and returns it.
-   *
-   * Used by:
-   * - DbWriter BEFORE toBody() in create flows.
-   * - MOS pipelines that need a stable id before coordinating parent/child writes.
-   */
   public ensureId(): string {
     if (this._id) {
       const normalized = validateUUIDv4String(this._id);
@@ -174,7 +195,6 @@ export abstract class DtoBase {
     return fresh;
   }
 
-  /** Return the current `_id` or explode loudly if missing. */
   public getId(): string {
     if (!this._id) {
       throw new Error(
@@ -185,7 +205,6 @@ export abstract class DtoBase {
     return this._id;
   }
 
-  /** Whether this DTO currently has an `_id`. */
   public hasId(): boolean {
     return !!this._id;
   }
@@ -206,7 +225,6 @@ export abstract class DtoBase {
     this._collectionName = trimmed;
   }
 
-  /** Convenience: require collection name or explode loudly for Ops. */
   public requireCollectionName(): string {
     const name = this.getCollectionName();
     if (!name) {
@@ -228,10 +246,6 @@ export abstract class DtoBase {
     this._ownerUserId = meta.ownerUserId ?? this._ownerUserId;
   }
 
-  /**
-   * Stamp createdAt if missing.
-   * - If a value already exists, this is a NO-OP (silent), per convention.
-   */
   public stampCreatedAt(date?: Date | string): void {
     if (this._createdAt) return;
 
@@ -244,12 +258,6 @@ export abstract class DtoBase {
     this._createdAt = d.toISOString();
   }
 
-  /**
-   * Stamp ownerUserId if:
-   *  - we have a non-empty userId
-   *  - and ownerUserId is not already set.
-   * This is a one-shot field tied to the creator’s user id.
-   */
   public stampOwnerUserId(userId?: string): void {
     if (this._ownerUserId) return;
     const trimmed = (userId ?? "").trim();
@@ -257,12 +265,6 @@ export abstract class DtoBase {
     this._ownerUserId = trimmed;
   }
 
-  /**
-   * Stamp updatedAt and (optionally) updatedByUserId.
-   * - Always refreshes updatedAt.
-   * - If userId is provided and non-empty, sets updatedByUserId.
-   * - If userId is omitted, updatedByUserId is left unchanged (no defaults).
-   */
   public stampUpdatedAt(userId?: string, date?: Date | string): void {
     if (typeof date === "string") {
       this._updatedAt = date;
@@ -360,18 +362,10 @@ export abstract class DtoBase {
 
   // ─────────────── Cloning (aligned with ID semantics) ───────────────
 
-  /**
-   * Shallow clone this DTO.
-   *
-   * - If newId is omitted, the clone retains the same `_id`.
-   * - If newId is provided, the clone receives that id without violating the
-   *   "id is immutable" rule (we explicitly clear `_id` before setting).
-   */
   public clone(newId?: string): this {
     const ctor = this.constructor as { new (...args: any[]): any };
     const copy = new ctor(DtoBase.getSecret()) as this;
 
-    // Copy all own properties, including _id/meta/collectionName/etc.
     Object.assign(copy, this);
 
     if (newId !== undefined) {
@@ -384,9 +378,7 @@ export abstract class DtoBase {
 
   // ─────────────── Abstracts / Expectations ───────────────
 
-  /** Stable DTO type identifier (e.g. "env-service", "svcconfig", "xxx"). */
   public abstract getType(): string;
 
-  /** Concrete DTOs must provide their outbound wire JSON shape. */
   public abstract toBody(): unknown;
 }

@@ -14,7 +14,7 @@ import { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import { getLogger } from "@nv/shared/logger/Logger";
 
-import { HandlerTestBase } from "../../../../testing/HandlerTestBase";
+import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 import { CodeGuardDbStateAndMockModeHandler } from "./code.guard.dbStateAndMockMode";
 
 export class CodeGuardDbStateAndMockModeTest extends HandlerTestBase {

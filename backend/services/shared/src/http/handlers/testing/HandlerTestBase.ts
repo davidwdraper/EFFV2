@@ -1,4 +1,4 @@
-// backend/services/test-runner/src/testing/HandlerTestBase.ts
+// backend/services/shared/src/htpp/testing/HandlerTestBase.ts
 /**
  * Docs:
  * - LDD-35 (Handler-level test-runner service)

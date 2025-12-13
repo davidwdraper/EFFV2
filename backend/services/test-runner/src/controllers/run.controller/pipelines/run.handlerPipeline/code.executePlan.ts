@@ -1,34 +1,14 @@
 // backend/services/test-runner/src/controllers/run.controller/pipelines/run.handlerPipeline/code.executePlan.ts
 /**
  * Docs:
- * - SOP: DTO-first; bag-centric processing for service APIs.
- * - ADRs:
- *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0041 (Per-route controllers; single-purpose handlers)
- *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0043 (Finalize mapping; controller builds wire payload)
- *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
- *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ * - SOP + ADR-0073
  *
- * Purpose:
- * - Execute the handler-level test list (ctx["testRunner.tests"]) and
- *   materialize test results as TestRunDto + TestHandlerDto DtoBags.
+ * Logging:
+ * - INFO once: counts (pass/fail/total).
+ * - WARN once: list of failed tests (only if failures exist).
  *
- * Responsibilities:
- * - Generate a runId for this invocation.
- * - For each HandlerTestBase instance:
- *     • run the test,
- *     • classify result as pass | fail,
- *     • accumulate stats on a TestRunDto,
- *     • create a TestHandlerDto record per test.
- * - Store the resulting bags at:
- *     • ctx["testRunner.runBag"]     → DtoBag<TestRunDto>
- *     • ctx["testRunner.handlerBag"] → DtoBag<TestHandlerDto>
- *
- * Invariants:
- * - Does not call DbWriter directly; persistence is delegated to the
- *   test-log service via a later handler.
- * - Does not mutate ctx["bag"]; this is internal test-runner meta.
+ * Output:
+ * - Sets ctx["bag"] to the singleton TestRunDto runBag so curl output is lean.
  */
 
 import crypto from "crypto";
@@ -55,7 +35,7 @@ export class CodeExecutePlanHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Execute the handler-level test list and project results into TestRunDto/TestHandlerDto DtoBags.";
+    return "Execute handler-level tests and project results into TestRunDto/TestHandlerDto DtoBags.";
   }
 
   protected override async execute(): Promise<void> {
@@ -67,25 +47,21 @@ export class CodeExecutePlanHandler extends HandlerBase {
         httpStatus: 500,
         title: "test_runner_tests_invalid",
         detail:
-          "ctx['testRunner.tests'] is not an array. Ops: ensure code.loadTests populates a HandlerTestBase[] list before code.executePlan.",
+          "ctx['testRunner.tests'] is not an array. Ops: ensure tests are loaded before executePlan.",
         stage: "testRunner.tests.invalid",
         requestId,
         rawError: null,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         logMessage:
-          "test-runner.code.executePlan: ctx['testRunner.tests'] is not an array.",
+          "test-runner.code.executePlan: ctx['testRunner.tests'] invalid.",
         logLevel: "error",
       });
       return;
     }
 
-    const envLabel = this.safeCtxGet<string>("envLabel") || "";
+    const envLabel = (this.controller as any)?.getSvcEnv?.()?.env ?? "";
     let dbState = "";
     try {
-      // DB_STATE is a logical state label; getVar guardrails are DB-safe.
       dbState = this.getVar("DB_STATE", false) || "";
     } catch {
       dbState = "";
@@ -95,26 +71,11 @@ export class CodeExecutePlanHandler extends HandlerBase {
     const serviceVersion = 1;
     const runId = crypto.randomUUID();
 
-    this.log.info(
-      {
-        event: "test_runner_execute_plan_start",
-        requestId,
-        runId,
-        envLabel,
-        dbState,
-        testCount: tests.length,
-      },
-      "test-runner.code.executePlan: starting execution of handler tests."
-    );
-
     const nowIso = new Date().toISOString();
-    const runDto = new TestRunDto({
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    });
+    const runDto = new TestRunDto({ createdAt: nowIso, updatedAt: nowIso });
 
     runDto.runId = runId;
-    runDto.env = envLabel;
+    runDto.env = envLabel; // IMPORTANT: prevent TestRunDto validation failures downstream
     runDto.dbState = dbState;
     runDto.serviceSlug = serviceSlug;
     runDto.serviceVersion = serviceVersion;
@@ -125,10 +86,10 @@ export class CodeExecutePlanHandler extends HandlerBase {
     runDto.pipelinePath =
       "controllers/run.controller/pipelines/run.handlerPipeline";
     runDto.requestId = requestId;
-    runDto.status = "error"; // pessimistic default
+    runDto.status = "error"; // pessimistic until finalized
 
-    const startedAt = Date.now();
-    runDto.startedAt = new Date(startedAt).toISOString();
+    const startedAtMs = Date.now();
+    runDto.startedAt = new Date(startedAtMs).toISOString();
 
     const handlerDtos: TestHandlerDto[] = [];
 
@@ -136,16 +97,10 @@ export class CodeExecutePlanHandler extends HandlerBase {
     let passed = 0;
     let failed = 0;
 
+    const failedList: Array<{ testId: string; name: string }> = [];
+
     for (const test of tests) {
       if (!test || typeof test.run !== "function") {
-        this.log.warn(
-          {
-            event: "non_test_entry_skipped",
-            runId,
-            kind: typeof test,
-          },
-          "test-runner.code.executePlan: skipping non-HandlerTestBase entry in ctx['testRunner.tests']."
-        );
         continue;
       }
 
@@ -161,33 +116,26 @@ export class CodeExecutePlanHandler extends HandlerBase {
       handlerDtos.push(result.dto);
       handlerCount += 1;
 
-      switch (result.dto.status as TestHandlerStatus) {
-        case "pass":
-          passed += 1;
-          break;
-        case "fail":
-          failed += 1;
-          break;
-        default:
-          // error/skip could be introduced later; treat non-pass as fail for now.
-          failed += 1;
-          break;
+      const status = result.dto.status as TestHandlerStatus;
+      if (status === "pass") {
+        passed += 1;
+      } else {
+        failed += 1;
+        failedList.push({ testId: result.raw.testId, name: result.raw.name });
       }
     }
 
-    const finishedAt = Date.now();
-    runDto.finishedAt = new Date(finishedAt).toISOString();
-    runDto.durationMs = Math.max(0, finishedAt - startedAt);
+    const finishedAtMs = Date.now();
+    runDto.finishedAt = new Date(finishedAtMs).toISOString();
+    runDto.durationMs = Math.max(0, finishedAtMs - startedAtMs);
 
     runDto.handlerCount = handlerCount;
     runDto.passedHandlerCount = passed;
     runDto.failedHandlerCount = failed;
-    runDto.errorHandlerCount = 0; // reserved for future error vs fail distinction
+    runDto.errorHandlerCount = 0;
 
     let finalStatus: TestRunStatus = "pass";
-    if (failed > 0) {
-      finalStatus = "fail";
-    }
+    if (failed > 0) finalStatus = "fail";
     runDto.status = finalStatus;
 
     const runBag = new DtoBag<TestRunDto>([runDto]);
@@ -197,19 +145,33 @@ export class CodeExecutePlanHandler extends HandlerBase {
     this.ctx.set("testRunner.runBag", runBag);
     this.ctx.set("testRunner.handlerBag", handlerBag);
 
+    // LEAN RESPONSE: return only this invocation’s run record (singleton)
+    this.ctx.set("bag", runBag);
+
     this.log.info(
       {
-        event: "test_runner_execute_plan_complete",
+        event: "test_runner_execute_plan_counts",
         requestId,
         runId,
         status: runDto.status,
-        handlerCount: runDto.handlerCount,
-        passedHandlerCount: runDto.passedHandlerCount,
-        failedHandlerCount: runDto.failedHandlerCount,
-        errorHandlerCount: runDto.errorHandlerCount,
+        handlerCount,
+        passedHandlerCount: passed,
+        failedHandlerCount: failed,
       },
-      "test-runner.code.executePlan: handler tests complete; results projected into TestRunDto/TestHandlerDto bags."
+      "test-runner.code.executePlan: test execution counts."
     );
+
+    if (failedList.length > 0) {
+      this.log.warn(
+        {
+          event: "test_runner_failed_tests",
+          requestId,
+          runId,
+          failedTests: failedList,
+        },
+        "test-runner.code.executePlan: failed tests."
+      );
+    }
 
     this.ctx.set("handlerStatus", "ok");
   }
@@ -226,7 +188,6 @@ export class CodeExecutePlanHandler extends HandlerBase {
     }
   ): Promise<{ dto: TestHandlerDto; raw: HandlerTestResult }> {
     const startedAt = Date.now();
-
     const raw = await test.run();
 
     const dto = new TestHandlerDto({
@@ -245,28 +206,20 @@ export class CodeExecutePlanHandler extends HandlerBase {
     dto.pipelinePath =
       "controllers/run.controller/pipelines/run.handlerPipeline";
 
-    // For now, use the test name as the handler label; we can refine later
-    // if tests expose more detailed metadata.
     dto.handlerName = raw.name;
     dto.handlerPath = "(inline-test)";
-
     dto.dtoType = "(n/a)";
     dto.scenarioName = raw.testId;
 
     dto.requestId = meta.requestId;
     dto.startedAt = new Date(startedAt).toISOString();
 
-    const durationMs = Math.max(0, raw.durationMs);
-    const status: TestHandlerStatus =
-      raw.outcome === "passed" ? "pass" : "fail";
-
-    dto.status = status;
+    dto.status = raw.outcome === "passed" ? "pass" : "fail";
     dto.assertionCount = raw.assertionCount;
     dto.failedAssertions = raw.failedAssertions;
-    dto.durationMs = durationMs;
+    dto.durationMs = Math.max(0, raw.durationMs);
 
-    const finishedAt = startedAt + durationMs;
-    dto.finishedAt = new Date(finishedAt).toISOString();
+    dto.finishedAt = new Date(startedAt + dto.durationMs).toISOString();
 
     return { dto, raw };
   }

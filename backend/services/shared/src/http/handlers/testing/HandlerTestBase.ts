@@ -1,4 +1,4 @@
-// backend/services/shared/src/htpp/testing/HandlerTestBase.ts
+// backend/services/shared/src/http/handlers/testing/HandlerTestBase.ts
 /**
  * Docs:
  * - LDD-35 (Handler-level test-runner service)
@@ -8,14 +8,18 @@
  * - Shared base class for handler-level tests.
  * - Handles:
  *   • standard run() wrapper with pass/fail result,
- *   • basic assertion helpers,
+ *   • basic assertion helpers (this.assert),
  *   • BagCount checks for DtoBag instances.
  *
  * Invariants:
  * - Tests throw on assertion failure; HandlerTestBase converts that into a
  *   structured HandlerTestResult.
- * - Tests are side-by-side with the handler under test:
+ * - Tests live side-by-side with the handler under test:
  *   code.foo.bar.ts + code.foo.bar.test.ts.
+ *
+ * Notes:
+ * - Your pasted path had `htpp/...` — that typo will break imports.
+ *   This file must live under `http/handlers/testing` to match your imports.
  */
 
 import type { ILogger } from "@nv/shared/logger/Logger";
@@ -41,6 +45,7 @@ export interface HandlerTestResult {
  */
 export abstract class HandlerTestBase {
   protected readonly log?: ILogger;
+
   private assertionCount = 0;
 
   constructor(params?: { log?: ILogger }) {
@@ -59,6 +64,7 @@ export abstract class HandlerTestBase {
    */
   public async run(): Promise<HandlerTestResult> {
     const startedAt = Date.now();
+
     const failedAssertions: string[] = [];
     let errorMessage: string | undefined;
     let outcome: HandlerTestOutcome = "passed";
@@ -105,16 +111,25 @@ export abstract class HandlerTestBase {
   // Assertion Helpers
   // ------------------------------
 
-  protected fail(message: string): never {
-    this.recordAssertion();
-    throw new Error(message);
-  }
-
+  /**
+   * Primary assertion helper used by tests.
+   * - Counts exactly ONE assertion per call (even when it fails).
+   * - Throws on failure so the test stops at first failed assertion (KISS).
+   */
   protected assert(condition: unknown, message: string): void {
     this.recordAssertion();
     if (!condition) {
-      this.fail(message);
+      throw new Error(message);
     }
+  }
+
+  /**
+   * Explicit fail helper for rare cases where an assertion does not map to a boolean check.
+   * - Counts as one assertion.
+   */
+  protected fail(message: string): never {
+    this.recordAssertion();
+    throw new Error(message);
   }
 
   // ------------------------------
@@ -157,11 +172,10 @@ export abstract class HandlerTestBase {
         );
     }
 
-    if (!ok) {
-      this.fail(
-        `BagCount(${ctxLabel}): expected ${comparator}, actual=${count}.`
-      );
-    }
+    this.assert(
+      ok,
+      `BagCount(${ctxLabel}): expected ${comparator}, actual=${count}.`
+    );
   }
 
   // ------------------------------
@@ -173,12 +187,8 @@ export abstract class HandlerTestBase {
   }
 
   private toErrorMessage(err: unknown): string {
-    if (err instanceof Error) {
-      return err.message;
-    }
-    if (typeof err === "string") {
-      return err;
-    }
+    if (err instanceof Error) return err.message;
+    if (typeof err === "string") return err;
     return String(err ?? "unknown error");
   }
 }

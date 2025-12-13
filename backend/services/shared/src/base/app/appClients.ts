@@ -6,6 +6,7 @@
  *
  * Purpose:
  * - Shared wiring for SvcClient and PromptsClient for AppBase.
+ * - Centralizes env-aware construction; NO guessing, NO fallbacks.
  */
 
 import {
@@ -46,9 +47,7 @@ export function createSvcClientForApp(opts: {
     });
 
     log.info(
-      {
-        ttlMs,
-      },
+      { ttlMs },
       `[${service}] SvcClient: using svcconfig-backed resolver with TTL cache`
     );
   } catch (err) {
@@ -56,14 +55,9 @@ export function createSvcClientForApp(opts: {
       `[${service}] SvcClient resolver not wired. ` +
       `Cannot resolve svcconfig targets; NV_SVCCONFIG_URL is likely missing. ` +
       "Ops: set NV_SVCCONFIG_URL for this process and ensure svcconfig is reachable.";
-    log.error(
-      {
-        error: (err as Error)?.message,
-      },
-      msg
-    );
+    log.error({ error: (err as Error)?.message }, msg);
 
-    // Hard-error resolver – this is still "real", just fails loudly until env is corrected.
+    // Hard-error resolver — fail fast, loudly, always.
     resolver = {
       async resolveTarget(
         env: string,
@@ -91,14 +85,16 @@ export function createPromptsClientForApp(opts: {
   service: string;
   log: IBoundLogger;
   svcClient: SvcClient;
+  getEnvLabel: () => string;
+  getRequestId?: () => string;
 }): PromptsClient {
-  const { service, log, svcClient } = opts;
+  const { service, log, svcClient, getEnvLabel, getRequestId } = opts;
 
   return new PromptsClient({
     logger: log,
     serviceSlug: service,
     svcClient,
-    // requestId correlation can later be wired via per-request context.
-    getRequestId: undefined,
+    getEnvLabel,
+    getRequestId,
   });
 }

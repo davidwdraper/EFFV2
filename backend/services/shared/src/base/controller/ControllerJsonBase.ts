@@ -24,6 +24,13 @@
  * Notes:
  * - Success responses are built strictly from ctx["bag"] (DtoBag.toBody()).
  * - Error responses are always Problem+JSON.
+ *
+ * Updated semantics (per session decision):
+ * - Prompts are REQUIRED infra:
+ *   - If prompt infra is unavailable while rendering an error response,
+ *     we hard-fail with a minimal Problem+JSON (503) and a single ERROR log.
+ * - Missing prompt keys are acceptable and remain handled by PromptsClient
+ *   (return key, log PROMPT once).
  */
 
 import type { Response } from "express";
@@ -36,6 +43,8 @@ import {
 } from "../../dto/persistence/adapters/mongo/dupeKeyError";
 import type { ProblemJson } from "./controllerTypes";
 import { ControllerBase } from "./ControllerBase";
+
+import { PromptsInfraError } from "../../prompts/PromptsClient";
 
 export abstract class ControllerJsonBase extends ControllerBase {
   // ───────────────────────────────────────────
@@ -62,7 +71,7 @@ export abstract class ControllerJsonBase extends ControllerBase {
         origin: {
           file: "backend/services/shared/src/base/controller/ControllerJsonBase.ts",
           method: "finalize",
-          line: 57,
+          line: 67,
         },
       },
       "ControllerJsonBase.finalize — start"
@@ -148,7 +157,7 @@ export abstract class ControllerJsonBase extends ControllerBase {
           origin: {
             file: "backend/services/shared/src/base/controller/ControllerJsonBase.ts",
             method: "finalize",
-            line: 132,
+            line: 142,
           },
         },
         "ControllerJsonBase.finalize — end (error)"
@@ -192,7 +201,7 @@ export abstract class ControllerJsonBase extends ControllerBase {
           origin: {
             file: "backend/services/shared/src/base/controller/ControllerJsonBase.ts",
             method: "finalize",
-            line: 171,
+            line: 181,
           },
         },
         "ControllerJsonBase.finalize — end (bag missing)"
@@ -272,7 +281,7 @@ export abstract class ControllerJsonBase extends ControllerBase {
         origin: {
           file: "backend/services/shared/src/base/controller/ControllerJsonBase.ts",
           method: "finalize",
-          line: 229,
+          line: 239,
         },
       },
       "ControllerJsonBase.finalize — DtoBag materialized"
@@ -381,21 +390,59 @@ async function buildProblemJsonWithPrompts(
         promptMeta
       );
     } catch (e) {
+      // Prompts are REQUIRED infra:
+      // - If prompts infra fails, we must hard-fail (503) with a minimal Problem+JSON.
+      // - Keep logging lean: single ERROR, no stack dumps.
+      if (PromptsInfraError.is(e)) {
+        log.error(
+          {
+            event: "prompts_infra_unavailable",
+            requestId,
+            promptKey: effectivePromptKey,
+            language,
+            reason: e.reason,
+            message: e.message,
+          },
+          "buildProblemJsonWithPrompts — prompts infra unavailable"
+        );
+
+        return {
+          type: "about:blank",
+          title: "prompts_infra_unavailable",
+          detail:
+            "Prompt infrastructure is unavailable; request cannot be served safely.",
+          status: 503,
+          code: "PROMPTS_INFRA_UNAVAILABLE",
+          requestId,
+        };
+      }
+
+      const msg = e instanceof Error ? e.message : String(e ?? "unknown error");
+
       log.error(
         {
-          event: "prompt_render_failed",
+          event: "prompts_render_failed_unknown",
           requestId,
-          code,
           promptKey: effectivePromptKey,
-          err:
-            log.serializeError?.(e) ??
-            (e instanceof Error ? e.message : String(e)),
+          language,
+          message: msg,
         },
-        "buildProblemJsonWithPrompts — falling back"
+        "buildProblemJsonWithPrompts — prompts render failed"
       );
+
+      return {
+        type: "about:blank",
+        title: "prompts_infra_unavailable",
+        detail:
+          "Prompt infrastructure is unavailable; request cannot be served safely.",
+        status: 503,
+        code: "PROMPTS_INFRA_UNAVAILABLE",
+        requestId,
+      };
     }
   }
 
+  // Missing key is acceptable; PromptsClient returns the key (or EN) in render().
   if (!userMessage && effectivePromptKey) {
     userMessage = effectivePromptKey;
   }

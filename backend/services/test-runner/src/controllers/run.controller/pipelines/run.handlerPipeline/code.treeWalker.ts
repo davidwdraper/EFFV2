@@ -52,7 +52,7 @@ export class CodeTreeWalkerHandler extends HandlerBase {
     //   you want to prove first.
     // - Keep them as ABSOLUTE paths for dynamic import compatibility.
     const hardcodedIndexFiles: string[] = [
-      "/eff/backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/index.ts",
+      "/Users/ddraper005/eff/backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/index.ts",
     ];
 
     const pipelines: TestRunnerDiscoveredPipeline[] = hardcodedIndexFiles

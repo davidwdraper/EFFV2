@@ -125,6 +125,9 @@ export abstract class AppBase extends ServiceBase {
       service: this.service,
       log: this.log,
       svcClient: this.svcClient,
+      getEnvLabel: () => this.getEnvLabel(),
+      // requestId correlation can later be wired via per-request context.
+      getRequestId: undefined,
     });
   }
 

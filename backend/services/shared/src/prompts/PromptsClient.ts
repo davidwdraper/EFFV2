@@ -1,4 +1,4 @@
-// backend/services/shared/src/prompt/PromptsClient.ts
+// backend/services/shared/src/prompts/PromptsClient.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -7,9 +7,8 @@
  *
  * Purpose:
  * - Central client for all prompt/catalog lookups (system + UI).
- * - Provides parameterized rendering of template strings returned by the
- *   prompts service (via SvcClient).
- * - Handles missing prompts according to ADR-0064:
+ * - Fetches templates from the *prompt* service via canonical DTO-based SvcClient.call().
+ * - Handles missing prompts per ADR-0064:
  *   - Log once at PROMPT level per (language, promptKey).
  *   - Negative-cache misses per (language, promptKey).
  *   - For NON-English languages:
@@ -17,26 +16,22 @@
  *       - If "en" exists, return the English text instead of the key.
  *       - If both are missing, fall back to the promptKey.
  *
+ * Infra semantics (REQUIRED INFRA):
+ * - If prompt infrastructure is unavailable (svcClient call fails / prompt service down / svcconfig missing),
+ *   PromptsClient throws PromptsInfraError so the caller can hard-fail safely.
+ *
  * Notes:
  * - Cache is in-memory, process-local:
  *   - Positive cache: (lang::key) → template.
  *   - Negative cache: Set of (lang::key) proven missing.
- * - Flush semantics and TTL/bulk-fetch are deferred to a later iteration.
+ * - Prompt record version:
+ *   - For now, default to 1 unless overridden by meta.promptVersion.
  */
 
 import type { IBoundLogger } from "../logger/Logger";
+import { SvcClient, type WireBagJson } from "../s2s/SvcClient";
 
 type Json = Record<string, unknown>;
-
-type SvcClientLike = {
-  callBySlug: (
-    slug: string,
-    version: string,
-    route: string,
-    message: unknown,
-    options?: Record<string, unknown>
-  ) => Promise<unknown>;
-};
 
 type PromptsClientDeps = {
   /** Bound logger with service/request context already attached where possible. */
@@ -45,8 +40,14 @@ type PromptsClientDeps = {
   /** The slug of the *current* service (for logging). */
   serviceSlug: string;
 
-  /** Shared SvcClient for S2S calls. */
-  svcClient: SvcClientLike;
+  /** Canonical shared SvcClient for S2S calls. */
+  svcClient: SvcClient;
+
+  /**
+   * REQUIRED: Provide the current env label (e.g., "dev", "stage", "prod").
+   * We do not guess this and we do not default it.
+   */
+  getEnvLabel: () => string;
 
   /**
    * Optional hook to obtain the current requestId for log correlation.
@@ -55,31 +56,70 @@ type PromptsClientDeps = {
   getRequestId?: () => string | undefined;
 
   /**
-   * Prompts service slug + version; defaults align with ADR-0064.
-   * Slug: "prompts"
-   * Version: "v1"
+   * Prompts service slug + API version.
+   * Slug: "prompt"
+   * Version: 1 (API major)
    */
   promptsSlug?: string;
-  promptsVersion?: string;
+  promptsApiVersion?: number;
 };
 
-type RenderMeta = {
+export type RenderMeta = {
   /**
    * Internal error code, UI component id, or any other context.
    * This is logged on missing prompt events.
    */
   code?: string;
+
+  /**
+   * Optional prompt record version (NOT the service API version).
+   * This maps to the `:version` param in:
+   *   GET /api/prompt/v1/prompt/read/:language/:version/:promptKey
+   */
+  promptVersion?: number;
+
   [key: string]: unknown;
 };
 
+export type PromptsInfraFailureReason =
+  | "PROMPTS_ENV_LABEL_MISSING"
+  | "PROMPTS_SERVICE_UNAVAILABLE";
+
+export class PromptsInfraError extends Error {
+  public readonly reason: PromptsInfraFailureReason;
+  public readonly promptKey: string;
+  public readonly language: string;
+  public readonly serviceSlug: string;
+
+  constructor(params: {
+    reason: PromptsInfraFailureReason;
+    message: string;
+    promptKey: string;
+    language: string;
+    serviceSlug: string;
+  }) {
+    super(params.message);
+    this.name = "PromptsInfraError";
+    this.reason = params.reason;
+    this.promptKey = params.promptKey;
+    this.language = params.language;
+    this.serviceSlug = params.serviceSlug;
+  }
+
+  public static is(err: unknown): err is PromptsInfraError {
+    return err instanceof PromptsInfraError;
+  }
+}
+
 export class PromptsClient {
   private readonly logger: IBoundLogger;
-  private readonly svcClient: SvcClientLike;
+  private readonly svcClient: SvcClient;
   private readonly serviceSlug: string;
   private readonly getRequestId?: () => string | undefined;
+  private readonly getEnvLabel: () => string;
 
   private readonly promptsSlug: string;
-  private readonly promptsVersion: string;
+  private readonly promptsApiVersion: number;
 
   // Positive cache: (lang::promptKey) → template string
   private readonly templates = new Map<string, string>();
@@ -91,8 +131,10 @@ export class PromptsClient {
     this.svcClient = deps.svcClient;
     this.serviceSlug = deps.serviceSlug;
     this.getRequestId = deps.getRequestId;
+    this.getEnvLabel = deps.getEnvLabel;
+
     this.promptsSlug = deps.promptsSlug ?? "prompt";
-    this.promptsVersion = deps.promptsVersion ?? "v1";
+    this.promptsApiVersion = deps.promptsApiVersion ?? 1;
   }
 
   /**
@@ -106,6 +148,9 @@ export class PromptsClient {
    * - Try English:
    *   - If found: interpolate and return.
    *   - If missing: log PROMPT once (for "en"), then return promptKey.
+   *
+   * Infra behavior:
+   * - If prompt infra is unavailable, throws PromptsInfraError.
    */
   public async render(
     language: string,
@@ -127,6 +172,9 @@ export class PromptsClient {
   /**
    * Return the raw template if available, applying the same language+English
    * fallback semantics as render(), but without interpolation.
+   *
+   * Infra behavior:
+   * - If prompt infra is unavailable, throws PromptsInfraError.
    */
   public async getTemplate(
     language: string,
@@ -188,6 +236,9 @@ export class PromptsClient {
    * - Returns:
    *   - string  → template found
    *   - null    → definitively missing for this language
+   *
+   * Infra behavior:
+   * - If fetch fails due to infra, fetchTemplate throws PromptsInfraError.
    */
   private async getOrFetchTemplate(
     language: string,
@@ -204,7 +255,7 @@ export class PromptsClient {
     if (this.missing.has(cacheKey)) return null;
 
     // Not cached yet → call prompts service
-    const template = await this.fetchTemplate(language, promptKey);
+    const template = await this.fetchTemplate(language, promptKey, meta);
 
     if (template == null) {
       // First time we learn this (lang, key) is missing:
@@ -218,56 +269,87 @@ export class PromptsClient {
   }
 
   /**
-   * Fetch a single template from the prompts service.
+   * Fetch a single template from the prompts service using canonical SvcClient.call().
    *
-   * Assumptions for this first pass:
-   * - Prompts service exposes a "read by key" style route that accepts
-   *   promptKey + language and returns a DtoBag<PromptDto>.
-   * - The DTO has a `template` field.
+   * Missing-key semantics:
+   * - Service returns 200 with items=[] → return null.
    *
-   * If the route signature differs, adapt this method only.
+   * Infra semantics (REQUIRED INFRA):
+   * - Any SvcClient failure (svcconfig/transport/service down) → throw PromptsInfraError.
    */
   private async fetchTemplate(
     language: string,
-    promptKey: string
+    promptKey: string,
+    meta: RenderMeta
   ): Promise<string | null> {
-    let response: unknown;
-
-    try {
-      response = await this.svcClient.callBySlug(
-        this.promptsSlug,
-        this.promptsVersion,
-        "/api/prompt/v1/prompt/readByKey",
-        {
-          promptKey,
-          language,
-        }
-      );
-    } catch (err) {
-      // Transport/service failure must *not* break the app; treat as missing.
-      this.logger.error(
-        {
-          err: this.logger.serializeError(err),
-          promptKey,
-          language,
-          serviceSlug: this.serviceSlug,
-        },
-        "PromptsClient: error calling prompts service."
-      );
-      return null;
+    const envLabel = (this.getEnvLabel?.() ?? "").trim();
+    if (!envLabel) {
+      throw new PromptsInfraError({
+        reason: "PROMPTS_ENV_LABEL_MISSING",
+        message:
+          "PromptsClient: envLabel is required but was empty (getEnvLabel() returned '').",
+        promptKey,
+        language,
+        serviceSlug: this.serviceSlug,
+      });
     }
 
-    return this.extractTemplateField(response);
+    const requestId = this.getRequestId ? this.getRequestId() : undefined;
+
+    // Prompt record version (not API version)
+    const recordVersion =
+      typeof meta.promptVersion === "number" &&
+      Number.isFinite(meta.promptVersion)
+        ? Math.trunc(meta.promptVersion)
+        : 1;
+
+    const pathSuffix = `/prompt/read/${encodeURIComponent(
+      language
+    )}/${encodeURIComponent(String(recordVersion))}/${encodeURIComponent(
+      promptKey
+    )}`;
+
+    let wire: WireBagJson;
+
+    try {
+      wire = await this.svcClient.call({
+        env: envLabel,
+        slug: this.promptsSlug,
+        version: this.promptsApiVersion,
+        dtoType: "prompt",
+        op: "read",
+        method: "GET",
+        pathSuffix,
+        requestId,
+        // GET has no body; no bag.
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err ?? "unknown");
+
+      // Do NOT log stacks here; caller (ControllerJsonBase) logs once and hard-fails.
+      throw new PromptsInfraError({
+        reason: "PROMPTS_SERVICE_UNAVAILABLE",
+        message: msg,
+        promptKey,
+        language,
+        serviceSlug: this.serviceSlug,
+      });
+    }
+
+    return this.extractTemplateField(wire);
   }
 
   /**
-   * Extract the `template` field from a DtoBag-like response.
+   * Extract the `template` field from the canonical wire bag.
    * Expected shape: { items: [{ template: string, ... }] }
+   *
+   * Missing-key behavior:
+   * - items=[] (or no template) → null (treated as missing prompt).
    */
-  private extractTemplateField(response: unknown): string | null {
-    if (!response || typeof response !== "object") return null;
+  private extractTemplateField(wire: WireBagJson | unknown): string | null {
+    if (!wire || typeof wire !== "object") return null;
 
-    const obj = response as Json;
+    const obj = wire as unknown as Json;
     const items = obj["items"];
 
     if (!Array.isArray(items) || items.length === 0) return null;

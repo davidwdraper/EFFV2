@@ -14,14 +14,18 @@
  *   GET /api/prompt/v1/prompt/read/:language/:version/:promptKey
  *
  * Flow:
- *   1) QueryBuildFilterHandler
- *        - Reads language/version/promptKey from ctx
- *          (typed values seeded by the controller from req.params).
+ *   1) CodeBuildQueryFilterHandler
+ *        - Reads language/version/promptKey from ctx (seeded by controller).
  *        - Builds Mongo filter: { language, version, promptKey }.
- *        - Writes ctx["bag.query.filter"] (and ctx["query.filter"] for logging).
- *   2) BagPopulateQueryHandler
+ *        - Writes ctx["bag.query.filter"].
+ *   2) DbReadOneByFilterHandler
  *        - Uses ctx["bag.query.dtoCtor"] + ctx["bag.query.filter"]
- *          to read exactly one record into a DtoBag<PromptDto>.
+ *          to read exactly one record into ctx["bag"] (DtoBag<PromptDto>).
+ *   3) CodePromptEnsureUndefinedPlaceholderHandler
+ *        - If ctx["bag"] is empty (prompt missing), fire-and-forget a placeholder insert:
+ *            template="" and undefined=true
+ *          so Ops can query undefined prompts via indexed field.
+ *        - Does not change response behavior: caller still receives empty items[].
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -32,7 +36,9 @@ import {
   CodeBuildQueryFilterHandler,
   type BuildFilterHandlerOptions,
 } from "@nv/shared/http/handlers/code.buildQuery.filter";
+
 import { DbReadOneByFilterHandler } from "@nv/shared/http/handlers/db.readOne.byFilter";
+import { DbEnsureUndefinedPlaceholderHandler } from "./db.ensureUndefinedPlaceholder";
 
 export function getSteps(
   ctx: HandlerContext,
@@ -41,28 +47,24 @@ export function getSteps(
   const filterOpts: BuildFilterHandlerOptions = {
     fields: [
       {
-        // language: e.g. "en-US"
         target: "language",
         source: "ctx",
         key: "language",
         required: true,
       },
       {
-        // version: numeric prompt version
         target: "version",
         source: "ctx",
         key: "version",
         required: true,
       },
       {
-        // promptKey: e.g. "auth.password.too-weak"
         target: "promptKey",
         source: "ctx",
         key: "promptKey",
         required: true,
       },
     ],
-    // For logging / idKey construction only; does NOT touch Mongo _id.
     idKeyFields: ["language", "version", "promptKey"],
     idKeyJoinChar: "@",
   };
@@ -70,5 +72,6 @@ export function getSteps(
   return [
     new CodeBuildQueryFilterHandler(ctx, controller, filterOpts),
     new DbReadOneByFilterHandler(ctx, controller),
+    new DbEnsureUndefinedPlaceholderHandler(ctx, controller),
   ];
 }

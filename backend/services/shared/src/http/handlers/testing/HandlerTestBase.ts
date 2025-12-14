@@ -8,8 +8,9 @@
  * - Shared base class for handler-level tests.
  * - Handles:
  *   • standard run() wrapper with pass/fail result,
- *   • basic assertion helpers (this.assert),
- *   • BagCount checks for DtoBag instances.
+ *   • assertion helpers with consistent counting,
+ *   • BagCount checks for DtoBag instances,
+ *   • small reusable assertions to avoid per-test local helpers.
  *
  * Invariants:
  * - Tests throw on assertion failure; HandlerTestBase converts that into a
@@ -18,8 +19,7 @@
  *   code.foo.bar.ts + code.foo.bar.test.ts.
  *
  * Notes:
- * - Your pasted path had `htpp/...` — that typo will break imports.
- *   This file must live under `http/handlers/testing` to match your imports.
+ * - This file must live under `http/handlers/testing` to match imports.
  */
 
 import type { ILogger } from "@nv/shared/logger/Logger";
@@ -108,15 +108,17 @@ export abstract class HandlerTestBase {
   protected abstract execute(): Promise<void>;
 
   // ------------------------------
-  // Assertion Helpers
+  // Assertion Helpers (PUBLIC on purpose)
   // ------------------------------
 
   /**
    * Primary assertion helper used by tests.
    * - Counts exactly ONE assertion per call (even when it fails).
    * - Throws on failure so the test stops at first failed assertion (KISS).
+   *
+   * PUBLIC so tests never need local `assert(...)` helpers.
    */
-  protected assert(condition: unknown, message: string): void {
+  public assert(condition: unknown, message: string): void {
     this.recordAssertion();
     if (!condition) {
       throw new Error(message);
@@ -126,10 +128,51 @@ export abstract class HandlerTestBase {
   /**
    * Explicit fail helper for rare cases where an assertion does not map to a boolean check.
    * - Counts as one assertion.
+   *
+   * PUBLIC so tests can do: this.fail("...") without re-implementing it.
    */
-  protected fail(message: string): never {
+  public fail(message: string): never {
     this.recordAssertion();
     throw new Error(message);
+  }
+
+  /**
+   * Convenience: assert a value is defined (not null/undefined).
+   * Counts as one assertion.
+   */
+  public assertDefined<T>(
+    value: T | null | undefined,
+    message: string
+  ): asserts value is T {
+    this.assert(value !== null && value !== undefined, message);
+  }
+
+  /**
+   * Convenience: assert strict equality with a helpful message.
+   * Counts as one assertion.
+   */
+  public assertEq<T>(actual: T, expected: T, label?: string): void {
+    const prefix = label ? `${label}: ` : "";
+    this.assert(
+      actual === expected,
+      `${prefix}expected ${String(expected)}, got ${String(actual)}`
+    );
+  }
+
+  /**
+   * Convenience: assert boolean true.
+   * Counts as one assertion.
+   */
+  public assertTrue(value: unknown, message: string): void {
+    this.assert(value === true, message);
+  }
+
+  /**
+   * Convenience: assert boolean false.
+   * Counts as one assertion.
+   */
+  public assertFalse(value: unknown, message: string): void {
+    this.assert(value === false, message);
   }
 
   // ------------------------------
@@ -139,8 +182,10 @@ export abstract class HandlerTestBase {
   /**
    * BagCount(:dtoBag, "eq0" | "eq1" | "ge0" | "ge1")
    * - Uses items() iterator; no assumptions about Bag internals.
+   *
+   * PUBLIC so tests can call it directly.
    */
-  protected assertBagCount<TDto extends DtoBase>(
+  public assertBagCount<TDto extends DtoBase>(
     bag: DtoBag<TDto>,
     comparator: "eq0" | "eq1" | "ge0" | "ge1",
     label?: string

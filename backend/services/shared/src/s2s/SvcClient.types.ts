@@ -17,6 +17,9 @@
  * Purpose:
  * - Shared types and contracts for SvcClient.
  * - Keeps the main SvcClient class file below god-file size and single-concern.
+ *
+ * Invariants:
+ * - No implicit mocks: transport mocking must be explicit via ISvcClientTransport injection.
  */
 
 import type { DtoBag } from "../dto/DtoBag";
@@ -24,6 +27,19 @@ import type { DtoBag } from "../dto/DtoBag";
 export interface WireBagJson {
   items: unknown[];
   meta?: Record<string, unknown>;
+}
+
+/**
+ * Raw response envelope used by SvcClient and transport.
+ *
+ * NOTE:
+ * - Does NOT interpret JSON.
+ * - Callers decide how (and whether) to parse `bodyText`.
+ */
+export interface RawResponse {
+  status: number;
+  headers: Record<string, string>;
+  bodyText: string;
 }
 
 /**
@@ -120,19 +136,6 @@ export interface SvcClientRawCallParams {
 }
 
 /**
- * Raw response envelope for callRaw().
- *
- * NOTE:
- * - Does NOT interpret JSON.
- * - Callers decide how (and whether) to parse `bodyText`.
- */
-export interface RawResponse {
-  status: number;
-  headers: Record<string, string>;
-  bodyText: string;
-}
-
-/**
  * Minimal logger interface used by SvcClient.
  * Implementations are expected to be backed by the shared logger util.
  */
@@ -141,4 +144,31 @@ export interface ISvcClientLogger {
   info(msg: string, meta?: Record<string, unknown>): void;
   warn(msg: string, meta?: Record<string, unknown>): void;
   error(msg: string, meta?: Record<string, unknown>): void;
+}
+
+/**
+ * S2S transport abstraction.
+ *
+ * Purpose:
+ * - Allows explicit, rail-controlled S2S mocking (S2S_MOCKS) without
+ *   handlers branching on flags.
+ * - Default transport uses fetch + timeout.
+ * - Tests may inject a deterministic transport returning known responses.
+ *
+ * Invariants:
+ * - Transport injection must be explicit; there is NO implicit mocking.
+ * - A "mock transport" should fail loudly unless it is intentionally
+ *   returning deterministic canned responses for a given test.
+ */
+export interface ISvcClientTransport {
+  execute(request: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+    requestId: string;
+    targetSlug: string;
+    logPrefix: string;
+  }): Promise<RawResponse>;
 }

@@ -6,10 +6,15 @@
  * - ADR-0043 (DTO Hydration & Failure Propagation)
  * - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  * - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
+ * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *
  * Purpose:
  * - Shared helpers for seeding HandlerContext, DTO/operation metadata,
  *   preflight checks, and pipeline execution.
+ *
+ * Update:
+ * - Seeds AsyncLocal request scope from inbound headers so negative-test intent
+ *   can propagate across S2S hops without requiring every caller to remember headers.
  */
 
 import type { Request, Response } from "express";
@@ -17,6 +22,7 @@ import { HandlerContext } from "../../http/handlers/HandlerContext";
 import type { HandlerBase } from "../../http/handlers/HandlerBase";
 import type { EnvServiceDto } from "../../dto/env-service.dto";
 import type { ControllerRuntimeDeps } from "./controllerTypes";
+import { enterRequestScopeFromInbound } from "../../http/requestScope";
 
 export function seedHydratorIntoContext(
   controller: ControllerRuntimeDeps,
@@ -46,12 +52,21 @@ export function makeHandlerContext(
   const requestId =
     (req.headers["x-request-id"] as string) ?? createRequestId();
 
+  // ───────────────────────────────────────────
+  // Seed request-scope (AsyncLocalStorage)
+  // ───────────────────────────────────────────
+  const scope = enterRequestScopeFromInbound({ req, requestId });
+
   ctx.set("requestId", requestId);
   ctx.set("headers", req.headers);
   ctx.set("params", req.params);
   ctx.set("query", req.query);
   ctx.set("body", req.body);
   ctx.set("res", res);
+
+  // Optional convenience keys for handlers/tests (not a source of truth).
+  if (scope.testRunId) ctx.set("test.runId", scope.testRunId);
+  if (scope.expectErrors === true) ctx.set("test.expectErrors", true);
 
   const svcEnv: EnvServiceDto | undefined = controller.getSvcEnv();
   if (svcEnv) {
@@ -88,6 +103,8 @@ export function makeHandlerContext(
       requestId,
       hasSvcEnv: !!svcEnv,
       envLabel,
+      testRunId: scope.testRunId,
+      expectErrors: scope.expectErrors,
     },
     "ControllerBase.makeContext"
   );

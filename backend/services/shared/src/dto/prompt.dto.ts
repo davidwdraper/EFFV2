@@ -9,11 +9,13 @@
  *   - ADR-0053 (Instantiation discipline via BaseDto secret)
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *   - ADR-0064 (Prompts Service, PromptsClient, Prompt-Flush MOS, UI Text Catalog)
+ *   - ADR-0075 (Controller seeds dtoCtor for db.* read handlers)
  *
  * Purpose:
  * - Concrete DTO for the `prompt` service.
  * - Represents a single localized text template identified by (promptKey, language, version).
  * - `version` allows independent evolution of prompts per YAML/UI generation or major-app-version.
+ * - `undefined=true` marks an operational placeholder created when a prompt is requested but missing.
  */
 
 import { DtoBase } from "./DtoBase";
@@ -28,6 +30,13 @@ export type PromptJson = {
   language: string;
   version: number;
   template: string;
+
+  /**
+   * Operational flag:
+   * - false/undefined => normal prompt record
+   * - true => placeholder created by read pipeline when prompt is missing
+   */
+  undefined?: boolean;
 
   category?: string;
   tags?: string[];
@@ -50,6 +59,8 @@ export class PromptDto extends DtoBase {
    *
    * - ux_prompt_key_language_version:
    *     Ensures each (promptKey, language, version) tuple is unique.
+   * - ix_prompt_undefined:
+   *     Enables ops queries for missing prompts without scanning by empty template.
    */
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
     {
@@ -72,6 +83,11 @@ export class PromptDto extends DtoBase {
       fields: ["version"],
       options: { name: "ix_prompt_version" },
     },
+    {
+      kind: "lookup",
+      fields: ["undefined"],
+      options: { name: "ix_prompt_undefined" },
+    },
   ];
 
   // Core fields
@@ -79,6 +95,12 @@ export class PromptDto extends DtoBase {
   public language = "";
   public version = 1;
   public template = "";
+
+  /**
+   * Operational flag.
+   * Defaults to false for normal prompts; set true for placeholders.
+   */
+  public undefined = false;
 
   // Optional metadata
   public category?: string;
@@ -120,6 +142,10 @@ export class PromptDto extends DtoBase {
       dto.template = j.template;
     }
 
+    if (typeof j.undefined === "boolean") {
+      dto.undefined = j.undefined;
+    }
+
     if (typeof j.category === "string") {
       dto.category = j.category.trim();
     }
@@ -147,6 +173,8 @@ export class PromptDto extends DtoBase {
       version: this.version,
       template: this.template,
 
+      undefined: this.undefined,
+
       category: this.category,
       tags: this.tags,
     };
@@ -171,6 +199,10 @@ export class PromptDto extends DtoBase {
 
     if (json.template !== undefined && typeof json.template === "string") {
       this.template = json.template;
+    }
+
+    if (json.undefined !== undefined && typeof json.undefined === "boolean") {
+      this.undefined = json.undefined;
     }
 
     if (json.category !== undefined && typeof json.category === "string") {

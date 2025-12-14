@@ -14,6 +14,7 @@
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
  *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics)
+ *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *
  * Purpose:
  * - Canonical S2S HTTP client for all NV services.
@@ -24,12 +25,20 @@
  * Notes:
  * - Transport-only: never inspects DTO internals.
  * - JWT/mTLS hooks live behind IKmsTokenFactory.
+ * - Explicit-only mocking: tests must inject an ISvcClientTransport; there is
+ *   no implicit behavior based on env flags in this class.
+ *
+ * Test propagation:
+ * - If an inbound request was marked as a test run (via requestScope ALS),
+ *   SvcClient auto-propagates x-nv-test-* headers across S2S hops so downstream
+ *   services can downgrade expected-negative-test ERRORs to WARN.
  */
 
 import {
   type ISvcClientLogger,
   type ISvcconfigResolver,
   type IKmsTokenFactory,
+  type ISvcClientTransport,
   type RawResponse,
   type RequestIdProvider,
   type SvcClientCallParams,
@@ -37,6 +46,85 @@ import {
   type WireBagJson,
   type SvcTarget,
 } from "./SvcClient.types";
+
+import { getS2SPropagationHeaders } from "../http/requestScope";
+
+/**
+ * Default fetch-based transport with timeout.
+ * This is the production transport unless a different transport is injected.
+ */
+class FetchSvcClientTransport implements ISvcClientTransport {
+  public async execute(request: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+    requestId: string;
+    targetSlug: string;
+    logPrefix: string;
+  }): Promise<RawResponse> {
+    const controller = new AbortController();
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutMs = request.timeoutMs ?? 30_000;
+
+    if (timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+    }
+
+    try {
+      const response = await fetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+        signal: controller.signal,
+      });
+
+      const bodyText = await response.text();
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key.toLowerCase()] = value;
+      });
+
+      return { status: response.status, bodyText, headers: responseHeaders };
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+/**
+ * Loud, intentionally useless transport.
+ *
+ * Purpose:
+ * - Used when S2S_MOCKS=true but no deterministic test transport is provided.
+ * - Prevents "tests passing" by silently returning placeholder responses.
+ */
+class BlockedSvcClientTransport implements ISvcClientTransport {
+  private readonly reason: string;
+
+  constructor(reason: string) {
+    this.reason = reason;
+  }
+
+  public async execute(request: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+    requestId: string;
+    targetSlug: string;
+    logPrefix: string;
+  }): Promise<RawResponse> {
+    throw new Error(
+      `S2S_MOCKS_BLOCKED: Outbound S2S call was blocked by rails. ` +
+        `Reason="${this.reason}". ` +
+        `target="${request.targetSlug}", method="${request.method}", url="${request.url}", requestId="${request.requestId}". ` +
+        "Ops: If this is a unit/handler test, inject a deterministic ISvcClientTransport that returns explicit canned responses."
+    );
+  }
+}
 
 export class SvcClient {
   private readonly callerSlug: string;
@@ -46,6 +134,7 @@ export class SvcClient {
   private readonly svcconfigResolver: ISvcconfigResolver;
   private readonly requestIdProvider: RequestIdProvider;
   private readonly tokenFactory?: IKmsTokenFactory;
+  private readonly transport: ISvcClientTransport;
 
   constructor(options: {
     callerSlug: string;
@@ -54,6 +143,16 @@ export class SvcClient {
     svcconfigResolver: ISvcconfigResolver;
     requestIdProvider: RequestIdProvider;
     tokenFactory?: IKmsTokenFactory; // optional until S2S auth is wired
+    /**
+     * Optional transport injection (tests may supply a deterministic transport).
+     * If omitted, defaults to fetch-based transport with timeout.
+     */
+    transport?: ISvcClientTransport;
+    /**
+     * Convenience rail: if provided, SvcClient will use a loud blocked transport.
+     * This exists to prevent silent placeholder behavior when S2S_MOCKS=true.
+     */
+    blockS2SReason?: string;
   }) {
     this.callerSlug = options.callerSlug;
     this.callerVersion = options.callerVersion;
@@ -61,15 +160,18 @@ export class SvcClient {
     this.svcconfigResolver = options.svcconfigResolver;
     this.requestIdProvider = options.requestIdProvider;
     this.tokenFactory = options.tokenFactory;
+
+    if (options.transport) {
+      this.transport = options.transport;
+    } else if (options.blockS2SReason) {
+      this.transport = new BlockedSvcClientTransport(options.blockS2SReason);
+    } else {
+      this.transport = new FetchSvcClientTransport();
+    }
   }
 
   // ───────────────── DTO-BASED PATH (WORKERS) ─────────────────
 
-  /**
-   * Execute a DTO-based service-to-service call and return the wire bag JSON envelope.
-   *
-   * Callers are responsible for mapping the returned JSON back into DTOs.
-   */
   public async call(params: SvcClientCallParams): Promise<WireBagJson> {
     const requestId = params.requestId ?? this.requestIdProvider();
 
@@ -113,14 +215,18 @@ export class SvcClient {
       slug: params.slug,
       version: params.version,
       pathSuffix,
-      // dtoType/op remain for legacy callers that might not pass pathSuffix,
-      // but we always pass an explicit suffix for CRUD rails now.
       dtoType: params.dtoType,
       op: params.op,
     });
 
+    // Auto-propagate test markers (and requestId) across S2S hops.
+    // Important: we explicitly overwrite x-request-id with the effective requestId
+    // so caller-supplied requestId always wins.
+    const propagated = getS2SPropagationHeaders();
+
     const headers: Record<string, string> = {
       "content-type": "application/json",
+      ...propagated,
       "x-request-id": requestId,
       "x-service-name": this.callerSlug,
       "x-api-version": String(this.callerVersion),
@@ -136,7 +242,6 @@ export class SvcClient {
 
     const body = this.buildDtoBody(params);
 
-    // Outbound body triage: prove exactly what we're putting on the wire.
     this.logger.debug("SvcClient.call.outbound_body", {
       requestId,
       targetSlug: target.slug,
@@ -146,7 +251,7 @@ export class SvcClient {
       bodySnippet: body ? body.slice(0, 512) : "<empty>",
     });
 
-    const { status, bodyText } = await this.fetchWithTimeout({
+    const { status, bodyText } = await this.transport.execute({
       url,
       method: params.method,
       headers,
@@ -180,7 +285,6 @@ export class SvcClient {
         body: parsed,
       });
 
-      // We assume Problem+JSON, but we don't enforce schema here.
       throw new Error(
         `SvcClient: Non-success response from target="${target.slug}" (status=${status}). See logs for Problem+JSON payload.`
       );
@@ -192,31 +296,13 @@ export class SvcClient {
       status,
     });
 
-    const wire = (parsed ?? {}) as WireBagJson;
-    return wire;
+    return (parsed ?? {}) as WireBagJson;
   }
 
   // ───────────────── RAW PATH (GATEWAY EDGE) ─────────────────
 
-  /**
-   * Raw-body S2S call (ADR-0066).
-   *
-   * Intended mainly for the gateway edge, where:
-   * - The JSON payload is treated as opaque.
-   * - We still want svcconfig-based resolution, call-graph enforcement,
-   *   and canonical S2S headers.
-   *
-   * Behavior:
-   * - Requires `fullPath`: the exact inbound path including `/api` and any query string
-   *   (e.g. `/api/auth/v1/auth/create?foo=bar`).
-   * - Applies "same path, different port": only host/port are changed using svcconfig.
-   * - Never parses JSON.
-   * - Never throws based on HTTP status (only network/timeout/errors).
-   * - Returns { status, headers, bodyText }; callers decide how to handle it.
-   */
   public async callRaw(params: SvcClientRawCallParams): Promise<RawResponse> {
     const requestId = params.requestId ?? this.requestIdProvider();
-
     const fullPath = (params as any).fullPath as string | undefined;
 
     this.logger.debug("SvcClient.callRaw.begin", {
@@ -271,7 +357,10 @@ export class SvcClient {
       : `/${fullPath}`;
     const url = `${baseTrimmed}${normalizedFullPath}`;
 
+    const propagated = getS2SPropagationHeaders();
+
     const headers: Record<string, string> = {
+      ...propagated,
       "x-request-id": requestId,
       "x-service-name": this.callerSlug,
       "x-api-version": String(this.callerVersion),
@@ -302,11 +391,7 @@ export class SvcClient {
       headers,
     });
 
-    const {
-      status,
-      bodyText,
-      headers: responseHeaders,
-    } = await this.fetchWithTimeout({
+    const response = await this.transport.execute({
       url,
       method: params.method,
       headers,
@@ -317,25 +402,21 @@ export class SvcClient {
       requestId,
     });
 
-    if (status < 200 || status >= 300) {
+    if (response.status < 200 || response.status >= 300) {
       this.logger.warn("SvcClient.callRaw.non2xx", {
         requestId,
         targetSlug: target.slug,
-        status,
+        status: response.status,
       });
     } else {
       this.logger.info("SvcClient.callRaw.success", {
         requestId,
         targetSlug: target.slug,
-        status,
+        status: response.status,
       });
     }
 
-    return {
-      status,
-      headers: responseHeaders,
-      bodyText,
-    };
+    return response;
   }
 
   // ───────────────── COMPAT STUB ─────────────────
@@ -380,22 +461,8 @@ export class SvcClient {
     opts.headers["authorization"] = `Bearer ${token}`;
   }
 
-  /**
-   * Build the CRUD path suffix for typed routes.
-   *
-   * Rules (worker CRUD rails):
-   * - PUT    create → /:dtoType/create
-   * - PATCH  update → /:dtoType/update/:id
-   * - GET    read   → /:dtoType/read/:id
-   * - DELETE delete → /:dtoType/delete/:id
-   * - GET    list   → /:dtoType/list
-   *
-   * If params.pathSuffix is provided, it wins (for non-CRUD/custom routes).
-   * Otherwise we derive the suffix from method/op/dtoType/id.
-   */
   private buildCrudSuffix(params: SvcClientCallParams): string {
     if (params.pathSuffix && params.pathSuffix.trim().length > 0) {
-      // Caller is explicitly overriding the suffix; trust it.
       const trimmed = params.pathSuffix.trim();
       return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
     }
@@ -414,12 +481,8 @@ export class SvcClient {
     const encType = encodeURIComponent(dtoType);
     const encId = id ? encodeURIComponent(id) : undefined;
 
-    // CREATE: PUT /:dtoType/create
-    if (method === "PUT" && op === "create") {
-      return `/${encType}/create`;
-    }
+    if (method === "PUT" && op === "create") return `/${encType}/create`;
 
-    // UPDATE: PATCH /:dtoType/update/:id
     if (method === "PATCH" && op === "update") {
       if (!encId) {
         throw new Error(
@@ -429,7 +492,6 @@ export class SvcClient {
       return `/${encType}/update/${encId}`;
     }
 
-    // READ: GET /:dtoType/read/:id
     if (method === "GET" && op === "read") {
       if (!encId) {
         throw new Error(
@@ -439,7 +501,6 @@ export class SvcClient {
       return `/${encType}/read/${encId}`;
     }
 
-    // DELETE: DELETE /:dtoType/delete/:id
     if (method === "DELETE" && op === "delete") {
       if (!encId) {
         throw new Error(
@@ -449,12 +510,8 @@ export class SvcClient {
       return `/${encType}/delete/${encId}`;
     }
 
-    // LIST: GET /:dtoType/list
-    if (method === "GET" && op === "list") {
-      return `/${encType}/list`;
-    }
+    if (method === "GET" && op === "list") return `/${encType}/list`;
 
-    // Fallback: preserve legacy behavior for non-CRUD ops.
     const encOp = encodeURIComponent(params.op ?? "");
     return `/${encType}/${encOp}`;
   }
@@ -478,46 +535,25 @@ export class SvcClient {
       suffix = `${encodeURIComponent(dtoType)}/${encodeURIComponent(op)}`;
     }
 
-    // Allow callers to pass a suffix that starts with "/" or not.
     const normalizedSuffix = suffix.replace(/^\/+/, "");
     return `${trimmedBase}/api/${encodeURIComponent(params.slug)}/v${
       params.version
     }/${normalizedSuffix}`;
   }
 
-  /**
-   * Build the JSON request body from the provided DtoBag, if applicable.
-   *
-   * - For GET/HEAD requests: no body is sent, regardless of bag presence.
-   * - For DELETE delete-by-id (canonical CRUD): no body is sent; id in path is sufficient.
-   * - For other non-GET methods:
-   *   - A DtoBag is required; we serialize it to the canonical wire bag envelope.
-   *
-   * The wire format is defined by ADR-0050 (Wire Bag Envelope).
-   */
   private buildDtoBody(params: SvcClientCallParams): string | undefined {
     const method = params.method.toUpperCase();
     const op = (params.op ?? "").toLowerCase();
 
-    // No body for safe/idempotent reads.
-    if (method === "GET" || method === "HEAD") {
-      return undefined;
-    }
-
-    // For canonical DELETE-by-id CRUD route, we do not send a body.
-    if (method === "DELETE" && op === "delete") {
-      return undefined;
-    }
+    if (method === "GET" || method === "HEAD") return undefined;
+    if (method === "DELETE" && op === "delete") return undefined;
 
     if (!params.bag) {
-      // Fail-fast for all other non-GET/HEAD methods that require a bag (create, update, etc).
       throw new Error(
         `SvcClient.call: DTO-based call with method="${method}" and op="${params.op}" requires a DtoBag; none was provided.`
       );
     }
 
-    // Whatever the bag's notion of "body" is, normalize it into the canonical
-    // wire bag envelope: { items: [...], meta?: {...} }.
     const raw = params.bag.toBody() as unknown;
 
     let envelope: WireBagJson;
@@ -528,64 +564,18 @@ export class SvcClient {
       !Array.isArray(raw) &&
       "items" in (raw as Record<string, unknown>)
     ) {
-      // Already a wire bag envelope; trust it.
       envelope = raw as WireBagJson;
     } else if (Array.isArray(raw)) {
-      // Treat as "items" array with no meta.
       envelope = { items: raw } as WireBagJson;
     } else if (raw && typeof raw === "object") {
-      // Single DTO-like object; wrap it.
       envelope = { items: [raw] } as WireBagJson;
     } else {
-      // Completely unexpected; better to fail loudly than send junk.
       throw new Error(
         "SvcClient.call: DtoBag.toBody() returned an unsupported shape for DTO-based S2S call."
       );
     }
 
     return JSON.stringify(envelope);
-  }
-
-  private async fetchWithTimeout(opts: {
-    url: string;
-    method: string;
-    headers: Record<string, string>;
-    body?: string;
-    timeoutMs?: number;
-    logPrefix: string;
-    targetSlug: string;
-    requestId: string;
-  }): Promise<{
-    status: number;
-    bodyText: string;
-    headers: Record<string, string>;
-  }> {
-    const controller = new AbortController();
-    let timeoutHandle: NodeJS.Timeout | undefined;
-    const timeoutMs = opts.timeoutMs ?? 30_000;
-
-    if (timeoutMs > 0) {
-      timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
-    }
-
-    try {
-      const response = await fetch(opts.url, {
-        method: opts.method,
-        headers: opts.headers,
-        body: opts.body,
-        signal: controller.signal,
-      });
-
-      const bodyText = await response.text();
-      const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((value, key) => {
-        responseHeaders[key.toLowerCase()] = value;
-      });
-
-      return { status: response.status, bodyText, headers: responseHeaders };
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
   }
 }
 
@@ -597,6 +587,7 @@ export type {
   ISvcClientLogger,
   ISvcconfigResolver,
   IKmsTokenFactory,
+  ISvcClientTransport,
   RawResponse,
   RequestIdProvider,
   SvcClientCallParams,

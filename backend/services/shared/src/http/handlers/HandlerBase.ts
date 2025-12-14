@@ -7,6 +7,7 @@
  * - ADR-0049 (DTO Registry & Wire Discrimination)
  * - ADR-0058 (HandlerBase.getVar — Strict Env Accessor)
  * - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
+ * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *
  * Purpose:
  * - Abstract base for handlers:
@@ -15,11 +16,13 @@
  *   • Short-circuit on prior failure
  *   • Standardized instrumentation via bound logger
  *   • Thin wrappers over env + error helpers
+ *   • Optional per-handler runTest() hook for test-runner
  *
  * Invariants:
  * - Controllers MUST pass `this` into handler constructors.
  * - No reading plumbing from ctx (no ctx.get('app'), etc).
  * - Env reads go through controller.getSvcEnv().getVar() via helpers.
+ * - HandlerBase.runTest() default returns undefined (no test).
  */
 
 import { HandlerContext } from "./HandlerContext";
@@ -36,6 +39,9 @@ import {
   type NvHandlerError,
   type FailWithErrorInput,
 } from "./handlerBaseExt/errorHelpers";
+
+import type { HandlerTestBase } from "./testing/HandlerTestBase";
+import type { HandlerTestResult } from "./testing/HandlerTestBase";
 
 // Re-export NvHandlerError so existing imports from HandlerBase remain valid.
 export type { NvHandlerError } from "./handlerBaseExt/errorHelpers";
@@ -106,6 +112,24 @@ export abstract class HandlerBase {
   protected abstract handlerPurpose(): string;
 
   /**
+   * Optional stable handler name (wire/log name).
+   * - Defaults to constructor name.
+   * - Override for your "toBag.* / code.* / db.* / s2s.*" conventions.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  protected handlerName(): string {
+    return this.constructor.name;
+  }
+
+  /**
+   * Public accessor so test-runner can capture the stable handler name
+   * without reaching into protected APIs.
+   */
+  public getHandlerName(): string {
+    return this.handlerName();
+  }
+
+  /**
    * Escape hatch for compensating handlers / WAL / cleanup:
    * - Default: false → handler is skipped after a prior failure.
    * - Override in derived handlers that MUST run even when status>=400 or
@@ -114,6 +138,94 @@ export abstract class HandlerBase {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected canRunAfterError(): boolean {
     return false;
+  }
+
+  /**
+   * Handler-level test hook for test-runner.
+   *
+   * Contract:
+   * - Default implementation returns undefined (no test).
+   * - Test-runner calls runTest() on every handler instance and skips when undefined.
+   * - Derived handlers with tests override runTest() and import their sibling *.test.ts.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public async runTest(): Promise<HandlerTestResult | undefined> {
+    return undefined;
+  }
+
+  /**
+   * Shared helper to aggregate multiple scenario tests into ONE HandlerTestResult.
+   *
+   * Why:
+   * - Keeps per-handler runTest() tiny (import scenarios, call this helper).
+   * - Keeps the runner dumb and stable.
+   *
+   * Contract:
+   * - If scenariosFactory returns an empty list → returns undefined (skip).
+   * - Never throws (worst-case becomes a failed result).
+   */
+  protected async runTestFromScenarios(input: {
+    testId: string;
+    testName: string;
+    scenariosFactory: () => HandlerTestBase[];
+  }): Promise<HandlerTestResult | undefined> {
+    const startedAt = Date.now();
+
+    let scenarios: HandlerTestBase[] = [];
+    try {
+      scenarios = input.scenariosFactory() ?? [];
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : String(err ?? "unknown error");
+      return {
+        testId: input.testId,
+        name: input.testName,
+        outcome: "failed",
+        assertionCount: 0,
+        failedAssertions: [`scenariosFactory threw: ${msg}`],
+        errorMessage: msg,
+        durationMs: Math.max(0, Date.now() - startedAt),
+      };
+    }
+
+    if (!Array.isArray(scenarios) || scenarios.length === 0) {
+      return undefined;
+    }
+
+    const failedAssertions: string[] = [];
+    let assertionCount = 0;
+
+    for (const t of scenarios) {
+      try {
+        const r = await t.run();
+        assertionCount += r.assertionCount;
+
+        if (r.outcome !== "passed") {
+          const msg =
+            r.errorMessage ||
+            (r.failedAssertions && r.failedAssertions[0]) ||
+            "unknown failure";
+          failedAssertions.push(`${r.testId}: ${msg}`);
+        }
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : String(err ?? "unknown error");
+        failedAssertions.push(`${input.testId}: scenario runner threw: ${msg}`);
+      }
+    }
+
+    const finishedAt = Date.now();
+
+    return {
+      testId: input.testId,
+      name: input.testName,
+      outcome: failedAssertions.length === 0 ? "passed" : "failed",
+      assertionCount,
+      failedAssertions,
+      errorMessage:
+        failedAssertions.length > 0 ? failedAssertions[0] : undefined,
+      durationMs: Math.max(0, finishedAt - startedAt),
+    };
   }
 
   /**

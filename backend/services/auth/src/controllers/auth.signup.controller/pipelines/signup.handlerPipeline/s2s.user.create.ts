@@ -8,6 +8,7 @@
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
+ *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *
  * Purpose:
  * - Use the hydrated DtoBag<UserDto> from ctx["bag"] to call the `user`
@@ -22,6 +23,11 @@
  * - Additionally, this handler stamps an explicit signup.userCreateStatus flag
  *   on the ctx bus so downstream transactional handlers (rollback, audit, etc.)
  *   can reason about whether the user record was created.
+ *
+ * Testing:
+ * - This handler opts into test-runner by overriding runTest().
+ * - The sibling *.test.ts file remains an implementation detail imported here.
+ * - If runTest() is removed, test-runner will naturally skip this handler.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -29,6 +35,14 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
+
+import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+import type { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+
+import {
+  S2sUserCreate_HappyPath_Test,
+  S2sUserCreate_MissingBag_Test,
+} from "./s2s.user.create.test";
 
 type UserBag = DtoBag<UserDto>;
 
@@ -53,6 +67,28 @@ export class S2sUserCreateHandler extends HandlerBase {
    */
   protected handlerPurpose(): string {
     return "Call the user service create endpoint with the hydrated UserDto bag while leaving ctx['bag'] untouched.";
+  }
+
+  protected handlerName(): string {
+    return "s2s.user.create";
+  }
+
+  /**
+   * Test-runner hook.
+   *
+   * Contract:
+   * - Returns undefined when this handler has no tests (not the case here).
+   * - Returns ONE aggregated result when tests exist (runner stays dumb).
+   */
+  public override async runTest(): Promise<HandlerTestResult | undefined> {
+    return this.runTestFromScenarios({
+      testId: "auth.s2s.user.create",
+      testName: "auth s2s.user.create — handler scenarios",
+      scenariosFactory: (): HandlerTestBase[] => [
+        new S2sUserCreate_HappyPath_Test(),
+        new S2sUserCreate_MissingBag_Test(),
+      ],
+    });
   }
 
   protected override async execute(): Promise<void> {
@@ -262,16 +298,6 @@ export class S2sUserCreateHandler extends HandlerBase {
         const message =
           err instanceof Error ? err.message : String(err ?? "Unknown error");
 
-        // ─────────────────────────────────────────────────────────────
-        // Map known business failures (e.g., duplicate user 409) to a
-        // client-visible 4xx instead of a generic 502.
-        //
-        // Today SvcClient throws a plain Error with a message like:
-        //   "SvcClient: Non-success response from target=\"user\" (status=409). ..."
-        // so we conservatively parse the status code out of the message.
-        // When SvcClient grows a structured error type, this logic can
-        // be switched over to use err.status / err.problem directly.
-        // ─────────────────────────────────────────────────────────────
         let downstreamStatus: number | undefined;
         if (err instanceof Error) {
           const m = err.message.match(/status=(\d{3})/);

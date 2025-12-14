@@ -12,9 +12,12 @@
     "typescript": "^5.6.3"
   },
   "scripts": {
+    "_nv_node": "NODE_OPTIONS='-r tsconfig-paths/register'",
     "dev": "echo \"Run per-service: pnpm --filter @nv/gateway dev (etc.)\"",
     "build": "pnpm -r --filter @nv/* run build",
-    "clean": "pnpm -r --filter @nv/* run clean"
+    "clean": "pnpm -r --filter @nv/* run clean",
+    "node": "pnpm run _nv_node -- node",
+    "tsx": "pnpm run _nv_node -- tsx"
   },
   "packageManager": "pnpm@9.15.9+sha512.68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd4682181bae55b58418c3a253bde65a505ec7c5f9403ece5cc3cd37dcf2531"
 }

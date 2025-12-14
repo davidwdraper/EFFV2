@@ -16,14 +16,17 @@
  *
  * Purpose:
  * - Shared abstract controller base for all services.
- * - Orchestrates context seeding, preflight, and pipeline execution
- *   using helpers in this folder.
+ * - Orchestrates context seeding, preflight, and pipeline execution.
+ * - Centralizes finalize-time error logging policy so JSON/HTML/stream
+ *   controllers don't have to re-implement it (and drift).
  *
  * Notes:
- * - finalize() is now an abstract hook implemented by concrete
- *   controller bases (JSON, HTML, streaming, etc.).
+ * - finalize() is an abstract hook implemented by concrete controller bases
+ *   (JSON, HTML, streaming, etc.).
  * - Success responses must still be built from ctx["bag"] (DtoBag) only;
  *   concrete subclasses enforce the wire format.
+ * - Finalize-time logging policy is format-agnostic:
+ *   negative tests may intentionally provoke 5xx; those must not page Ops.
  */
 
 import type { Request, Response } from "express";
@@ -82,8 +85,7 @@ export abstract class ControllerBase {
    * - Env DTO is owned by AppBase.
    * - Preferred access is via AppBase.getSvcEnv().
    * - Legacy direct field access (app.svcEnv) is supported as a temporary
-   *   compatibility path, but should be removed once all apps expose
-   *   getSvcEnv().
+   *   compatibility path, but should be removed once all apps expose getSvcEnv().
    */
   public getSvcEnv(): EnvServiceDto {
     const appAny = this.app as any;
@@ -185,6 +187,9 @@ export abstract class ControllerBase {
    * must implement this and:
    * - Build success responses strictly from ctx["bag"] (DtoBag).
    * - Normalize errors into their chosen wire format.
+   *
+   * Logging policy (especially for negative tests) MUST be delegated to
+   * ControllerBase helpers below to avoid drift across finalize types.
    */
   protected abstract finalize(ctx: HandlerContext): Promise<void>;
 
@@ -195,6 +200,129 @@ export abstract class ControllerBase {
    */
   public needsRegistry(): boolean {
     return true;
+  }
+
+  // ───────────────────────────────────────────
+  // Finalize-time logging policy (format-agnostic)
+  // ───────────────────────────────────────────
+
+  /**
+   * Determines whether a 5xx is expected (e.g., negative tests) and therefore
+   * should NOT be logged as ERROR.
+   *
+   * Contract:
+   * - Default: false (real runtime errors are ERROR).
+   * - Test-runner/negative scenarios may mark ctx to signal an expected failure.
+   * - AppBase may optionally provide a policy hook for future ALS-based logic.
+   *
+   * Supported ctx keys (non-exclusive, best-effort):
+   * - ctx["test.expectedError"] === true
+   * - ctx["test.isNegative"] === true
+   * - ctx["testRun.expectedError"] === true
+   * - ctx["runner.expectedError"] === true
+   *
+   * AppBase optional hook:
+   * - app.isExpectedErrorContext?(ctx: HandlerContext): boolean
+   */
+  protected isExpectedErrorContext(ctx: HandlerContext): boolean {
+    try {
+      const b1 = ctx.get<boolean>("test.expectedError");
+      if (b1 === true) return true;
+
+      const b2 = ctx.get<boolean>("test.isNegative");
+      if (b2 === true) return true;
+
+      const b3 = ctx.get<boolean>("testRun.expectedError");
+      if (b3 === true) return true;
+
+      const b4 = ctx.get<boolean>("runner.expectedError");
+      if (b4 === true) return true;
+    } catch {
+      // ctx.get() should not throw, but if it does we treat it as "not expected".
+    }
+
+    try {
+      const appAny = this.app as any;
+      const hook = appAny?.isExpectedErrorContext;
+      if (typeof hook === "function") {
+        const r = hook.call(appAny, ctx);
+        if (r === true) return true;
+      }
+    } catch {
+      // If a policy hook is buggy, we do not suppress ERRORs.
+    }
+
+    return false;
+  }
+
+  /**
+   * Centralized finalize-time error logging.
+   *
+   * Why:
+   * - JSON/HTML/stream finalize implementations will differ in wire formatting.
+   * - The *logging policy* must be identical across all controller types.
+   *
+   * Usage:
+   * - Call this AFTER writing the response to the client.
+   */
+  protected logFinalizeError(opts: {
+    ctx: HandlerContext;
+    requestId: string;
+    status: number;
+    body: unknown;
+    event?: string;
+    messageError?: string;
+    messageExpected?: string;
+  }): void {
+    const { ctx, requestId, status, body } = opts;
+
+    const event = opts.event ?? "finalize_error";
+    const msgError = opts.messageError ?? "ControllerBase error response";
+    const msgExpected =
+      opts.messageExpected ??
+      "ControllerBase expected error response (negative test)";
+
+    // 4xx: keep as WARN (client/data errors)
+    if (status < 500) {
+      this.log.warn(
+        {
+          event: "finalize_client_error",
+          requestId,
+          status,
+          problem: body,
+        },
+        msgError
+      );
+      return;
+    }
+
+    // 5xx: ERROR unless explicitly marked as expected.
+    const expected = this.isExpectedErrorContext(ctx);
+
+    if (expected) {
+      this.log.warn(
+        {
+          event,
+          requestId,
+          status,
+          expectedError: true,
+          problem: body,
+        },
+        msgExpected
+      );
+      return;
+    }
+
+    this.log.error(
+      {
+        event,
+        requestId,
+        status,
+        expectedError: false,
+        problem: body,
+      },
+      msgError
+    );
   }
 }
 

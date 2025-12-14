@@ -8,6 +8,7 @@
  *
  * Invariant:
  * - ALWAYS attempts to log a TestRun record to test-log, even if 0 tests ran.
+ * - MUST NOT attempt to log test-handler if there are 0 handler results.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -41,7 +42,6 @@ export class S2sLogToTestLogHandler extends HandlerBase {
       this.ctx.get<DtoBag<TestHandlerDto>>("testRunner.handlerBag") ?? null;
 
     if (!runBag) {
-      // This violates your invariant: we *must* have a run record to log.
       this.log.error(
         {
           event: "test_runner_missing_runBag",
@@ -98,31 +98,40 @@ export class S2sLogToTestLogHandler extends HandlerBase {
       );
     }
 
-    // 2) Best-effort persist handlers (optional)
+    // 2) Best-effort persist handlers (ONLY if at least one item exists)
     if (handlerBag) {
+      let count = 0;
       try {
-        await svcClient.call({
-          env: envLabel,
-          slug: "test-log",
-          version: 1,
-          dtoType: "test-handler",
-          op: "create",
-          method: "PUT",
-          bag: handlerBag,
-          requestId,
-        });
-      } catch (err) {
-        this.log.error(
-          {
-            event: "test_runner_s2s_log_handlers_failed",
+        for (const _ of handlerBag.items()) count += 1;
+      } catch {
+        count = 0;
+      }
+
+      if (count > 0) {
+        try {
+          await svcClient.call({
+            env: envLabel,
+            slug: "test-log",
+            version: 1,
+            dtoType: "test-handler",
+            op: "create",
+            method: "PUT",
+            bag: handlerBag,
             requestId,
-            runId: runIdFromCtx,
-            err:
-              (err as Error)?.message ??
-              "Unknown error during S2S log of TestHandlerDto bag.",
-          },
-          "test-runner.s2s.logToTestLog: failed to log TestHandlerDto bag (continuing)."
-        );
+          });
+        } catch (err) {
+          this.log.error(
+            {
+              event: "test_runner_s2s_log_handlers_failed",
+              requestId,
+              runId: runIdFromCtx,
+              err:
+                (err as Error)?.message ??
+                "Unknown error during S2S log of TestHandlerDto bag.",
+            },
+            "test-runner.s2s.logToTestLog: failed to log TestHandlerDto bag (continuing)."
+          );
+        }
       }
     }
 

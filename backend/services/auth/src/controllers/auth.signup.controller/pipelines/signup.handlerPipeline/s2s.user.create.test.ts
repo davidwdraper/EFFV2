@@ -117,10 +117,9 @@ export class S2sUserCreate_HappyPath_Test extends HandlerTestBase {
         return appStub;
       },
       getDtoRegistry() {
-        // Not needed for this handler.
-        throw new Error(
-          "DTO registry not needed for S2sUserCreate handler test."
-        );
+        // HandlerBase ctor requires a registry. This handler doesn't use it,
+        // so a minimal stub object is correct (do NOT throw here).
+        return {} as any;
       },
       getSvcEnv() {
         // Not used by this handler; present for HandlerBase/env helpers.
@@ -259,9 +258,9 @@ export class S2sUserCreate_MissingBag_Test extends HandlerTestBase {
         return appStub;
       },
       getDtoRegistry() {
-        throw new Error(
-          "DTO registry not needed for S2sUserCreate handler test."
-        );
+        // HandlerBase ctor requires a registry. This handler doesn't use it,
+        // so a minimal stub object is correct (do NOT throw here).
+        return {} as any;
       },
       getSvcEnv() {
         return {

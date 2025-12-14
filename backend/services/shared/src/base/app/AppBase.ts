@@ -10,6 +10,7 @@
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *   - ADR-0072 (Edge Mode Factory — Root Env Switches)
+ *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *
  * Purpose:
  * - Orchestrator for Express composition across ALL services.
@@ -18,6 +19,10 @@
  * - Holds the resolved EdgeMode (prod / future mock modes) as a boot-time decision
  *   so downstream wiring can choose appropriate edge helpers (DbWriter, DbReader, etc.)
  *   without re-reading env on each call.
+ *
+ * Invariants:
+ * - No implicit S2S mocking: AppBase must receive s2sMocksEnabled explicitly (tests only).
+ * - Runtime services should keep s2sMocksEnabled=false so boot-time env/config S2S calls work normally.
  */
 
 import type { Express } from "express";
@@ -68,6 +73,16 @@ export type AppBaseCtor = {
    * - If omitted, AppBase defaults to EdgeMode.Prod.
    */
   edgeMode?: EdgeMode;
+
+  /**
+   * Explicit-only S2S mocking switch.
+   *
+   * IMPORTANT:
+   * - Default is false.
+   * - Only the test-runner (or a test harness) should ever set this true.
+   * - Real services must keep this false or you will block the env/config boot calls.
+   */
+  s2sMocksEnabled?: boolean;
 };
 
 export abstract class AppBase extends ServiceBase {
@@ -92,10 +107,15 @@ export abstract class AppBase extends ServiceBase {
 
   /**
    * Effective edge mode for this process (resolved at boot).
-   * - For now, all services should run with EdgeMode.Prod behavior; non-prod
-   *   modes will be wired in via follow-up ADRs.
    */
   private readonly edgeMode: EdgeMode;
+
+  /**
+   * Explicit-only S2S mocks flag (frozen at boot).
+   * - When true: AppBase wires a SvcClient that blocks outbound S2S calls unless a deterministic transport is injected.
+   * - When false: normal fetch transport (runtime).
+   */
+  private readonly s2sMocksEnabled: boolean;
 
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
@@ -112,6 +132,9 @@ export abstract class AppBase extends ServiceBase {
     // Edge mode is a boot-time decision. If not provided, default to production behavior.
     this.edgeMode = opts.edgeMode ?? EdgeMode.Prod;
 
+    // Explicit-only. Default false. Never inferred from env here.
+    this.s2sMocksEnabled = opts.s2sMocksEnabled ?? false;
+
     this.app = express();
     this.initApp();
 
@@ -119,6 +142,7 @@ export abstract class AppBase extends ServiceBase {
       service: this.service,
       version: this.version,
       log: this.log,
+      s2sMocksEnabled: this.s2sMocksEnabled,
     });
 
     this.promptsClient = createPromptsClientForApp({
@@ -188,6 +212,13 @@ export abstract class AppBase extends ServiceBase {
    */
   public getEdgeMode(): EdgeMode {
     return this.edgeMode;
+  }
+
+  /**
+   * Explicit-only S2S mocks accessor (primarily for diagnostics).
+   */
+  public getS2sMocksEnabled(): boolean {
+    return this.s2sMocksEnabled;
   }
 
   /** DTO Registry accessor – concrete services MUST implement. */
@@ -269,6 +300,7 @@ export abstract class AppBase extends ServiceBase {
         service: this.service,
         envLabel: this.envLabel,
         edgeMode: this.edgeMode,
+        s2sMocksEnabled: this.s2sMocksEnabled,
       },
       "app booted"
     );

@@ -11,8 +11,13 @@
  * Purpose:
  * - Represents a single handler-level test result within a test run.
  * - Child record of TestRunDto:
- *     • runId   → logical grouping key
+ *     • runId    → logical grouping key
  *     • runRefId → FK to TestRunDto.id
+ *
+ * Option A Semantics (IMPORTANT):
+ * - serviceSlug/serviceVersion/controllerName/pipelineLabel/pipelinePath describe the **TARGET** under test,
+ *   not the test-runner service.
+ * - runner* fields describe the test-runner invocation context.
  *
  * Invariants:
  * - One document per (runId, handlerName, pipelineLabel, scenarioName?).
@@ -35,6 +40,7 @@ type TestHandlerJson = {
   env?: string;
   dbState?: string;
 
+  // TARGET (under test)
   serviceSlug?: string;
   serviceVersion?: number | string;
 
@@ -47,6 +53,13 @@ type TestHandlerJson = {
 
   dtoType?: string;
   scenarioName?: string;
+
+  // RUNNER (test-runner invocation)
+  runnerServiceSlug?: string;
+  runnerServiceVersion?: number | string;
+  runnerControllerName?: string;
+  runnerPipelineLabel?: string;
+  runnerPipelinePath?: string;
 
   status?: TestHandlerStatus;
   assertionCount?: number;
@@ -76,7 +89,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
     { kind: "lookup", fields: ["runRefId"] },
     { kind: "lookup", fields: ["runId"] },
 
-    // Drill-down by service/pipeline/handler.
+    // Drill-down by TARGET service/pipeline/handler.
     {
       kind: "lookup",
       fields: ["serviceSlug", "pipelineLabel", "handlerName"],
@@ -87,6 +100,9 @@ export class TestHandlerDto extends DtoBase implements IDto {
 
     // Optional: environment/state.
     { kind: "lookup", fields: ["env", "dbState"] },
+
+    // Optional: runner drill-down (rare, but sometimes useful).
+    { kind: "lookup", fields: ["runnerServiceSlug"] },
   ];
 
   // ─────────────── Instance: Domain Fields ───────────────
@@ -97,6 +113,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
   public env = "";
   public dbState = "";
 
+  // TARGET (under test)
   public serviceSlug = "";
   public serviceVersion = 1;
 
@@ -109,6 +126,13 @@ export class TestHandlerDto extends DtoBase implements IDto {
 
   public dtoType: string | undefined;
   public scenarioName: string | undefined;
+
+  // RUNNER (test-runner invocation)
+  public runnerServiceSlug = "";
+  public runnerServiceVersion = 1;
+  public runnerControllerName = "";
+  public runnerPipelineLabel = "";
+  public runnerPipelinePath = "";
 
   public status: TestHandlerStatus = "error";
   public assertionCount = 0;
@@ -152,6 +176,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (typeof j.env === "string") dto.env = j.env.trim();
     if (typeof j.dbState === "string") dto.dbState = j.dbState.trim();
 
+    // TARGET
     if (typeof j.serviceSlug === "string") {
       dto.serviceSlug = j.serviceSlug.trim();
     }
@@ -193,6 +218,32 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (typeof j.scenarioName === "string") {
       const s = j.scenarioName.trim();
       dto.scenarioName = s || undefined;
+    }
+
+    // RUNNER
+    if (typeof j.runnerServiceSlug === "string") {
+      dto.runnerServiceSlug = j.runnerServiceSlug.trim();
+    }
+
+    if (typeof j.runnerServiceVersion === "number") {
+      dto.runnerServiceVersion = Math.trunc(j.runnerServiceVersion);
+    } else if (typeof j.runnerServiceVersion === "string") {
+      const n = Number(j.runnerServiceVersion);
+      if (Number.isFinite(n) && n > 0) {
+        dto.runnerServiceVersion = Math.trunc(n);
+      }
+    }
+
+    if (typeof j.runnerControllerName === "string") {
+      dto.runnerControllerName = j.runnerControllerName.trim();
+    }
+
+    if (typeof j.runnerPipelineLabel === "string") {
+      dto.runnerPipelineLabel = j.runnerPipelineLabel.trim();
+    }
+
+    if (typeof j.runnerPipelinePath === "string") {
+      dto.runnerPipelinePath = j.runnerPipelinePath.trim();
     }
 
     if (
@@ -252,11 +303,12 @@ export class TestHandlerDto extends DtoBase implements IDto {
         });
       }
 
+      // TARGET required (this is the whole point of Option A)
       if (!dto.serviceSlug) {
         issues.push({
           path: "serviceSlug",
           code: "required",
-          message: "serviceSlug is required",
+          message: "serviceSlug (TARGET) is required",
         });
       }
 
@@ -264,7 +316,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
         issues.push({
           path: "controllerName",
           code: "required",
-          message: "controllerName is required",
+          message: "controllerName (TARGET) is required",
         });
       }
 
@@ -272,7 +324,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
         issues.push({
           path: "pipelineLabel",
           code: "required",
-          message: "pipelineLabel is required",
+          message: "pipelineLabel (TARGET) is required",
         });
       }
 
@@ -280,7 +332,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
         issues.push({
           path: "handlerName",
           code: "required",
-          message: "handlerName is required",
+          message: "handlerName (TARGET handler) is required",
         });
       }
 
@@ -292,6 +344,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
         });
       }
 
+      // RUNNER fields are optional (but encouraged). Don’t block persistence.
       if (issues.length) {
         throw new DtoValidationError(
           `Invalid TestHandlerDto payload — ${issues.length} issue(s) found.`,
@@ -316,6 +369,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
       env: this.env || undefined,
       dbState: this.dbState || undefined,
 
+      // TARGET
       serviceSlug: this.serviceSlug || undefined,
       serviceVersion: this.serviceVersion,
 
@@ -328,6 +382,13 @@ export class TestHandlerDto extends DtoBase implements IDto {
 
       dtoType: this.dtoType,
       scenarioName: this.scenarioName,
+
+      // RUNNER
+      runnerServiceSlug: this.runnerServiceSlug || undefined,
+      runnerServiceVersion: this.runnerServiceVersion,
+      runnerControllerName: this.runnerControllerName || undefined,
+      runnerPipelineLabel: this.runnerPipelineLabel || undefined,
+      runnerPipelinePath: this.runnerPipelinePath || undefined,
 
       status: this.status,
       assertionCount: this.assertionCount,
@@ -356,6 +417,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (other.env) this.env = other.env;
     if (other.dbState) this.dbState = other.dbState;
 
+    // TARGET
     if (other.serviceSlug) this.serviceSlug = other.serviceSlug;
     if (other.serviceVersion && other.serviceVersion > 0) {
       this.serviceVersion = Math.trunc(other.serviceVersion);
@@ -371,20 +433,35 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (other.dtoType) this.dtoType = other.dtoType;
     if (other.scenarioName) this.scenarioName = other.scenarioName;
 
+    // RUNNER
+    if (other.runnerServiceSlug)
+      this.runnerServiceSlug = other.runnerServiceSlug;
+    if (other.runnerServiceVersion && other.runnerServiceVersion > 0) {
+      this.runnerServiceVersion = Math.trunc(other.runnerServiceVersion);
+    }
+    if (other.runnerControllerName)
+      this.runnerControllerName = other.runnerControllerName;
+    if (other.runnerPipelineLabel)
+      this.runnerPipelineLabel = other.runnerPipelineLabel;
+    if (other.runnerPipelinePath)
+      this.runnerPipelinePath = other.runnerPipelinePath;
+
     if (other.status) this.status = other.status;
 
-    if (other.assertionCount > 0) {
-      this.assertionCount = Math.trunc(other.assertionCount);
+    // allow 0 assertions (meaningful)
+    if (other.assertionCount >= 0) {
+      this.assertionCount = Math.max(0, Math.trunc(other.assertionCount));
     }
 
-    if (other.failedAssertions && other.failedAssertions.length > 0) {
+    // allow empty list (meaningful)
+    if (other.failedAssertions) {
       this.failedAssertions = [...other.failedAssertions];
     }
 
     if (other.startedAt) this.startedAt = other.startedAt;
     if (other.finishedAt) this.finishedAt = other.finishedAt;
-    if (other.durationMs > 0) {
-      this.durationMs = Math.trunc(other.durationMs);
+    if (other.durationMs >= 0) {
+      this.durationMs = Math.max(0, Math.trunc(other.durationMs));
     }
 
     if (other.requestId) this.requestId = other.requestId;

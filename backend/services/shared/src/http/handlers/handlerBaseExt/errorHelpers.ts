@@ -5,14 +5,20 @@
  * - ADR-0042 (HandlerContext Bus — KISS)
  * - ADR-0043 (Hydration + Failure Propagation)
  * - ADR-0049 (DTO Registry & Wire Discrimination)
+ * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *
  * Purpose:
  * - Centralize NvHandlerError construction, logging, and stack parsing.
  * - Keep HandlerBase lean by moving error plumbing to focused helpers.
+ *
+ * Test behavior:
+ * - When requestScope indicates expected negative-test errors, we downgrade
+ *   ERROR logging to WARN (still visible, but no pager-noise).
  */
 
 import type { HandlerContext } from "../HandlerContext";
 import type { IBoundLogger } from "../../../logger/Logger";
+import { isExpectedErrorContext } from "../../requestScope";
 
 export type NvHandlerError = {
   httpStatus: number;
@@ -199,12 +205,15 @@ export function logAndAttachHandlerError(opts: {
     firstFrame,
   });
 
+  const expected = isExpectedErrorContext();
+
   const logPayload: Record<string, unknown> = {
     event: "handler_fail",
     handler: handlerName,
     requestId,
     httpStatus: error.httpStatus,
     origin: error.origin,
+    expectedError: expected,
   };
 
   if (firstFrame) {
@@ -226,7 +235,12 @@ export function logAndAttachHandlerError(opts: {
     input.logMessage ??
     `Handler failure in ${error.origin?.handler ?? "unknown handler"}`;
 
-  const level = input.logLevel ?? "error";
+  // Downgrade: expected negative-test errors must not be logged as ERROR.
+  let level = input.logLevel ?? "error";
+  if (expected && level === "error") {
+    level = "warn";
+  }
+
   if (level === "debug") {
     log.debug(logPayload, msg);
   } else if (level === "info") {

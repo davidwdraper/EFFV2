@@ -3,26 +3,21 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0013 (Versioned Health Envelope; versioned health routes)
- *   - ADR-0032 (RoutePolicyGate — version-agnostic enforcement; health bypass)
- *   - ADR-0039 (env-service centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
+ *   - ADR-0013 (Versioned Health Envelope)
+ *   - ADR-0039 (env-service centralized non-secret env)
+ *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
- *   - ADR-0072 (Edge Mode Factory — Root Env Switches)
  *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ *   - ADR-0076 (Process Env Guard — NV_PROCESS_ENV_GUARD runtime guardrail)
  *
  * Purpose:
  * - Orchestrator for Express composition across ALL services.
- * - Delegates concrete concerns (boot, health, middleware, S2S clients, prompts)
- *   into focused helpers in this folder.
- * - Holds the resolved EdgeMode (prod / future mock modes) as a boot-time decision
- *   so downstream wiring can choose appropriate edge helpers (DbWriter, DbReader, etc.)
- *   without re-reading env on each call.
+ * - Holds boot-time decisions so downstream wiring never re-reads env.
  *
  * Invariants:
- * - No implicit S2S mocking: AppBase must receive s2sMocksEnabled explicitly (tests only).
- * - Runtime services should keep s2sMocksEnabled=false so boot-time env/config S2S calls work normally.
+ * - No implicit S2S mocking.
+ * - Deterministic S2S transport may ONLY be injected explicitly (tests).
  */
 
 import type { Express } from "express";
@@ -31,7 +26,7 @@ import { ServiceBase } from "@nv/shared/base/ServiceBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
-import { SvcClient } from "@nv/shared/s2s/SvcClient";
+import { SvcClient, type ISvcClientTransport } from "@nv/shared/s2s/SvcClient";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
 import { performDbBoot, type DbBootContext } from "./appBoot";
 import {
@@ -46,43 +41,32 @@ import {
   mountEnvReloadRoute,
 } from "./appHealth";
 import { createSvcClientForApp, createPromptsClientForApp } from "./appClients";
-// NOTE: AppBase lives in shared, so use a relative import for EdgeMode.
 import { EdgeMode } from "../../env/edgeModeFactory";
+import {
+  installProcessEnvGuard,
+  isProcessEnvGuardEnabled,
+  getProcessEnvGuardState,
+} from "./processEnvGuard";
 
 export type AppBaseCtor = {
   service: string;
   version: number;
-  /**
-   * Logical environment label for this service instance (e.g., "dev", "stage", "prod").
-   * - Optional: if omitted, derived from EnvServiceDto.getEnvLabel().
-   */
   envLabel?: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
   checkDb: boolean;
-  /**
-   * Effective edge mode for this process:
-   * - EdgeMode.Prod      => production edge helpers
-   * - EdgeMode.FullMock  => future full-mock mode
-   * - EdgeMode.DbMock    => future DB-mock mode
-   *
-   * NOTE:
-   * - This is intended to be resolved once at boot (e.g., from the root
-   *   "service-root" env-service record via the edgeModeFactory) and then
-   *   treated as immutable for the lifetime of the process.
-   * - If omitted, AppBase defaults to EdgeMode.Prod.
-   */
   edgeMode?: EdgeMode;
 
   /**
-   * Explicit-only S2S mocking switch.
-   *
-   * IMPORTANT:
-   * - Default is false.
-   * - Only the test-runner (or a test harness) should ever set this true.
-   * - Real services must keep this false or you will block the env/config boot calls.
+   * Explicit-only S2S mocking switch (tests only).
    */
   s2sMocksEnabled?: boolean;
+
+  /**
+   * Deterministic S2S transport (tests only).
+   * When provided, overrides BOTH fetch and blocked transports.
+   */
+  svcClientTransport?: ISvcClientTransport;
 };
 
 export abstract class AppBase extends ServiceBase {
@@ -90,32 +74,17 @@ export abstract class AppBase extends ServiceBase {
   private _booted = false;
 
   protected readonly version: number;
-
-  /**
-   * Logical environment label for this service instance.
-   * Source of truth: explicit ctor value when provided, otherwise derived from EnvServiceDto.
-   */
   private readonly envLabel: string;
-
   private _envDto: EnvServiceDto;
   private readonly envReloader: () => Promise<EnvServiceDto>;
-
   protected readonly checkDb: boolean;
 
   protected readonly svcClient: SvcClient;
   protected readonly promptsClient: PromptsClient;
 
-  /**
-   * Effective edge mode for this process (resolved at boot).
-   */
   private readonly edgeMode: EdgeMode;
-
-  /**
-   * Explicit-only S2S mocks flag (frozen at boot).
-   * - When true: AppBase wires a SvcClient that blocks outbound S2S calls unless a deterministic transport is injected.
-   * - When false: normal fetch transport (runtime).
-   */
   private readonly s2sMocksEnabled: boolean;
+  private readonly hasInjectedSvcClientTransport: boolean;
 
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
@@ -125,15 +94,10 @@ export abstract class AppBase extends ServiceBase {
     this.envReloader = opts.envReloader;
     this.checkDb = opts.checkDb;
 
-    // Logical environment label: prefer explicit ctor value, otherwise derive from EnvServiceDto.
-    const labelFromDto = this._envDto.getEnvLabel();
-    this.envLabel = opts.envLabel ?? labelFromDto;
-
-    // Edge mode is a boot-time decision. If not provided, default to production behavior.
+    this.envLabel = opts.envLabel ?? this._envDto.getEnvLabel();
     this.edgeMode = opts.edgeMode ?? EdgeMode.Prod;
-
-    // Explicit-only. Default false. Never inferred from env here.
     this.s2sMocksEnabled = opts.s2sMocksEnabled ?? false;
+    this.hasInjectedSvcClientTransport = !!opts.svcClientTransport;
 
     this.app = express();
     this.initApp();
@@ -142,7 +106,9 @@ export abstract class AppBase extends ServiceBase {
       service: this.service,
       version: this.version,
       log: this.log,
+      envDto: this._envDto,
       s2sMocksEnabled: this.s2sMocksEnabled,
+      transport: opts.svcClientTransport,
     });
 
     this.promptsClient = createPromptsClientForApp({
@@ -150,42 +116,55 @@ export abstract class AppBase extends ServiceBase {
       log: this.log,
       svcClient: this.svcClient,
       getEnvLabel: () => this.getEnvLabel(),
-      // requestId correlation can later be wired via per-request context.
       getRequestId: undefined,
     });
   }
 
-  /** Disable noisy headers; keep this minimal. */
   protected initApp(): void {
     this.app.disable("x-powered-by");
   }
 
-  /** Current environment DTO (protected for subclasses). */
-  protected get envDto(): EnvServiceDto {
+  /**
+   * EnvServiceDto accessor (preferred for controllers/handlers).
+   * Note: legacy `app.svcEnv` access is supported by ControllerBase as a compatibility path.
+   */
+  public getSvcEnv(): EnvServiceDto {
     return this._envDto;
   }
 
-  /** Public accessor for the EnvServiceDto instance. */
+  /** Legacy accessor (kept for compatibility; prefer getSvcEnv()). */
   public get svcEnv(): EnvServiceDto {
     return this._envDto;
   }
 
-  /** Public accessor for the bound logger singleton owned by this app. */
   public getLogger(): IBoundLogger {
     return this.log;
   }
 
-  /** PromptsClient accessor for advanced usage. */
   public getPromptsClient(): PromptsClient {
     return this.promptsClient;
   }
 
-  /** SvcClient accessor for S2S calls. */
   public getSvcClient(): SvcClient {
     return this.svcClient;
   }
 
-  /** Convenience wrapper around PromptsClient.render(). */
+  public getEnvLabel(): string {
+    return this.envLabel;
+  }
+
+  public getEdgeMode(): EdgeMode {
+    return this.edgeMode;
+  }
+
+  public getS2sMocksEnabled(): boolean {
+    return this.s2sMocksEnabled;
+  }
+
+  /**
+   * Convenience wrapper used by HTML controllers (and any future UX surfaces).
+   * This keeps prompt semantics centralized behind PromptsClient.
+   */
   public async prompt(
     language: string,
     promptKey: string,
@@ -195,49 +174,40 @@ export abstract class AppBase extends ServiceBase {
     return this.promptsClient.render(language, promptKey, params, meta);
   }
 
-  /**
-   * Runtime environment label accessor.
-   * Controllers should always call this to fetch the environment tag.
-   */
-  public getEnvLabel(): string {
-    return this.envLabel;
-  }
-
-  /**
-   * Effective edge mode accessor.
-   * - Downstream wiring (DbWriter/DbReader/DbDeleter, SvcClient variants, etc.)
-   *   should use this to decide which concrete helpers to construct.
-   * - This value is resolved once at boot and remains immutable for the
-   *   lifetime of the process.
-   */
-  public getEdgeMode(): EdgeMode {
-    return this.edgeMode;
-  }
-
-  /**
-   * Explicit-only S2S mocks accessor (primarily for diagnostics).
-   */
-  public getS2sMocksEnabled(): boolean {
-    return this.s2sMocksEnabled;
-  }
-
-  /** DTO Registry accessor – concrete services MUST implement. */
   public abstract getDtoRegistry(): IDtoRegistry;
 
-  /** Optional svcconfig resolver hook. */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  protected getSvcconfigResolver():
-    | import("@nv/shared/middleware/policy/routePolicyGate").ISvcconfigResolver
-    | null {
+  protected getSvcconfigResolver(): any | null {
     return null;
   }
 
-  /** Versioned health base like `/api/<slug>/v<major>`. */
   protected healthBasePath(): string | null {
     return computeHealthBasePath(this.service, this.version);
   }
 
-  /** Async lifecycle entry – MUST be awaited before using `instance`. */
+  private maybeEnableProcessEnvGuard(): void {
+    let raw: string | null = null;
+    try {
+      raw = this._envDto.getEnvVar("NV_PROCESS_ENV_GUARD");
+    } catch {
+      raw = null;
+    }
+
+    if (!isProcessEnvGuardEnabled(raw)) return;
+
+    installProcessEnvGuard({
+      service: this.service,
+      envLabel: this.envLabel,
+      lockImmediately: true,
+    });
+
+    const st = getProcessEnvGuardState();
+    this.log.info(
+      { processEnvGuard: st, envLabel: this.envLabel },
+      `[${this.service}] process.env guard enabled`
+    );
+  }
+
   public async boot(): Promise<void> {
     if (this._booted) return;
 
@@ -268,11 +238,7 @@ export abstract class AppBase extends ServiceBase {
       });
     }
 
-    mountPreRoutingLayer({
-      app: this.app,
-      service: this.service,
-    });
-
+    mountPreRoutingLayer({ app: this.app, service: this.service });
     mountRoutePolicyGateLayer({
       app: this.app,
       service: this.service,
@@ -282,17 +248,16 @@ export abstract class AppBase extends ServiceBase {
     });
 
     this.mountSecurity();
-
     mountParserLayer({ app: this.app });
-
     this.mountRoutes();
-
     mountPostRoutingLayer({
       app: this.app,
       service: this.service,
       envLabel: this.envLabel,
       log: this.log,
     });
+
+    this.maybeEnableProcessEnvGuard();
 
     this._booted = true;
     this.log.info(
@@ -301,14 +266,12 @@ export abstract class AppBase extends ServiceBase {
         envLabel: this.envLabel,
         edgeMode: this.edgeMode,
         s2sMocksEnabled: this.s2sMocksEnabled,
+        hasInjectedSvcClientTransport: this.hasInjectedSvcClientTransport,
       },
       "app booted"
     );
   }
 
-  // ─────────────── Hooks (override sparingly) ───────────────
-
-  /** Boot hook – delegates DB ensure to shared helper. */
   protected async onBoot(): Promise<void> {
     const ctx: DbBootContext = {
       service: this.service,
@@ -322,18 +285,13 @@ export abstract class AppBase extends ServiceBase {
     await performDbBoot(ctx);
   }
 
-  /** Optional readiness function. */
   protected readyCheck(): (() => boolean | Promise<boolean>) | undefined {
     return undefined;
   }
 
-  /** Security layer (verifyS2S, CORS, rate limits…). Default: no-op. */
   protected mountSecurity(): void {}
-
-  /** Service routes – MUST be implemented by concrete service. */
   protected abstract mountRoutes(): void;
 
-  /** Express instance after boot. */
   public get instance(): Express {
     if (!this._booted) {
       throw new Error(

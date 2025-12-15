@@ -58,8 +58,8 @@ class gatewayApp extends AppBase {
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // gateway is DB-backed: requires NV_MONGO_* and index ensure at boot.
-      checkDb: true,
+      // gateway is NOT db-backed.
+      checkDb: false,
     });
 
     // AppBase now sources envLabel from envDto; no need to pass it directly.

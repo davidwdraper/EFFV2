@@ -11,11 +11,11 @@
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - Third step in the config pipeline hierarchy:
+ * - Final step in the config pipeline hierarchy:
  *   1) Read rootBag and serviceBag (DtoBags) from ctx.
  *   2) Delegate hierarchy resolution to EnvConfigReader.mergeEnvBags().
- *   3) Leave a single-item DtoBag on ctx["bag"] with proper meta, so
- *      ControllerBase.finalize() can build the wire payload via bag.toBody().
+ *   3) Leave a single-item DtoBag on ctx["bag"] so ControllerJsonBase.finalize()
+ *      can build the wire payload via bag.toBody().
  *
  * Invariants (final handler contract):
  * - On success:
@@ -40,7 +40,6 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { EnvConfigReader } from "../../../../svc/EnvConfigReader";
 
@@ -50,7 +49,7 @@ export class CodeMergeHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Merge envConfig.rootBag and envConfig.serviceBag into a single EnvServiceDto bag on ctx['bag'] for finalize().";
+    return "Merge envConfig.rootBag and envConfig.serviceBag into a single EnvServiceDto DtoBag on ctx['bag'] for finalize().";
   }
 
   protected override async execute(): Promise<void> {
@@ -100,26 +99,19 @@ export class CodeMergeHandler extends HandlerBase {
 
       try {
         // Merge the two bags via EnvConfigReader to enforce hierarchy + counts.
+        // IMPORTANT:
+        // - Keep the result as a real DtoBag. ControllerJsonBase.finalize() is built on DtoBag semantics.
         const mergedBag: DtoBag<EnvServiceDto> = EnvConfigReader.mergeEnvBags(
           rootBag,
           serviceBag
         );
 
-        const finalDto: EnvServiceDto = mergedBag.get(0);
-        const total = 1;
-
-        // Build a canonical single-item bag with proper meta for finalize().
-        const { bag: wireBag } = BagBuilder.fromDtos([finalDto], {
-          requestId,
-          limit: total,
-          total,
-          cursor: null,
-        });
-
-        // Final-handler invariant: leave the bag on ctx["bag"]; finalize() will
-        // call bag.toBody() and construct the wire payload.
-        this.ctx.set("bag", wireBag);
+        // Final-handler invariant: leave the DtoBag on ctx["bag"].
+        // finalize() will build the wire envelope via bag.toBody().
+        this.ctx.set("bag", mergedBag);
         this.ctx.set("handlerStatus", "ok");
+
+        const finalDto: EnvServiceDto = mergedBag.get(0);
 
         const hasRoot = !!rootBag && rootBag.count() > 0;
         const hasService = !!serviceBag && serviceBag.count() > 0;

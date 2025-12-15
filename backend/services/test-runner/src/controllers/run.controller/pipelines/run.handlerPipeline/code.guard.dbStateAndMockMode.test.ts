@@ -6,7 +6,7 @@
  *
  * Purpose:
  * - Handler-level test for CodeGuardDbStateAndMockModeHandler.
- * - Validates that a safe non-prod DB_STATE + DB_MOCKING=true configuration
+ * - Validates that a safe non-prod DB_STATE + DB_MOCKS=true configuration
  *   allows the pipeline to proceed and stashes mockMode=true in ctx.
  */
 
@@ -23,7 +23,7 @@ export class CodeGuardDbStateAndMockModeTest extends HandlerTestBase {
   }
 
   public testName(): string {
-    return "CodeGuardDbStateAndMockMode allows non-prod DB_STATE with DB_MOCKING=true and sets mockMode=true";
+    return "CodeGuardDbStateAndMockMode allows non-prod DB_STATE with DB_MOCKS=true and sets mockMode=true";
   }
 
   protected async execute(): Promise<void> {
@@ -46,7 +46,7 @@ export class CodeGuardDbStateAndMockModeTest extends HandlerTestBase {
         return {
           getVar(key: string): string | undefined {
             if (key === "DB_STATE") return "smoke";
-            if (key === "DB_MOCKING") return "true";
+            if (key === "DB_MOCKS") return "true";
             return undefined;
           },
         };
@@ -69,7 +69,7 @@ export class CodeGuardDbStateAndMockModeTest extends HandlerTestBase {
 
     this.assert(
       mockMode === true,
-      `Expected mockMode=true for DB_STATE="smoke" and DB_MOCKING="true"; got "${mockMode}".`
+      `Expected mockMode=true for DB_STATE="smoke" and DB_MOCKS="true"; got "${mockMode}".`
     );
   }
 }

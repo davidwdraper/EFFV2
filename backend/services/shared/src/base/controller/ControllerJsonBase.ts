@@ -79,16 +79,20 @@ export abstract class ControllerJsonBase extends ControllerBase {
     // ───────────────────────────────────────────
     // Success path
     // ───────────────────────────────────────────
-    // NOTE: DtoBag is generic (DtoBag<T>), so the controller must not type it directly.
-    // We only require a stable interface: toJson().
+    // NOTE:
+    // - DtoBag is generic (DtoBag<T>), so the controller must not type it directly.
+    // - Controller output must use the polymorphic body serializer (ADR-0069):
+    //     - toBody() for wire bodies (controller boundary)
+    //     - toJson() remains an internal/persistence-oriented shape emitter
     const bag = ctx.get<any>("bag");
-    if (!bag || typeof bag.toJson !== "function") {
+    if (!bag || typeof bag.toBody !== "function") {
       // This is a controller/handler contract violation → 500
       const body = {
         title: "missing_response_bag",
         detail:
-          "Controller finalized without ctx['bag']. " +
-          "Handlers must store success results in a DtoBag at ctx['bag'].",
+          "Controller finalized without a ctx['bag'] that supports toBody(). " +
+          "Handlers must store success results in a DtoBag-like object at ctx['bag'] " +
+          "and the bag must implement toBody() for controller responses.",
         requestId,
       };
 
@@ -105,7 +109,7 @@ export abstract class ControllerJsonBase extends ControllerBase {
       return;
     }
 
-    const payload = bag.toJson();
+    const payload = bag.toBody();
 
     res.status(status).json(payload);
 

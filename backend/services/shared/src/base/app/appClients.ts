@@ -12,7 +12,7 @@
  * Invariants:
  * - No TTL fallback: NV_SVCCONFIG_CACHE_TTL_MS must be explicitly set to a valid integer.
  * - No implicit S2S mocking: when S2S_MOCKS is enabled, outbound S2S calls are blocked
- *   unless a deterministic test transport is injected elsewhere.
+ *   unless a deterministic test transport is explicitly injected.
  */
 
 import {
@@ -20,19 +20,33 @@ import {
   type SvcTarget,
   type ISvcconfigResolver,
   type ISvcClientLogger,
+  type ISvcClientTransport,
 } from "@nv/shared/s2s/SvcClient";
 import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
 import { SvcconfigResolverWithCache } from "@nv/shared/s2s/SvcconfigResolverWithCache";
+import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
-function requirePositiveIntEnv(name: string): number {
-  const raw = process.env[name];
-  const trimmed = typeof raw === "string" ? raw.trim() : "";
+function requirePositiveIntVarFromDto(
+  dto: EnvServiceDto,
+  name: string
+): number {
+  let raw: string;
+  try {
+    raw = dto.getEnvVar(name);
+  } catch (err) {
+    throw new Error(
+      `${name}_MISSING: ${name} is required and must be a positive integer string. ` +
+        `Ops: set ${name} explicitly (e.g., "5000") in env-service for env="${dto.getEnvLabel()}". ` +
+        `Detail: ${(err as Error)?.message ?? String(err)}`
+    );
+  }
 
+  const trimmed = raw.trim();
   if (!trimmed) {
     throw new Error(
       `${name}_MISSING: ${name} is required and must be a positive integer string. ` +
-        `Ops: set ${name} explicitly (e.g., "5000") for this process.`
+        `Ops: set ${name} explicitly (e.g., "5000") in env-service for env="${dto.getEnvLabel()}".`
     );
   }
 
@@ -40,7 +54,7 @@ function requirePositiveIntEnv(name: string): number {
   if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
     throw new Error(
       `${name}_INVALID: ${name} must be a positive integer string; got "${raw}". ` +
-        `Ops: correct ${name} in the environment for this process.`
+        `Ops: correct ${name} in env-service for env="${dto.getEnvLabel()}".`
     );
   }
 
@@ -51,13 +65,20 @@ export function createSvcClientForApp(opts: {
   service: string;
   version: number;
   log: IBoundLogger;
+  envDto: EnvServiceDto;
   /**
    * Rails-provided flag (frozen at boot in AppBase).
-   * When true, this factory wires a loud blocked transport via SvcClient.
+   * When true, S2S calls are blocked UNLESS a deterministic transport is injected.
    */
   s2sMocksEnabled: boolean;
+
+  /**
+   * Optional deterministic transport (tests only).
+   * When provided, this transport ALWAYS wins.
+   */
+  transport?: ISvcClientTransport;
 }): SvcClient {
-  const { service, version, log, s2sMocksEnabled } = opts;
+  const { service, version, log, envDto, s2sMocksEnabled, transport } = opts;
 
   const loggerAdapter: ISvcClientLogger = {
     debug: (msg, meta) => log.debug(meta ?? {}, msg),
@@ -66,11 +87,13 @@ export function createSvcClientForApp(opts: {
     error: (msg, meta) => log.error(meta ?? {}, msg),
   };
 
-  let resolver: ISvcconfigResolver;
-
   // Required TTL. No fallbacks. Ever.
-  const ttlMs = requirePositiveIntEnv("NV_SVCCONFIG_CACHE_TTL_MS");
+  const ttlMs = requirePositiveIntVarFromDto(
+    envDto,
+    "NV_SVCCONFIG_CACHE_TTL_MS"
+  );
 
+  let resolver: ISvcconfigResolver;
   try {
     resolver = new SvcconfigResolverWithCache({
       logger: loggerAdapter,
@@ -84,8 +107,8 @@ export function createSvcClientForApp(opts: {
   } catch (err) {
     const msg =
       `[${service}] SvcClient resolver not wired. ` +
-      `Cannot resolve svcconfig targets; NV_SVCCONFIG_URL is likely missing. ` +
-      "Ops: set NV_SVCCONFIG_URL for this process and ensure svcconfig is reachable.";
+      `Cannot resolve svcconfig targets; NV_SVCCONFIG_URL is likely missing or invalid. ` +
+      "Ops: set NV_SVCCONFIG_URL for this process (absolute URL) and ensure svcconfig is reachable.";
     log.error({ error: (err as Error)?.message }, msg);
 
     resolver = {
@@ -107,10 +130,16 @@ export function createSvcClientForApp(opts: {
     logger: loggerAdapter,
     svcconfigResolver: resolver,
     requestIdProvider: () => `svcclient-${Date.now().toString(36)}`,
-    tokenFactory: undefined,
-    blockS2SReason: s2sMocksEnabled
-      ? `S2S_MOCKS=true for service="${service}".`
-      : undefined,
+
+    // Resolution order (do not change):
+    // 1) explicit transport (tests)
+    // 2) blocked transport when S2S_MOCKS=true
+    // 3) default fetch transport
+    transport,
+    blockS2SReason:
+      !transport && s2sMocksEnabled
+        ? `S2S_MOCKS=true for service="${service}".`
+        : undefined,
   });
 }
 

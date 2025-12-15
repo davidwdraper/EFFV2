@@ -10,21 +10,30 @@
  *   • standard run() wrapper with pass/fail result,
  *   • assertion helpers with consistent counting,
  *   • BagCount checks for DtoBag instances,
- *   • small reusable assertions to avoid per-test local helpers.
+ *   • STANDARDIZED HandlerContext bus seeding (defaults + deltas),
+ *   • STANDARDIZED handler execution wrapper that mirrors production:
+ *       new Handler(ctx, controller).run()
  *
  * Invariants:
  * - Tests throw on assertion failure; HandlerTestBase converts that into a
  *   structured HandlerTestResult.
  * - Tests live side-by-side with the handler under test:
  *   code.foo.bar.ts + code.foo.bar.test.ts.
+ * - Tests seed ONLY handler-specific deltas; defaults come from seedDefaults().
  *
  * Notes:
- * - This file must live under `http/handlers/testing` to match imports.
+ * - Must live under `http/handlers/testing` to match imports.
+ * - Files within shared MUST use explicit relative imports (no @nv/shared/*).
  */
 
-import type { ILogger } from "@nv/shared/logger/Logger";
-import { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { DtoBase } from "@nv/shared/dto/DtoBase";
+import type { ILogger, IBoundLogger } from "../../../logger/Logger";
+import { DtoBag } from "../../../dto/DtoBag";
+import type { DtoBase } from "../../../dto/DtoBase";
+import { HandlerContext } from "../HandlerContext";
+import type { HandlerBase } from "../HandlerBase";
+import type { ControllerBase } from "../../../base/controller/ControllerBase";
+import type { AppBase } from "../../../base/app/AppBase";
+import type { IDtoRegistry } from "../../../registry/RegistryBase";
 
 export type HandlerTestOutcome = "passed" | "failed";
 
@@ -37,6 +46,77 @@ export interface HandlerTestResult {
   errorMessage?: string;
   durationMs: number;
 }
+
+/**
+ * Canonical minimal wire-bag envelope used by many handlers at edges.
+ * Tests can override with a full payload when needed.
+ */
+export function defaultWireBagEnvelope(): {
+  items: unknown[];
+  meta?: Record<string, unknown>;
+} {
+  return { items: [] };
+}
+
+export type HandlerTestSeed = {
+  requestId?: string;
+  dtoType?: string;
+  op?: string;
+  body?: unknown;
+
+  /**
+   * Default: do NOT seed ctx["bag"] unless explicitly provided.
+   * This prevents false positives where a handler “finds” a bag that no one seeded.
+   */
+  bag?: unknown;
+
+  /**
+   * Optional convenience keys commonly used in handlers/pipelines.
+   * Only seeded if provided.
+   */
+  pipeline?: string;
+  slug?: string;
+};
+
+/**
+ * High-level harness inputs:
+ * - app + registry can be provided by the caller (preferred when running inside a real service).
+ * - If omitted, we create minimal stubs that satisfy HandlerBase constructor invariants.
+ *
+ * IMPORTANT:
+ * - For real S2S execution, you MUST supply an app that has getEnvLabel() + getSvcClient().
+ *   The cleanest source is the *actual* AppBase instance from the running process
+ *   that is constructing the handler tests (e.g., test-runner’s AppBase).
+ */
+export type HandlerTestHarnessOptions = {
+  app?: AppBase;
+  registry?: IDtoRegistry;
+
+  /**
+   * Optional explicit env label override (if your app stub uses it).
+   * If omitted, harness will try app.getEnvLabel() and fall back to "dev".
+   */
+  envLabel?: string;
+
+  /**
+   * Optional logger for test diagnostics.
+   * If provided, failures will be logged once per test.
+   */
+  log?: ILogger;
+};
+
+export type HandlerCtor<T extends HandlerBase> = new (
+  ctx: HandlerContext,
+  controller: ControllerBase
+) => T;
+
+export type HandlerRunResult = {
+  handlerStatus: string;
+  status: number;
+  responseStatus?: number;
+  responseBody?: unknown;
+  snapshot: Record<string, unknown>;
+};
 
 /**
  * Base class for all handler tests.
@@ -108,16 +188,161 @@ export abstract class HandlerTestBase {
   protected abstract execute(): Promise<void>;
 
   // ------------------------------
-  // Assertion Helpers (PUBLIC on purpose)
+  // KISS Harness: seed → run → compare
   // ------------------------------
 
   /**
-   * Primary assertion helper used by tests.
-   * - Counts exactly ONE assertion per call (even when it fails).
-   * - Throws on failure so the test stops at first failed assertion (KISS).
-   *
-   * PUBLIC so tests never need local `assert(...)` helpers.
+   * Create a fresh HandlerContext with deterministic defaults.
+   * Tests should call this once, then seed only handler-specific deltas.
    */
+  protected makeCtx(seed?: HandlerTestSeed): HandlerContext {
+    const ctx = new HandlerContext();
+    this.seedDefaults(ctx, seed);
+    return ctx;
+  }
+
+  /**
+   * Seed deterministic defaults onto an existing ctx.
+   * Safe to call exactly once per ctx.
+   */
+  protected seedDefaults(ctx: HandlerContext, seed?: HandlerTestSeed): void {
+    const requestId = (seed?.requestId ?? "req-test").trim() || "req-test";
+    const dtoType = (seed?.dtoType ?? "test").trim() || "test";
+    const op = (seed?.op ?? "test").trim() || "test";
+    const body = seed?.body ?? defaultWireBagEnvelope();
+
+    ctx.set("requestId", requestId);
+    ctx.set("dtoType", dtoType);
+    ctx.set("op", op);
+    ctx.set("body", body);
+
+    // Optional conventional keys
+    if (typeof seed?.pipeline === "string" && seed.pipeline.trim() !== "") {
+      ctx.set("pipeline", seed.pipeline.trim());
+    }
+    if (typeof seed?.slug === "string" && seed.slug.trim() !== "") {
+      ctx.set("slug", seed.slug.trim());
+    }
+
+    // DO NOT seed ctx["bag"] unless explicitly asked.
+    if (typeof seed?.bag !== "undefined") {
+      ctx.set("bag", seed.bag);
+    }
+  }
+
+  /**
+   * Convenience for negative tests: remove a key.
+   * Uses ctx.delete() (real API), not fake “set undefined” hacks.
+   */
+  protected remove(ctx: HandlerContext, key: string): void {
+    ctx.delete(key);
+  }
+
+  /**
+   * Build a ControllerBase harness that satisfies HandlerBase invariants:
+   * - controller.getApp() must return an AppBase-like instance
+   * - controller.getDtoRegistry() must return a registry (can be empty for tests)
+   *
+   * For REAL S2S execution, pass a real AppBase from the running process.
+   */
+  protected makeControllerHarness(
+    opts: HandlerTestHarnessOptions = {}
+  ): ControllerBase {
+    const app = opts.app ?? this.makeAppStub(opts);
+    const registry = opts.registry ?? ({} as IDtoRegistry);
+
+    const controllerStub: ControllerBase = {
+      getApp: () => app,
+      getDtoRegistry: () => registry,
+
+      // HandlerBase.getVar() uses controller.getSvcEnv() via envHelpers;
+      // many handler tests won't touch getVar(), but if they do, we want a sane stub.
+      getSvcEnv: () =>
+        (app as any)?.getSvcEnv?.() ??
+        ({
+          env: (opts.envLabel ??
+            (app as any)?.getEnvLabel?.() ??
+            "dev") as string,
+          getVar: (key: string) => {
+            // No silent fallbacks. Tests must explicitly provide a real svc env if they need vars.
+            throw new Error(
+              `HANDLER_TEST_SVCENV_VAR_ACCESS: attempted to read env var "${key}" in a handler test without a real SvcEnv. ` +
+                `Ops/Dev: provide a real AppBase (preferred) or extend the test harness to supply getSvcEnv().getVar("${key}").`
+            );
+          },
+        } as any),
+    } as unknown as ControllerBase;
+
+    return controllerStub;
+  }
+
+  /**
+   * Run a handler exactly like production:
+   *   const h = new Handler(ctx, controller); await h.run();
+   *
+   * Returns a small, comparable result surface.
+   */
+  protected async runHandler<T extends HandlerBase>(input: {
+    handlerCtor: HandlerCtor<T>;
+    ctx: HandlerContext;
+    harness?: HandlerTestHarnessOptions;
+  }): Promise<HandlerRunResult> {
+    const controller = this.makeControllerHarness(input.harness);
+
+    const handler = new input.handlerCtor(input.ctx, controller);
+    await handler.run();
+
+    const handlerStatus = input.ctx.get<string>("handlerStatus") ?? "ok";
+    const status = input.ctx.get<number>("status") ?? 200;
+
+    const responseStatus = input.ctx.get<number>("response.status");
+    const responseBody = input.ctx.get<unknown>("response.body");
+
+    return {
+      handlerStatus,
+      status,
+      responseStatus,
+      responseBody,
+      snapshot: input.ctx.snapshot(),
+    };
+  }
+
+  /**
+   * Minimal AppBase stub.
+   *
+   * WARNING:
+   * - This does NOT provide real S2S.
+   * - If you want S2S to actually execute (integration), pass the real AppBase via harness.app.
+   */
+  private makeAppStub(opts: HandlerTestHarnessOptions): AppBase {
+    const envLabel =
+      (opts.envLabel ?? "").trim() ||
+      ((opts.app as any)?.getEnvLabel?.() as string) ||
+      "dev";
+
+    const log: IBoundLogger | undefined = (opts.app as any)?.log;
+
+    const stub: Partial<AppBase> = {
+      // Common patterns used by handlers
+      getEnvLabel: () => envLabel,
+      getSvcClient: () => {
+        throw new Error(
+          "HANDLER_TEST_SVCCLIENT_MISSING: handler attempted to call getSvcClient() but the test harness did not supply a real AppBase. " +
+            "Dev: pass harness.app = real AppBase from the running service to execute real S2S."
+        );
+      },
+
+      // Allow HandlerBase to prefer app.log if present
+      ...(log ? { log } : {}),
+    };
+
+    return stub as AppBase;
+  }
+
+  // ------------------------------
+  // Assertion Helpers (PUBLIC on purpose)
+  // ------------------------------
+
   public assert(condition: unknown, message: string): void {
     this.recordAssertion();
     if (!condition) {
@@ -125,21 +350,11 @@ export abstract class HandlerTestBase {
     }
   }
 
-  /**
-   * Explicit fail helper for rare cases where an assertion does not map to a boolean check.
-   * - Counts as one assertion.
-   *
-   * PUBLIC so tests can do: this.fail("...") without re-implementing it.
-   */
   public fail(message: string): never {
     this.recordAssertion();
     throw new Error(message);
   }
 
-  /**
-   * Convenience: assert a value is defined (not null/undefined).
-   * Counts as one assertion.
-   */
   public assertDefined<T>(
     value: T | null | undefined,
     message: string
@@ -147,10 +362,6 @@ export abstract class HandlerTestBase {
     this.assert(value !== null && value !== undefined, message);
   }
 
-  /**
-   * Convenience: assert strict equality with a helpful message.
-   * Counts as one assertion.
-   */
   public assertEq<T>(actual: T, expected: T, label?: string): void {
     const prefix = label ? `${label}: ` : "";
     this.assert(
@@ -159,18 +370,10 @@ export abstract class HandlerTestBase {
     );
   }
 
-  /**
-   * Convenience: assert boolean true.
-   * Counts as one assertion.
-   */
   public assertTrue(value: unknown, message: string): void {
     this.assert(value === true, message);
   }
 
-  /**
-   * Convenience: assert boolean false.
-   * Counts as one assertion.
-   */
   public assertFalse(value: unknown, message: string): void {
     this.assert(value === false, message);
   }
@@ -179,12 +382,6 @@ export abstract class HandlerTestBase {
   // BagCount helpers
   // ------------------------------
 
-  /**
-   * BagCount(:dtoBag, "eq0" | "eq1" | "ge0" | "ge1")
-   * - Uses items() iterator; no assumptions about Bag internals.
-   *
-   * PUBLIC so tests can call it directly.
-   */
   public assertBagCount<TDto extends DtoBase>(
     bag: DtoBag<TDto>,
     comparator: "eq0" | "eq1" | "ge0" | "ge1",

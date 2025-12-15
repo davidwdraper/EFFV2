@@ -109,8 +109,8 @@ export class DbWriter<TDto extends DtoBase> {
       );
 
       throw new DbWriterEdgeModeConfigError(
-        "DbWriter edge-mode configuration is invalid: both DB_STATE (dbState) and DB_MOCKING-derived mockMode are required when constructing DbWriter with edge-mode. " +
-          "Ops: ensure DB_STATE and DB_MOCKING are defined in env-service for this service/version and that mockMode is computed from DB_MOCKING before constructing DbWriter."
+        "DbWriter edge-mode configuration is invalid: both DB_STATE (dbState) and DB_MOCKS-derived mockMode are required when constructing DbWriter with edge-mode. " +
+          "Ops: ensure DB_STATE and DB_MOCKS are defined in env-service for this service/version and that mockMode is computed from DB_MOCKS before constructing DbWriter."
       );
     }
 
@@ -133,7 +133,7 @@ export class DbWriter<TDto extends DtoBase> {
         throw new DbWriterEdgeModeConfigError(
           "DbWriter edge-mode safety block: " +
             decision.reason +
-            " Ops: adjust DB_STATE and DB_MOCKING in env-service so that writes are directed only at safe, non-prod databases, " +
+            " Ops: adjust DB_STATE and DB_MOCKS in env-service so that writes are directed only at safe, non-prod databases, " +
             'and ensure DB_STATE is set to values like "smoke" or "testsuite" for non-mocked test runs.'
         );
       }

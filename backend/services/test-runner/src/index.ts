@@ -6,10 +6,14 @@
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *
- * Purpose (template):
- * - Pure orchestration entrypoint for a CRUD-style test-runner service.
- * - Delegates DB + config loading to envBootstrap().
- * - Unwraps the EnvServiceDto (from envBag) for createApp().
+ * Purpose:
+ * - Pure orchestration entrypoint for the test-runner MOS service.
+ * - Delegates env/config loading to envBootstrap().
+ * - Unwraps EnvServiceDto (from envBag) for createApp().
+ *
+ * Invariants:
+ * - test-runner is MOS-only: it must NOT require DB vars and must NOT run DB boot.
+ * - test-log is the DB-backed writer for test-run + test-handler collections.
  */
 
 import fs from "fs";
@@ -29,11 +33,16 @@ const LOG_FILE = path.resolve(process.cwd(), "test-runner-startup-error.log");
 (async () => {
   try {
     // Step 1: Bootstrap and load configuration (env-service-backed config)
+    //
+    // CRITICAL:
+    // - test-runner is a MOS service and must not require NV_MONGO_*.
+    // - Therefore checkDb MUST be false here (otherwise envBootstrap will
+    //   demand DB vars and the shared boot path will attempt ensureIndexes()).
     const { envBag, envReloader, host, port, envLabel } = await envBootstrap({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
       logFile: LOG_FILE,
-      checkDb: true,
+      checkDb: false,
     });
 
     // Step 2: Extract the primary EnvServiceDto from the bag (should always be exactly one)
@@ -68,13 +77,14 @@ const LOG_FILE = path.resolve(process.cwd(), "test-runner-startup-error.log");
     const { app } = await createApp({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
-      envLabel, // <-- this is what test-runner/app.ts expects
+      envLabel,
       envDto: primary,
       envReloader: envReloaderForApp,
     });
 
     // Step 5: Start listening.
     app.listen(port, host, () => {
+      // eslint-disable-next-line no-console
       console.info("[entrypoint] http_listening", {
         slug: SERVICE_SLUG,
         version: SERVICE_VERSION,

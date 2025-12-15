@@ -28,7 +28,7 @@ import { S2sLogToTestLogHandler } from "./s2s.logToTestLog";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   return [
-    // 0) Hard guard: DB_STATE / DB_MOCKING safety + mockMode selection.
+    // 0) Hard guard: DB_STATE / DB_MOCKS safety + mockMode selection.
     new CodeGuardDbStateAndMockModeHandler(ctx, controller),
 
     // 1) Walk the code tree to discover pipelines/handlers suitable for testing.

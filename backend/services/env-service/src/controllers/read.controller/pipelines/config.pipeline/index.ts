@@ -9,7 +9,7 @@
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - Read root env follwed by merging service's env
+ * - Read root env followed by merging service's env.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";

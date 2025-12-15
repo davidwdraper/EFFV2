@@ -12,7 +12,7 @@
  * - Keep HandlerBase lean by moving error plumbing to focused helpers.
  *
  * Test behavior:
- * - When requestScope indicates expected negative-test errors, we downgrade
+ * - When requestScope OR ctx indicates expected negative-test errors, downgrade
  *   ERROR logging to WARN (still visible, but no pager-noise).
  */
 
@@ -112,6 +112,16 @@ function extractFirstStackFrame(rawError: unknown): FirstFrame | undefined {
   };
 }
 
+function isExpectedErrorFromCtx(ctx: HandlerContext): boolean {
+  // Test-runner / handler tests can set this directly on HandlerContext.
+  // KISS: only treat literal boolean true as opt-in.
+  try {
+    return ctx.get<boolean | undefined>("expectErrors") === true;
+  } catch {
+    return false;
+  }
+}
+
 export function buildHandlerError(opts: {
   input: FailWithErrorInput;
   handlerName: string;
@@ -205,7 +215,10 @@ export function logAndAttachHandlerError(opts: {
     firstFrame,
   });
 
-  const expected = isExpectedErrorContext();
+  // Expected negative tests can be marked either:
+  // - via requestScope ALS (real HTTP flows), OR
+  // - via HandlerContext (unit/handler tests).
+  const expected = isExpectedErrorContext() || isExpectedErrorFromCtx(ctx);
 
   const logPayload: Record<string, unknown> = {
     event: "handler_fail",

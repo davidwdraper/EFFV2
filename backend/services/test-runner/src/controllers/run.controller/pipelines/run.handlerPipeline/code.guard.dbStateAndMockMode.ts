@@ -9,7 +9,7 @@
  *
  * Purpose:
  * - First handler in the test-runner pipeline that **hard-gates execution**
- *   based on DB_STATE and DB_MOCKING.
+ *   based on DB_STATE and DB_MOCKS.
  * - Prevents the test-runner from:
  *   • ever running against prod DB_STATE, and
  *   • running non-mocked writes against dev/stage/prod.
@@ -17,10 +17,10 @@
  *   downstream handlers (DbWriter edge-mode, etc.).
  *
  * Invariants:
- * - DB_STATE and DB_MOCKING **must** be defined in env-service.
- * - DB_STATE="prod"/"production" ⇒ hard block, regardless of DB_MOCKING.
- * - If DB_MOCKING === true  ⇒ any non-prod DB_STATE is allowed.
- * - If DB_MOCKING === false ⇒ DB_STATE **cannot** be dev/development/stage/staging/prod/production
+ * - DB_STATE and DB_MOCKS **must** be defined in env-service.
+ * - DB_STATE="prod"/"production" ⇒ hard block, regardless of DB_MOCKS.
+ * - If DB_MOCKS === true  ⇒ any non-prod DB_STATE is allowed.
+ * - If DB_MOCKS === false ⇒ DB_STATE **cannot** be dev/development/stage/staging/prod/production
  *   (must be a dedicated test state, e.g. "smoke", "testsuite", "ci").
  * - On failure:
  *   • handlerStatus="error"
@@ -53,7 +53,7 @@ function resolveDbMockMode(
     return {
       ok: false,
       detail:
-        'DB_MOCKING is missing in env-service configuration for this service. Ops: add DB_MOCKING="true" or "false" to env-service for this (env, slug, version) before running the test-runner.',
+        'DB_MOCKS is missing in env-service configuration for this service. Ops: add DB_MOCKS="true" or "false" to env-service for this (env, slug, version) before running the test-runner.',
     };
   }
 
@@ -65,7 +65,7 @@ function resolveDbMockMode(
     return {
       ok: false,
       detail:
-        'DB_STATE is set to "prod" for this service. The test-runner will not execute against a production DB_STATE, regardless of DB_MOCKING. Ops: point DB_STATE to a non-prod, test-safe database (e.g. "smoke" or "testsuite") before re-running.',
+        'DB_STATE is set to "prod" for this service. The test-runner will not execute against a production DB_STATE, regardless of DB_MOCKS. Ops: point DB_STATE to a non-prod, test-safe database (e.g. "smoke" or "testsuite") before re-running.',
     };
   }
 
@@ -78,8 +78,8 @@ function resolveDbMockMode(
     return {
       ok: false,
       detail:
-        `DB_MOCKING="${dbMockingRaw}" is invalid. Expected "true" or "false". ` +
-        'Ops: update env-service so DB_MOCKING is exactly "true" or "false" for this service.',
+        `DB_MOCKS="${dbMockingRaw}" is invalid. Expected "true" or "false". ` +
+        'Ops: update env-service so DB_MOCKS is exactly "true" or "false" for this service.',
     };
   }
 
@@ -102,9 +102,9 @@ function resolveDbMockMode(
     return {
       ok: false,
       detail:
-        `DB_STATE="${dbStateRaw}" is not allowed when DB_MOCKING=false. ` +
+        `DB_STATE="${dbStateRaw}" is not allowed when DB_MOCKS=false. ` +
         `Non-mocked test-runner execution must target a dedicated test database (e.g. "smoke", "testsuite", or "ci"), not dev/stage/prod. ` +
-        "Ops: update DB_STATE to a test-only value and/or set DB_MOCKING=true for safe mock-mode runs.",
+        "Ops: update DB_STATE to a test-only value and/or set DB_MOCKS=true for safe mock-mode runs.",
     };
   }
 
@@ -125,7 +125,7 @@ export class CodeGuardDbStateAndMockModeHandler extends HandlerBase {
    * One-sentence, ops-facing description of what this handler does.
    */
   protected handlerPurpose(): string {
-    return "Guard test-runner execution based on DB_STATE and DB_MOCKING, computing mockMode for downstream handlers.";
+    return "Guard test-runner execution based on DB_STATE and DB_MOCKS, computing mockMode for downstream handlers.";
   }
 
   /**
@@ -137,7 +137,7 @@ export class CodeGuardDbStateAndMockModeHandler extends HandlerBase {
 
     // Strict env access; both vars are required and wired via env-service.
     const dbState = this.getVar("DB_STATE", true);
-    const dbMocking = this.getVar("DB_MOCKING", true);
+    const dbMocking = this.getVar("DB_MOCKS", true);
 
     const result = resolveDbMockMode(dbState, dbMocking);
 
@@ -155,7 +155,7 @@ export class CodeGuardDbStateAndMockModeHandler extends HandlerBase {
         },
         issues: [{ dbState, dbMocking }],
         logMessage:
-          "test-runner: blocking execution due to unsafe DB_STATE/DB_MOCKING configuration.",
+          "test-runner: blocking execution due to unsafe DB_STATE/DB_MOCKS configuration.",
         logLevel: "error",
       });
 
@@ -177,7 +177,7 @@ export class CodeGuardDbStateAndMockModeHandler extends HandlerBase {
         slug: this.safeServiceSlug(),
         pipeline: this.safePipeline(),
       },
-      "test-runner: DB_STATE/DB_MOCKING configuration validated; continuing pipeline."
+      "test-runner: DB_STATE/DB_MOCKS configuration validated; continuing pipeline."
     );
   }
 }

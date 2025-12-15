@@ -39,7 +39,6 @@ import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { EnvConfigReader } from "../../../../svc/EnvConfigReader";
-
 export class DbReadRootHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);

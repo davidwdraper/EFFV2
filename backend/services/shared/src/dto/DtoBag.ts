@@ -4,6 +4,8 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
+ *   - ADR-0050 (Wire Bag Envelope; bag-only edges)
+ *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics)
  *
  * Purpose:
  * - Immutable, generic in-memory container for DTOs.
@@ -13,6 +15,11 @@
  * - Never mutates; holds the master ordered array of DTOs.
  * - Does not expose raw arrays; callers operate on DtoBagView instances.
  * - All refining operations live here and RETURN NEW VIEWS.
+ *
+ * Wire Contract:
+ * - toBody() produces the canonical wire envelope:
+ *     { items: [ dto.toBody(), ... ], meta: { count, dtoType? } }
+ * - Controllers serialize bags; clients validate { items: [...] }.
  *
  * Notes:
  * - No logging here. Handlers/controllers log as needed.
@@ -57,6 +64,16 @@ export type FilterPlan<T> = {
 };
 
 type IncludeOptions = { ci?: boolean; normalize?: (s: string) => string };
+
+type WireBagMeta = {
+  count: number;
+  dtoType?: string;
+};
+
+type WireBagBody = {
+  items: any[];
+  meta: WireBagMeta;
+};
 
 function isFn<T>(p: PathOrGetter<T>): p is (dto: T) => unknown {
   return typeof p === "function";
@@ -152,26 +169,42 @@ export class DtoBag<T> {
   }
 
   /**
-   * Materialize this bag into a JSON-ready DTO array for wire transport.
-   * Each DTO is expected to implement toBody(); if it does not, it is passed
-   * through as-is (defensive only).
+   * Canonical wire serializer.
    *
-   * NOTE:
-   * - This does NOT wrap in { items, meta }; that is the ControllerBase's job.
-   * - This keeps the "DTOs only ever live in bags" invariant: callers only see
-   *   JSON, never live DTO instances.
+   * Produces:
+   *   { items: [ dto.toBody(), ... ], meta: { count, dtoType? } }
+   *
+   * Invariants:
+   * - Every item MUST implement toBody(); if not, this is a rails violation.
+   * - Envelope shape is stable across S2S and public boundaries (ADR-0050/0069).
    */
-  public toBody(): any[] {
+  public toBody(): WireBagBody {
     const out: any[] = [];
+
+    let dtoType: string | undefined;
+
     for (const dto of this._items) {
-      if (dto && typeof (dto as any).toBody === "function") {
-        out.push((dto as any).toBody());
-      } else {
-        // Defensive fallback; in normal flows all entries are DTOs.
-        out.push(dto);
+      if (!dto || typeof (dto as any).toBody !== "function") {
+        throw new Error(
+          "DTOBAG_ITEM_MISSING_TOBODY: DtoBag contains an item that does not implement toBody(). " +
+            "Ops: ensure handlers only store DTO instances in bags, and all DTOs implement toBody()/fromBody() per ADR-0069."
+        );
       }
+
+      if (dtoType === undefined && typeof (dto as any).getType === "function") {
+        dtoType = String((dto as any).getType());
+      }
+
+      out.push((dto as any).toBody());
     }
-    return out;
+
+    return {
+      items: out,
+      meta: {
+        count: out.length,
+        dtoType,
+      },
+    };
   }
 
   /**
@@ -300,7 +333,6 @@ export class DtoBag<T> {
       return !s.has(v);
     }
 
-    // --- Range-like comparisons (explicit casts silence TS18046 while keeping behavior) ---
     const vv: any = v;
     if (p.gte !== undefined) {
       const rhs: any = normIfString(p.gte, opts);
@@ -319,7 +351,6 @@ export class DtoBag<T> {
       if (!(vv < rhs)) return false;
     }
 
-    // If no operator matched, treat as true (predicate vacuously satisfied).
     return true;
   }
 

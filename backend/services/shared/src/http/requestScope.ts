@@ -11,7 +11,7 @@
  *
  * Invariants:
  * - No process.env reads.
- * - Pure runtime scope only (seeded at inbound controller boundary).
+ * - Pure runtime scope only (seeded at inbound controller boundary or test harness).
  */
 
 import type { Request } from "express";
@@ -72,6 +72,25 @@ export function enterRequestScopeFromInbound(input: {
 
   ALS.enterWith(scope);
   return scope;
+}
+
+/**
+ * Seed request scope directly (non-Express contexts like handler tests).
+ * Prefer withRequestScope() unless you intentionally want to override the current store.
+ */
+export function enterRequestScope(scope: NvRequestScope): void {
+  ALS.enterWith(scope);
+}
+
+/**
+ * Run a function inside a temporary request scope.
+ * Safe for tests: the previous scope is restored automatically.
+ */
+export async function withRequestScope<T>(
+  scope: NvRequestScope,
+  fn: () => Promise<T>
+): Promise<T> {
+  return await ALS.run(scope, fn);
 }
 
 /** Best-effort getter (never throws). */

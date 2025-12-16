@@ -22,7 +22,7 @@ import { DtoBase, DtoValidationError } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
 import type { IDto } from "./IDto";
 
-export type TestRunStatus = "pass" | "fail" | "error";
+export type TestRunStatus = "started" | "pass" | "fail" | "error";
 
 type TestRunJson = {
   _id?: string;
@@ -172,7 +172,12 @@ export class TestRunDto extends DtoBase implements IDto {
       dto.pipelinePath = j.pipelinePath.trim();
     }
 
-    if (j.status === "pass" || j.status === "fail" || j.status === "error") {
+    if (
+      j.status === "started" ||
+      j.status === "pass" ||
+      j.status === "fail" ||
+      j.status === "error"
+    ) {
       dto.status = j.status;
     }
 

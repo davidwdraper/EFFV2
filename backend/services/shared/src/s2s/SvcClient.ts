@@ -461,6 +461,63 @@ export class SvcClient {
     opts.headers["authorization"] = `Bearer ${token}`;
   }
 
+  /**
+   * Derive the CRUD path id.
+   *
+   * Invariant:
+   * - There is only one canonical id: `_id` (rails-owned, idempotent).
+   * - This helper never invents an id; it only finds one supplied explicitly
+   *   or present in the singleton DTO body within the bag.
+   *
+   * Notes:
+   * - We use the *wire body* shape (DtoBag.toBody()) rather than DTO internals.
+   */
+  private deriveCrudId(params: SvcClientCallParams): string | undefined {
+    const explicit = (params.id ?? "").trim();
+    if (explicit) return explicit;
+
+    const bag = params.bag;
+    if (!bag) return undefined;
+
+    let raw: unknown;
+    try {
+      raw = bag.toBody() as unknown;
+    } catch {
+      return undefined;
+    }
+
+    // Supported shapes from buildDtoBody():
+    // - { items: [...] }
+    // - [...]
+    // - { ...dto }
+    const tryGetId = (obj: unknown): string | undefined => {
+      if (!obj || typeof obj !== "object") return undefined;
+      const v = (obj as any)._id;
+      if (typeof v !== "string") return undefined;
+      const s = v.trim();
+      return s ? s : undefined;
+    };
+
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      if ("items" in (raw as Record<string, unknown>)) {
+        const items = (raw as any).items;
+        if (Array.isArray(items) && items.length === 1) {
+          return tryGetId(items[0]);
+        }
+        return undefined;
+      }
+
+      // Singleton DTO object
+      return tryGetId(raw);
+    }
+
+    if (Array.isArray(raw) && raw.length === 1) {
+      return tryGetId(raw[0]);
+    }
+
+    return undefined;
+  }
+
   private buildCrudSuffix(params: SvcClientCallParams): string {
     if (params.pathSuffix && params.pathSuffix.trim().length > 0) {
       const trimmed = params.pathSuffix.trim();
@@ -470,7 +527,6 @@ export class SvcClient {
     const method = params.method.toUpperCase();
     const op = (params.op ?? "").toLowerCase();
     const dtoType = (params.dtoType ?? "").trim();
-    const id = (params as any).id as string | undefined;
 
     if (!dtoType) {
       throw new Error(
@@ -479,35 +535,37 @@ export class SvcClient {
     }
 
     const encType = encodeURIComponent(dtoType);
-    const encId = id ? encodeURIComponent(id) : undefined;
 
     if (method === "PUT" && op === "create") return `/${encType}/create`;
 
     if (method === "PATCH" && op === "update") {
-      if (!encId) {
+      const id = this.deriveCrudId(params);
+      if (!id) {
         throw new Error(
-          `SvcClient.buildCrudSuffix: PATCH update requires 'id' for dtoType="${dtoType}".`
+          `SvcClient.buildCrudSuffix: PATCH update requires '_id' on the singleton DTO (or an explicit id) for dtoType="${dtoType}".`
         );
       }
-      return `/${encType}/update/${encId}`;
+      return `/${encType}/update/${encodeURIComponent(id)}`;
     }
 
     if (method === "GET" && op === "read") {
-      if (!encId) {
+      const id = this.deriveCrudId(params);
+      if (!id) {
         throw new Error(
-          `SvcClient.buildCrudSuffix: GET read requires 'id' for dtoType="${dtoType}".`
+          `SvcClient.buildCrudSuffix: GET read requires '_id' on the singleton DTO (or an explicit id) for dtoType="${dtoType}".`
         );
       }
-      return `/${encType}/read/${encId}`;
+      return `/${encType}/read/${encodeURIComponent(id)}`;
     }
 
     if (method === "DELETE" && op === "delete") {
-      if (!encId) {
+      const id = this.deriveCrudId(params);
+      if (!id) {
         throw new Error(
-          `SvcClient.buildCrudSuffix: DELETE delete requires 'id' for dtoType="${dtoType}".`
+          `SvcClient.buildCrudSuffix: DELETE delete requires '_id' on the singleton DTO (or an explicit id) for dtoType="${dtoType}".`
         );
       }
-      return `/${encType}/delete/${encId}`;
+      return `/${encType}/delete/${encodeURIComponent(id)}`;
     }
 
     if (method === "GET" && op === "list") return `/${encType}/list`;

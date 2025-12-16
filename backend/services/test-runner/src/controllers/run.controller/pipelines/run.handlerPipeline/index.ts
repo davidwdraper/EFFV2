@@ -14,6 +14,11 @@
  * Invariants:
  * - Handlers are single-purpose and constructed per request via this factory.
  * - Guard runs first; logging runs last.
+ *
+ * Persistence flow (per session design):
+ *  1) Early: create TestRun (status=started) so crashes still leave a breadcrumb.
+ *  2) Late: create TestHandler results (second last).
+ *  3) Final: update TestRun with duration + completed status.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -22,8 +27,12 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 import { CodeGuardDbStateAndMockModeHandler } from "./code.guard.dbStateAndMockMode";
 import { CodeTreeWalkerHandler } from "./code.treeWalker";
 import { CodePlanRunsHandler } from "./code.planRuns";
+import { CodeSeedRunHandler } from "./code.seedRun";
 import { CodeLoadTestsHandler } from "./code.loadTests";
 import { CodeExecutePlanHandler } from "./code.executePlan";
+
+import { S2sLogTestRunStartHandler } from "./s2s.logTestRunStart";
+import { S2sLogTestHandlersHandler } from "./s2s.logTestHandlers";
 import { S2sLogToTestLogHandler } from "./s2s.logToTestLog";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
@@ -34,16 +43,25 @@ export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
     // 1) Walk the code tree to discover pipelines/handlers suitable for testing.
     new CodeTreeWalkerHandler(ctx, controller),
 
-    // 2) Plan which runs to execute based on discovered tests and request input.
+    // 2) Plan which runs/pipelines to execute (planning only).
     new CodePlanRunsHandler(ctx, controller),
 
-    // 3) Load tests into DTO/bag structures for execution.
+    // 3) Seed an invocation-level TestRunDto (status=started) into ctx["testRunner.runBag"].
+    new CodeSeedRunHandler(ctx, controller),
+
+    // 4) Persist a STARTED test-run record (early breadcrumb).
+    new S2sLogTestRunStartHandler(ctx, controller),
+
+    // 5) Load tests into handler instances for execution.
     new CodeLoadTestsHandler(ctx, controller),
 
-    // 4) Execute the planned tests/pipelines.
+    // 6) Execute the planned tests/pipelines and finalize the invocation runBag fields.
     new CodeExecutePlanHandler(ctx, controller),
 
-    // 5) Emit S2S log entry summarizing the test run to the log/test-log service.
+    // 7) Persist test-handler results (second last).
+    new S2sLogTestHandlersHandler(ctx, controller),
+
+    // 8) Finalize the test-run (duration + completed status) via UPDATE.
     new S2sLogToTestLogHandler(ctx, controller),
   ];
 }

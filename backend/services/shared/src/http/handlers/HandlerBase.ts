@@ -163,6 +163,10 @@ export abstract class HandlerBase {
    * Contract:
    * - If scenariosFactory returns an empty list → returns undefined (skip).
    * - Never throws (worst-case becomes a failed result).
+   *
+   * New behavior:
+   * - Happy path FIRST (expectedError=false scenarios before expectedError=true).
+   * - FAIL-FAST: once any scenario fails, stop executing further scenarios.
    */
   protected async runTestFromScenarios(input: {
     testId: string;
@@ -180,6 +184,7 @@ export abstract class HandlerBase {
       return {
         testId: input.testId,
         name: input.testName,
+        expectedError: false,
         outcome: "failed",
         assertionCount: 0,
         failedAssertions: [`scenariosFactory threw: ${msg}`],
@@ -191,6 +196,14 @@ export abstract class HandlerBase {
     if (!Array.isArray(scenarios) || scenarios.length === 0) {
       return undefined;
     }
+
+    // Happy path first: expectedError=false before expectedError=true.
+    // expectedError() is protected, so we access it best-effort via runtime.
+    scenarios = [...scenarios].sort((a, b) => {
+      const aExp = this.safeScenarioExpectedError(a);
+      const bExp = this.safeScenarioExpectedError(b);
+      return Number(aExp) - Number(bExp); // false(0) first
+    });
 
     const failedAssertions: string[] = [];
     let assertionCount = 0;
@@ -206,11 +219,13 @@ export abstract class HandlerBase {
             (r.failedAssertions && r.failedAssertions[0]) ||
             "unknown failure";
           failedAssertions.push(`${r.testId}: ${msg}`);
+          break; // FAIL-FAST
         }
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : String(err ?? "unknown error");
         failedAssertions.push(`${input.testId}: scenario runner threw: ${msg}`);
+        break; // FAIL-FAST
       }
     }
 
@@ -219,6 +234,7 @@ export abstract class HandlerBase {
     return {
       testId: input.testId,
       name: input.testName,
+      expectedError: false,
       outcome: failedAssertions.length === 0 ? "passed" : "failed",
       assertionCount,
       failedAssertions,
@@ -226,6 +242,18 @@ export abstract class HandlerBase {
         failedAssertions.length > 0 ? failedAssertions[0] : undefined,
       durationMs: Math.max(0, finishedAt - startedAt),
     };
+  }
+
+  private safeScenarioExpectedError(t: HandlerTestBase): boolean {
+    try {
+      const anyT = t as any;
+      if (typeof anyT.expectedError === "function") {
+        return anyT.expectedError() === true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
   }
 
   /**
@@ -378,11 +406,6 @@ export abstract class HandlerBase {
     }
   }
 
-  /**
-   * Best-effort ctx.get() for error/telemetry context.
-   * - Never throws.
-   * - Logs at debug if something weird happens.
-   */
   protected safeCtxGet<T = unknown>(key: string): T | undefined {
     try {
       return this.ctx.get<T | undefined>(key);
@@ -400,12 +423,6 @@ export abstract class HandlerBase {
     }
   }
 
-  /**
-   * Best-effort, normalized requestId string for logging and errors.
-   * - Reads via safeCtxGet("requestId").
-   * - Guarantees a non-empty string; falls back to "unknown".
-   * - Never throws.
-   */
   protected getRequestId(): string {
     const raw = this.safeCtxGet<any>("requestId");
     if (typeof raw === "string") {
@@ -417,12 +434,6 @@ export abstract class HandlerBase {
     return "unknown";
   }
 
-  /**
-   * Best-effort service slug for error context.
-   * - Tries app.getSlug() if present.
-   * - Falls back to ctx["slug"].
-   * - Never throws.
-   */
   protected safeServiceSlug(): string | undefined {
     try {
       const appAny = this.app as any;
@@ -444,21 +455,14 @@ export abstract class HandlerBase {
     return this.safeCtxGet<string>("slug");
   }
 
-  /** Best-effort dtoType for error context. */
   protected safeDtoType(): string | undefined {
     return this.safeCtxGet<string>("dtoType");
   }
 
-  /** Best-effort pipeline label for error context. */
   protected safePipeline(): string | undefined {
     return this.safeCtxGet<string>("pipeline");
   }
 
-  /**
-   * High-level helper for use in handler try/catch blocks:
-   * - Derives requestId from ctx if not supplied.
-   * - Delegates to errorHelpers to build/log/attach NvHandlerError.
-   */
   protected failWithError(input: FailWithErrorInput): NvHandlerError {
     const requestId = input.requestId ?? this.safeCtxGet<string>("requestId");
 
@@ -477,6 +481,5 @@ export abstract class HandlerBase {
     });
   }
 
-  /** Service routes must implement this in concrete handlers. */
   protected abstract execute(): Promise<void>;
 }

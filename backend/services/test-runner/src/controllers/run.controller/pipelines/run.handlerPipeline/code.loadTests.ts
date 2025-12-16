@@ -10,6 +10,11 @@
  *
  * Logging:
  * - Errors only (default).
+ *
+ * Critical Harness Invariant:
+ * - Foreign handlers (ex: auth) must be constructed with a controller that can supply a REAL AppBase.
+ * - Handler tests (HandlerTestBase) will call harness.getApp().getSvcClient() to execute real S2S.
+ * - Therefore: use the *real* controller (this.controller) as the harness controller.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -48,6 +53,10 @@ export class CodeLoadTestsHandler extends HandlerBase {
 
   protected handlerPurpose(): string {
     return "Load pipeline modules and instantiate handler objects so test-runner can call handler.runTest() (KISS).";
+  }
+
+  protected handlerName(): string {
+    return "code.loadTests";
   }
 
   protected override async execute(): Promise<void> {
@@ -193,27 +202,15 @@ export class CodeLoadTestsHandler extends HandlerBase {
   }
 
   /**
-   * Minimal controller stub for constructing foreign handlers.
-   * Goal: satisfy HandlerBase ctor invariants, not provide real service plumbing.
+   * Harness controller for constructing foreign handlers.
    *
-   * IMPORTANT:
-   * - Handler tests are expected to construct their own realistic stubs inside handler.runTest().
-   * - This harness exists only so we can instantiate handler objects and ask them to runTest().
+   * Invariant:
+   * - MUST expose a real AppBase so handler.runTest() can obtain a real SvcClient.
+   *
+   * Implementation:
+   * - Reuse the currently executing controller (real app + real svcenv).
    */
   private makeHarnessController(): ControllerJsonBase {
-    const appStub = {
-      log: this.log,
-      getEnvLabel: () => (this.controller as any)?.getSvcEnv?.()?.env ?? "dev",
-      getSvcClient: () =>
-        (this.controller as any)?.getApp?.()?.getSvcClient?.(),
-    };
-
-    const controllerStub = {
-      getApp: () => appStub,
-      getDtoRegistry: () => ({} as any),
-      getSvcEnv: () => (this.controller as any)?.getSvcEnv?.(),
-    } as unknown as ControllerJsonBase;
-
-    return controllerStub;
+    return this.controller as unknown as ControllerJsonBase;
   }
 }

@@ -98,6 +98,18 @@ export interface SvcClientCallParams {
   dtoType: string;
   op: string;
   method: "GET" | "PUT" | "PATCH" | "POST" | "DELETE";
+  /**
+   * CRUD identifier used for suffix construction when required.
+   *
+   * Example:
+   * - PATCH update typically targets `/<dtoType>/<op>/<id>`
+   * - DELETE typically targets `/<dtoType>/<op>/<id>`
+   *
+   * NOTE:
+   * - This is a *wire* path identifier, not a Mongo _id.
+   * - SvcClient enforces when/where it is required.
+   */
+  id?: string;
   bag?: DtoBag<any>;
   pathSuffix?: string; // optional override for `<dtoType>/<op>`
   requestId?: string;

@@ -1,4 +1,4 @@
-// backend/services/test-runner/src/controllers/run.controller/pipelines/run.handlerPipeline/s2s.logToTestLog.ts
+// backend/services/test-runner/src/controllers/run.controller/pipelines/run.handlerPipeline/s2s.logTestRunStart.ts
 /**
  * Docs:
  * - SOP + ADR-0073
@@ -7,9 +7,9 @@
  * - Errors only (default).
  *
  * Invariant:
- * - Finalizes the TestRun record by UPDATE (duration + completed status).
- * - Does NOT create TestHandler records (that is second-last now).
- * - If ctx["testRunner.runBag"] is missing, logs error and exits (best-effort).
+ * - Best-effort persists a STARTED TestRun record early in the pipeline.
+ * - Expects ctx["testRunner.runBag"] to be available after planning.
+ * - Does NOT write any TestHandler records.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -19,24 +19,22 @@ import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { TestRunDto } from "@nv/shared/dto/test-run.dto";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 
-export class S2sLogToTestLogHandler extends HandlerBase {
+export class S2sLogTestRunStartHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }
 
   protected handlerPurpose(): string {
-    return "Best-effort S2S finalize of test-run to test-log (UPDATE duration + completed status).";
+    return "Best-effort S2S create of STARTED TestRun record to test-log (early breadcrumb).";
   }
 
   protected handlerName(): string {
-    return "s2s.test-log.updateTestRunFinal";
+    return "s2s.test-log.createTestRunStart";
   }
 
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
-    const runIdFromCtx = (
-      this.ctx.get<string>("testRunner.runId") ?? ""
-    ).trim();
+    const runIdFromCtx = this.ctx.get<string>("testRunner.runId");
 
     const runBag =
       this.ctx.get<DtoBag<TestRunDto>>("testRunner.runBag") ?? null;
@@ -44,23 +42,11 @@ export class S2sLogToTestLogHandler extends HandlerBase {
     if (!runBag) {
       this.log.error(
         {
-          event: "test_runner_missing_runBag_for_finalize",
+          event: "test_runner_missing_runBag_for_start",
           requestId,
-          runId: runIdFromCtx || undefined,
+          runId: runIdFromCtx,
         },
-        "test-runner.s2s.logToTestLog(finalize): missing ctx['testRunner.runBag']; cannot finalize TestRun record."
-      );
-      this.ctx.set("handlerStatus", "ok");
-      return;
-    }
-
-    if (!runIdFromCtx) {
-      this.log.error(
-        {
-          event: "test_runner_missing_runId_for_finalize",
-          requestId,
-        },
-        "test-runner.s2s.logToTestLog(finalize): missing ctx['testRunner.runId']; cannot finalize TestRun record."
+        "test-runner.s2s.logTestRunStart: missing ctx['testRunner.runBag']; cannot create STARTED TestRun record."
       );
       this.ctx.set("handlerStatus", "ok");
       return;
@@ -75,11 +61,11 @@ export class S2sLogToTestLogHandler extends HandlerBase {
     if (!svcClient) {
       this.log.error(
         {
-          event: "test_runner_no_svcclient_for_finalize",
+          event: "test_runner_no_svcclient_for_start",
           requestId,
           runId: runIdFromCtx,
         },
-        "test-runner.s2s.logToTestLog(finalize): SvcClient not available on App; cannot finalize TestRun record."
+        "test-runner.s2s.logTestRunStart: SvcClient not available on App; cannot create STARTED TestRun record."
       );
       this.ctx.set("handlerStatus", "ok");
       return;
@@ -88,30 +74,28 @@ export class S2sLogToTestLogHandler extends HandlerBase {
     const envLabel = (this.controller as any)?.getSvcEnv?.()?.env ?? "";
 
     try {
-      // Finalize by UPDATE.
-      // NOTE: runBag must reflect the completed status + durationMs/finishedAt fields by this point.
+      // Create a STARTED record early.
       await svcClient.call({
         env: envLabel,
         slug: "test-log",
         version: 1,
         dtoType: "test-run",
-        op: "update",
-        method: "PATCH",
-        id: runIdFromCtx, // ✅ REQUIRED for PATCH (CRUD suffix)
+        op: "create",
+        method: "PUT",
         bag: runBag,
         requestId,
       });
     } catch (err) {
       this.log.error(
         {
-          event: "test_runner_s2s_finalize_run_failed",
+          event: "test_runner_s2s_create_run_start_failed",
           requestId,
           runId: runIdFromCtx,
           err:
             (err as Error)?.message ??
-            "Unknown error during S2S finalize of TestRunDto bag.",
+            "Unknown error during S2S create of STARTED TestRunDto bag.",
         },
-        "test-runner.s2s.logToTestLog(finalize): failed to finalize TestRun record (continuing)."
+        "test-runner.s2s.logTestRunStart: failed to create STARTED TestRun record (continuing)."
       );
     }
 

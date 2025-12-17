@@ -9,6 +9,8 @@
  *   - ADR-0053 (Instantiation discipline via BaseDto secret)
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *   - ADR-0060 (DTO Secure Access Layer)
+ *   - ADR-0078 (DTO write-once private fields; setters in / getters out)
+ *   - ADR-0079 (DtoBase.check — single normalization/validation gate)
  *
  * Purpose:
  * - Base class for all DTOs.
@@ -19,23 +21,11 @@
  *   • Collection name plumbing (dbCollectionName → instance).
  *   • Finalization hook for outbound wire JSON.
  *   • Optional per-field access rules for secure getters/setters.
+ *   • Shared normalization/validation via DtoBase.check().
  */
 
 import { newUuid, validateUUIDv4String } from "../utils/uuid";
-
-/**
- * UserType enum used for DTO access control.
- * The numeric ordinals are ordered from least to most privileged.
- */
-export const enum UserType {
-  Anon = 0,
-  Viber = 1,
-  PremViber = 2,
-  NotUsedYet = 3,
-  AdminDomain = 4,
-  AdminSystem = 5,
-  AdminRoot = 6,
-}
+import { UserType } from "./UserType";
 
 export type DtoMeta = {
   createdAt?: string;
@@ -52,8 +42,10 @@ type AccessRule = {
 type AccessMap = Record<string, AccessRule>;
 
 /**
- * Validation error used by concrete DTOs when they perform
+ * Validation error used by DTOs when they perform
  * per-DTO validation (e.g., EnvServiceDto.fromBody with validate=true).
+ *
+ * All failures from DtoBase.check() MUST throw this type.
  */
 export class DtoValidationError extends Error {
   public readonly issues: Array<{
@@ -71,6 +63,33 @@ export class DtoValidationError extends Error {
     this.issues = issues;
   }
 }
+
+// ─────────────── DtoBase.check() types ───────────────
+
+export type CheckKind =
+  | "string"
+  | "stringOpt"
+  | "number"
+  | "numberOpt"
+  | "boolean"
+  | "booleanOpt";
+
+export type Validator<T> = (value: T) => void; // throws DtoValidationError on failure
+
+export type CheckOptions<T> = {
+  // When true, validation runs (type + normalization + custom validator).
+  // When false/omitted, check() still normalizes but does not enforce custom validation.
+  validate?: boolean;
+
+  // Field/path name used for errors (required when validate=true).
+  path?: string;
+
+  // Optional, shared or DTO-specific validator.
+  validator?: Validator<T>;
+
+  // Optional, additional normalization after base normalization.
+  normalize?: (value: T) => T;
+};
 
 export abstract class DtoBase {
   // ─────────────── Instantiation Secret ───────────────
@@ -93,6 +112,10 @@ export abstract class DtoBase {
    *     • enforces /^[A-Za-z][A-Za-z\s'-]*$/ pattern
    *
    * Can be used by givenName, lastName, actName, businessName, etc.
+   *
+   * NOTE:
+   * - This is legacy/specialized. New DTOs should prefer DtoBase.check()
+   *   plus a dedicated validator instead of calling this directly.
    */
   public static normalizeRequiredName(
     value: unknown,
@@ -125,6 +148,211 @@ export abstract class DtoBase {
     }
 
     return raw;
+  }
+
+  // ─────────────── DtoBase.check() — single gate (ADR-0079) ───────────────
+
+  /**
+   * Single DTO-internal gate for normalization + validation of inbound values.
+   *
+   * Requirements (ADR-0079):
+   * - DTO fromBody() MUST call DtoBase.check() then set via setters.
+   * - DTO toBody() reads via getters only; it does not use check().
+   * - No logging. No defaults. No guessing.
+   *
+   * Semantics by kind:
+   * - "string":
+   *     • returns string (trimmed).
+   *     • if validate=true: rejects non-string OR empty-after-trim.
+   * - "stringOpt":
+   *     • returns string | undefined (trimmed; empty → undefined).
+   *     • non-string: if validate=true → error; else → undefined.
+   * - "number":
+   *     • accepts number or numeric string.
+   *     • returns integer via Math.trunc(n).
+   *     • if validate=true: rejects invalid / non-finite.
+   * - "numberOpt":
+   *     • returns number | undefined.
+   *     • invalid / non-finite → undefined (even when validate=true)
+   *       unless a custom validator rejects.
+   * - "boolean":
+   *     • accepts boolean only.
+   *     • if validate=true: rejects non-boolean.
+   *     • if validate=false: non-boolean coerced via Boolean(input).
+   * - "booleanOpt":
+   *     • returns boolean | undefined.
+   *     • null/undefined → undefined.
+   *     • non-boolean: if validate=true → error; else → Boolean(input).
+   */
+  public static check<T>(
+    input: unknown,
+    kind: CheckKind,
+    opts?: CheckOptions<T>
+  ): T {
+    const validate = opts?.validate === true;
+    const path = opts?.path ?? "<unknown>";
+
+    const fail = (code: string, message: string): never => {
+      if (validate && !opts?.path) {
+        throw new DtoValidationError("DTO_CHECK_PATH_REQUIRED", [
+          {
+            path: "<missing>",
+            code: "path_required",
+            message:
+              "DtoBase.check called with validate=true but without a path.",
+          },
+        ]);
+      }
+
+      throw new DtoValidationError(`DTO_CHECK_INVALID: ${path} — ${message}`, [
+        {
+          path,
+          code,
+          message,
+        },
+      ]);
+    };
+
+    let value: unknown;
+
+    switch (kind) {
+      case "string": {
+        if (typeof input !== "string") {
+          if (validate) {
+            fail("type", "Expected string.");
+          }
+          // Non-validating path — best-effort coercion.
+          value = String(input ?? "").trim();
+        } else {
+          value = input.trim();
+        }
+
+        const s = value as string;
+        if (validate && !s) {
+          fail("required", "Non-empty string is required.");
+        }
+
+        break;
+      }
+
+      case "stringOpt": {
+        if (input == null) {
+          value = undefined;
+          break;
+        }
+
+        if (typeof input !== "string") {
+          if (validate) {
+            fail("type", "Expected string or undefined.");
+          }
+          // Non-validating: treat non-string as undefined.
+          value = undefined;
+          break;
+        }
+
+        const trimmed = input.trim();
+        value = trimmed ? trimmed : undefined;
+        break;
+      }
+
+      case "number": {
+        let n: number;
+
+        if (typeof input === "number") {
+          n = input;
+        } else if (typeof input === "string") {
+          const trimmed = input.trim();
+          n = trimmed ? Number(trimmed) : NaN;
+        } else {
+          n = NaN;
+        }
+
+        const intVal = Math.trunc(n);
+
+        if (!Number.isFinite(intVal)) {
+          if (validate) {
+            fail("type", "Expected finite numeric value.");
+          }
+          value = intVal; // May be NaN in non-validating paths.
+        } else {
+          value = intVal;
+        }
+
+        break;
+      }
+
+      case "numberOpt": {
+        if (input == null || input === "") {
+          value = undefined;
+          break;
+        }
+
+        let n: number;
+
+        if (typeof input === "number") {
+          n = input;
+        } else if (typeof input === "string") {
+          const trimmed = input.trim();
+          n = trimmed ? Number(trimmed) : NaN;
+        } else {
+          n = NaN;
+        }
+
+        const intVal = Math.trunc(n);
+        value = Number.isFinite(intVal) ? intVal : undefined;
+        // Note: even when validate=true, invalid numeric becomes undefined,
+        // unless a custom validator rejects.
+        break;
+      }
+
+      case "boolean": {
+        if (typeof input === "boolean") {
+          value = input;
+        } else if (validate) {
+          fail("type", "Expected boolean.");
+        } else {
+          // Non-validating mode: best-effort coercion.
+          value = Boolean(input);
+        }
+        break;
+      }
+
+      case "booleanOpt": {
+        if (input == null) {
+          value = undefined;
+          break;
+        }
+
+        if (typeof input === "boolean") {
+          value = input;
+          break;
+        }
+
+        if (validate) {
+          fail("type", "Expected boolean or undefined.");
+        }
+
+        // Non-validating mode: best-effort coercion.
+        value = Boolean(input);
+        break;
+      }
+
+      default: {
+        fail("kind", `Unsupported CheckKind '${kind as string}'.`);
+      }
+    }
+
+    // Optional extra normalization hook.
+    if (opts?.normalize && value !== undefined) {
+      value = opts.normalize(value as T);
+    }
+
+    // Optional validator hook (only when validate=true).
+    if (validate && opts?.validator && value !== undefined) {
+      opts.validator(value as T);
+    }
+
+    return value as T;
   }
 
   // ─────────────── Identity & Meta ───────────────

@@ -16,10 +16,16 @@
  *  6) CallUserAuthCreateHandler
  *  7) MintUserAuthTokenHandler
  *  8) RollbackUserOnAuthCreateFailureHandler
+ *
+ * Test-Runner Contract:
+ * - Pipelines MUST declare their controller via createController(app).
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
+
+import { AuthSignupController } from "../../auth.signup.controller";
 
 import { CodeBuildUserIdHandler } from "./code.build.userId";
 import { ToBagUserHandler } from "./toBag.User";
@@ -29,6 +35,14 @@ import { S2sUserCreateHandler } from "./s2s.user.create";
 import { S2sUserAuthCreateHandler } from "./s2s.userAuth.create";
 import { CodeMintUserAuthTokenHandler } from "./code.mintUserAuthToken";
 import { S2sUserDeleteOnFailureHandler } from "./s2s.user.delete.onFailure";
+
+/**
+ * Deterministic controller factory.
+ * Controllers are APP-scoped, not CTX-scoped.
+ */
+export function createController(app: AppBase): ControllerJsonBase {
+  return new AuthSignupController(app);
+}
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // S2S metadata: used by handlers (or future policy gates) if needed.

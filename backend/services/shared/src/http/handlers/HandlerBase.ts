@@ -130,6 +130,19 @@ export abstract class HandlerBase {
   }
 
   /**
+   * Test-runner opt-in flag.
+   *
+   * Contract:
+   * - Default: false (skip).
+   * - Handlers that participate in test-runner MUST override to true.
+   * - When hasTest() is true, runTest() MUST return a HandlerTestResult (not undefined).
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public hasTest(): boolean {
+    return false;
+  }
+
+  /**
    * Escape hatch for compensating handlers / WAL / cleanup:
    * - Default: false → handler is skipped after a prior failure.
    * - Override in derived handlers that MUST run even when status>=400 or
@@ -145,8 +158,8 @@ export abstract class HandlerBase {
    *
    * Contract:
    * - Default implementation returns undefined (no test).
-   * - Test-runner calls runTest() on every handler instance and skips when undefined.
-   * - Derived handlers with tests override runTest() and import their sibling *.test.ts.
+   * - Test-runner MUST NOT call runTest() unless hasTest() is true.
+   * - When hasTest() is true, runTest() MUST return a HandlerTestResult (not undefined).
    */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   public async runTest(): Promise<HandlerTestResult | undefined> {
@@ -296,9 +309,6 @@ export abstract class HandlerBase {
     try {
       await this.execute();
     } catch (err) {
-      // If a lower-level helper (e.g., getMongoConfig) already called
-      // failWithError(), handlerStatus will be "error". In that case we do
-      // NOT want to wrap it again and overwrite the more specific error.
       const afterStatus = this.ctx.get<string>("handlerStatus");
       if (afterStatus === "error") {
         this.log.pipeline(
@@ -335,18 +345,6 @@ export abstract class HandlerBase {
     );
   }
 
-  /**
-   * Strict accessor for per-service environment variables.
-   *
-   * Overloads:
-   * - getVar(key)                    → string | undefined  (optional env var)
-   * - getVar(key, false)             → string | undefined  (same as above)
-   * - getVar(key, true)              → string              (required; throws if missing/empty)
-   *
-   * Semantics:
-   * - Reads ONLY from ControllerBase.getSvcEnv().getVar(key) via helper.
-   * - Never falls back to process.env or ctx.
-   */
   protected getVar(key: string): string | undefined;
   protected getVar(key: string, required: false): string | undefined;
   protected getVar(key: string, required: true): string;
@@ -360,19 +358,6 @@ export abstract class HandlerBase {
     });
   }
 
-  /**
-   * Canonical Mongo config accessor for handlers.
-   *
-   * Usage pattern in handlers:
-   *
-   *   const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
-   *
-   * Behavior:
-   * - On success: returns { uri, dbName }.
-   * - On failure:
-   *   • Calls failWithError() with a detailed mongo_config_error.
-   *   • Throws, so callers do NOT need to write 19 truthy checks.
-   */
   protected getMongoConfig(): { uri: string; dbName: string } {
     try {
       return resolveMongoConfigWithDbState({
@@ -401,7 +386,6 @@ export abstract class HandlerBase {
         logLevel: "error",
       });
 
-      // Throw so handler.execute() stops immediately.
       throw err;
     }
   }

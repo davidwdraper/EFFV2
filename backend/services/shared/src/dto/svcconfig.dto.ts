@@ -31,7 +31,8 @@
  *     • No legacy `id` tolerance — strictly `_id` on input/output.
  */
 
-import { DtoBase, type DtoMeta, UserType } from "./DtoBase";
+import { DtoBase, type DtoMeta } from "./DtoBase";
+import { UserType } from "./UserType";
 import type { IndexHint } from "./persistence/index-hints";
 
 // Wire-friendly shape

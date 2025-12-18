@@ -31,6 +31,10 @@ export class CodeBuildUserIdHandler extends HandlerBase {
     super(ctx, controller);
   }
 
+  public hasTest(): boolean {
+    return true;
+  }
+
   protected handlerPurpose(): string {
     return "Generate or reuse a stable UUIDv4 for a signup pipeline without ever overwriting an existing id.";
   }

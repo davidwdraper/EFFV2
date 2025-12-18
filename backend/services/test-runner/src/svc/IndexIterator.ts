@@ -11,10 +11,7 @@
  *   1) Builds a fresh HandlerContext per pipeline index.ts
  *   2) Loads the pipeline via IndexLoader
  *   3) Resolves controller + steps
- *   4) Iterates steps read-only (StepIterator)
- *
- * Current scope:
- * - Resolution + read-only step inspection. No handler execution.
+ *   4) Iterates steps via StepIterator (hasTest gate + S2S writer)
  *
  * Invariants:
  * - Fresh ctx per index
@@ -29,6 +26,7 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 
 import { IndexLoader } from "./IndexLoader";
 import { StepIterator } from "./StepIterator";
+import type { TestRunWriter } from "./TestRunWriter";
 
 export type IndexFile = {
   absolutePath: string;
@@ -43,6 +41,8 @@ export class IndexIterator {
     app: AppBase;
     pipelineLabel?: string;
     requestIdPrefix?: string;
+    writer: TestRunWriter;
+    testRunId: string;
   }): Promise<void> {
     const label = input.pipelineLabel ?? "run";
     const prefix = input.requestIdPrefix ?? "tr-local";
@@ -68,8 +68,9 @@ export class IndexIterator {
         app: input.app,
       });
 
-      // 3) Visibility: index load success
       const log = ctx.get<any>("log");
+
+      // 3) Visibility: index load success
       if (log?.info) {
         log.info(
           {
@@ -82,12 +83,16 @@ export class IndexIterator {
         );
       }
 
-      // 4) Read-only step inspection (no execution)
+      // 4) Step iteration (hasTest() gate + TestRunWriter + runTest classification)
       await stepIterator.execute({
         ctx,
         controller,
         steps,
         indexRelativePath: index.relativePath,
+        testRunId: input.testRunId,
+        writer: input.writer,
+        // target service metadata can be wired later; StepIterator
+        // defensively defaults to "unknown" when omitted.
       });
     }
   }

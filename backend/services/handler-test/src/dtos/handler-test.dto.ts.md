@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/xxx.dto.ts
+// backend/services/shared/src/dto/handler-test.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -12,7 +12,7 @@
  *   - ADR-0079 (DtoBase.check — single normalization/validation gate)
  *
  * Purpose:
- * - Concrete DTO for the template service ("xxx").
+ * - Concrete DTO for the template service ("handler-test").
  * - Demonstrates canonical patterns for:
  *   • required string/number fields
  *   • optional contact fields (email, phoneE164)
@@ -27,9 +27,9 @@ import { NumberValidators } from "./validators/NumberValidators";
 import { ContactValidators } from "./validators/ContactValidators";
 
 // Wire-friendly shape
-type XxxJson = {
+type HandlerTestJson = {
   _id?: string;
-  type?: "xxx";
+  type?: "handler-test";
 
   // Required business fields
   txtfield1: string;
@@ -46,11 +46,11 @@ type XxxJson = {
   updatedByUserId?: string;
 };
 
-export class XxxDto extends DtoBase {
+export class HandlerTestDto extends DtoBase {
   // ─────────────── Collection & Index Hints ───────────────
 
   public static dbCollectionName(): string {
-    return "xxx";
+    return "handler-test";
   }
 
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
@@ -90,7 +90,7 @@ export class XxxDto extends DtoBase {
       | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
   ) {
     super(secretOrMeta);
-    this.setCollectionName(XxxDto.dbCollectionName());
+    this.setCollectionName(HandlerTestDto.dbCollectionName());
   }
 
   // ─────────────── Getters (no public fields) ───────────────
@@ -147,9 +147,9 @@ export class XxxDto extends DtoBase {
 
   // ─────────────── Wire hydration (ADR-0079 via DtoBase.check) ───────────────
 
-  public static fromBody(json: unknown, opts?: { validate?: boolean }): XxxDto {
-    const dto = new XxxDto(DtoBase.getSecret());
-    const j = (json ?? {}) as Partial<XxxJson>;
+  public static fromBody(json: unknown, opts?: { validate?: boolean }): HandlerTestDto {
+    const dto = new HandlerTestDto(DtoBase.getSecret());
+    const j = (json ?? {}) as Partial<HandlerTestJson>;
     const validate = opts?.validate === true;
 
     const check = <T>(
@@ -230,11 +230,11 @@ export class XxxDto extends DtoBase {
 
   // ─────────────── Outbound wire shape (getters only, ADR-0078) ───────────────
 
-  public toBody(): XxxJson {
-    const body: XxxJson = {
+  public toBody(): HandlerTestJson {
+    const body: HandlerTestJson = {
       // DO NOT generate id here — DbWriter ensures id BEFORE calling toBody().
       _id: this.hasId() ? this.getId() : undefined,
-      type: "xxx",
+      type: "handler-test",
 
       txtfield1: this.getTxtfield1(),
       txtfield2: this.getTxtfield2(),
@@ -257,7 +257,7 @@ export class XxxDto extends DtoBase {
    * - Uses DtoBase.check() with validate=false for normalization only.
    * - Callers are responsible for enforcing any additional business rules.
    */
-  public patchFrom(json: Partial<XxxJson>): this {
+  public patchFrom(json: Partial<HandlerTestJson>): this {
     const j = json;
 
     const txtfield1 = DtoBase.check<string | undefined>(
@@ -318,6 +318,6 @@ export class XxxDto extends DtoBase {
   // ─────────────── IDto contract ───────────────
 
   public getType(): string {
-    return "xxx";
+    return "handler-test";
   }
 }

@@ -573,11 +573,21 @@ export class HandlerTestDto extends DtoBase implements IDto {
     }
 
     // header (write-once semantics; all through check + write-once setters)
-    const env = check<string>(j.env, "string", "env");
-    dto.setEnvOnce(env);
+    const env = DtoBase.check<string | undefined>(j.env, "stringOpt", {
+      validate,
+      path: "env",
+    });
+    if (env !== undefined) {
+      dto.setEnvOnce(env);
+    }
 
-    const dbState = check<string>(j.dbState, "string", "dbState");
-    dto.setDbStateOnce(dbState);
+    const dbState = DtoBase.check<string | undefined>(j.dbState, "stringOpt", {
+      validate,
+      path: "dbState",
+    });
+    if (dbState !== undefined) {
+      dto.setDbStateOnce(dbState);
+    }
 
     const dbMocks = check<boolean | undefined>(
       j.dbMocks,
@@ -597,45 +607,59 @@ export class HandlerTestDto extends DtoBase implements IDto {
       dto.setS2sMocksOnce(s2sMocks);
     }
 
-    const targetServiceSlug = check<string>(
+    const targetServiceSlug = DtoBase.check<string | undefined>(
       j.targetServiceSlug,
-      "string",
-      "targetServiceSlug"
+      "stringOpt",
+      { validate, path: "targetServiceSlug" }
     );
-    dto.setTargetServiceSlugOnce(targetServiceSlug);
+    if (targetServiceSlug !== undefined) {
+      dto.setTargetServiceSlugOnce(targetServiceSlug);
+    }
 
-    const targetServiceName = check<string | undefined>(
+    const targetServiceName = DtoBase.check<string | undefined>(
       j.targetServiceName,
       "stringOpt",
-      "targetServiceName"
+      { validate, path: "targetServiceName" }
     );
     if (targetServiceName !== undefined) {
       dto.setTargetServiceNameOnce(targetServiceName);
     }
 
-    const targetServiceVersion = check<number>(
+    const targetServiceVersion = DtoBase.check<number | undefined>(
       j.targetServiceVersion,
-      "number",
-      "targetServiceVersion"
+      "numberOpt",
+      { validate, path: "targetServiceVersion" }
     );
-    dto.setTargetServiceVersionOnce(targetServiceVersion);
+    if (targetServiceVersion !== undefined) {
+      dto.setTargetServiceVersionOnce(targetServiceVersion);
+    }
 
-    const indexRelativePath = check<string>(
+    const indexRelativePath = DtoBase.check<string | undefined>(
       j.indexRelativePath,
-      "string",
-      "indexRelativePath"
+      "stringOpt",
+      { validate, path: "indexRelativePath" }
     );
-    dto.setIndexRelativePathOnce(indexRelativePath);
+    if (indexRelativePath !== undefined) {
+      dto.setIndexRelativePathOnce(indexRelativePath);
+    }
 
-    const pipelineName = check<string>(
+    const pipelineName = DtoBase.check<string | undefined>(
       j.pipelineName,
-      "string",
-      "pipelineName"
+      "stringOpt",
+      { validate, path: "pipelineName" }
     );
-    dto.setPipelineNameOnce(pipelineName);
+    if (pipelineName !== undefined) {
+      dto.setPipelineNameOnce(pipelineName);
+    }
 
-    const handlerName = check<string>(j.handlerName, "string", "handlerName");
-    dto.setHandlerNameOnce(handlerName);
+    const handlerName = DtoBase.check<string | undefined>(
+      j.handlerName,
+      "stringOpt",
+      { validate, path: "handlerName" }
+    );
+    if (handlerName !== undefined) {
+      dto.setHandlerNameOnce(handlerName);
+    }
 
     const handlerPurpose = check<string | undefined>(
       j.handlerPurpose,
@@ -755,13 +779,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
 
     // freeze header post-hydration
     dto.freezeWriteOnce();
-
-    // Additional requiredness validation is now enforced by check() for required fields.
-    // If you want extra constraints later (e.g., env in {dev,test,int}), that should be
-    // implemented via dedicated validators and passed into DtoBase.check().
-    //
-    // At this point, any structural payload issues should already have thrown DtoValidationError
-    // from check(), so we don't need a second issues[] walk here.
 
     return dto;
   }

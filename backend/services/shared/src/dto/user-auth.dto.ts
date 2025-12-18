@@ -17,7 +17,8 @@
  *   • writing a single UserAuthDto per userId.
  */
 
-import { DtoBase, UserType } from "./DtoBase";
+import { DtoBase } from "./DtoBase";
+import { UserType } from "./UserType";
 
 import type { IndexHint } from "./persistence/index-hints";
 

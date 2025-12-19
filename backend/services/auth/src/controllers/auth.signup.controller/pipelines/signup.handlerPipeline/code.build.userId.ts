@@ -1,4 +1,5 @@
 // backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/code.build.userId.ts
+
 /**
  * Docs:
  * - SOP: Explicit id generation; DTOs consume ids, they do not invent them.
@@ -26,6 +27,9 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 // Centralized UUIDv4 generator (ADR-0057)
 import { newUuid } from "@nv/shared/utils/uuid";
 
+import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+import { CodeBuildUserIdTest } from "./code.build.userId.test";
+
 export class CodeBuildUserIdHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
@@ -37,6 +41,17 @@ export class CodeBuildUserIdHandler extends HandlerBase {
 
   protected handlerPurpose(): string {
     return "Generate or reuse a stable UUIDv4 for a signup pipeline without ever overwriting an existing id.";
+  }
+
+  /**
+   * Test hook:
+   * - StepIterator / test-runner calls handler.runTest().
+   * - No test logic lives here; this is only a delegating wrapper.
+   * - MUST return HandlerTestResult | undefined per HandlerBase contract.
+   */
+  public override async runTest(): Promise<HandlerTestResult | undefined> {
+    const test = new CodeBuildUserIdTest();
+    return test.run();
   }
 
   protected override async execute(): Promise<void> {

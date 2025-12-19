@@ -391,6 +391,52 @@ export class HandlerTestDto extends DtoBase implements IDto {
     this._notes = notes || undefined;
   }
 
+  /**
+   * Replace scenarios wholesale with a validated, normalized list.
+   * Used by runScenario() and fromBody(); external callers should prefer runScenario().
+   */
+  public replaceScenarios(scenarios: HandlerTestScenario[]): void {
+    const normalized: HandlerTestScenario[] = [];
+
+    for (const raw of scenarios ?? []) {
+      if (!raw || typeof raw !== "object") continue;
+
+      const name = (raw.name ?? "").trim();
+      if (!name) {
+        continue;
+      }
+
+      const status: HandlerTestScenarioStatus =
+        raw.status === "Passed" ||
+        raw.status === "Failed" ||
+        raw.status === "RailError"
+          ? raw.status
+          : "RailError";
+
+      const startedAt = (raw.startedAt ?? "").trim();
+      const finishedAt = (raw.finishedAt ?? "").trim();
+      const durationMs = Math.max(
+        0,
+        Math.trunc(Number.isFinite(raw.durationMs) ? raw.durationMs : 0)
+      );
+
+      normalized.push({
+        name,
+        status,
+        startedAt,
+        finishedAt,
+        durationMs,
+        details: raw.details,
+        errorMessage:
+          typeof raw.errorMessage === "string" ? raw.errorMessage : undefined,
+        errorStack:
+          typeof raw.errorStack === "string" ? raw.errorStack : undefined,
+      });
+    }
+
+    this._scenarios = normalized;
+  }
+
   // ─────────────── Scenario enforcement ───────────────
 
   /**
@@ -710,7 +756,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
 
     // scenarios
     if (Array.isArray(j.scenarios)) {
-      const scenarios: HandlerTestScenario[] = j.scenarios
+      const rawScenarios: HandlerTestScenario[] = j.scenarios
         .filter((s) => !!s && typeof s === "object")
         .map((s, idx) => {
           const ss = s as any;
@@ -755,10 +801,9 @@ export class HandlerTestDto extends DtoBase implements IDto {
             errorStack:
               typeof ss.errorStack === "string" ? ss.errorStack : undefined,
           };
-        })
-        .filter((s) => !!s.name);
+        });
 
-      (dto as any)._scenarios = scenarios;
+      dto.replaceScenarios(rawScenarios);
     }
 
     const requestId = check<string | undefined>(

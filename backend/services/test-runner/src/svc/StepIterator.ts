@@ -10,22 +10,21 @@
  * Purpose:
  * - StepIterator: iterate resolved handler steps for a single pipeline.
  *
- * Responsibilities (exact; per LDD-39):
+ * Responsibilities (per LDD-39 + HandlerTestDto):
  * - hasTest() gate (opt-in only)
  * - For opted-in handlers:
  *     • mint a HandlerTestDto as the canonical record
- *     • writer.start(dto) immediately
- *     • expose the dto to the handler's runTest()
+ *     • mint a HandlerTestRecord wrapper with run metadata
+ *     • writer.startHandlerTest(record) immediately
+ *     • expose the dto on ctx["handlerTest.dto"]
+ *     • execute handler.runTest() inside dto.runScenario(...)
  *     • classify the outcome:
  *         - Passed / Failed (from returned payload)
- *         - TestError (runTest() returned undefined)
- *         - RailError (runTest() threw)
- *     • patch the dto with outcome/duration/error info
- *     • writer.finalize(dto)
- *
- * Non-responsibilities:
- * - No plans, no scenarios, no assertions, no test internals.
- * - No swallowing errors silently: every failure path is persisted + logged.
+ *         - TestError (runTest() returned undefined or no scenarios)
+ *         - RailError (runTest() threw — captured by runScenario)
+ *     • set finishedAt and finalize dto from scenarios
+ *     • populate terminalStatus/error info on the record (not the DTO)
+ *     • writer.finalizeHandlerTest(record)
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -33,15 +32,24 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
-import type { TestHandlerTerminalStatus, TestRunWriter } from "./TestRunWriter";
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
 import type { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
 
+import type {
+  TestHandlerTerminalStatus,
+  HandlerTestRecord,
+  TestRunWriter,
+} from "./TestRunWriter";
+
+type LoggerLike = {
+  info?: (obj: unknown, msg?: string) => void;
+  warn?: (obj: unknown, msg?: string) => void;
+  error?: (obj: unknown, msg?: string) => void;
+};
+
 export class StepIterator {
   /**
-   * Shared registry for minting HandlerTestDto instances. Lives here so:
-   * - we do NOT reach across service boundaries into handler-test/Registry
-   * - every step uses the same minting rails (secret, collection, etc.)
+   * Shared registry for minting HandlerTestDto instances.
    */
   private readonly handlerTestRegistry = new HandlerTestDtoRegistry();
 
@@ -54,32 +62,30 @@ export class StepIterator {
     indexRelativePath: string;
     testRunId: string;
     writer: TestRunWriter;
-    target?: {
+    target: {
       serviceSlug: string;
       serviceVersion: number;
     };
   }): Promise<void> {
     const { ctx, steps, indexRelativePath, testRunId, writer, target } = input;
 
-    const log = ctx.get<any>("log");
+    const log = ctx.get<LoggerLike>("log");
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
 
       const handlerName =
-        typeof (step as any).getHandlerName === "function"
-          ? String((step as any).getHandlerName())
+        typeof step.getHandlerName === "function"
+          ? step.getHandlerName()
           : step.constructor.name;
 
       let hasTest = false;
 
       // 1) hasTest() gate
       try {
-        hasTest =
-          typeof (step as any).hasTest === "function" ? step.hasTest() : false;
+        hasTest = step.hasTest();
       } catch (err) {
-        // hasTest() throwing means rails are already broken. Treat as opted-in,
-        // record, and continue after persisting a RailError.
+        // hasTest() throwing means rails are broken; treat as opted-in and record.
         hasTest = true;
 
         const msg =
@@ -118,53 +124,37 @@ export class StepIterator {
         continue;
       }
 
-      // 2) Opted-in => mint a HandlerTestDto as canonical record
-      const startedAt = Date.now();
-      const handlerTestDto = this.handlerTestRegistry.newHandlerTestDto();
+      // 2) Opted-in => mint a HandlerTestDto and HandlerTestRecord
+      const startedAtMs = Date.now();
+      const handlerTestDto: HandlerTestDto =
+        this.handlerTestRegistry.newHandlerTestDto();
 
-      // Defensive target metadata handling: missing target should NOT crash
-      const targetServiceSlug = target?.serviceSlug ?? "unknown";
-      const targetServiceVersion = target?.serviceVersion ?? 0;
+      handlerTestDto.setIndexRelativePathOnce(indexRelativePath);
+      handlerTestDto.setHandlerNameOnce(handlerName);
+      handlerTestDto.setTargetServiceSlugOnce(target.serviceSlug);
+      handlerTestDto.setTargetServiceVersionOnce(target.serviceVersion);
 
-      if (!target && log?.warn) {
-        log.warn(
-          {
-            event: "step_missing_target_metadata",
-            index: indexRelativePath,
-            stepIndex: i,
-            stepCount: steps.length,
-            handler: handlerName,
-          },
-          "StepIterator called without target metadata; using fallback values"
-        );
-      }
+      const startedAtIso = new Date(startedAtMs).toISOString();
+      handlerTestDto.setStartedAt(startedAtIso);
 
-      // Seed DTO with everything StepIterator knows at START.
-      // Field names are intentionally generic; HandlerTestDto is the single
-      // source of truth and can be evolved without touching StepIterator's shape.
-      (handlerTestDto as any).testRunId = testRunId;
-      (handlerTestDto as any).indexRelativePath = indexRelativePath;
-      (handlerTestDto as any).stepIndex = i;
-      (handlerTestDto as any).stepCount = steps.length;
-      (handlerTestDto as any).handlerName = handlerName;
-      (handlerTestDto as any).targetServiceSlug = targetServiceSlug;
-      (handlerTestDto as any).targetServiceVersion = targetServiceVersion;
-      (handlerTestDto as any).startedAt = new Date(startedAt).toISOString();
+      const record: HandlerTestRecord = {
+        dto: handlerTestDto,
+        testRunId,
+        stepIndex: i,
+        stepCount: steps.length,
+        indexRelativePath,
+        handlerName,
+        targetServiceSlug: target.serviceSlug,
+        targetServiceVersion: target.serviceVersion,
+      };
 
-      // Expose the DTO on the HandlerContext so handler-owned tests can find
-      // and mutate it without new parameters if they prefer that pattern.
+      // Expose the DTO on the HandlerContext so handler-owned tests can see it.
+      ctx.set("handlerTest.dto", handlerTestDto);
+
+      // 3) Start: immediately persist the new record via the writer.
       try {
-        (ctx as any).set?.("handlerTest.dto", handlerTestDto);
-      } catch {
-        // If ctx.set doesn't exist, tests can still receive the dto via runTest(dto).
-      }
-
-      // 3) Start: immediately persist the new record via the dumb writer.
-      try {
-        await writer.startHandlerTest(handlerTestDto);
+        await writer.startHandlerTest(record);
       } catch (err) {
-        // If we can't write the start record, that's a test-runner rails failure.
-        // We still do NOT execute the test, because we can't guarantee forensics.
         const msg =
           err instanceof Error ? err.message : String(err ?? "unknown error");
 
@@ -184,24 +174,38 @@ export class StepIterator {
         continue;
       }
 
-      // 4) Execute runTest() and classify outcome
-      let status: TestHandlerTerminalStatus;
-      let result: HandlerTestResult | undefined;
+      // 4) Execute runTest() inside dto.runScenario(...) and classify outcome
+      let terminalStatus: TestHandlerTerminalStatus = "TestError";
+      let lastResult: HandlerTestResult | undefined;
       let errMsg: string | undefined;
       let errStack: string | undefined;
 
       try {
-        // Note: This assumes HandlerBase.runTest(testDto: HandlerTestDto)
-        // per ADR-0077. Handlers that don't care can ignore the argument.
-        result = await (step as any).runTest(handlerTestDto);
+        await handlerTestDto.runScenario(
+          handlerName,
+          async () => {
+            const result = await step.runTest();
+            lastResult = result;
 
-        if (result === undefined) {
-          status = "TestError";
-        } else {
-          status = this.classifyPassFail(result);
-        }
+            if (!result) {
+              // Absent result is a "TestError".
+              return {
+                status: "Failed",
+                details: {
+                  reason: "NO_HANDLER_TEST_RESULT",
+                },
+              };
+            }
+
+            return {
+              status: "Passed", // always assume happy-path when a result exists
+              details: result,
+            };
+          },
+          { rethrowOnRailError: false }
+        );
       } catch (err) {
-        status = "RailError";
+        // Only unexpected exceptions in runScenario itself should hit here.
         errMsg =
           err instanceof Error ? err.message : String(err ?? "unknown error");
         errStack = err instanceof Error ? err.stack : undefined;
@@ -209,30 +213,85 @@ export class StepIterator {
         if (log?.error) {
           log.error(
             {
-              event: "step_runTest_threw",
+              event: "step_runScenario_threw",
               index: indexRelativePath,
               stepIndex: i,
               stepCount: steps.length,
               handler: handlerName,
               error: errMsg,
             },
-            "Pipeline step runTest() threw (RailError)"
+            "HandlerTestDto.runScenario threw unexpectedly"
           );
         }
       }
 
-      // 5) Patch DTO with final status + timing + any error payload
-      const durationMs = Date.now() - startedAt;
+      const finishedAtMs = Date.now();
+      const finishedAtIso = new Date(finishedAtMs).toISOString();
+      handlerTestDto.setFinishedAt(finishedAtIso);
 
-      (handlerTestDto as any).terminalStatus = status;
-      (handlerTestDto as any).durationMs = durationMs;
-      (handlerTestDto as any).errorMessage = errMsg;
-      (handlerTestDto as any).errorStack = errStack;
-      (handlerTestDto as any).rawResult = result ?? null;
+      // Derive final status/duration from scenarios (single source of truth on the DTO).
+      try {
+        handlerTestDto.finalizeFromScenarios();
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : String(err ?? "unknown error");
+
+        if (log?.error) {
+          log.error(
+            {
+              event: "handlerTest_finalizeFromScenarios_threw",
+              index: indexRelativePath,
+              stepIndex: i,
+              stepCount: steps.length,
+              handler: handlerName,
+              error: msg,
+            },
+            "HandlerTestDto.finalizeFromScenarios threw"
+          );
+        }
+      }
+
+      const dtoStatus = handlerTestDto.getStatus();
+
+      switch (dtoStatus) {
+        case "Passed":
+          terminalStatus = "Passed";
+          break;
+        case "Failed":
+          terminalStatus = "Failed";
+          break;
+        case "RailError":
+          terminalStatus = "RailError";
+          break;
+        case "TestError":
+        case "Started":
+        default:
+          terminalStatus = "TestError";
+          break;
+      }
+
+      // Pull a top-level error summary from the first failing/rail scenario, if any.
+      const scenarios = handlerTestDto.getScenarios();
+
+      if (!errMsg && scenarios.length) {
+        const bad = scenarios.find(
+          (s) => s.status === "RailError" || s.status === "Failed"
+        );
+        if (bad) {
+          errMsg = bad.errorMessage;
+          errStack = bad.errorStack;
+        }
+      }
+
+      // Populate outcome metadata on the record, not on the DTO.
+      record.terminalStatus = terminalStatus;
+      record.errorMessage = errMsg;
+      record.errorStack = errStack;
+      record.rawResult = lastResult ?? null;
 
       // 6) Finalize record exactly once
       try {
-        await writer.finalizeHandlerTest(handlerTestDto);
+        await writer.finalizeHandlerTest(record);
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : String(err ?? "unknown error");
@@ -245,39 +304,14 @@ export class StepIterator {
               stepIndex: i,
               handler: handlerName,
               error: msg,
-              intendedStatus: status,
+              intendedStatus: terminalStatus,
             },
             "Failed to finalize handler-test record"
           );
         }
 
-        // Continue: the run must proceed; run summary will reflect railErrors
-        // at the run level.
         continue;
       }
     }
-  }
-
-  private classifyPassFail(
-    result: HandlerTestResult
-  ): TestHandlerTerminalStatus {
-    // Keep this logic tiny and defensive.
-    // We do NOT interpret test semantics; we only map a common "passed" signal to status.
-    const anyResult = result as any;
-
-    if (typeof anyResult?.passed === "boolean") {
-      return anyResult.passed ? "Passed" : "Failed";
-    }
-
-    const status =
-      typeof anyResult?.status === "string" ? anyResult.status : "";
-    const norm = status.toLowerCase();
-
-    if (norm === "passed" || norm === "pass" || norm === "green")
-      return "Passed";
-    if (norm === "failed" || norm === "fail" || norm === "red") return "Failed";
-
-    // If the shape is unknown, treat it as a failure signal rather than lying.
-    return "Failed";
   }
 }

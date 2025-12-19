@@ -1,4 +1,5 @@
 // backend/services/shared/src/http/handlers/testing/HandlerTestBase.ts
+
 /**
  * Docs:
  * - LDD-35 (Handler-level test-runner service)
@@ -146,6 +147,9 @@ type RailsSnapshot = {
  * - run() is the single entrypoint used by the test-runner.
  */
 export abstract class HandlerTestBase {
+  private static readonly uuidV4Regex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
   protected readonly log?: ILogger;
   private readonly defaultHarness?: HandlerTestHarnessOptions;
 
@@ -458,6 +462,89 @@ export abstract class HandlerTestBase {
 
   public assertFalse(value: unknown, message: string): void {
     this.assert(value === false, message);
+  }
+
+  // ------------------------------
+  // Context helpers (LDD-40)
+  // ------------------------------
+
+  public assertCtxHasValue(ctx: HandlerContext, key: string): unknown {
+    const value = ctx.get<unknown>(key);
+    this.assert(
+      typeof value !== "undefined",
+      `CTX[${this.testName()}]: missing key "${key}".`
+    );
+    return value;
+  }
+
+  public assertCtxString(ctx: HandlerContext, key: string): string {
+    const value = this.assertCtxHasValue(ctx, key);
+    this.assert(
+      typeof value === "string",
+      `CTX[${this.testName()}]: key "${key}" expected string, got ${typeof value}.`
+    );
+    return value as string;
+  }
+
+  public assertCtxNonEmptyString(ctx: HandlerContext, key: string): string {
+    const value = this.assertCtxString(ctx, key);
+    this.assert(
+      value.trim().length > 0,
+      `CTX[${this.testName()}]: key "${key}" expected non-empty string.`
+    );
+    return value;
+  }
+
+  public assertCtxStringEquals(
+    ctx: HandlerContext,
+    key: string,
+    expected: string
+  ): void {
+    const value = this.assertCtxString(ctx, key);
+    this.assert(
+      value === expected,
+      `CTX[${this.testName()}]: key "${key}" expected "${expected}", got "${value}".`
+    );
+  }
+
+  public assertCtxStringMatches(
+    ctx: HandlerContext,
+    key: string,
+    regex: RegExp
+  ): string {
+    const value = this.assertCtxString(ctx, key);
+    this.assert(
+      regex.test(value),
+      `CTX[${this.testName()}]: key "${key}" value "${value}" did not match ${regex}.`
+    );
+    return value;
+  }
+
+  public assertCtxValueIsZero(ctx: HandlerContext, key: string): void {
+    const value = this.assertCtxHasValue(ctx, key);
+    this.assert(
+      value === 0,
+      `CTX[${this.testName()}]: key "${key}" expected 0, got ${String(value)}.`
+    );
+  }
+
+  public assertCtxValueIsNotZero(ctx: HandlerContext, key: string): void {
+    const value = this.assertCtxHasValue(ctx, key);
+    this.assert(
+      value !== 0,
+      `CTX[${this.testName()}]: key "${key}" expected non-zero, got ${String(
+        value
+      )}.`
+    );
+  }
+
+  public assertCtxUUID(ctx: HandlerContext, key: string): string {
+    const value = this.assertCtxNonEmptyString(ctx, key);
+    this.assert(
+      HandlerTestBase.uuidV4Regex.test(value),
+      `CTX[${this.testName()}]: key "${key}" expected UUIDv4, got "${value}".`
+    );
+    return value;
   }
 
   // ------------------------------

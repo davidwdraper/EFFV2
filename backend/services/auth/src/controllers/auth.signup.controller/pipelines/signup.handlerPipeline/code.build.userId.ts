@@ -42,7 +42,7 @@ export class CodeBuildUserIdHandler extends HandlerBase {
    *   a matching test module for this handler.
    */
   public hasTest(): boolean {
-    return true;
+    return false;
   }
 
   /**

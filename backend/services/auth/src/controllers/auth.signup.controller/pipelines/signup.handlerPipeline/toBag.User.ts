@@ -39,14 +39,28 @@ export class ToBagUserHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  public hasTest(): boolean {
-    return false;
+  /**
+   * Handler identity:
+   * - Used by logging AND by the test-runner to locate the test module.
+   * - Must match the base file name: "toBag.user" → "toBag.user.test.ts".
+   */
+  protected override handlerName(): string {
+    return "toBag.user";
+  }
+
+  /**
+   * Test-runner contract:
+   * - StepIterator inspects hasTest().
+   * - When true, it calls runTest() once for this handler.
+   */
+  public override hasTest(): boolean {
+    return true;
   }
 
   /**
    * Test hook:
    * - StepIterator sees hasTest() === true and calls handler.runTest().
-   * - Use the new base helper so each handler stays 1-liner.
+   * - Uses the shared base helper so handler stays 1-liner.
    */
   public override async runTest(): Promise<HandlerTestResult | undefined> {
     return this.runSingleTest(ToBagUserTest);

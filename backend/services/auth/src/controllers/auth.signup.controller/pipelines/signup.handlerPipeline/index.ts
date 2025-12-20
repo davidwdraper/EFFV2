@@ -28,7 +28,7 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { AuthSignupController } from "../../auth.signup.controller";
 
 import { CodeBuildUserIdHandler } from "./code.build.userId";
-import { ToBagUserHandler } from "./toBag.User";
+import { ToBagUserHandler } from "./toBag.user";
 import { CodeExtractPasswordHandler } from "./code.extractPassword";
 import { CodePasswordHashHandler } from "./code.passwordHash";
 import { S2sUserCreateHandler } from "./s2s.user.create";

@@ -1,4 +1,5 @@
 // backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/toBag.user.ts
+
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -29,9 +30,26 @@ import type { BagItemWire } from "@nv/shared/registry/RegistryBase";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { UserDto, type UserJson } from "@nv/shared/dto/user.dto";
 
+// Test-runner wiring
+import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+import { ToBagUserTest } from "./toBag.user.test";
+
 export class ToBagUserHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
     super(ctx, controller);
+  }
+
+  public hasTest(): boolean {
+    return false;
+  }
+
+  /**
+   * Test hook:
+   * - StepIterator sees hasTest() === true and calls handler.runTest().
+   * - Use the new base helper so each handler stays 1-liner.
+   */
+  public override async runTest(): Promise<HandlerTestResult | undefined> {
+    return this.runSingleTest(ToBagUserTest);
   }
 
   protected handlerPurpose(): string {
@@ -53,9 +71,7 @@ export class ToBagUserHandler extends HandlerBase {
     );
 
     try {
-      // ───────────────────────────────────────────────────────────────
-      // 0) Ensure signup.userId exists from BuildSignupUserIdHandler
-      // ───────────────────────────────────────────────────────────────
+      // 0) Ensure signup.userId was minted upstream
       const userId = this.safeCtxGet<string>("signup.userId");
 
       if (!userId || userId.trim().length === 0) {
@@ -63,19 +79,11 @@ export class ToBagUserHandler extends HandlerBase {
           httpStatus: 500,
           title: "auth_signup_user_id_missing",
           detail:
-            "Auth signup expected ctx['signup.userId'] to be populated before hydration. " +
-            "Dev: ensure BuildSignupUserIdHandler ran first in the pipeline.",
+            "Auth signup expected ctx['signup.userId'] to be populated before hydration. Dev: ensure BuildSignupUserIdHandler ran first.",
           stage: "preconditions.signup.userId",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              hasUserId: !!userId,
-            },
-          ],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ hasUserId: !!userId }],
           logMessage:
             "signup.hydrateUserBag: ctx['signup.userId'] missing before hydration.",
           logLevel: "error",
@@ -83,29 +91,18 @@ export class ToBagUserHandler extends HandlerBase {
         return;
       }
 
-      // ───────────────────────────────────────────────────────────────
-      // 1) Wire-bag shape validation
-      // ───────────────────────────────────────────────────────────────
+      // 1) wire-bag shape checks
       const body = this.safeCtxGet<any>("body");
-
       if (!body || !Array.isArray(body.items)) {
         this.failWithError({
           httpStatus: 400,
           title: "wire_bag_invalid",
           detail:
-            "Expected a wire bag envelope with 'items: []'. Dev: ensure auth.signup sends { items: [ { type: 'user', ...UserJson } ] }.",
+            "Expected a wire bag envelope with items[]. Dev: ensure inbound payload conforms to bag shape.",
           stage: "wire_bag.shape",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              bodyType: typeof body,
-              hasItems: !!body?.items,
-            },
-          ],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ bodyType: typeof body, hasItems: !!body?.items }],
           logMessage:
             "signup.hydrateUserBag: missing or invalid items[] on inbound payload.",
           logLevel: "warn",
@@ -116,20 +113,16 @@ export class ToBagUserHandler extends HandlerBase {
       const size = body.items.length;
       if (size !== 1) {
         const code = size === 0 ? "WIRE_BAG_EMPTY" : "WIRE_BAG_TOO_MANY_ITEMS";
-
         this.failWithError({
           httpStatus: 400,
           title: code.toLowerCase(),
           detail:
             size === 0
-              ? "Signup requires exactly one item in the wire bag; received 0."
-              : `Signup requires exactly one item in the wire bag; received ${size}.`,
+              ? "Signup requires exactly one item; received 0."
+              : `Signup requires exactly one item; received ${size}.`,
           stage: "wire_bag.cardinality",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           issues: [{ size }],
           logMessage:
             "signup.hydrateUserBag: singleton wire-bag requirement failed.",
@@ -144,20 +137,12 @@ export class ToBagUserHandler extends HandlerBase {
           httpStatus: 400,
           title: "wire_bag_item_invalid",
           detail:
-            "Wire bag item must be a DTO-like object with a 'type' field. Dev: ensure items[0] is an object with type='user' and UserDto fields.",
+            "Wire bag item must be an object w/ type='user' + dto fields.",
           stage: "wire_bag.item_shape",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              itemType: typeof item,
-            },
-          ],
-          logMessage:
-            "signup.hydrateUserBag: invalid first item in wire bag (non-object).",
+          origin: { file: __filename, method: "execute" },
+          issues: [{ itemType: typeof item }],
+          logMessage: "signup.hydrateUserBag: invalid first item in wire bag.",
           logLevel: "warn",
         });
         return;
@@ -168,19 +153,11 @@ export class ToBagUserHandler extends HandlerBase {
         this.failWithError({
           httpStatus: 400,
           title: "wire_bag_type_mismatch",
-          detail: `Wire bag item.type='${itemType}' does not match expected dtoType='${dtoType}'. Dev: call /api/auth/v1/user/signup with dtoType='user' and item.type='user'.`,
+          detail: `Wire bag item.type='${itemType}' mismatch dtoType='${dtoType}'.`,
           stage: "wire_bag.type",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              itemType,
-              dtoType,
-            },
-          ],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ itemType, dtoType }],
           logMessage:
             "signup.hydrateUserBag: dtoType/type mismatch on inbound wire bag.",
           logLevel: "warn",
@@ -188,15 +165,12 @@ export class ToBagUserHandler extends HandlerBase {
         return;
       }
 
-      // ───────────────────────────────────────────────────────────────
-      // 2) DTO hydration and id injection via setIdOnce()
-      // ───────────────────────────────────────────────────────────────
+      // 2) Hydrate DTO + enforce id immutability
       try {
         const dto = UserDto.fromBody(item as Partial<UserJson>, {
           validate: true,
         });
 
-        // Immutable id assignment (ADR-0057)
         dto.setIdOnce(userId);
 
         const { bag } = BagBuilder.fromDtos([dto], {
@@ -221,13 +195,13 @@ export class ToBagUserHandler extends HandlerBase {
             requestId,
             bagSize,
           },
-          "signup.hydrateUserBag: populated ctx['bag'] with singleton UserDto bag (id applied)"
+          "signup.hydrateUserBag: populated singleton bag w/ applied id"
         );
       } catch (err) {
         const message =
           err instanceof Error
             ? err.message
-            : "Failed to hydrate UserDto or apply id via setIdOnce().";
+            : "Failed UserDto hydration or id assignment.";
 
         this.failWithError({
           httpStatus: 400,
@@ -235,35 +209,23 @@ export class ToBagUserHandler extends HandlerBase {
           detail: message,
           stage: "hydrate.userDto",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              dtoType,
-              hasUserId: !!userId,
-            },
-          ],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ dtoType, hasUserId: !!userId }],
           rawError: err,
           logMessage:
-            "signup.hydrateUserBag: UserDto.fromBody() or setIdOnce() validation failed.",
+            "signup.hydrateUserBag: UserDto.fromBody()/setIdOnce() failed.",
           logLevel: "warn",
         });
       }
     } catch (err) {
-      // Catch-all for truly unexpected bugs inside the handler.
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_hydrate_user_bag_handler_failure",
         detail:
-          "Unhandled exception while hydrating the UserDto bag for signup. Ops: inspect logs for requestId and stack frame.",
+          "Unhandled exception while hydrating UserDto bag. Inspect logs/call stack.",
         stage: "execute.unhandled",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         rawError: err,
         logMessage:
           "signup.hydrateUserBag: unhandled exception in hydrate handler.",

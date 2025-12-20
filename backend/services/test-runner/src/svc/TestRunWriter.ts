@@ -45,12 +45,12 @@ import { SvcClient } from "@nv/shared/s2s/SvcClient";
 /**
  * StepIterator’s view of handler-test terminal status.
  * Pure classification labels; semantics live in docs.
+ *
+ * NOTE:
+ * - These are TEST verdict labels only; rails metadata is kept on the DTO
+ *   (railsVerdict / railsStatus / railsHandlerStatus).
  */
-export type TestHandlerTerminalStatus =
-  | "Passed"
-  | "Failed"
-  | "TestError"
-  | "RailError";
+export type TestHandlerTerminalStatus = "Passed" | "Failed" | "TestError";
 
 /**
  * Runner-owned wrapper around a HandlerTestDto.
@@ -134,15 +134,6 @@ export class SvcTestRunWriter implements TestRunWriter {
     this.log = options.log;
   }
 
-  /**
-   * Start a handler-test record via:
-   *   PUT /api/handler-test/v1/handler-test/create
-   *
-   * Behavior:
-   * - Wraps the DTO in a DtoBag singleton and passes the bag to SvcClient.call().
-   * - Does not inspect the response body; hydrators own JSON.
-   * - DTO id may be empty at this stage; DbWriter can assign it.
-   */
   public async startHandlerTest(record: HandlerTestRecord): Promise<void> {
     const dto = record.dto;
     const bag = new DtoBag([dto]);
@@ -182,24 +173,13 @@ export class SvcTestRunWriter implements TestRunWriter {
     }
   }
 
-  /**
-   * Finalize a handler-test record via:
-   *   PATCH /api/handler-test/v1/handler-test/update/:id
-   *
-   * Behavior:
-   * - Calls dto.ensureId() to obtain a stable id.
-   * - Wraps the DTO in a DtoBag singleton and passes bag to SvcClient.call().
-   * - Ignores response body; summaries are built by the test-runner.
-   */
   public async finalizeHandlerTest(record: HandlerTestRecord): Promise<void> {
     const dto = record.dto;
 
     let id: string;
-    try {
-      id = dto.ensureId();
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : String(err ?? "unknown error");
+    if (!dto.hasId()) {
+      const msg = "HandlerTestDto is missing an _id";
+      const err = new Error(msg);
       this.log.error(
         {
           event: "svcTestRunWriter.finalizeHandlerTest.ensureId.failed",
@@ -218,6 +198,7 @@ export class SvcTestRunWriter implements TestRunWriter {
       throw err;
     }
 
+    id = dto.getId();
     const bag = new DtoBag([dto]);
 
     try {

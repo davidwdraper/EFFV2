@@ -18,15 +18,20 @@
  * - Instance collection name is seeded from each DTO class's dbCollectionName().
  */
 
-import { DtoBase } from "@nv/shared/dto/DtoBase";
 import { UserDto } from "@nv/shared/dto/user.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
+import { UserDtoRegistry } from "@nv/shared/dto/registry/user.dtoRegistry";
 
 export class Registry extends ServiceRegistryBase {
-  /** Shared secret used by DTO constructors that enforce instantiation discipline. */
-  private readonly secret = DtoBase.getSecret();
+  /**
+   * Shared user DTO registry:
+   * - Instantiation helpers live in shared (UserDtoRegistry).
+   * - This service registry focuses on service-local concerns
+   *   (index hints, persistence, etc.).
+   */
+  private readonly userRegistry = new UserDtoRegistry();
 
   /**
    * Explicit map of registry type keys → DTO constructors.
@@ -51,21 +56,15 @@ export class Registry extends ServiceRegistryBase {
     return dto;
   }
 
-  // ─────────────── Convenience constructors (optional) ───────────────
+  // ─────────────── Convenience constructors (delegated) ───────────────
 
   /** Create a new UserDto instance with a seeded collection. */
   public newUserDto(): UserDto {
-    const dto = new UserDto(this.secret);
-    dto.setCollectionName(UserDto.dbCollectionName());
-    return dto;
+    return this.userRegistry.newUserDto();
   }
 
-  /** Hydrate an UserDto from JSON (validates if requested) and seed collection. */
+  /** Hydrate a UserDto from JSON (validates if requested) and seed collection. */
   public fromJsonUser(json: unknown, opts?: { validate?: boolean }): UserDto {
-    const dto = UserDto.fromBody(json, {
-      validate: !!opts?.validate,
-    });
-    dto.setCollectionName(UserDto.dbCollectionName());
-    return dto;
+    return this.userRegistry.fromJsonUser(json, opts);
   }
 }

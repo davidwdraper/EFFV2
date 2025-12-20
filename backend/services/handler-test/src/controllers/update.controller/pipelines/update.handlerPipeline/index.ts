@@ -26,11 +26,7 @@ export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   return [
     // 1) Hydrate DtoBag<IDto> from JSON body (no singleton shortcut)
     new ToBagHandler(ctx, controller),
-    // 2) Load the existing DTO as a **bag** (ctx["existingBag"])
-    new DbReadExistingHandler(ctx, controller),
-    // 3) Apply patch using inbound patch bag → UPDATED singleton bag into ctx["bag"]
-    new CodePatchHandler(ctx, controller),
-    // 4) Persist updated singleton bag
+    // 2) Persist updated singleton bag
     new DbUpdateHandler(ctx, controller),
   ];
 }

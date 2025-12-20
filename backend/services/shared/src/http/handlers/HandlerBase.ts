@@ -22,7 +22,8 @@
  * - Controllers MUST pass `this` into handler constructors.
  * - No reading plumbing from ctx (no ctx.get('app'), etc).
  * - Env reads go through controller.getSvcEnv().getVar() via helpers.
- * - HandlerBase.runTest() default returns undefined (no test).
+ * - Default HandlerBase.runTest() NEVER returns undefined; it yields a
+ *   concrete TestError HandlerTestResult w/ reason="NO_TEST_PROVIDED".
  */
 
 import { HandlerContext } from "./HandlerContext";
@@ -43,14 +44,12 @@ import {
 import type { HandlerTestBase } from "./testing/HandlerTestBase";
 import type { HandlerTestResult } from "./testing/HandlerTestBase";
 
-// Re-export NvHandlerError so existing imports from HandlerBase remain valid.
 export type { NvHandlerError } from "./handlerBaseExt/errorHelpers";
 
 export abstract class HandlerBase {
   protected readonly ctx: HandlerContext;
   protected readonly log: IBoundLogger;
 
-  /** Available to all derived handlers */
   protected readonly controller: ControllerBase;
   protected readonly app: AppBase;
   protected readonly registry: IDtoRegistry;
@@ -65,20 +64,17 @@ export abstract class HandlerBase {
     this.controller = controller;
 
     const app = controller.getApp?.();
-    if (!app) {
+    if (!app)
       throw new Error("ControllerBase.getApp() returned null/undefined.");
-    }
     this.app = app;
 
     const registry = controller.getDtoRegistry?.();
-    if (!registry) {
+    if (!registry)
       throw new Error(
         "ControllerBase.getDtoRegistry() returned null/undefined."
       );
-    }
     this.registry = registry;
 
-    // Logger: prefer app logger, fall back to shared
     const appLog: IBoundLogger | undefined = (app as any)?.log;
     this.log =
       appLog?.bind?.({
@@ -91,96 +87,107 @@ export abstract class HandlerBase {
         handler: this.constructor.name,
       });
 
-    // Expose request-scoped logger back into context (optional convenience)
     this.ctx.set("log", this.log);
 
-    // Construction is still DEBUG; pipeline-level traces focus on run()/execute()
     this.log.debug(
       {
         event: "construct",
         handlerStatus: this.ctx.get<string>("handlerStatus") ?? "ok",
-        strict: true,
       },
       "HandlerBase ctor"
     );
   }
 
-  /**
-   * One-sentence, ops-facing description of what this handler does.
-   * Must be static (no ctx/env reads).
-   */
   protected abstract handlerPurpose(): string;
 
-  /**
-   * Optional stable handler name (wire/log name).
-   * - Defaults to constructor name.
-   * - Override for your "toBag.* / code.* / db.* / s2s.*" conventions.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected handlerName(): string {
     return this.constructor.name;
   }
 
-  /**
-   * Public accessor so test-runner can capture the stable handler name
-   * without reaching into protected APIs.
-   */
   public getHandlerName(): string {
     return this.handlerName();
   }
 
-  /**
-   * Test-runner opt-in flag.
-   *
-   * Contract:
-   * - Default: false (skip).
-   * - Handlers that participate in test-runner MUST override to true.
-   * - When hasTest() is true, runTest() MUST return a HandlerTestResult (not undefined).
-   */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   public hasTest(): boolean {
     return false;
   }
 
-  /**
-   * Escape hatch for compensating handlers / WAL / cleanup:
-   * - Default: false → handler is skipped after a prior failure.
-   * - Override in derived handlers that MUST run even when status>=400 or
-   *   handlerStatus="error" (e.g., S2sUserDeleteOnFailureHandler).
-   */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected canRunAfterError(): boolean {
     return false;
   }
 
   /**
-   * Handler-level test hook for test-runner.
+   * Default: NEVER returns undefined.
    *
    * Contract:
-   * - Default implementation returns undefined (no test).
-   * - Test-runner MUST NOT call runTest() unless hasTest() is true.
-   * - When hasTest() is true, runTest() MUST return a HandlerTestResult (not undefined).
+   * - Handlers MAY override runTest() and return:
+   *     Promise<HandlerTestResult | undefined>
+   * - `undefined` is reserved for "bad state" / wiring errors:
+   *   • no scenarios,
+   *   • misconfigured test,
+   *   • etc.
+   * - This default implementation always returns a concrete TestError
+   *   HandlerTestResult with reason "NO_TEST_PROVIDED".
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   public async runTest(): Promise<HandlerTestResult | undefined> {
-    return undefined;
+    const handlerName =
+      typeof (this as any).getHandlerName === "function"
+        ? (this as any).getHandlerName()
+        : this.constructor.name;
+
+    const startedAt = Date.now();
+
+    const msg =
+      "HandlerBase.runTest() default invoked. hasTest() is likely true but runTest() not overridden. " +
+      "Provide a HandlerTestBase test and override runTest() accordingly.";
+
+    return {
+      testId: `${handlerName}.NO_TEST_PROVIDED`,
+      name: `${handlerName}: no test implementation`,
+      expectedError: false,
+      outcome: "failed",
+      assertionCount: 0,
+      failedAssertions: [`NO_TEST_PROVIDED: ${msg}`],
+      errorMessage: msg,
+      durationMs: Math.max(0, Date.now() - startedAt),
+    };
   }
 
   /**
-   * Shared helper to aggregate multiple scenario tests into ONE HandlerTestResult.
+   * Build the standard test init payload for handler-level tests.
    *
-   * Why:
-   * - Keeps per-handler runTest() tiny (import scenarios, call this helper).
-   * - Keeps the runner dumb and stable.
-   *
-   * Contract:
-   * - If scenariosFactory returns an empty list → returns undefined (skip).
-   * - Never throws (worst-case becomes a failed result).
-   *
-   * New behavior:
-   * - Happy path FIRST (expectedError=false scenarios before expectedError=true).
-   * - FAIL-FAST: once any scenario fails, stop executing further scenarios.
+   * Shape is intentionally loose so individual tests can:
+   * - ignore it (no-arg ctor still works)
+   * - or consume `log`, `app`, `registry` as needed.
    */
+  protected buildStandardTestInit(): any {
+    return {
+      log: this.log,
+      harness: {
+        app: this.app,
+        registry: this.registry,
+      },
+    };
+  }
+
+  /**
+   * Convenience helper for the common "single test class" pattern.
+   *
+   * Usage in handlers:
+   *   public override async runTest(): Promise<HandlerTestResult | undefined> {
+   *     return this.runSingleTest(ToBagUserTest);
+   *   }
+   *
+   * Test ctors may accept the init object or ignore it.
+   */
+  protected async runSingleTest(
+    TestCtor: new (init?: any) => HandlerTestBase
+  ): Promise<HandlerTestResult | undefined> {
+    const init = this.buildStandardTestInit();
+    const test = new TestCtor(init);
+    return test.run();
+  }
+
   protected async runTestFromScenarios(input: {
     testId: string;
     testName: string;
@@ -210,12 +217,10 @@ export abstract class HandlerBase {
       return undefined;
     }
 
-    // Happy path first: expectedError=false before expectedError=true.
-    // expectedError() is protected, so we access it best-effort via runtime.
     scenarios = [...scenarios].sort((a, b) => {
       const aExp = this.safeScenarioExpectedError(a);
       const bExp = this.safeScenarioExpectedError(b);
-      return Number(aExp) - Number(bExp); // false(0) first
+      return Number(aExp) - Number(bExp);
     });
 
     const failedAssertions: string[] = [];
@@ -232,13 +237,13 @@ export abstract class HandlerBase {
             (r.failedAssertions && r.failedAssertions[0]) ||
             "unknown failure";
           failedAssertions.push(`${r.testId}: ${msg}`);
-          break; // FAIL-FAST
+          break;
         }
       } catch (err) {
         const msg =
-          err instanceof Error ? err.message : String(err ?? "unknown error");
-        failedAssertions.push(`${input.testId}: scenario runner threw: ${msg}`);
-        break; // FAIL-FAST
+          err instanceof Error ? err.message : String(err ?? "unknown");
+        failedAssertions.push(`${input.testId}: scenario threw: ${msg}`);
+        break;
       }
     }
 
@@ -251,8 +256,7 @@ export abstract class HandlerBase {
       outcome: failedAssertions.length === 0 ? "passed" : "failed",
       assertionCount,
       failedAssertions,
-      errorMessage:
-        failedAssertions.length > 0 ? failedAssertions[0] : undefined,
+      errorMessage: failedAssertions[0],
       durationMs: Math.max(0, finishedAt - startedAt),
     };
   }
@@ -263,19 +267,10 @@ export abstract class HandlerBase {
       if (typeof anyT.expectedError === "function") {
         return anyT.expectedError() === true;
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
     return false;
   }
 
-  /**
-   * Framework entrypoint called by controllers.
-   * - Short-circuits on prior failure unless canRunAfterError() is true.
-   * - Wraps execute() in a generic try/catch that records a structured
-   *   UNHANDLED_HANDLER_EXCEPTION on ctx["error"] if no handler-level error
-   *   was already recorded.
-   */
   public async run(): Promise<void> {
     const status = this.ctx.get<number>("status");
     const handlerStatus = this.ctx.get<string>("handlerStatus");
@@ -293,16 +288,13 @@ export abstract class HandlerBase {
           handlerStatus,
           canRunAfterError: false,
         },
-        "Handler run() short-circuited due to prior failure"
+        "Handler run() short-circuited"
       );
       return;
     }
 
     this.log.pipeline(
-      {
-        event: "execute_start",
-        handler: this.constructor.name,
-      },
+      { event: "execute_start", handler: this.constructor.name },
       "Handler execute() start"
     );
 
@@ -316,7 +308,7 @@ export abstract class HandlerBase {
             event: "execute_exception_after_handler_error",
             handler: this.constructor.name,
           },
-          "Handler threw after recording structured error; skipping secondary failWithError"
+          "Handler threw after structured error; skip secondary failWithError"
         );
         return;
       }
@@ -325,9 +317,7 @@ export abstract class HandlerBase {
         httpStatus: 500,
         title: "internal_handler_error",
         detail:
-          "Handler threw an unhandled exception. " +
-          "Ops: search logs for 'handler.unhandled_exception' and the requestId; " +
-          "use origin.handler and origin.purpose to locate the failing handler.",
+          "Handler threw unhandled exception. Ops: inspect logs + stack via requestId.",
         stage: "HandlerBase.run",
         rawError: err,
         logMessage: "handler.unhandled_exception",
@@ -366,26 +356,20 @@ export abstract class HandlerBase {
         handlerName: this.constructor.name,
       });
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : String(err ?? "unknown error");
-
+      const msg = err instanceof Error ? err.message : String(err ?? "unknown");
       this.failWithError({
         httpStatus: 500,
         title: "mongo_config_error",
         detail:
           msg +
-          " Ops: verify NV_MONGO_URI, NV_MONGO_DB, DB_STATE, and the env-service configuration document for this service/version. " +
-          "Infra DBs must end with `_infra`; domain DBs require a valid DB_STATE.",
+          " Ops: verify NV_MONGO_URI, NV_MONGO_DB, DB_STATE, and svcenv. Infra DBs require `_infra`; domain DBs require valid DB_STATE.",
         stage: `${this.handlerPurpose()}:mongo.config`,
         rawError: err,
-        origin: {
-          method: "getMongoConfig",
-        },
+        origin: { method: "getMongoConfig" },
         logMessage:
-          "mongo_config_error: failure resolving Mongo configuration; aborting handler.",
+          "mongo_config_error resolving Mongo configuration; aborting handler.",
         logLevel: "error",
       });
-
       throw err;
     }
   }
@@ -411,9 +395,7 @@ export abstract class HandlerBase {
     const raw = this.safeCtxGet<any>("requestId");
     if (typeof raw === "string") {
       const trimmed = raw.trim();
-      if (trimmed !== "") {
-        return trimmed;
-      }
+      if (trimmed !== "") return trimmed;
     }
     return "unknown";
   }
@@ -423,19 +405,11 @@ export abstract class HandlerBase {
       const appAny = this.app as any;
       if (typeof appAny.getSlug === "function") {
         const slug = appAny.getSlug();
-        if (typeof slug === "string" && slug.trim() !== "") return slug;
+        if (typeof slug === "string" && slug.trim()) return slug;
       }
-    } catch (err) {
-      this.log.debug(
-        {
-          event: "safeServiceSlug_error",
-          handler: this.constructor.name,
-          error: err instanceof Error ? err.message : String(err),
-        },
-        "safeServiceSlug: getSlug() threw; falling back to ctx['slug']"
-      );
+    } catch {
+      /* ignore */
     }
-
     return this.safeCtxGet<string>("slug");
   }
 

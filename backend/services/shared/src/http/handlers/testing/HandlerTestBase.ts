@@ -114,6 +114,10 @@ export type HandlerTestHarnessOptions = {
    */
   app?: AppBase;
 
+  /**
+   * Real DTO registry, same instance the service uses.
+   * Tests MUST construct DTOs via the registry (never `new SomeDto()`).
+   */
   registry?: IDtoRegistry;
 
   envLabel?: string;
@@ -587,6 +591,54 @@ export abstract class HandlerTestBase {
       ok,
       `BagCount(${ctxLabel}): expected ${comparator}, actual=${count}.`
     );
+  }
+
+  // ------------------------------
+  // DTO + JSON helpers (via Registry ONLY)
+  // ------------------------------
+
+  /**
+   * Creates a short-lived DTO via the real Registry, seeds it with a provided
+   * function, then returns its canonical JSON representation (dto.toBody()).
+   *
+   * Invariants:
+   * - NO direct DTO construction (no `new SomeDto()`); everything flows through Registry.
+   * - If Registry is missing, this throws loudly so tests cannot silently cheat.
+   */
+  protected makeDtoJsonFromRegistry<TDto extends DtoBase>(
+    dtoTypeKey: string,
+    seed: (dto: TDto) => void
+  ): Record<string, unknown> {
+    const registry = this.defaultHarness?.registry;
+    if (!registry) {
+      throw new Error(
+        "HANDLER_TEST_DTO_REGISTRY_MISSING: makeDtoJsonFromRegistry() " +
+          "requires harness.registry so DTOs are constructed via the real Registry."
+      );
+    }
+
+    // NOTE: this assumes the Registry exposes a create/new API that returns
+    // a fully wired DTO instance (with the secret) for dtoTypeKey.
+    // Adjust the member name to match your IDtoRegistry implementation.
+    const dto = (registry as any).createDto(dtoTypeKey) as TDto;
+
+    if (!dto || typeof (dto as any).toBody !== "function") {
+      throw new Error(
+        `HANDLER_TEST_DTO_REGISTRY_INVALID: Registry.createDto("${dtoTypeKey}") ` +
+          "did not return a DTO with toBody()."
+      );
+    }
+
+    seed(dto as TDto);
+
+    const body = (dto as any).toBody();
+    if (!body || typeof body !== "object") {
+      throw new Error(
+        `HANDLER_TEST_DTO_TO_BODY_INVALID: DTO "${dtoTypeKey}" toBody() did not return an object.`
+      );
+    }
+
+    return body as Record<string, unknown>;
   }
 
   private recordAssertion(): void {

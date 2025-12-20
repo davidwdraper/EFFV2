@@ -18,6 +18,10 @@
  * Invariants:
  * - Pure id minting: no DTO knowledge, no validation beyond UUIDv4 generation.
  * - Idempotent: if ctx["signup.userId"] is already set, do not overwrite it.
+ * - Test wiring:
+ *     • hasTest() opt-in only.
+ *     • No runTest() override; tests live in the external test module
+ *       discovered by ScenarioRunner via handlerName "code.build.userId".
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -27,31 +31,33 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 // Centralized UUIDv4 generator (ADR-0057)
 import { newUuid } from "@nv/shared/utils/uuid";
 
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { CodeBuildUserIdTest } from "./code.build.userId.test";
-
 export class CodeBuildUserIdHandler extends HandlerBase {
-  constructor(ctx: HandlerContext, controller: ControllerBase) {
+  public constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }
 
+  /**
+   * Test opt-in:
+   * - ScenarioRunner / StepIterator will see this true and look for
+   *   a matching test module for this handler.
+   */
   public hasTest(): boolean {
     return true;
   }
 
-  protected handlerPurpose(): string {
-    return "Generate or reuse a stable UUIDv4 for a signup pipeline without ever overwriting an existing id.";
+  /**
+   * Stable handler name for test discovery.
+   *
+   * Convention:
+   * - HandlerTestDto.handlerName == "code.build.userId"
+   * - Test module file == "code.build.userId.test.ts"
+   */
+  public getHandlerName(): string {
+    return "code.build.userId";
   }
 
-  /**
-   * Test hook:
-   * - StepIterator / test-runner calls handler.runTest().
-   * - No test logic lives here; this is only a delegating wrapper.
-   * - MUST return HandlerTestResult | undefined per HandlerBase contract.
-   */
-  public override async runTest(): Promise<HandlerTestResult | undefined> {
-    const test = new CodeBuildUserIdTest();
-    return test.run();
+  protected handlerPurpose(): string {
+    return "Generate or reuse a stable UUIDv4 for a signup pipeline without ever overwriting an existing id.";
   }
 
   protected override async execute(): Promise<void> {

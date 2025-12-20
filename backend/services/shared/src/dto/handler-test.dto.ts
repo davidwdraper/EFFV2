@@ -25,18 +25,15 @@
  * - No nested DTOs
  */
 
-import { DtoBase, DtoValidationError, type CheckKind } from "./DtoBase";
+import { DtoBase, type CheckKind } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
 import type { IDto } from "./IDto";
 
-export type HandlerTestStatus =
-  | "Started"
-  | "Passed"
-  | "Failed"
-  | "TestError"
-  | "RailError";
+// Test status is the TEST VERDICT ONLY.
+// Rails metadata is kept separately (railsVerdict / railsStatus / railsHandlerStatus).
+export type HandlerTestStatus = "Started" | "Passed" | "Failed" | "TestError";
 
-export type HandlerTestScenarioStatus = "Passed" | "Failed" | "RailError";
+export type HandlerTestScenarioStatus = "Passed" | "Failed";
 
 export type HandlerTestScenario = {
   name: string;
@@ -80,6 +77,11 @@ type HandlerTestJson = {
 
   requestId?: string;
   notes?: string;
+
+  // Rails metadata (classification only; does NOT change test status)
+  railsVerdict?: string;
+  railsStatus?: number | null;
+  railsHandlerStatus?: string | null;
 
   // meta
   createdAt?: string;
@@ -152,6 +154,11 @@ export class HandlerTestDto extends DtoBase implements IDto {
   private _requestId: string | undefined;
   private _notes: string | undefined;
 
+  // Rails metadata (classification only)
+  private _railsVerdict: string | undefined;
+  private _railsStatus: number | null | undefined;
+  private _railsHandlerStatus: string | null | undefined;
+
   // ─────────────── Internal write-once enforcement ───────────────
 
   private _writeOnceFrozen = false;
@@ -180,6 +187,10 @@ export class HandlerTestDto extends DtoBase implements IDto {
     return this._dbMocks;
   }
   public getS2sMocks(): boolean {
+    return this._s2Mocks;
+  }
+
+  private get _s2Mocks(): boolean {
     return this._s2sMocks;
   }
 
@@ -230,6 +241,18 @@ export class HandlerTestDto extends DtoBase implements IDto {
   }
   public getNotes(): string | undefined {
     return this._notes;
+  }
+
+  public getRailsVerdict(): string | undefined {
+    return this._railsVerdict;
+  }
+
+  public getRailsStatus(): number | null | undefined {
+    return this._railsStatus;
+  }
+
+  public getRailsHandlerStatus(): string | null | undefined {
+    return this._railsHandlerStatus;
   }
 
   // ─────────────── Write-once header lifecycle ───────────────
@@ -360,10 +383,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
     this._status = "TestError";
   }
 
-  public markRailError(): void {
-    this._status = "RailError";
-  }
-
   public setStatus(v: HandlerTestStatus): void {
     this._status = v;
   }
@@ -391,9 +410,74 @@ export class HandlerTestDto extends DtoBase implements IDto {
     this._notes = notes || undefined;
   }
 
+  public setRailsVerdict(v: string | undefined): void {
+    const val = typeof v === "string" ? v.trim() : "";
+    this._railsVerdict = val || undefined;
+  }
+
+  public setRailsStatus(v: number | null | undefined): void {
+    if (v === null || v === undefined) {
+      this._railsStatus = v;
+      return;
+    }
+    const n = Math.trunc(Number(v));
+    this._railsStatus = Number.isFinite(n) ? n : null;
+  }
+
+  public setRailsHandlerStatus(v: string | null | undefined): void {
+    if (v === null || v === undefined) {
+      this._railsHandlerStatus = v;
+      return;
+    }
+    const val = v.trim();
+    this._railsHandlerStatus = val || null;
+  }
+
+  private _appendNote(line: string | undefined | null): void {
+    const trimmed = (line ?? "").trim();
+    if (!trimmed) return;
+    if (this._notes && this._notes.length > 0) {
+      this._notes = `${this._notes}\n${trimmed}`;
+    } else {
+      this._notes = trimmed;
+    }
+  }
+
+  // Normalizes scenario status based on test outcome and assertion failures.
+  // IMPORTANT:
+  // - railsVerdict is NOT used to override test status anymore.
+  // - "Passed"/"Failed" are test truth; rails metadata is separate.
+  private _normalizeScenarioStatus(
+    status: HandlerTestScenarioStatus,
+    details: unknown
+  ): HandlerTestScenarioStatus {
+    let normalized: HandlerTestScenarioStatus = status;
+
+    const d: any = details;
+    if (d && typeof d === "object") {
+      const outcome =
+        typeof d.outcome === "string"
+          ? d.outcome.trim().toLowerCase()
+          : undefined;
+      const failedAssertions = Array.isArray(d.failedAssertions)
+        ? d.failedAssertions
+        : undefined;
+      const hasFailedAssertions =
+        !!failedAssertions && failedAssertions.length > 0;
+
+      if (outcome === "failed" || hasFailedAssertions) {
+        normalized = "Failed";
+      } else if (outcome === "passed") {
+        normalized = "Passed";
+      }
+    }
+
+    return normalized;
+  }
+
   /**
    * Replace scenarios wholesale with a validated, normalized list.
-   * Used by runScenario() and fromBody(); external callers should prefer runScenario().
+   * Used by fromBody(); external callers should prefer runScenario().
    */
   public replaceScenarios(scenarios: HandlerTestScenario[]): void {
     const normalized: HandlerTestScenario[] = [];
@@ -406,12 +490,10 @@ export class HandlerTestDto extends DtoBase implements IDto {
         continue;
       }
 
-      const status: HandlerTestScenarioStatus =
-        raw.status === "Passed" ||
-        raw.status === "Failed" ||
-        raw.status === "RailError"
+      let status: HandlerTestScenarioStatus =
+        raw.status === "Passed" || raw.status === "Failed"
           ? raw.status
-          : "RailError";
+          : "Failed";
 
       const startedAt = (raw.startedAt ?? "").trim();
       const finishedAt = (raw.finishedAt ?? "").trim();
@@ -420,13 +502,16 @@ export class HandlerTestDto extends DtoBase implements IDto {
         Math.trunc(Number.isFinite(raw.durationMs) ? raw.durationMs : 0)
       );
 
+      const details = raw.details;
+      status = this._normalizeScenarioStatus(status, details);
+
       normalized.push({
         name,
         status,
         startedAt,
         finishedAt,
         durationMs,
-        details: raw.details,
+        details,
         errorMessage:
           typeof raw.errorMessage === "string" ? raw.errorMessage : undefined,
         errorStack:
@@ -444,7 +529,9 @@ export class HandlerTestDto extends DtoBase implements IDto {
    *   await dto.runScenario("happy path", async () => { ... })
    *
    * The scenario status is STRUCTURED and always recorded.
-   * - Throw => RailError (and the throw is rethrown by default)
+   * - Throw => TestError at DTO level (scenario still recorded)
+   *   • by default we rethrow so later scenarios WILL NOT run (happy-path-first rule)
+   *   • callers can opt out via opts.rethrowOnRailError === false
    * - Return => Passed/Failed based on the return shape
    */
   public async runScenario(
@@ -462,7 +549,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
     const startedAt = new Date().toISOString();
     const t0 = Date.now();
 
-    let status: HandlerTestScenarioStatus = "RailError";
+    let status: HandlerTestScenarioStatus = "Failed";
     let details: unknown | undefined;
     let errorMessage: string | undefined;
     let errorStack: string | undefined;
@@ -473,12 +560,13 @@ export class HandlerTestDto extends DtoBase implements IDto {
       status = parsed.status;
       details = parsed.details;
     } catch (err) {
-      status = "RailError";
+      status = "Failed";
       errorMessage =
         err instanceof Error ? err.message : String(err ?? "unknown error");
       errorStack = err instanceof Error ? err.stack : undefined;
 
       const shouldRethrow = opts?.rethrowOnRailError !== false;
+
       this._appendScenario({
         name: scenarioName,
         status,
@@ -491,9 +579,16 @@ export class HandlerTestDto extends DtoBase implements IDto {
       });
 
       if (shouldRethrow) {
+        this._appendNote(
+          `Scenario "${scenarioName}" raised an error and the exception was rethrown; later scenarios were not executed (happy-path-first rule).`
+        );
         throw err;
+      } else {
+        this._appendNote(
+          `Scenario "${scenarioName}" raised an error; error was swallowed so subsequent scenarios could run.`
+        );
+        return;
       }
-      return;
     }
 
     this._appendScenario({
@@ -538,17 +633,16 @@ export class HandlerTestDto extends DtoBase implements IDto {
     if (!name) {
       throw new Error(`Scenario name is required`);
     }
-    if (
-      s.status !== "Passed" &&
-      s.status !== "Failed" &&
-      s.status !== "RailError"
-    ) {
+
+    const finalStatus = this._normalizeScenarioStatus(s.status, s.details);
+
+    if (finalStatus !== "Passed" && finalStatus !== "Failed") {
       throw new Error(`Scenario status is invalid`);
     }
 
     this._scenarios.push({
       name,
-      status: s.status,
+      status: finalStatus,
       startedAt: s.startedAt,
       finishedAt: s.finishedAt,
       durationMs: Math.max(0, Math.trunc(s.durationMs)),
@@ -561,11 +655,13 @@ export class HandlerTestDto extends DtoBase implements IDto {
   // ─────────────── Finalization (status derived from scenarios) ───────────────
 
   /**
-   * Compute final status from scenarios (preferred single truth).
-   * - Any RailError => RailError
-   * - Else any Failed => Failed
+   * Compute final TEST status from scenarios (single truth).
+   * - Any Failed => Failed
    * - Else at least one Passed => Passed
    * - Else (no scenarios) => TestError
+   *
+   * Rails metadata (railsVerdict / railsStatus / railsHandlerStatus) is derived
+   * from the first scenario.details, if present, but DOES NOT affect status.
    */
   public finalizeFromScenarios(): void {
     const finishedAt = new Date().toISOString();
@@ -577,27 +673,43 @@ export class HandlerTestDto extends DtoBase implements IDto {
       this._durationMs = Math.max(0, Math.trunc(finishMs - startMs));
     }
 
-    if (!this._scenarios.length) {
+    const scenarios = this._scenarios;
+
+    if (!scenarios.length) {
       this._status = "TestError";
       return;
     }
 
-    if (this._scenarios.some((s) => s.status === "RailError")) {
-      this._status = "RailError";
-      return;
-    }
-
-    if (this._scenarios.some((s) => s.status === "Failed")) {
+    if (scenarios.some((s) => s.status === "Failed")) {
       this._status = "Failed";
-      return;
-    }
-
-    if (this._scenarios.some((s) => s.status === "Passed")) {
+    } else if (scenarios.some((s) => s.status === "Passed")) {
       this._status = "Passed";
-      return;
+    } else {
+      this._status = "TestError";
     }
 
-    this._status = "TestError";
+    // Derive rails metadata from the first scenario's details, if available.
+    const firstDetails = scenarios[0]?.details as any;
+    if (firstDetails && typeof firstDetails === "object") {
+      const railsVerdict =
+        typeof firstDetails.railsVerdict === "string"
+          ? firstDetails.railsVerdict.trim()
+          : undefined;
+      const railsStatus =
+        typeof firstDetails.railsStatus === "number"
+          ? firstDetails.railsStatus
+          : undefined;
+      const railsHandlerStatus =
+        typeof firstDetails.railsHandlerStatus === "string"
+          ? firstDetails.railsHandlerStatus.trim()
+          : undefined;
+
+      this.setRailsVerdict(railsVerdict);
+      this.setRailsStatus(railsStatus === undefined ? null : railsStatus);
+      this.setRailsHandlerStatus(
+        railsHandlerStatus === undefined ? null : railsHandlerStatus
+      );
+    }
   }
 
   // ─────────────── Wire hydration (via DtoBase.check) ───────────────
@@ -721,8 +833,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
       j.status === "Started" ||
       j.status === "Passed" ||
       j.status === "Failed" ||
-      j.status === "TestError" ||
-      j.status === "RailError"
+      j.status === "TestError"
     ) {
       dto.setStatus(j.status);
     }
@@ -782,12 +893,13 @@ export class HandlerTestDto extends DtoBase implements IDto {
             { validate, path: `${basePath}.durationMs` }
           );
 
-          const status: HandlerTestScenarioStatus =
-            ss.status === "Passed" ||
-            ss.status === "Failed" ||
-            ss.status === "RailError"
+          let status: HandlerTestScenarioStatus =
+            ss.status === "Passed" || ss.status === "Failed"
               ? ss.status
-              : "RailError";
+              : "Failed";
+
+          const details = ss.details;
+          status = dto._normalizeScenarioStatus(status, details);
 
           return {
             name: name ?? "",
@@ -795,7 +907,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
             startedAt: startedAtSc ?? "",
             finishedAt: finishedAtSc ?? "",
             durationMs: durationMsSc ?? 0,
-            details: ss.details,
+            details,
             errorMessage:
               typeof ss.errorMessage === "string" ? ss.errorMessage : undefined,
             errorStack:
@@ -815,6 +927,30 @@ export class HandlerTestDto extends DtoBase implements IDto {
 
     const notes = check<string | undefined>(j.notes, "stringOpt", "notes");
     dto.setNotes(notes);
+
+    // rails metadata (optional)
+    const railsVerdict = check<string | undefined>(
+      j.railsVerdict,
+      "stringOpt",
+      "railsVerdict"
+    );
+    dto.setRailsVerdict(railsVerdict);
+
+    const railsStatus = DtoBase.check<number | undefined>(
+      j.railsStatus,
+      "numberOpt",
+      { validate, path: "railsStatus" }
+    );
+    dto.setRailsStatus(railsStatus === undefined ? null : railsStatus);
+
+    const railsHandlerStatus = check<string | undefined>(
+      j.railsHandlerStatus,
+      "stringOpt",
+      "railsHandlerStatus"
+    );
+    dto.setRailsHandlerStatus(
+      railsHandlerStatus === undefined ? null : railsHandlerStatus
+    );
 
     dto.setMeta({
       createdAt: j.createdAt,
@@ -862,6 +998,10 @@ export class HandlerTestDto extends DtoBase implements IDto {
 
       requestId: this.getRequestId(),
       notes: this.getNotes(),
+
+      railsVerdict: this.getRailsVerdict(),
+      railsStatus: this.getRailsStatus(),
+      railsHandlerStatus: this.getRailsHandlerStatus(),
     };
 
     return this._finalizeToJson(body);
@@ -886,6 +1026,10 @@ export class HandlerTestDto extends DtoBase implements IDto {
 
     if (other.getRequestId()) this._requestId = other.getRequestId();
     if (other.getNotes()) this._notes = other.getNotes();
+
+    this._railsVerdict = other.getRailsVerdict();
+    this._railsStatus = other.getRailsStatus();
+    this._railsHandlerStatus = other.getRailsHandlerStatus();
 
     return this;
   }

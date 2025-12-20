@@ -914,3 +914,15 @@ This doc represents the evolving user-facing + UX + engagement feature set.
 ## All ADR are created as .md files with a download link - always.
 
 ## For the 1st ADR in a session, ask for the ADR number to use.
+
+## No unfinished code
+
+When writing code for NV backend:
+
+No forward-looking TODO promises.
+
+No passive “can be wired later.”
+
+No comments implying skipped invariants.
+
+Every invariant is either enforced in code or explicitly failed.

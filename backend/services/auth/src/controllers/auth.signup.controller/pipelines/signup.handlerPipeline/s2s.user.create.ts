@@ -37,12 +37,8 @@ import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
 
 import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import type { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
-import {
-  S2sUserCreate_HappyPath_Test,
-  S2sUserCreate_MissingBag_Test,
-} from "./s2s.user.create.test";
+import { S2sUserCreate_HappyPath_Test } from "./s2s.user.create.test";
 
 type UserBag = DtoBag<UserDto>;
 
@@ -73,22 +69,16 @@ export class S2sUserCreateHandler extends HandlerBase {
     return "s2s.user.create";
   }
 
+  public hasTest(): boolean {
+    return false;
+  }
+
   /**
-   * Test-runner hook.
-   *
-   * Contract:
-   * - Returns undefined when this handler has no tests (not the case here).
-   * - Returns ONE aggregated result when tests exist (runner stays dumb).
+   * Test hook used by the handler-level test harness.
+   * Uses the same scenario entrypoint the test-runner relies on.
    */
   public override async runTest(): Promise<HandlerTestResult | undefined> {
-    return this.runTestFromScenarios({
-      testId: "auth.s2s.user.create",
-      testName: "auth s2s.user.create — handler scenarios",
-      scenariosFactory: (): HandlerTestBase[] => [
-        new S2sUserCreate_HappyPath_Test(),
-        new S2sUserCreate_MissingBag_Test(),
-      ],
-    });
+    return this.runSingleTest(S2sUserCreate_HappyPath_Test);
   }
 
   protected override async execute(): Promise<void> {

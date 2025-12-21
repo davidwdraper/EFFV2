@@ -1,0 +1,128 @@
+[
+  {
+    "_id": "3f8e6947-5679-4f57-be57-bdd517007b4b",
+    "type": "env-service",
+    "env": "dev",
+    "slug": "gateway",
+    "version": 1,
+    "vars": {
+      "NV_HTTP_HOST": "127.0.0.1",
+      "NV_HTTP_PORT": "4015",
+      "NV_MONGO_URI": "mongodb://127.0.0.1:27017",
+      "NV_MONGO_DB": "nv",
+      "NV_MONGO_COLLECTION": "gateway",
+      "DB_STATE": "dev"
+    },
+    "createdAt": "2025-11-24T21:31:29.423Z",
+    "updatedAt": "2025-11-24T21:31:29.423Z",
+    "updatedByUserId": null
+  },
+  {
+    "_id": "90f51a74-52ad-4d75-8073-95d6bb3cda54",
+    "type": "env-service",
+    "env": "dev",
+    "slug": "auth",
+    "version": 1,
+    "vars": {
+      "NV_HTTP_HOST": "127.0.0.1",
+      "NV_HTTP_PORT": "4030",
+      "NV_MONGO_URI": "mongodb://127.0.0.1:27017",
+      "NV_MONGO_DB": "nv",
+      "NV_MONGO_COLLECTION": "auth",
+      "DB_STATE": "dev"
+    },
+    "createdAt": "2025-11-24T21:31:29.423Z",
+    "updatedAt": "2025-11-24T21:31:29.423Z",
+    "updatedByUserId": null
+  },
+  {
+    "_id": "4bc8cead-1df3-426b-b421-64b63757464b",
+    "type": "env-service",
+    "env": "dev",
+    "slug": "user",
+    "version": 1,
+    "vars": {
+      "NV_HTTP_HOST": "127.0.0.1",
+      "NV_HTTP_PORT": "4040",
+      "NV_MONGO_URI": "mongodb://127.0.0.1:27017",
+      "NV_MONGO_DB": "nv",
+      "NV_MONGO_COLLECTION": "user",
+      "DB_STATE": "dev"
+    },
+    "createdAt": "2025-11-24T21:31:29.423Z",
+    "updatedAt": "2025-11-24T21:31:29.423Z",
+    "updatedByUserId": null
+  },
+  {
+    "_id": "0f905831-6318-496e-b6a5-9172fe4afffe",
+    "type": "env-service",
+    "env": "dev",
+    "slug": "prompt",
+    "version": 1,
+    "vars": {
+      "NV_HTTP_HOST": "127.0.0.1",
+      "NV_HTTP_PORT": "4050",
+      "NV_MONGO_URI": "mongodb://127.0.0.1:27017",
+      "NV_MONGO_DB": "nv",
+      "NV_MONGO_COLLECTION": "prompt",
+      "DB_STATE": "dev"
+    },
+    "createdAt": "2025-11-24T21:31:29.423Z",
+    "updatedAt": "2025-11-24T21:31:29.423Z",
+    "updatedByUserId": null
+  },
+  {
+    "_id": "de39eb11-bb88-4c39-8dfb-902c47d8fbef",
+    "type": "env-service",
+    "env": "dev",
+    "slug": "user-auth",
+    "version": 1,
+    "vars": {
+      "NV_HTTP_HOST": "127.0.0.1",
+      "NV_HTTP_PORT": "4060",
+      "NV_MONGO_URI": "mongodb://127.0.0.1:27017",
+      "NV_MONGO_DB": "nv",
+      "NV_MONGO_COLLECTION": "user-auth",
+      "DB_STATE": "dev"
+    },
+    "createdAt": "2025-11-24T21:31:29.423Z",
+    "updatedAt": "2025-11-24T21:31:29.423Z",
+    "updatedByUserId": null
+  },
+  {
+    "_id": "3ba868a9-5dd9-4c74-a628-f4dd2e04c7ea",
+    "type": "env-service",
+    "env": "dev",
+    "slug": "test-runner",
+    "version": 1,
+    "vars": {
+      "NV_HTTP_HOST": "127.0.0.1",
+      "NV_HTTP_PORT": "5010",
+      "NV_MONGO_URI": "mongodb://127.0.0.1:27017",
+      "NV_MONGO_DB": "nv",
+      "NV_MONGO_COLLECTION": "test-runner",
+      "DB_STATE": "dev"
+    },
+    "createdAt": "2025-11-24T21:31:29.423Z",
+    "updatedAt": "2025-11-24T21:31:29.423Z",
+    "updatedByUserId": null
+  },
+  {
+    "_id": "f136e2fd-f75f-47a4-9733-e0e4df73d670",
+    "type": "env-service",
+    "env": "dev",
+    "slug": "handler-test",
+    "version": 1,
+    "vars": {
+      "NV_HTTP_HOST": "127.0.0.1",
+      "NV_HTTP_PORT": "5020",
+      "NV_MONGO_URI": "mongodb://127.0.0.1:27017",
+      "NV_MONGO_DB": "nv",
+      "NV_MONGO_COLLECTION": "handler-test",
+      "DB_STATE": "dev"
+    },
+    "createdAt": "2025-11-24T21:31:29.423Z",
+    "updatedAt": "2025-11-24T21:31:29.423Z",
+    "updatedByUserId": null
+  }
+]

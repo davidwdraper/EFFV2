@@ -49,8 +49,8 @@ SERVICES=(
   "user|backend/services/user|pnpm dev"
   "test-runner|backend/services/test-runner|pnpm dev"
   "handler-test|backend/services/handler-test|pnpm dev"
-  #"audit|backend/services/audit|pnpm dev"
-  #"jwks|backend/services/jwks|pnpm dev"
+  "audit|backend/services/audit|pnpm dev"
+  "jwks|backend/services/jwks|pnpm dev"
 
 )
 

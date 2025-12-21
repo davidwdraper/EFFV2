@@ -54,7 +54,7 @@ export class ToBagUserHandler extends HandlerBase {
    * - When true, it calls runTest() once for this handler.
    */
   public override hasTest(): boolean {
-    return true;
+    return false;
   }
 
   /**

@@ -184,6 +184,31 @@ export abstract class HandlerTestBase {
     return false;
   }
 
+  // Stable per-test suffix for unique test data (emails, names, etc.).
+  private _suffix?: string;
+
+  /**
+   * Return a small, stable 6-character suffix based on a timestamp.
+   *
+   * Rules:
+   * - Generated once per test instance (per scenario run).
+   * - Cached for the lifetime of the test object.
+   * - Intended for making test data unique (emails, names, etc.) without
+   *   plumbing a suffix argument through the whole call stack.
+   */
+  protected suffix(): string {
+    if (this._suffix) {
+      return this._suffix;
+    }
+
+    // Base36 timestamp → compact, monotonic-ish string.
+    const ts = Date.now().toString(36);
+    // Take the last 6 characters for a short, reasonably unique suffix.
+    this._suffix = ts.slice(-6);
+
+    return this._suffix;
+  }
+
   public async run(): Promise<HandlerTestResult> {
     const startedAt = Date.now();
 

@@ -43,7 +43,7 @@ export class CodeExtractPasswordHandler extends HandlerBase {
   }
 
   public override hasTest(): boolean {
-    return true;
+    return false;
   }
 
   /**

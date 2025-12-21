@@ -103,6 +103,13 @@ export type HandlerTestSeed = {
    */
   pipeline?: string;
   slug?: string;
+
+  /**
+   * Optional HTTP headers bag for handlers that read from headers.
+   * - Tests MUST use this property when seeding headers via makeCtx().
+   * - Do NOT pass random extra properties to makeCtx(); extend HandlerTestSeed instead.
+   */
+  headers?: Record<string, string>;
 };
 
 export type HandlerTestHarnessOptions = {
@@ -284,6 +291,16 @@ export abstract class HandlerTestBase {
 
     if (typeof seed?.bag !== "undefined") {
       ctx.set("bag", seed.bag);
+    }
+
+    /**
+     * Headers:
+     * - If the test passes a headers property (even an empty object),
+     *   we seed ctx["headers"] with a shallow copy.
+     * - This lets tests explicitly control "no headers" vs "no opinion".
+     */
+    if (seed && "headers" in seed) {
+      ctx.set("headers", { ...(seed.headers ?? {}) });
     }
   }
 

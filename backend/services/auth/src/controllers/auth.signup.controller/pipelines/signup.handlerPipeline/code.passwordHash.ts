@@ -24,10 +24,18 @@
  *   • ctx["signup.passwordCreatedAt"]
  */
 
-import { randomBytes, scryptSync } from "crypto";
+import * as crypto from "crypto";
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+import { CodePasswordHashTest } from "./code.passwordHash.test";
+
+type ScryptFn = (
+  password: string,
+  salt: string | Buffer,
+  keylen: number
+) => Buffer;
 
 export class CodePasswordHashHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
@@ -36,6 +44,22 @@ export class CodePasswordHashHandler extends HandlerBase {
 
   protected handlerPurpose(): string {
     return "Derive a password hash, salt, and metadata from a cleartext signup password and stash only the hashed credentials on the context.";
+  }
+
+  protected override handlerName(): string {
+    return "code.passwordHash";
+  }
+
+  public override hasTest(): boolean {
+    return true;
+  }
+
+  /**
+   * Test hook used by the handler-level test harness.
+   * Uses the same scenario entrypoint the test-runner relies on.
+   */
+  public override async runTest(): Promise<HandlerTestResult | undefined> {
+    return this.runSingleTest(CodePasswordHashTest);
   }
 
   protected override async execute(): Promise<void> {
@@ -60,7 +84,7 @@ export class CodePasswordHashHandler extends HandlerBase {
           title: "auth_signup_missing_password",
           detail:
             "Auth signup pipeline expected ctx['signup.passwordClear'] to contain the cleartext password before hashing. " +
-            "Dev: ensure ExtractPasswordHandler ran and stored the password under ctx['signup.passwordClear'].",
+            "Dev: ensure CodeExtractPasswordHandler ran and stored the password under ctx['signup.passwordClear'].",
           stage: "inputs.passwordClear",
           requestId,
           origin: {
@@ -86,13 +110,22 @@ export class CodePasswordHashHandler extends HandlerBase {
       );
 
       try {
+        // Optional injectable hash function, primarily for tests.
+        const injectedFn = this.ctx.get<ScryptFn>(
+          "signup.passwordHashFn" as any
+        );
+        const scryptFn: ScryptFn =
+          injectedFn && typeof injectedFn === "function"
+            ? injectedFn
+            : crypto.scryptSync;
+
         // 16 bytes of random salt, hex-encoded.
-        const saltBytes = randomBytes(16);
+        const saltBytes = crypto.randomBytes(16);
         const saltHex = saltBytes.toString("hex");
 
         // Derive a key using scrypt. Parameters are fixed so behavior is identical across envs.
         const keyLen = 64;
-        const key = scryptSync(passwordClear, saltHex, keyLen);
+        const key = scryptFn(passwordClear, saltHex, keyLen);
         const hashHex = key.toString("hex");
 
         const hashAlgo = "scrypt";
@@ -147,6 +180,7 @@ export class CodePasswordHashHandler extends HandlerBase {
             {
               algo: "scrypt",
               keyLen: 64,
+              message,
             },
           ],
           rawError: err,

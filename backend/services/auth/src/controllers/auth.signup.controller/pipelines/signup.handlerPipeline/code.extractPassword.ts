@@ -7,21 +7,27 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping; controller builds wire payload)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta)
+ *   - ADR-0063 (Auth Signup MOS Pipeline)
  *
  * Purpose:
- * - Extract the signup password from HTTP headers, validate basic constraints,
- *   and stash it in ctx["signup.password"] without ever logging the raw value.
+ * - Extract the signup password from HTTP headers, validate policy via the
+ *   shared ValidatePassword helper, and stash the cleartext in
+ *   ctx["signup.passwordClear"] without ever logging the raw value.
  *
  * Inputs (ctx):
  * - "headers": Record<string, unknown> (populated by ControllerBase.makeContext)
  *
  * Outputs (ctx on success):
- * - "signup.password": string   (NOT logged anywhere)
+ * - "signup.passwordClear": string   (NOT logged anywhere)
  * - "handlerStatus": "ok"
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+
+import { ValidatePassword } from "@nv/shared/security/PasswordValidator";
+import { CodeExtractPasswordTest } from "./code.extractPassword.test";
 
 export class CodeExtractPasswordHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -29,7 +35,23 @@ export class CodeExtractPasswordHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Extract a cleartext signup password from headers, validate its length, and stash it on the context without ever logging the secret.";
+    return "Extract a cleartext signup password from headers, validate policy, and stash it on the context without ever logging the secret.";
+  }
+
+  protected override handlerName(): string {
+    return "code.extractPassword";
+  }
+
+  public override hasTest(): boolean {
+    return true;
+  }
+
+  /**
+   * Test hook used by the handler-level test harness:
+   * - Uses the same scenario entrypoint as the test-runner (CodeExtractPasswordTest).
+   */
+  public override async runTest(): Promise<HandlerTestResult | undefined> {
+    return this.runSingleTest(CodeExtractPasswordTest);
   }
 
   protected override async execute(): Promise<void> {
@@ -84,18 +106,15 @@ export class CodeExtractPasswordHandler extends HandlerBase {
       }
 
       const password = raw.trim();
+      const length = password.length;
 
-      const minLen = 8;
-      const maxLen = 256;
-
-      if (password.length < minLen || password.length > maxLen) {
+      if (!ValidatePassword(password)) {
         this.failWithError({
           httpStatus: 400,
           title: "password_invalid",
           detail:
-            `Signup password does not meet length requirements (min ${minLen}, max ${maxLen}). ` +
-            "Dev: enforce password policy on the client before calling auth.signup.",
-          stage: "validate.length",
+            "Signup password does not meet current password policy. Dev: enforce password policy on the client before calling auth.signup.",
+          stage: "validate.password",
           requestId,
           origin: {
             file: __filename,
@@ -103,20 +122,18 @@ export class CodeExtractPasswordHandler extends HandlerBase {
           },
           issues: [
             {
-              length: password.length,
-              minLen,
-              maxLen,
+              length,
             },
           ],
           logMessage:
-            "signup.extractPassword: password length out of bounds (value not logged, length only).",
+            "signup.extractPassword: password rejected by policy (value not logged, length only).",
           logLevel: "warn",
         });
         return;
       }
 
       // Store only the cleartext in a dedicated ctx slot; NEVER log the value.
-      // (Downstream handlers are responsible for hashing and then discarding it.)
+      // Downstream handlers are responsible for hashing and then discarding it.
       this.ctx.set("signup.passwordClear", password);
       this.ctx.set("handlerStatus", "ok");
 
@@ -124,7 +141,7 @@ export class CodeExtractPasswordHandler extends HandlerBase {
         {
           event: "password_extracted",
           requestId,
-          length: password.length,
+          length,
         },
         "signup.extractPassword: password extracted and stored on ctx['signup.passwordClear']"
       );

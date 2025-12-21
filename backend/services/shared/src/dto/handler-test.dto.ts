@@ -443,10 +443,11 @@ export class HandlerTestDto extends DtoBase implements IDto {
     }
   }
 
-  // Normalizes scenario status based on test outcome and assertion failures.
+  // Normalizes scenario status based on test outcome, expectedError, and rails verdict.
   // IMPORTANT:
-  // - railsVerdict is NOT used to override test status anymore.
-  // - "Passed"/"Failed" are test truth; rails metadata is separate.
+  // - Assertion failures always win (they are real test bugs).
+  // - For runs that complete without throwing, we interpret railsVerdict
+  //   relative to expectedError so that “expected 500” scenarios can PASS.
   private _normalizeScenarioStatus(
     status: HandlerTestScenarioStatus,
     details: unknown
@@ -465,9 +466,30 @@ export class HandlerTestDto extends DtoBase implements IDto {
       const hasFailedAssertions =
         !!failedAssertions && failedAssertions.length > 0;
 
+      const expectedError =
+        typeof d.expectedError === "boolean" ? d.expectedError : false;
+      const railsVerdict =
+        typeof d.railsVerdict === "string"
+          ? d.railsVerdict.trim().toLowerCase()
+          : undefined;
+
+      // 1) Hard failures: assertion failures or explicit outcome===failed.
       if (outcome === "failed" || hasFailedAssertions) {
-        normalized = "Failed";
-      } else if (outcome === "passed") {
+        return "Failed";
+      }
+
+      // 2) Rails verdict present: interpret relative to expectedError.
+      if (railsVerdict === "rails_error") {
+        // Rails error was explicitly expected -> scenario passes.
+        if (expectedError) {
+          return "Passed";
+        }
+        // Rails error was not expected -> scenario fails.
+        return "Failed";
+      }
+
+      // 3) No rails error; if outcome is passed (or unspecified), treat as Passed.
+      if (outcome === "passed" || outcome === undefined) {
         normalized = "Passed";
       }
     }

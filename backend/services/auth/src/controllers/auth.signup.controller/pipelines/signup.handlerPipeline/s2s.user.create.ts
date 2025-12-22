@@ -38,7 +38,7 @@ import type { UserDto } from "@nv/shared/dto/user.dto";
 
 import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
-import { S2sUserCreate_HappyPath_Test } from "./s2s.user.create.test";
+import { S2sUserCreateTest } from "./s2s.user.create.test";
 
 type UserBag = DtoBag<UserDto>;
 
@@ -69,8 +69,8 @@ export class S2sUserCreateHandler extends HandlerBase {
     return "s2s.user.create";
   }
 
-  public hasTest(): boolean {
-    return false;
+  public override hasTest(): boolean {
+    return true;
   }
 
   /**
@@ -78,7 +78,7 @@ export class S2sUserCreateHandler extends HandlerBase {
    * Uses the same scenario entrypoint the test-runner relies on.
    */
   public override async runTest(): Promise<HandlerTestResult | undefined> {
-    return this.runSingleTest(S2sUserCreate_HappyPath_Test);
+    return this.runSingleTest(S2sUserCreateTest);
   }
 
   protected override async execute(): Promise<void> {

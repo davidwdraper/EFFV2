@@ -13,7 +13,7 @@
  * Purpose:
  * - Define handler-level tests for S2sUserCreateHandler.
  * - Scenarios:
- *   1) Happy path: user.create succeeds; signup.userCreateStatus.ok === true.
+ *   1) Canonical happy path: user.create succeeds; signup.userCreateStatus.ok === true.
  *   2) Sad path: malformed bag/envelope causes downstream failure and handler rails with error.
  *   3) Sad path: missing givenName/familyName/email causes downstream failure and handler rails with error.
  *
@@ -54,15 +54,20 @@ interface UserCreateStatusError {
 type UserCreateStatus = UserCreateStatusOk | UserCreateStatusError;
 
 /**
- * Happy-path scenario.
+ * Canonical happy-path scenario.
+ * Used by S2sUserCreateHandler.runTest() via runSingleTest().
  */
-export class S2sUserCreate_HappyPath_Test extends HandlerTestBase {
+export class S2sUserCreateTest extends HandlerTestBase {
   public testId(): string {
     return "auth.signup.s2s.user.create.happy";
   }
 
   public testName(): string {
     return "auth.signup: S2sUserCreateHandler happy path — user.create succeeds";
+  }
+
+  protected expectedError(): boolean {
+    return false;
   }
 
   /**
@@ -156,7 +161,7 @@ export class S2sUserCreate_HappyPath_Test extends HandlerTestBase {
 /**
  * Sad path — malformed envelope.
  */
-export class S2sUserCreate_BadEnvelope_Test extends HandlerTestBase {
+export class S2sUserCreateBadEnvelopeTest extends HandlerTestBase {
   public testId(): string {
     return "auth.signup.s2s.user.create.badEnvelope";
   }
@@ -265,7 +270,7 @@ export class S2sUserCreate_BadEnvelope_Test extends HandlerTestBase {
 /**
  * Sad path — missing required fields (givenName, familyName, email).
  */
-export class S2sUserCreate_MissingFields_Test extends HandlerTestBase {
+export class S2sUserCreateMissingFieldsTest extends HandlerTestBase {
   public testId(): string {
     return "auth.signup.s2s.user.create.missingFields";
   }
@@ -376,7 +381,7 @@ export async function getScenarios() {
       shortCircuitOnFail: true,
       expectedError: false,
       async run(): Promise<HandlerTestResult> {
-        const test = new S2sUserCreate_HappyPath_Test();
+        const test = new S2sUserCreateTest();
         return await test.run();
       },
     },
@@ -386,7 +391,7 @@ export async function getScenarios() {
       shortCircuitOnFail: false,
       expectedError: true,
       async run(): Promise<HandlerTestResult> {
-        const test = new S2sUserCreate_BadEnvelope_Test();
+        const test = new S2sUserCreateBadEnvelopeTest();
         return await test.run();
       },
     },
@@ -396,14 +401,9 @@ export async function getScenarios() {
       shortCircuitOnFail: false,
       expectedError: true,
       async run(): Promise<HandlerTestResult> {
-        const test = new S2sUserCreate_MissingFields_Test();
+        const test = new S2sUserCreateMissingFieldsTest();
         return await test.run();
       },
     },
   ];
 }
-
-/**
- * Back-compat alias for any legacy imports.
- */
-export { S2sUserCreate_BadEnvelope_Test as S2sUserCreate_MissingBag_Test };

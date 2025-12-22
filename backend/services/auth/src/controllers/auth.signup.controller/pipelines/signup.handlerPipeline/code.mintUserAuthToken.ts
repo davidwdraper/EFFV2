@@ -64,6 +64,10 @@ import {
 } from "@nv/shared/security/MintProvider";
 import { KmsJwtSigner } from "@nv/shared/security/KmsJwtSigner";
 
+// Test harness wiring
+import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+import { CodeMintUserAuthTokenTest } from "./code.mintUserAuthToken.test";
+
 // Status summaries from upstream handlers
 type UserCreateStatus =
   | { ok: true; userId?: string }
@@ -80,6 +84,30 @@ let tokenProvider: MintProvider | null = null;
 export class CodeMintUserAuthTokenHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
+  }
+
+  /**
+   * Stable handler name for logging + test discovery.
+   */
+  public handlerName(): string {
+    return "code.mintUserAuthToken";
+  }
+
+  /**
+   * Test opt-in:
+   * - StepIterator / ScenarioRunner will see this true and look for
+   *   a matching test module for this handler.
+   */
+  public hasTest(): boolean {
+    return true;
+  }
+
+  /**
+   * Test hook used by the handler-level test harness:
+   * - Uses the same scenario entrypoint as the test-runner (CodeMintUserAuthTokenTest).
+   */
+  public override async runTest(): Promise<HandlerTestResult | undefined> {
+    return this.runSingleTest(CodeMintUserAuthTokenTest);
   }
 
   protected handlerPurpose(): string {

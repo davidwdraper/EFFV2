@@ -11,6 +11,7 @@
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="_id")
  *   - ADR-0057 (ID Generation & Validation — UUIDv4 only)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
+ *   - Build-a-test-guide (Handler-level test pattern: canonical test + scenarios)
  *
  * Purpose:
  * - Hydrate a singleton DtoBag<UserDto> from the inbound wire bag.
@@ -54,13 +55,13 @@ export class ToBagUserHandler extends HandlerBase {
    * - When true, it calls runTest() once for this handler.
    */
   public override hasTest(): boolean {
-    return false;
+    return true;
   }
 
   /**
-   * Test hook:
-   * - StepIterator sees hasTest() === true and calls handler.runTest().
-   * - Uses the shared base helper so handler stays 1-liner.
+   * Canonical handler-test entrypoint:
+   * - Bridges this handler to its primary smoke test class.
+   * - ScenarioRunner separately uses getScenarios() from the test module.
    */
   public override async runTest(): Promise<HandlerTestResult | undefined> {
     return this.runSingleTest(ToBagUserTest);

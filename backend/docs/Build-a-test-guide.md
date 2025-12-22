@@ -1,660 +1,283 @@
-# Build-a-test-guide
+# Build-a-test-guide.md
 
-## 1. Purpose
+## Purpose
+A handler-level test verifies that when a handler runs under full rails with specific inputs, the final outputs match expectations — whether the path is happy or sad. Tests behave like calling clients: they supply inputs, run the handler once, and assert final outputs.
 
-This guide locks in **how to build handler-level tests** for the test-runner service so that:
+## Philosophy
+Tests never inspect internal logic or mid-handler state. They assert only:
+- handlerStatus
+- HTTP/rails status
+- final context fields relevant to handler outputs
 
-- The test-runner can **discover** tests without special wiring.
-- `ScenarioRunner` can **run scenarios** and write results into `HandlerTestDto` with **no per-test debugging**.
-- Every handler test follows the **same, predictable pattern** (one scenario per `HandlerTestBase` subclass).
-- Rails semantics (200 vs 500, handlerStatus, etc.) are **never guessed** by individual tests; they are interpreted once in `HandlerTestBase` + `HandlerTestDto`.
+Sad paths are expected failures: handlerStatus="error", status=500. Happy paths expect no rails error and correct outputs.
 
-This is the contract the code now relies on.
-
----
-
-## 2. Big Picture: Who Talks to Whom
-
-There are three main pieces:
-
-1. **Handler** (in a service, e.g., `auth`)
-
-   - Derives from `HandlerBase`.
-   - Opts into testing via `hasTest()`.
-   - Provides a **stable handler name** used for discovery.
-
-2. **Test module** (sibling file to the handler)
-
-   - File name: `<handlerName>.test.ts`.
-   - One or more classes extending `HandlerTestBase`, **one per scenario**.
-   - Exports a single `getScenarios()` function that returns an array of **scenario descriptors**.
-   - Each scenario descriptor’s `run()` calls `HandlerTestBase.run()` and returns a `HandlerTestResult`.
-
-3. **Test-runner service**
-
-   - Uses the pipeline index + handler name to locate the test module.
-   - Calls `getScenarios()` to get the list of scenarios.
-   - For each scenario:
-     - Calls `scenario.run()` → `HandlerTestResult`.
-     - Wraps that into the DTO’s `runScenario(...)` call.
-   - `HandlerTestDto` computes **scenario status** and **final test status** based on:
-     - Test outcome (`passed` / `failed`).
-     - Whether the scenario is an expected error.
-     - Rails verdict (`ok` / `rails_error` / `test_bug`).
-
-When all three follow this guide, tests “just work”.
+## Components
+- Handler: implements execute(), sets handlerStatus, may set ctx fields.
+- HandlerTestBase: wraps handler execution, collects rails signals and assertions.
+- ScenarioRunner: discovers test modules, executes scenarios, writes HandlerTestDto results.
 
 ---
 
-## 3. Handler Requirements
+## Test Entry Structure & Wiring (canonical)
 
-Every testable handler must follow these rules.
+Every handler-level test file must expose **two entrypoints**:
 
-### 3.1 File location
+1. **Canonical handler test class** – referenced by the handler via `runSingleTest()`.
+2. **Scenario registry** – ordered array consumed by ScenarioRunner.
 
-Handler lives in a pipeline folder, for example:
+This ensures:
+- handler → test coupling is deterministic
+- scenario ordering is explicit in one place
+- no alias hacks or filename sorting
 
-```text
-backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/toBag.user.ts
-```
+### 1. Handler wiring (required)
 
-The test module will live **next to it** (same folder).
-
-### 3.2 hasTest()
-
-Opt-in for the test-runner:
+Handlers must explicitly opt into testing and expose the entrypoint used by the harness. Without this wiring, tests will not be discovered or executed.
 
 ```ts
-public override hasTest(): boolean {
+public hasTest(): boolean {
   return true;
 }
-```
-
-If `hasTest()` is `false`, `StepIterator`/`ScenarioRunner` will **skip** this handler entirely.
-
-### 3.3 Handler name → file name
-
-There must be a **stable handler name** that will be written into `HandlerTestDto.handlerName` and used to derive the test module name.
-
-Current pattern (auth example):
-
-```ts
-protected override handlerName(): string {
-  return "toBag.user"; // handlerName
-}
-```
-
-**Mapping:**
-
-- Handler name: `"toBag.user"`
-- Test module file: `toBag.user.test.ts`
-- `HandlerTestDto.handlerName`: `"toBag.user"`
-
-For the `code.build.userId` example:
-
-- Handler name: `"code.build.userId"`
-- Test module file: `code.build.userId.test.ts`
-
-Whatever name the handler reports must match the test module’s base file name (before `.test.ts`).
-
-### 3.4 Optional: runTest for legacy
-
-Handlers may still implement `runTest()` to support older rails, e.g.:
-
-```ts
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { ToBagUserTest } from "./toBag.user.test";
 
 public override async runTest(): Promise<HandlerTestResult | undefined> {
-  return this.runSingleTest(ToBagUserTest);
+  return this.runSingleTest(CodeXxxTest); // canonical test class
 }
 ```
 
-This is **optional** under the new design; the test-runner uses `getScenarios()` instead. The alias pattern (`export { FooHappyTest as FooTest }`) lets `runSingleTest()` keep working without extra wiring.
+### 2. Canonical test class
 
----
-
-## 4. Test Module Requirements
-
-For every handler that sets `hasTest() === true`, there must be a matching test module:
-
-```text
-<handler-folder>/<handlerName>.test.ts
-```
-
-Examples:
-
-- Handler: `"code.build.userId"` → `code.build.userId.test.ts`
-- Handler: `"toBag.user"` → `toBag.user.test.ts`
-- Handler: `"code.passwordHash"` → `code.passwordHash.test.ts`
-
-Each test module must:
-
-1. Export one or more **scenario classes** derived from `HandlerTestBase`.
-2. Export an **async `getScenarios()`** function that returns an array of scenario descriptors.
-3. (Optionally) export a back-compat alias used by `runSingleTest(...)`.
-
-### 4.1 Scenario classes (HandlerTestBase)
-
-Each **scenario** is its own `HandlerTestBase` subclass.
-
-Common pattern:
+Each handler’s test file must define a single canonical test class, named by convention:
 
 ```ts
-import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { SomeHandler } from "./some.handler";
+export class CodeXxxTest extends HandlerTestBase {
+  public testId(): string { /* stable id */ }
+  public testName(): string { /* human-readable name */ }
 
-export class SomeHandlerHappyTest extends HandlerTestBase {
-  public testId(): string {
-    return "service.slug.handler.happy";
-  }
-
-  public testName(): string {
-    return "Human-readable description of the happy path";
+  protected expectedError(): boolean {
+    return false; // happy-path smoke by default
   }
 
   protected async execute(): Promise<void> {
-    const ctx = this.makeCtx({
-      requestId: "req-some-handler-happy",
-      dtoType: "some.dtoType",
-      op: "some.op",
-      body: {
-        /* handler-specific test payload */
-      },
-    });
+    const ctx = this.makeCtx();
+    await this.runHandler({ handlerCtor: CodeXxxHandler, ctx });
 
-    await this.runHandler({
-      handlerCtor: SomeHandler,
-      ctx,
-    });
-
-    // Assertions using HandlerTestBase helpers:
-    //   this.assertEq(...);
-    //   this.assertCtxUUID(ctx, "some.key");
-    //   etc.
+    // Final assertions only — no mid-handler inspection
+    this.assertEq(ctx.get("handlerStatus"), "ok");
+    this.assertEq(ctx.get("response.status"), 200);
   }
 }
 ```
 
-**Key points about `HandlerTestBase`:**
+Guidelines:
 
-- `run()` wraps `execute()` in `withRequestScope`, seeding:
-  - `requestId`
-  - `testRunId`
-  - `expectErrors` (derived from `expectedError()` override)
-- `run()` catches any thrown error and returns a `HandlerTestResult`:
+- `CodeXxxTest` is the **primary smoke test** for the handler.
+- It may reuse logic from scenario classes (e.g., extend a happy scenario), but its name and existence are stable.
+- The handler must reference **only this class** from `runTest()`.
 
-  ```ts
-  export interface HandlerTestResult {
-    testId: string;
-    name: string;
-    outcome: "passed" | "failed";
-    expectedError: boolean;
-    assertionCount: number;
-    failedAssertions: string[];
-    errorMessage?: string;
-    durationMs: number;
-    railsVerdict?: "ok" | "rails_error" | "test_bug";
-    railsStatus?: number;
-    railsHandlerStatus?: string;
-    railsResponseStatus?: number;
-  }
-  ```
+### 3. Scenario registry (for ScenarioRunner)
 
-- `runHandler()`:
-
-  - Instantiates the real handler: `new Handler(ctx, controller)`.
-  - Calls `handler.run()` under full rails (no shortcuts).
-  - Reads `handlerStatus`, `status`, and `response.status` from `ctx`.
-  - Derives `railsError` truth.
-  - Enforces:
-
-    - If **no error expected** and rails error is present → **throws** `RAILS_VERDICT: unexpected rails error...`.
-    - If **error expected** and rails error is absent → **throws** `RAILS_VERDICT: expected rails error but handler succeeded...`.
-
-  - Records the rails metadata into `lastRails` so `HandlerTestResult` has the correct `railsVerdict`, `railsStatus`, etc.
-  - If no rails mismatch is seen, resolves with a `HandlerRunResult` (and `run()` keeps `outcome: "passed"`).
-
-Negative tests do **not** do their own rail classification; they only assert on `ctx` values after `runHandler()` returns.
-
-### 4.2 Negative tests (`expectedError()`)
-
-For **“unhappy path”** scenarios where the handler is _supposed_ to rail (500, `handlerStatus: "error"`, etc.), the recommended pattern is:
-
-- Override `expectedError()` on the test class:
-
-  ```ts
-  protected expectedError(): boolean {
-    return true;
-  }
-  ```
-
-- Call `runHandler()` **without** passing `expectedError` again:
-
-  ```ts
-  await this.runHandler({
-    handlerCtor: SomeHandler,
-    ctx,
-  });
-  ```
-
-`HandlerTestBase.runHandler()` uses `input.expectedError ?? this.expectedError()`, so the override is the single source of truth.
-
-Then assert on the rails signals the handler left on the context:
+The same test module must export a `getScenarios()` function that returns an ordered array of scenario descriptors:
 
 ```ts
-const handlerStatus = ctx.get<string>("handlerStatus");
-const rawResponseStatus = ctx.get<number>("response.status");
-const statusCode =
-  rawResponseStatus !== undefined
-    ? rawResponseStatus
-    : ctx.get<number>("status");
-
-this.assertEq(
-  String(handlerStatus ?? ""),
-  "error",
-  "handlerStatus should be 'error' on the expected failure path"
-);
-this.assertEq(
-  String(statusCode ?? ""),
-  "500",
-  "statusCode should be 500 on the expected failure path"
-);
-```
-
-This gives you the semantics you wanted:
-
-- **Passed** — scenario behaved as designed (happy _or_ sad path).
-- **Failed** — scenario logic failed (assertions or rails mismatch).
-- **TestError** — test code itself blew up (see `HandlerTestDto` section below).
-- **RailsVerdict** (`ok` / `rails_error` / `test_bug`) — extra rails classification for ops.
-
-### 4.3 `getScenarios()` contract
-
-This is the **critical contract** that the test-runner depends on.
-
-Pattern:
-
-```ts
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-
 export async function getScenarios() {
   return [
     {
-      id: "auth.signup.code.build.userId.happy",
-      name: "auth.signup: CodeBuildUserIdHandler mints UUIDv4 on ctx['signup.userId']",
-      shortCircuitOnFail: true,
+      id: "svc.pipeline.handler.happy",
+      name: "Happy path description",
       expectedError: false,
-      async run(): Promise<HandlerTestResult> {
-        const test = new CodeBuildUserIdTest();
-        return await test.run();
+      shortCircuitOnFail: true,
+      async run() {
+        const t = new CodeXxxTest();
+        return await t.run();
+      },
+    },
+    {
+      id: "svc.pipeline.handler.sad-case",
+      name: "Sad path description",
+      expectedError: true,
+      shortCircuitOnFail: false,
+      async run() {
+        const t = new SomeSadScenario();
+        return await t.run();
       },
     },
   ];
 }
 ```
 
-Key points:
+Rules:
 
-- `getScenarios()` is `async` and returns an array of **scenario descriptors**.
-- Each scenario descriptor has:
+- `getScenarios()` is the **only place** that defines execution order.
+- ScenarioRunner uses `getScenarios()`; it does **not** call the canonical test class directly.
+- Handlers do **not** depend on scenario ordering.
 
-  - `id: string` — scenario key (goes into `HandlerTestDto`).
-  - `name: string` — human-readable label.
-  - `shortCircuitOnFail?: boolean` — if `true`, `ScenarioRunner` stops executing additional scenarios once this one fails.
-  - `expectedError: boolean` — for documentation; **the actual enforcement lives in the test’s `expectedError()` and `runHandler()`**.
-  - `run: () => Promise<HandlerTestResult>` — ALWAYS calls `new ScenarioTest().run()`.
+### 4. Handler/Test author checklist
 
-- `run()` must **not** call `execute()` directly. Always use `run()` so that:
-  - `withRequestScope` executes.
-  - assertion counting works.
-  - `railsVerdict` is captured correctly.
+- [ ] `handlerName()` is stable and unique
+- [ ] `hasTest()` returns `true`
+- [ ] `runTest()` calls `this.runSingleTest(CodeXxxTest)`
+- [ ] Test file exports `CodeXxxTest`
+- [ ] Test file exports `getScenarios()`
+- [ ] Canonical test + scenarios live in the same test file
 
-### 4.4 Optional back-compat alias
+---
 
-If a handler still calls `runSingleTest(SomeTest)`, you can provide an alias:
+## Scenario Pattern
 
-```ts
-export { ToBagUserHappyTest as ToBagUserTest };
-```
-
-This lets the handler’s legacy `runTest()` keep working while the new `getScenarios()` API powers the test-runner.
-
-### 4.5 `HandlerTestSeed` and `makeCtx()`
-
-All tests call `this.makeCtx(seed)` where `seed` is a `HandlerTestSeed`.
-
-Current `HandlerTestSeed` shape:
-
-- `requestId?: string`
-- `dtoType?: string`
-- `op?: string`
-- `body?: unknown`
-- `bag?: unknown`
-- `pipeline?: string`
-- `slug?: string`
-- `headers?: Record<string, string>`
-
-**Rules:**
-
-- If you need another seed field, **add it to `HandlerTestSeed`** in `HandlerTestBase.ts`.  
-  Don’t sneak extra properties into the object literal; TypeScript will complain and it breaks the contract.
-- If a handler reads from HTTP headers, use the `headers` property:
-
-  ```ts
-  const ctx = this.makeCtx({
-    requestId: "req-auth-signup-codeExtractPassword-happy",
-    dtoType: "user",
-    op: "code.extract.password",
-    headers: {
-      "x-signup-password": "GoodPassw0rd!#", // test input only; never logged
-    },
-  });
-  ```
-
-- To explicitly model “no headers”, still use `headers: {}`:
-
-  ```ts
-  const ctx = this.makeCtx({
-    requestId: "req-auth-signup-codeExtractPassword-missing",
-    dtoType: "user",
-    op: "code.extract.password",
-    headers: {}, // handler sees an empty bag, not undefined
-  });
-  ```
-
-`HandlerTestBase.seedDefaults()` maps `HandlerTestSeed` onto `HandlerContext` (`ctx["headers"]`, `ctx["body"]`, etc.), so tests only describe deltas; shared defaults stay centralized.
-
-### 4.6 Use handler injection hooks, not monkey-patching
-
-Some handlers expose **injection hooks** via the context for tests to simulate low-level failures without touching globals. For example, `CodePasswordHashHandler`:
+Each scenario is a `HandlerTestBase` subclass:
 
 ```ts
-const injectedFn = this.ctx.get<ScryptFn>("signup.passwordHashFn" as any);
-const scryptFn: ScryptFn =
-  injectedFn && typeof injectedFn === "function"
-    ? injectedFn
-    : crypto.scryptSync;
-```
+export class ScenarioTest extends HandlerTestBase {
+  public testId(): string { /* unique id */ }
+  public testName(): string { /* human-readable */ }
 
-**Rules:**
-
-- Use these hooks instead of monkey-patching Node built-ins like `crypto.scryptSync`.  
-  Modern Node makes many of these properties non-writable accessors, which causes test bugs like:
-
-  > `Cannot set property scryptSync of #<Object> which has only a getter`
-
-- Example sad-path test for password hashing:
-
-  ```ts
   protected expectedError(): boolean {
-    return true;
+    return true | false;
   }
 
   protected async execute(): Promise<void> {
-    const ctx = this.makeCtx({
-      requestId: "req-auth-passwordHash-failure",
-      dtoType: "user",
-      op: "code.passwordHash",
-    });
+    const ctx = this.makeCtx();
+    await this.runHandler({ handlerCtor, ctx });
 
-    ctx.set("signup.passwordClear", "AnotherStrongPass#1");
-
-    ctx.set(
-      "signup.passwordHashFn",
-      ((password: string, salt: string | Buffer, keylen: number): Buffer => {
-        throw new Error("TEST_FORCED_SCRYPT_FAILURE");
-      }) as typeof crypto.scryptSync
-    );
-
-    await this.runHandler({
-      handlerCtor: CodePasswordHashHandler,
-      ctx,
-    });
-
-    const handlerStatus = ctx.get<string>("handlerStatus");
-    const rawResponseStatus = ctx.get<number>("response.status");
-    const statusCode =
-      rawResponseStatus !== undefined
-        ? rawResponseStatus
-        : ctx.get<number>("status");
-
-    this.assertEq(
-      String(handlerStatus ?? ""),
-      "error",
-      "handlerStatus should be 'error' when hashing fails"
-    );
-    this.assertEq(
-      String(statusCode ?? ""),
-      "500",
-      "status should be 500 when hashing fails"
-    );
-
-    const hash = ctx.get("signup.hash");
-    this.assert(
-      typeof hash === "undefined" || hash === null,
-      "signup.hash should not be set on hash failure"
-    );
+    this.assertEq(ctx.get("handlerStatus"), /* expected */);
+    this.assertEq(ctx.get("response.status"), /* expected */);
+    // Additional final-state assertions here
   }
-  ```
-
-This keeps the low-level failure inside the handler rails, where `runHandler()` and the DTO can classify it correctly.
-
----
-
-## 5. HandlerTestDto: Single Source of Truth for Status
-
-`HandlerTestDto` is where **scenario status** and **final test status** are computed. Tests and `ScenarioRunner` do not hand-roll status logic.
-
-### 5.1 Test-level status
-
-Top-level test status (`HandlerTestStatus`) is one of:
-
-- `"Started"` — test record has been seeded but not finalized.
-- `"Passed"` — all recorded scenarios passed.
-- `"Failed"` — at least one recorded scenario failed.
-- `"TestError"` — _no_ scenarios recorded successfully (or all scenarios failed in a “buggy” way).
-
-This maps to the status set you wanted:
-
-- **Passed** — handler behaved as expected (happy or sad path).
-- **Failed** — handler behavior didn’t match the scenario’s expectations.
-- **TestError** — something went wrong with the test harness itself (scenario blew up, module load failure, etc.).
-
-### 5.2 Scenario status normalization
-
-Each scenario stored in `HandlerTestDto.scenarios[]` has:
-
-- `name: string`
-- `status: "Passed" | "Failed"`
-- `startedAt`, `finishedAt`, `durationMs`
-- `details?: unknown`
-- `errorMessage?: string`
-- `errorStack?: string`
-
-The important bit is that, for handler tests, `details` is the **full `HandlerTestResult`** returned by `HandlerTestBase.run()`:
-
-```jsonc
-"details": {
-  "testId": "...",
-  "name": "...",
-  "outcome": "passed" | "failed",
-  "expectedError": true | false,
-  "assertionCount": 0,
-  "failedAssertions": [],
-  "errorMessage": "...",
-  "durationMs": 2,
-  "railsVerdict": "ok" | "rails_error" | "test_bug",
-  "railsStatus": 200 | 500,
-  "railsHandlerStatus": "ok" | "error"
 }
 ```
 
-`HandlerTestDto._normalizeScenarioStatus()` applies the rules:
+Scenarios should:
 
-1. **Hard test failures win**:
-
-   - If `outcome === "failed"` → scenario `status = "Failed"`.
-   - If `failedAssertions.length > 0` → scenario `status = "Failed"`.
-
-2. If `railsVerdict === "rails_error"`:
-
-   - If `expectedError === true` → scenario `status = "Passed"`.
-   - If `expectedError === false` → scenario `status = "Failed"`.
-
-3. If no rails error and no failed assertions:
-   - `outcome === "passed"` or `outcome` undefined → scenario `status = "Passed"`.
-
-This avoids the situation where “500 in the rails” looks like a **pass** unless the test explicitly opts into `expectedError`.
-
-### 5.3 Finalizing from scenarios
-
-`HandlerTestDto.finalizeFromScenarios()`:
-
-- Computes `durationMs` from `startedAt` / `finishedAt`.
-- Aggregates `scenarios[]` to set `status`:
-  - Any scenario with `status === "Failed"` → test `"Failed"`.
-  - Else at least one `"Passed"` → test `"Passed"`.
-  - Else (no scenarios) → test `"TestError"`.
-
-It also derives **rails metadata** (for ops) from the **first scenario’s** `details`:
-
-- `railsVerdict` (e.g., `"ok"`, `"rails_error"`, `"test_bug"`)
-- `railsStatus` (e.g., `200`, `500`)
-- `railsHandlerStatus` (e.g., `"ok"`, `"error"`)
-
-These do **not** change the test status; they’re a diagnostic side-channel.
+- Work with **full rails** (real controller, real HandlerContext).
+- Avoid mid-handler peeking; assert only final context state and rails signals.
+- Use helper methods from `HandlerTestBase` (`assertEq`, `assertTrue`, etc.).
 
 ---
 
-## 6. Concrete Examples
+## getScenarios() (summary)
 
-### 6.1 Single-scenario handler — `code.build.userId`
-
-**Handler:** `code.build.userId.ts`
-
-- `handlerName(): "code.build.userId"`
-- `hasTest(): true`
-
-**Test module:** `code.build.userId.test.ts`
+`getScenarios()` returns descriptors that construct and run scenario instances:
 
 ```ts
-import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { CodeBuildUserIdHandler } from "./code.build.userId";
-
-export class CodeBuildUserIdTest extends HandlerTestBase {
-  public testId(): string {
-    return "auth.signup.code.build.userId.happy";
-  }
-
-  public testName(): string {
-    return "auth.signup: CodeBuildUserIdHandler mints UUIDv4 on ctx['signup.userId']";
-  }
-
-  protected async execute(): Promise<void> {
-    const ctx = this.makeCtx({
-      requestId: "req-auth-signup-build-user-id",
-      dtoType: "auth.signup",
-      op: "build.userId",
-    });
-
-    await this.runHandler({
-      handlerCtor: CodeBuildUserIdHandler,
-      ctx,
-    });
-
-    this.assertCtxUUID(ctx, "signup.userId");
-  }
-}
-
 export async function getScenarios() {
   return [
     {
-      id: "auth.signup.code.build.userId.happy",
-      name: "auth.signup: CodeBuildUserIdHandler mints UUIDv4 on ctx['signup.userId']",
-      shortCircuitOnFail: true,
-      expectedError: false,
-      async run(): Promise<HandlerTestResult> {
-        const test = new CodeBuildUserIdTest();
-        return await test.run();
+      id,
+      name,
+      shortCircuitOnFail,
+      expectedError,
+      async run() {
+        const t = new ScenarioTest();
+        return await t.run();
       },
     },
   ];
 }
 ```
 
-This is the **canonical single-scenario pattern**.
+The test harness uses:
 
-### 6.2 Multi-scenario handler — `code.passwordHash` (happy + two sad paths)
-
-**Handler:** `code.passwordHash.ts`
-
-- `handlerName(): "code.passwordHash"`
-- `hasTest(): true`
-
-**Test module:** `code.passwordHash.test.ts`
-
-Three scenarios:
-
-- Happy path.
-- Missing password (precondition error).
-- Hash failure (scrypt error).
-
-The key points:
-
-- Each test extends `HandlerTestBase`.
-- Negative tests override `expectedError(): true`.
-- The hash-failure test uses the **injection hook** `ctx["signup.passwordHashFn"]` instead of monkey-patching `crypto.scryptSync`.
-- `getScenarios()` returns descriptors whose `run()` calls each test’s `run()`.
-
-(See your current `code.passwordHash.test.ts` implementation — it now matches this pattern.)
+- `id` for persistence and uniqueness
+- `name` for human-readable reporting
+- `expectedError` to interpret rails status
+- `shortCircuitOnFail` to decide whether later scenarios should still run
 
 ---
 
-## 7. Checklist for New Tests
+## Inputs
 
-When you add a new handler test:
+- `ctx` values via `this.makeCtx()` or `ctx.set()`
+- Upstream handler outputs mimicked via `ctx.set("some.key", value)`
+- Env values read through svcEnv + `getVar()` / `getDbVar()` (never `process.env` directly in tests)
+- For env mutation tests, use shared override helpers (e.g., TTL-backed overrides with manual restore) against the real `EnvServiceDto` instance, not global process state.
 
-### 7.1 Update the handler
+---
 
-- [ ] Ensure `hasTest(): true`.
-- [ ] Ensure `handlerName()` (or `getHandlerName()`) returns the intended name.
-- [ ] Confirm that `<handlerName>.test.ts` will sit next to the handler file.
+## Outputs Asserted
 
-### 7.2 Create the test module
+Scenarios should assert only final, observable rails and context state:
 
-For **each scenario**:
+- `ctx.get("handlerStatus")`
+- `ctx.get("response.status")` or `ctx.get("status")`
+- Presence/absence and correctness of specific ctx output fields relevant to the handler’s contract (e.g., `ctx["jwt.userAuth"]`, `ctx["bag"]`, etc.)
 
-- [ ] Create a `HandlerTestBase` subclass.
-- [ ] Implement `testId()` and `testName()`.
-- [ ] If scenario expects a handler error, override `expectedError(): true`.
-- [ ] Implement `execute()` using `makeCtx()` and `runHandler()` (no custom `withRequestScope`).
-- [ ] Use only `HandlerTestBase` assertion helpers (`assert`, `assertEq`, `assertCtxUUID`, etc.).
+Avoid:
 
-### 7.3 Export `getScenarios()`
+- Asserting on internal private fields
+- Asserting on transient, mid-handler state
 
-- [ ] `export async function getScenarios() { ... }`
-- [ ] Return an array of scenario descriptors with:
-  - [ ] `id`
-  - [ ] `name`
-  - [ ] `shortCircuitOnFail`
-  - [ ] `expectedError` (for documentation; enforcement via `expectedError()` override)
-  - [ ] `async run() { const test = new ScenarioTest(); return await test.run(); }`
+---
 
-### 7.4 Use only declared seed fields
+## Happy/Sad Semantics
 
-- [ ] Only pass fields declared on `HandlerTestSeed` to `makeCtx` (e.g., `requestId`, `dtoType`, `op`, `body`, `bag`, `pipeline`, `slug`, `headers`).
-- [ ] If you need more, extend `HandlerTestSeed` in `HandlerTestBase.ts` **first**, then use it.
+**Happy path:**
 
-### 7.5 Prefer injection hooks over monkey-patching
+- `handlerStatus !== "error"`
+- HTTP status is not 500 (typically 200, 201, etc.)
+- Expected ctx outputs are present and valid
 
-- [ ] If the handler exposes injection hooks via `ctx` (e.g., `signup.passwordHashFn`), use those for sad-path simulations.
-- [ ] Do **not** monkey-patch Node built-ins (`crypto`, etc.); that creates `test_bug` scenarios instead of clean sad-path rails.
+**Sad path (expected failure):**
 
-When this checklist is followed, the test-runner can:
+- `handlerStatus === "error"`
+- HTTP status is 500 (or other error status defined by the contract)
+- Expected outputs are absent or in error shape
 
-- Discover tests automatically.
-- Run them under real rails.
-- Classify outcomes consistently.
-- Give you clean Mongo records where **happy and sad paths both show as “Passed”**, and **only real bugs show as “Failed” or “TestError”**.
+Scenarios must set `expectedError()` to match the intended path so the test harness can interpret rails signals correctly.
+
+---
+
+## Failure Injection
+
+Prefer **controlled bad inputs** over monkey-patching:
+
+- For ctx-driven failures:
+  - Omit required ctx keys.
+  - Provide invalid values (wrong types, malformed strings, etc.).
+- For env-driven failures:
+  - Use svcEnv-backed helpers to temporarily override specific env keys for the duration of the scenario.
+  - Always:
+    - Save the original value
+    - Apply the bad value
+    - Restore the original value in a `finally` block
+    - Optionally use a short TTL failsafe in case of hangs
+
+Never:
+
+- Patch handler internals directly.
+- Modify `process.env` globally in tests.
+
+---
+
+## Example Scenario Sketch
+
+**Happy KMS mint:**
+
+- Seed ctx with:
+  - `signup.userId`
+  - `signup.userCreateStatus.ok === true`
+  - `signup.userAuthCreateStatus.ok === true`
+- Use real env-service configuration for KMS/JWT vars.
+- Assertions:
+  - No rails error (`handlerStatus !== "error"`)
+  - HTTP status is 200
+  - `ctx["jwt.userAuth"]` is a non-empty string
+  - `ctx["signup.jwt"]` matches `ctx["jwt.userAuth"]`
+  - Header and timestamps are present and sane
+
+**Sad missing env:**
+
+- Same ctx setup as happy path.
+- Temporarily remove/override `KMS_KEY_ID` (via svcEnv override helper).
+- Assertions:
+  - `handlerStatus === "error"`
+  - HTTP status is 500
+  - No JWT fields set on ctx.
+
+**Sad invalid KMS:**
+
+- Same ctx setup as happy path.
+- Corrupt `KMS_PROJECT_ID` or similar value so real KMS fails.
+- Assertions:
+  - `handlerStatus === "error"`
+  - HTTP status is 500
+  - No JWT fields set on ctx.

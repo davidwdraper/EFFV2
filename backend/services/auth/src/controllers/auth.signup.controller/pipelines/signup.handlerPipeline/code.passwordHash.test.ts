@@ -10,22 +10,30 @@
  *
  * Purpose:
  * - Provide THREE handler-test scenarios for CodePasswordHashHandler:
- *   • Happy path: hash derived from ctx['signup.passwordClear'].
+ *   • Canonical happy path (CodePasswordHashTest): hash derived from ctx['signup.passwordClear'].
  *   • Missing cleartext password: handler fails with 500 precondition error.
  *   • Hash failure: simulated scrypt error yields a 500 hash-derive failure.
+ *
+ * Canonical pattern:
+ * - CodePasswordHashTest is the primary smoke test used by handler.runTest().
+ * - getScenarios() returns an ordered list of all scenarios for ScenarioRunner.
  */
 
 import * as crypto from "crypto";
 import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 import { CodePasswordHashHandler } from "./code.passwordHash";
 
-export class CodePasswordHashHappyTest extends HandlerTestBase {
+export class CodePasswordHashTest extends HandlerTestBase {
   public testId(): string {
     return "auth.signup.code.passwordHash.happy";
   }
 
   public testName(): string {
     return "auth.signup: CodePasswordHashHandler derives hash, algo, params, and clears cleartext password";
+  }
+
+  protected expectedError(): boolean {
+    return false;
   }
 
   protected async execute(): Promise<void> {
@@ -44,7 +52,18 @@ export class CodePasswordHashHappyTest extends HandlerTestBase {
     });
 
     const handlerStatus = ctx.get<string>("handlerStatus");
+    const rawResponseStatus = ctx.get<number>("response.status");
+    const statusCode =
+      rawResponseStatus !== undefined
+        ? rawResponseStatus
+        : ctx.get<number>("status");
+
+    // Rails-level expectations.
     this.assertEq(String(handlerStatus ?? ""), "ok");
+    this.assert(
+      String(statusCode ?? "") !== "500",
+      "status should not be 500 on happy path"
+    );
 
     const hash = ctx.get<string>("signup.hash");
     const algo = ctx.get<string>("signup.hashAlgo");
@@ -145,9 +164,7 @@ export class CodePasswordHashFailureTest extends HandlerTestBase {
     // Seed a valid cleartext password as the previous handler would.
     ctx.set("signup.passwordClear", "AnotherStrongPass#1");
 
-    // Instead of monkey-patching crypto.scryptSync (which is a non-writable
-    // accessor in modern Node and causes "only a getter" errors), inject a
-    // custom hash function via the context hook the handler already supports.
+    // Inject a custom hash function via the context hook the handler supports.
     ctx.set("signup.passwordHashFn", ((
       password: string,
       salt: string | Buffer,
@@ -190,12 +207,6 @@ export class CodePasswordHashFailureTest extends HandlerTestBase {
 }
 
 /**
- * Alias used by CodePasswordHashHandler.runTest().
- * Handler rails and the test-runner both rely on the same scenario wiring.
- */
-export { CodePasswordHashHappyTest as CodePasswordHashTest };
-
-/**
  * ScenarioRunner entrypoint: used by the handler-level test-runner service.
  */
 export async function getScenarios() {
@@ -206,7 +217,7 @@ export async function getScenarios() {
       shortCircuitOnFail: true,
       expectedError: false,
       async run() {
-        const test = new CodePasswordHashHappyTest();
+        const test = new CodePasswordHashTest();
         return await test.run();
       },
     },

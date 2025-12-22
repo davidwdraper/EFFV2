@@ -2,6 +2,7 @@
 
 /**
  * Docs:
+ * - Build-a-test-guide (Handler-level test pattern)
  * - LDD-40 (Handler Test Design — fresh ctx per scenario)
  * - LDD-35 (Handler-level test-runner service)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
@@ -9,28 +10,25 @@
  * - ADR-0057 (ID Generation & Validation — UUIDv4 only)
  *
  * Purpose:
- * - Happy-path test for CodeBuildUserIdHandler:
- *   ensure a valid UUIDv4 is written to ctx["signup.userId"].
+ * - Happy-path smoke test for CodeBuildUserIdHandler:
+ *   ensure a valid UUIDv4 is written to ctx["signup.userId"] and the handler
+ *   remains on the "ok" rail.
  *
  * Scope:
  * - Single happy-path scenario only.
  * - No DtoBag involvement; handler is pure id minting on the bus.
  *
- * New test-runner contract (ScenarioRunner):
+ * Test-runner contract:
  * - This module is discovered via HandlerTestModuleLoader using:
  *     indexRelativePath + handlerName = "code.build.userId"
- * - It MUST export getScenarios(), which returns an array of
- *   scenario definitions with a run() function.
- * - ScenarioRunner will:
- *     • call getScenarios()
- *     • call each scenario.run()
- *     • push results into HandlerTestDto via dto.runScenario(...)
+ * - It MUST:
+ *     • export CodeBuildUserIdTest (canonical test class)
+ *     • export getScenarios(), which returns an array of scenario definitions.
  */
 
 import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 import { CodeBuildUserIdHandler } from "./code.build.userId";
 
-// Existing test harness, now used by the scenario definition.
 export class CodeBuildUserIdTest extends HandlerTestBase {
   public testId(): string {
     return "auth.signup.code.build.userId.happy";
@@ -38,6 +36,11 @@ export class CodeBuildUserIdTest extends HandlerTestBase {
 
   public testName(): string {
     return "auth.signup: CodeBuildUserIdHandler mints UUIDv4 on ctx['signup.userId']";
+  }
+
+  protected expectedError(): boolean {
+    // Happy-path smoke: handlerStatus !== "error".
+    return false;
   }
 
   protected async execute(): Promise<void> {
@@ -53,7 +56,10 @@ export class CodeBuildUserIdTest extends HandlerTestBase {
       ctx,
     });
 
-    // Rails verdict already enforced by runHandler(); now assert payload on the bus.
+    // Assert final handler rail (HTTP status is derived later by rails, not by the test).
+    this.assertEq(ctx.get("handlerStatus"), "ok");
+
+    // Assert payload on the bus: UUIDv4 written to ctx["signup.userId"].
     this.assertCtxUUID(ctx, "signup.userId");
   }
 }
@@ -61,7 +67,8 @@ export class CodeBuildUserIdTest extends HandlerTestBase {
 /**
  * ScenarioRunner entrypoint:
  * - Single happy-path scenario for this handler.
- * - Returns a list of scenarios; each scenario's run() returns a HandlerTestResult.
+ * - Even with one scenario, we follow the same pattern so all tests
+ *   look identical to future you.
  */
 export async function getScenarios() {
   return [
@@ -72,8 +79,6 @@ export async function getScenarios() {
       expectedError: false,
       async run() {
         const test = new CodeBuildUserIdTest();
-        // HandlerTestBase.run() returns HandlerTestResult; ScenarioRunner
-        // will treat that as the scenario's details.
         return await test.run();
       },
     },

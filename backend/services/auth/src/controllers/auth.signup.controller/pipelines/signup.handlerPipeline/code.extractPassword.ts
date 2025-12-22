@@ -8,6 +8,7 @@
  *   - ADR-0043 (Finalize mapping; controller builds wire payload)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
+ *   - Build-a-test-guide (Handler-level test pattern: canonical test + scenarios)
  *
  * Purpose:
  * - Extract the signup password from HTTP headers, validate policy via the
@@ -42,13 +43,19 @@ export class CodeExtractPasswordHandler extends HandlerBase {
     return "code.extractPassword";
   }
 
+  /**
+   * Test-runner contract:
+   * - StepIterator inspects hasTest().
+   * - When true, it calls runTest() once for this handler.
+   */
   public override hasTest(): boolean {
-    return false;
+    return true;
   }
 
   /**
-   * Test hook used by the handler-level test harness:
-   * - Uses the same scenario entrypoint as the test-runner (CodeExtractPasswordTest).
+   * Canonical handler-test entrypoint:
+   * - Bridges this handler to its primary smoke test class.
+   * - ScenarioRunner separately uses getScenarios() from the test module.
    */
   public override async runTest(): Promise<HandlerTestResult | undefined> {
     return this.runSingleTest(CodeExtractPasswordTest);

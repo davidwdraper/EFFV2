@@ -7,6 +7,7 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0057 (ID Generation & Validation — UUIDv4 only)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
+ *   - Build-a-test-guide (Handler-level test pattern: canonical test + scenarios)
  *
  * Purpose:
  * - Generate a stable UUIDv4 for this signup operation and store it on the
@@ -20,8 +21,9 @@
  * - Idempotent: if ctx["signup.userId"] is already set, do not overwrite it.
  * - Test wiring:
  *     • hasTest() opt-in only.
- *     • No runTest() override; tests live in the external test module
- *       discovered by ScenarioRunner via handlerName "code.build.userId".
+ *     • runTest() bridges this handler to the canonical CodeBuildUserIdTest.
+ *     • ScenarioRunner discovers scenarios via getScenarios() in
+ *       code.build.userId.test.ts, using handlerName "code.build.userId".
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -31,6 +33,10 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 // Centralized UUIDv4 generator (ADR-0057)
 import { newUuid } from "@nv/shared/utils/uuid";
 
+// Test harness types
+import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+import { CodeBuildUserIdTest } from "./code.build.userId.test";
+
 export class CodeBuildUserIdHandler extends HandlerBase {
   public constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
@@ -38,11 +44,19 @@ export class CodeBuildUserIdHandler extends HandlerBase {
 
   /**
    * Test opt-in:
-   * - ScenarioRunner / StepIterator will see this true and look for
-   *   a matching test module for this handler.
+   * - StepIterator / test-runner will see this true and invoke runTest().
    */
   public hasTest(): boolean {
     return true;
+  }
+
+  /**
+   * Canonical test entrypoint:
+   * - Bridges this handler to its primary smoke test.
+   * - The test module also exposes getScenarios() for ScenarioRunner.
+   */
+  public override async runTest(): Promise<HandlerTestResult | undefined> {
+    return this.runSingleTest(CodeBuildUserIdTest);
   }
 
   /**

@@ -51,7 +51,7 @@ export class CodePasswordHashHandler extends HandlerBase {
   }
 
   public override hasTest(): boolean {
-    return false;
+    return true;
   }
 
   /**

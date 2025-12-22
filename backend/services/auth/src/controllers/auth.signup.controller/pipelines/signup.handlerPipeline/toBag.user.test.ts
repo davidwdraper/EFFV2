@@ -2,6 +2,7 @@
 
 /**
  * Docs:
+ * - Build-a-test-guide (Handler-level test pattern)
  * - LDD-40 (Handler Test Design — fresh ctx per scenario)
  * - LDD-35 (Handler-level test-runner service)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
@@ -21,12 +22,9 @@
  * ScenarioRunner contract:
  * - This module is discovered via HandlerTestModuleLoader using:
  *     indexRelativePath + handlerName = "toBag.user"
- * - It MUST export getScenarios(), which returns an array of
- *   scenario definitions with a run() function.
- * - ScenarioRunner will:
- *     • call getScenarios()
- *     • call each scenario.run()
- *     • push results into HandlerTestDto via dto.runScenario(...)
+ * - It MUST:
+ *   • export ToBagUserTest (canonical test class)
+ *   • export getScenarios(), which returns an array of scenario definitions.
  */
 
 import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
@@ -38,21 +36,21 @@ import { ToBagUserHandler } from "./toBag.user";
 const TEST_USER_ID_V4 = "550e8400-e29b-41d4-a716-446655440000";
 
 /**
- * Scenario 1: happy path
- * - Valid wire bag
- * - signup.userId present
- * - Expects:
- *   • handlerStatus = "ok"
- *   • ctx["bag"] populated
- *   • 1 UserDto with id === ctx["signup.userId"]
+ * Canonical happy-path test:
+ * - Used by handler.runTest() via ToBagUserTest.
  */
-export class ToBagUserHappyTest extends HandlerTestBase {
+export class ToBagUserTest extends HandlerTestBase {
   public testId(): string {
     return "auth.signup.toBag.user.happy";
   }
 
   public testName(): string {
     return "auth.signup: ToBagUserHandler hydrates singleton UserDto bag and applies signup.userId";
+  }
+
+  protected expectedError(): boolean {
+    // Happy-path smoke: handlerStatus !== "error"; HTTP != 500.
+    return false;
   }
 
   protected async execute(): Promise<void> {
@@ -78,6 +76,14 @@ export class ToBagUserHappyTest extends HandlerTestBase {
       String(handlerStatus ?? ""),
       "ok",
       "handlerStatus should be 'ok' on happy path"
+    );
+
+    const responseStatus =
+      ctx.get<number>("response.status") ?? ctx.get<number>("status");
+    this.assertEq(
+      String(responseStatus ?? ""),
+      "200",
+      "response.status should be 200 on happy path"
     );
 
     const bag: any = ctx.get("bag");
@@ -111,7 +117,7 @@ export class ToBagUserHappyTest extends HandlerTestBase {
 }
 
 /**
- * Scenario 2: sad path (missing signup.userId)
+ * Sad-path scenario: missing signup.userId
  * - Valid wire bag
  * - NO signup.userId set on ctx
  * - Expects:
@@ -125,6 +131,11 @@ export class ToBagUserMissingUserIdTest extends HandlerTestBase {
 
   public testName(): string {
     return "auth.signup: ToBagUserHandler fails with 500 when signup.userId is missing";
+  }
+
+  protected expectedError(): boolean {
+    // This scenario is explicitly an expected failure.
+    return true;
   }
 
   protected async execute(): Promise<void> {
@@ -142,7 +153,6 @@ export class ToBagUserMissingUserIdTest extends HandlerTestBase {
     await this.runHandler({
       handlerCtor: ToBagUserHandler,
       ctx,
-      expectedError: true,
     });
 
     const handlerStatus = ctx.get<string>("handlerStatus");
@@ -213,12 +223,6 @@ function makeUserWireItem(suffix: string): BagItemWire {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Back-compat alias for handler.runSingleTest(ToBagUserTest)
-// ─────────────────────────────────────────────────────────────────────
-
-export { ToBagUserHappyTest as ToBagUserTest };
-
-// ─────────────────────────────────────────────────────────────────────
 // ScenarioRunner entrypoint: getScenarios()
 // ─────────────────────────────────────────────────────────────────────
 
@@ -228,7 +232,7 @@ export { ToBagUserHappyTest as ToBagUserTest };
  *   • Happy path (no expected rail error).
  *   • Sad path (handler is expected to fail and test asserts that).
  *
- * Shape deliberately mirrors code.build.userId.test.ts:
+ * Shape aligns with Build-a-test-guide:
  *   • id
  *   • name
  *   • shortCircuitOnFail
@@ -243,7 +247,7 @@ export async function getScenarios() {
       shortCircuitOnFail: true,
       expectedError: false,
       async run() {
-        const test = new ToBagUserHappyTest();
+        const test = new ToBagUserTest();
         return await test.run();
       },
     },
@@ -251,10 +255,7 @@ export async function getScenarios() {
       id: "auth.signup.toBag.user.missingSignupUserId",
       name: "auth.signup: ToBagUserHandler fails with 500 when signup.userId is missing",
       shortCircuitOnFail: true,
-      // Rail-level expectedError stays false; the handler throws,
-      // but the test calls runHandler({ expectedError: true }) and
-      // asserts on ctx/status instead.
-      expectedError: false,
+      expectedError: true,
       async run() {
         const test = new ToBagUserMissingUserIdTest();
         return await test.run();

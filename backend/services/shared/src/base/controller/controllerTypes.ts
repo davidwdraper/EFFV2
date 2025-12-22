@@ -30,6 +30,7 @@ export type ProblemJson = {
 export interface ControllerRuntimeDeps {
   getDtoRegistry(): IDtoRegistry;
   getSvcEnv(): EnvServiceDto;
+  getEnvLabel(): string;
   getLogger(): IBoundLogger;
   getApp(): AppBase;
   /** Whether a registry is required for this controller. */

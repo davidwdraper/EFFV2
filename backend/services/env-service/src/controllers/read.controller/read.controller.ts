@@ -1,4 +1,4 @@
-// backend/services/env-service/src/controllers/env-service.read.controller/env-service.read.controller.ts
+// backend/services/env-service/src/controllers/read.controller/read.controller.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)

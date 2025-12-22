@@ -6,6 +6,8 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
+ *   - ADR-0074 (DB_STATE + _infra state-invariant DBs)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Bootstrap env-service without svcenvClient or SvcEnvDto.
@@ -25,6 +27,10 @@
  * - Canonical DB keys for ALL services (including env-service) are:
  *     • NV_MONGO_URI
  *     • NV_MONGO_DB
+ *
+ * Guardrail (critical):
+ * - The bootstrap DB MUST be state-invariant and end with "_infra".
+ * - If it does not, we hard-fail to avoid silently creating a fresh DB via DB_STATE decoration.
  */
 
 import fs from "fs";
@@ -83,6 +89,31 @@ function requireEnv(name: string, logFile: string): string {
 }
 
 /**
+ * Enforce that the bootstrap DB is state-invariant ("_infra").
+ * This prevents accidental boot against a stateful base name which would
+ * cause DB_STATE decoration to create a fresh DB and “lose” config.
+ */
+function requireInfraDbName(mongoDb: string, logFile: string): string {
+  const db = (mongoDb ?? "").trim();
+  if (!db) {
+    fatal(
+      logFile,
+      'BOOTSTRAP_DBNAME_EMPTY: NV_MONGO_DB is empty. Ops: set NV_MONGO_DB (e.g., "nv_env_infra").'
+    );
+  }
+
+  if (!db.toLowerCase().endsWith("_infra")) {
+    fatal(
+      logFile,
+      `BOOTSTRAP_DBNAME_NOT_INFRA: NV_MONGO_DB="${db}" must end with "_infra" for env-service bootstrap. ` +
+        'Ops: point env-service at a state-invariant bootstrap DB (e.g., "nv_env_infra").'
+    );
+  }
+
+  return db;
+}
+
+/**
  * Bootstrap env-service:
  * - Reads DB config from env (NV_MONGO_URI / NV_MONGO_DB).
  * - Uses DbReader + EnvConfigReader.getEnv() to fetch:
@@ -105,9 +136,9 @@ export async function envBootstrap(
   console.log("[bootstrap] envBootstrap starting", { slug, version });
 
   // 1) Required DB config from env (.env file)
-  // Canonical names for ALL services (including env-service)
   const mongoUri = requireEnv("NV_MONGO_URI", logFile);
-  const mongoDb = requireEnv("NV_MONGO_DB", logFile);
+  const mongoDbRaw = requireEnv("NV_MONGO_DB", logFile);
+  const mongoDb = requireInfraDbName(mongoDbRaw, logFile);
 
   // 2) Determine current logical environment label (no fallbacks).
   const envLabel = requireEnv("NV_ENV", logFile);
@@ -137,8 +168,6 @@ export async function envBootstrap(
       slug: "service-root",
       version,
     }).catch((err) => {
-      // If the root read fails at the DB level, that's fatal; if it just returns
-      // an empty bag, mergeEnvBags() will handle it.
       if (err) {
         throw new Error(
           `ROOT_CONFIG_READ_FAILED: ${String(
@@ -154,8 +183,6 @@ export async function envBootstrap(
       slug,
       version,
     }).catch((err) => {
-      // Same story for service-level: DB failures are fatal; empty bag is allowed
-      // as long as root is present.
       if (err) {
         throw new Error(
           `SERVICE_CONFIG_READ_FAILED: ${String(
@@ -221,19 +248,24 @@ export async function envBootstrap(
       env: nextEnvLabel,
       slug: "service-root",
       version,
-    }).catch(() => new DtoBag<EnvServiceDto>([])); // root still optional
+    }).catch(() => new DtoBag<EnvServiceDto>([]));
 
     const nextSvcBag = await EnvConfigReader.getEnv(dbReader, {
       env: nextEnvLabel,
       slug,
       version,
-    }).catch(() => new DtoBag<EnvServiceDto>([])); // svc optional as long as root exists
+    }).catch(() => new DtoBag<EnvServiceDto>([]));
 
     return EnvConfigReader.mergeEnvBags(nextRootBag, nextSvcBag);
   };
 
   // eslint-disable-next-line no-console
-  console.log("[bootstrap] envBootstrap complete", { host, port, envLabel });
+  console.log("[bootstrap] envBootstrap complete", {
+    host,
+    port,
+    envLabel,
+    bootstrapDb: mongoDb,
+  });
 
   return {
     envBag,

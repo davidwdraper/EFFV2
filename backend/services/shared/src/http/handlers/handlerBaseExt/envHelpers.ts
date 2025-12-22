@@ -1,25 +1,29 @@
 // backend/services/shared/src/http/handlers/handlerBaseExt/envHelpers.ts
 /**
  * Docs:
- * - ADR-0058 (HandlerBase.getVar — strict svcEnv accessor)
- * - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
+ * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADRs:
+ *   - ADR-0058 (HandlerBase.getVar — strict env accessor)
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared helpers used by HandlerBase for:
- *   • Strict, logged access to svcEnv variables (getEnvVarFromSvcEnv).
+ *   • Strict, logged access to runtime vars (getEnvVarFromSandbox).
  *   • DB_STATE-aware Mongo config resolution (resolveMongoConfigWithDbState).
  *
  * Invariants:
- * - HandlerBase.getVar() MUST go through getEnvVarFromSvcEnv().
+ * - HandlerBase.getVar() MUST go through getEnvVarFromSandbox().
  * - DB-related keys (NV_MONGO_*) are **forbidden** via getVar() and must be
- *   accessed via getMongoConfig() → resolveMongoConfigWithDbState() →
- *   svcEnv.getDbVar().
+ *   accessed via getMongoConfig() → resolveMongoConfigWithDbState().
+ * - No svcEnv reads here. SvcSandbox is the canonical runtime owner (ADR-0080).
  */
 
 import type { ControllerBase } from "../../../base/controller/ControllerBase";
 import type { IBoundLogger } from "../../../logger/Logger";
+import type { SvcSandbox } from "../../../sandbox/SvcSandbox";
 
-type GetEnvVarFromSvcEnvArgs = {
+type GetEnvVarFromSandboxArgs = {
   controller: ControllerBase;
   log: IBoundLogger;
   handlerName: string;
@@ -31,108 +35,54 @@ type GetEnvVarFromSvcEnvArgs = {
  * Guarded accessor used by HandlerBase.getVar().
  *
  * Behavior:
- * - Reads ONLY from controller.getSvcEnv().
- * - For non-DB keys:
- *     • calls svcEnv.getEnvVar(name)
- *     • logs failures with first-order context
- * - For DB-related keys (NV_MONGO_*, DB_STATE, etc.):
+ * - Reads ONLY from controller.getSandbox().getVar()/tryVar().
+ * - For DB-related keys (NV_MONGO_*):
  *     • throws ENV_DBVAR_USE_GETDBVAR to force callers over to getMongoConfig()
  */
-export function getEnvVarFromSvcEnv(
-  args: GetEnvVarFromSvcEnvArgs
+export function getEnvVarFromSandbox(
+  args: GetEnvVarFromSandboxArgs
 ): string | undefined {
   const { controller, log, handlerName, key, required } = args;
 
-  const svcEnv: any = controller.getSvcEnv?.();
-  if (!svcEnv) {
-    const msg =
-      "Service environment configuration is unavailable. " +
-      "Ops: ensure AppBase/ControllerBase seeds svcEnv from envBootstrap/env-service.";
-    log.error(
-      {
-        event: "getVar_svcEnv_missing",
-        handler: handlerName,
-        key,
-      },
-      msg
-    );
-    if (required) {
-      throw new Error(
-        `[EnvVarMissing] Required svc env var '${key}' could not be read (svcEnv missing).`
-      );
-    }
-    return undefined;
-  }
+  const ssb = mustGetSandbox({ controller, log, handlerName, stage: "getVar" });
 
-  const hasGetEnvVar = typeof svcEnv.getEnvVar === "function";
-  if (!hasGetEnvVar) {
-    const msg =
-      "svcEnv.getEnvVar is not implemented on this env DTO. " +
-      "Ops: ensure EnvServiceDto (or equivalent) exposes getEnvVar(name: string).";
-    log.error(
-      {
-        event: "getVar_getter_missing",
-        handler: handlerName,
-        key,
-      },
-      msg
-    );
-    if (required) {
-      throw new Error(
-        `[EnvVarMissing] Required svc env var '${key}' could not be read (getter missing).`
-      );
-    }
-    return undefined;
-  }
-
-  // DB-related keys must NEVER flow through getVar() — they go through getDbVar()
+  // DB-related keys must NEVER flow through getVar() — they go through getMongoConfig()
   const dbKeys = new Set<string>([
     "NV_MONGO_URI",
     "NV_MONGO_DB",
     "NV_MONGO_COLLECTION",
     "NV_MONGO_COLLECTIONS",
+    "NV_MONGO_USER",
+    "NV_MONGO_PASS",
+    "NV_MONGO_OPTIONS",
   ]);
 
-  const isDbKey = dbKeys.has(key);
-
-  if (isDbKey) {
-    // Best-effort context for the error message.
-    const envLabel =
-      typeof svcEnv.getEnvLabel === "function"
-        ? svcEnv.getEnvLabel()
-        : safeGetEnvLabel(svcEnv);
-
-    const slug =
-      typeof svcEnv.slug === "string" ? svcEnv.slug : safeGetSlug(svcEnv);
-    const version =
-      typeof svcEnv.version === "number"
-        ? svcEnv.version
-        : safeGetVersion(svcEnv);
-
+  if (dbKeys.has(key)) {
     const msg =
-      `ENV_DBVAR_USE_GETDBVAR: "${key}" is DB-related and must be accessed via getDbVar("${key}"). ` +
-      `Context: env="${envLabel}", slug="${slug}", version=${version}. ` +
-      "Ops: update callers to use getDbVar() so DB_STATE-aware naming and guardrails are enforced.";
+      `ENV_DBVAR_USE_GETDBVAR: "${key}" is DB-related and must be accessed via getMongoConfig()/getDbVar(). ` +
+      `Context: env="${ssb.getEnv()}", service="${ssb.getServiceSlug()}", version=${ssb.getServiceVersion()}, dbState="${ssb.getDbState()}". ` +
+      "Ops: update callers to use getMongoConfig() so DB_STATE-aware naming and guardrails are enforced.";
 
     log.error(
       {
         event: "getVar_db_key_forbidden",
         handler: handlerName,
         key,
-        env: envLabel,
-        slug,
-        version,
+        env: ssb.getEnv(),
+        service: ssb.getServiceSlug(),
+        version: ssb.getServiceVersion(),
+        dbState: ssb.getDbState(),
       },
       msg
     );
 
-    // This is the guardrail that callers see if they misuse getVar().
     throw new Error(msg);
   }
 
-  // Non-DB key: delegate to svcEnv.getEnvVar()
+  // Non-DB key: delegate to SvcSandbox vars
   try {
-    const value: string = svcEnv.getEnvVar(key);
+    const value = required ? ssb.getVar(key) : ssb.tryVar(key);
+
     if (!value && required) {
       log.error(
         {
@@ -140,31 +90,33 @@ export function getEnvVarFromSvcEnv(
           handler: handlerName,
           key,
         },
-        `Required svc env var '${key}' is empty.`
+        `Required runtime var '${key}' is empty.`
       );
       throw new Error(
-        `[EnvVarMissing] Required svc env var '${key}' is empty or falsy.`
+        `[EnvVarMissing] Required runtime var '${key}' is empty or missing.`
       );
     }
+
     return value || undefined;
   } catch (err: any) {
     const errMsg = err?.message ?? String(err);
     log.error(
       {
-        event: "getVar_getter_threw",
+        event: "getVar_sandbox_threw",
         handler: handlerName,
         key,
         required,
         error: errMsg,
       },
-      `getVar('${key}', ${required}) — svcEnv.getEnvVar() threw`
+      `getVar('${key}', ${required}) — sandbox var access threw`
     );
 
     if (required) {
       throw new Error(
-        `[EnvVarMissing] Required svc env var '${key}' could not be read (getter threw).`
+        `[EnvVarMissing] Required runtime var '${key}' could not be read (sandbox threw).`
       );
     }
+
     return undefined;
   }
 }
@@ -181,14 +133,14 @@ type ResolveMongoConfigArgs = {
  * It is the implementation behind HandlerBase.getMongoConfig().
  *
  * Behavior:
- * - Reads BOTH NV_MONGO_URI and NV_MONGO_DB via svcEnv.getDbVar():
- *     • uri   = svcEnv.getDbVar("NV_MONGO_URI")
- *     • db    = svcEnv.getDbVar("NV_MONGO_DB")
- * - getDbVar() is responsible for applying ADR-0074's DB_STATE semantics:
+ * - Reads BOTH NV_MONGO_URI and NV_MONGO_DB from SvcSandbox vars:
+ *     • uri  = ssb.getVar("NV_MONGO_URI")
+ *     • base = ssb.getVar("NV_MONGO_DB")
+ * - Applies ADR-0074 DB_STATE semantics using SvcSandbox identity:
  *     • domain DBs: <NV_MONGO_DB>_<DB_STATE>
  *     • *_infra DBs: ignore DB_STATE
  *
- * This function NEVER calls getEnvVarFromSvcEnv() for DB vars, so it does not
+ * This function NEVER calls getEnvVarFromSandbox() for DB vars, so it does not
  * trip the guardrail that protects HandlerBase.getVar().
  */
 export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
@@ -197,50 +149,27 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
 } {
   const { controller, log, handlerName } = args;
 
-  const svcEnv: any = controller.getSvcEnv?.();
-  if (!svcEnv) {
-    const msg =
-      "Service environment configuration is unavailable. " +
-      "Ops: ensure AppBase/ControllerBase seeds svcEnv from envBootstrap/env-service.";
-    log.error(
-      {
-        event: "mongo_config_svcEnv_missing",
-        handler: handlerName,
-      },
-      msg
-    );
-    throw new Error(msg);
-  }
-
-  const hasGetDbVar = typeof svcEnv.getDbVar === "function";
-  if (!hasGetDbVar) {
-    const msg =
-      "svcEnv.getDbVar is not implemented on this env DTO. " +
-      "Ops: implement getDbVar(name: string) per ADR-0074 so DB_STATE-aware DB names can be resolved.";
-    log.error(
-      {
-        event: "mongo_config_getDbVar_missing",
-        handler: handlerName,
-      },
-      msg
-    );
-    throw new Error(msg);
-  }
+  const ssb = mustGetSandbox({
+    controller,
+    log,
+    handlerName,
+    stage: "getMongoConfig",
+  });
 
   let uri: string;
-  let dbName: string;
+  let baseDbName: string;
 
   try {
-    uri = svcEnv.getDbVar("NV_MONGO_URI");
-    dbName = svcEnv.getDbVar("NV_MONGO_DB");
+    uri = ssb.getVar("NV_MONGO_URI");
+    baseDbName = ssb.getVar("NV_MONGO_DB");
   } catch (err: any) {
     const errMsg = err?.message ?? String(err);
     const msg =
-      "Failed to resolve Mongo configuration via svcEnv.getDbVar(). " +
-      "Ops: verify NV_MONGO_URI, NV_MONGO_DB, DB_STATE, and DB naming rules in env-service.";
+      "Failed to resolve Mongo configuration via SvcSandbox vars. " +
+      "Ops: verify NV_MONGO_URI and NV_MONGO_DB are present in env-service for this service (root/service merge).";
     log.error(
       {
-        event: "mongo_config_getDbVar_failed",
+        event: "mongo_config_sandbox_vars_failed",
         handler: handlerName,
         error: errMsg,
       },
@@ -249,10 +178,12 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
     throw new Error(`${msg} Detail: ${errMsg}`);
   }
 
+  const dbName = decorateDbNameWithDbState(baseDbName, ssb.getDbState());
+
   if (!uri || !dbName) {
     const msg =
-      "Mongo configuration incomplete: NV_MONGO_URI or NV_MONGO_DB is missing/empty after getDbVar(). " +
-      "Ops: fix the env-service document for this service/version.";
+      "Mongo configuration incomplete: NV_MONGO_URI or NV_MONGO_DB is missing/empty after sandbox resolution. " +
+      "Ops: fix the env-service document(s) for this service/version.";
     log.error(
       {
         event: "mongo_config_missing_values",
@@ -270,39 +201,62 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
       event: "mongo_config_resolved",
       handler: handlerName,
       dbName,
+      dbState: ssb.getDbState(),
     },
-    "resolveMongoConfigWithDbState: resolved Mongo URI and DB name via svcEnv.getDbVar"
+    "resolveMongoConfigWithDbState: resolved Mongo URI and DB name via SvcSandbox"
   );
 
   return { uri, dbName };
 }
 
-/** Best-effort helpers for context strings in errors. */
-function safeGetEnvLabel(svcEnv: any): string {
+// ───────────────────────────────────────────
+// Internals
+// ───────────────────────────────────────────
+
+function mustGetSandbox(args: {
+  controller: ControllerBase;
+  log: IBoundLogger;
+  handlerName: string;
+  stage: string;
+}): SvcSandbox {
+  const { controller, log, handlerName, stage } = args;
+
   try {
-    if (typeof svcEnv.getEnvVar === "function") {
-      const v = svcEnv.getEnvVar("NV_ENV");
-      if (typeof v === "string" && v.trim()) return v.trim();
-    }
-  } catch {
-    // ignore
+    return controller.getSandbox();
+  } catch (err: any) {
+    const errMsg = err?.message ?? String(err);
+    const msg =
+      "SvcSandbox is required but unavailable. " +
+      "Ops/Dev: wire SvcSandbox at service boot and ensure ControllerBase seeds ctx['ssb'].";
+    log.error(
+      {
+        event: "ssb_missing",
+        handler: handlerName,
+        stage,
+        error: errMsg,
+      },
+      msg
+    );
+    throw new Error(`${msg} Detail: ${errMsg}`);
   }
-  if (typeof svcEnv.env === "string" && svcEnv.env.trim()) {
-    return svcEnv.env.trim();
-  }
-  return "unknown";
 }
 
-function safeGetSlug(svcEnv: any): string {
-  if (typeof svcEnv.slug === "string" && svcEnv.slug.trim()) {
-    return svcEnv.slug.trim();
+function decorateDbNameWithDbState(base: string, dbState: string): string {
+  const b = (base ?? "").trim();
+  if (!b) {
+    throw new Error(
+      'ENV_DBNAME_INVALID: NV_MONGO_DB is empty. Ops: set NV_MONGO_DB to a non-empty base name (e.g., "nv", "nv_env_infra").'
+    );
   }
-  return "unknown";
-}
 
-function safeGetVersion(svcEnv: any): number {
-  if (typeof svcEnv.version === "number" && svcEnv.version > 0) {
-    return Math.trunc(svcEnv.version);
+  const state = (dbState ?? "").trim();
+  if (!state) {
+    throw new Error(
+      'ENV_DBSTATE_MISSING: DB_STATE is empty. Ops: set DB_STATE (e.g., "dev", "test", "stage") in the env-service config record(s).'
+    );
   }
-  return -1;
+
+  if (b.toLowerCase().endsWith("_infra")) return b;
+
+  return `${b}_${state}`;
 }

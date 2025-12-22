@@ -8,6 +8,7 @@
  * - ADR-0058 (HandlerBase.getVar — Strict Env Accessor)
  * - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ * - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Abstract base for handlers:
@@ -21,7 +22,7 @@
  * Invariants:
  * - Controllers MUST pass `this` into handler constructors.
  * - No reading plumbing from ctx (no ctx.get('app'), etc).
- * - Env reads go through controller.getSvcEnv().getVar() via helpers.
+ * - Env reads go through controller.getSandbox() via helpers (ADR-0080).
  * - Default HandlerBase.runTest() NEVER returns undefined; it yields a
  *   concrete TestError HandlerTestResult w/ reason="NO_TEST_PROVIDED".
  */
@@ -32,7 +33,7 @@ import type { AppBase } from "../../base/app/AppBase";
 import type { IDtoRegistry } from "../../registry/RegistryBase";
 import type { ControllerBase } from "../../base/controller/ControllerBase";
 import {
-  getEnvVarFromSvcEnv,
+  getEnvVarFromSandbox,
   resolveMongoConfigWithDbState,
 } from "./handlerBaseExt/envHelpers";
 import {
@@ -62,6 +63,10 @@ export abstract class HandlerBase {
       );
     }
     this.controller = controller;
+
+    // HARD REQUIRE: SvcSandbox must exist or the service is mis-wired.
+    // This is the “no seatbelt, no ignition” rule.
+    this.controller.getSandbox();
 
     const app = controller.getApp?.();
     if (!app)
@@ -93,6 +98,7 @@ export abstract class HandlerBase {
       {
         event: "construct",
         handlerStatus: this.ctx.get<string>("handlerStatus") ?? "ok",
+        hasSandbox: true,
       },
       "HandlerBase ctor"
     );
@@ -339,7 +345,7 @@ export abstract class HandlerBase {
   protected getVar(key: string, required: false): string | undefined;
   protected getVar(key: string, required: true): string;
   protected getVar(key: string, required: boolean = false): string | undefined {
-    return getEnvVarFromSvcEnv({
+    return getEnvVarFromSandbox({
       controller: this.controller,
       log: this.log,
       handlerName: this.constructor.name,
@@ -362,7 +368,7 @@ export abstract class HandlerBase {
         title: "mongo_config_error",
         detail:
           msg +
-          " Ops: verify NV_MONGO_URI, NV_MONGO_DB, DB_STATE, and svcenv. Infra DBs require `_infra`; domain DBs require valid DB_STATE.",
+          " Ops: verify NV_MONGO_URI, NV_MONGO_DB, DB_STATE, and sandbox wiring. `_infra` DBs are state-invariant; domain DBs require DB_STATE decoration.",
         stage: `${this.handlerPurpose()}:mongo.config`,
         rawError: err,
         origin: { method: "getMongoConfig" },

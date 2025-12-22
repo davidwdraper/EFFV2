@@ -15,6 +15,10 @@
  * Update:
  * - Seeds AsyncLocal request scope from inbound headers so negative-test intent
  *   can propagate across S2S hops without requiring every caller to remember headers.
+ *
+ * Commit 1:
+ * - Delete try-paths: svcEnv/envLabel are always sourced via controller getters.
+ * - No "optional env" error injection here; missing deps are hard failures.
  */
 
 import type { Request, Response } from "express";
@@ -30,8 +34,10 @@ export function seedHydratorIntoContext(
   dtoType: string,
   opts?: { validate?: boolean }
 ): void {
-  const reg: any = controller.getDtoRegistry();
-  const hydrate = reg.hydratorFor(dtoType, { validate: !!opts?.validate });
+  const reg = controller.getDtoRegistry();
+  const hydrate = (reg as any).hydratorFor(dtoType, {
+    validate: !!opts?.validate,
+  });
   ctx.set("hydrate.fromBody", hydrate);
 
   controller
@@ -68,40 +74,19 @@ export function makeHandlerContext(
   if (scope.testRunId) ctx.set("test.runId", scope.testRunId);
   if (scope.expectErrors === true) ctx.set("test.expectErrors", true);
 
-  const svcEnv: EnvServiceDto | undefined = controller.getSvcEnv();
-  if (svcEnv) {
-    ctx.set("svcEnv", svcEnv);
-  } else {
-    ctx.set("handlerStatus", "error");
-    ctx.set("response.status", 500);
-    ctx.set("response.body", {
-      code: "ENV_DTO_MISSING",
-      title: "Internal Error",
-      detail:
-        "EnvServiceDto not available. Ops: ensure AppBase exposes svcEnv via a public getter.",
-      hint: "AppBase owns envDto; export via a public getter returning EnvServiceDto.",
-    });
-  }
+  // Commit 1: hard requirement — no optional env DTO seeding paths.
+  const svcEnv: EnvServiceDto = controller.getSvcEnv();
+  ctx.set("svcEnv", svcEnv);
 
-  // Seed the runtime environment label from the App, if available.
-  // Single source of truth is AppBase.getEnvLabel() surfaced via ControllerBase.getEnvLabel().
-  let envLabel: string | undefined;
-  try {
-    const label = (controller as any).getEnvLabel?.() as string | undefined;
-    if (label && label.trim()) {
-      envLabel = label;
-      ctx.set("svc.env", envLabel);
-    }
-  } catch {
-    // Intentionally ignore here; handlers that require env can enforce it
-    // and emit a focused Problem+JSON with Ops guidance.
-  }
+  // Commit 1: envLabel is also required (ControllerBase enforces non-empty).
+  const envLabel = controller.getEnvLabel();
+  ctx.set("svc.env", envLabel);
 
   controller.getLogger().debug(
     {
       event: "make_context",
       requestId,
-      hasSvcEnv: !!svcEnv,
+      hasSvcEnv: true,
       envLabel,
       testRunId: scope.testRunId,
       expectErrors: scope.expectErrors,

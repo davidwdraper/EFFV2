@@ -9,7 +9,8 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *   - ADR-0053 (Instantiation discipline via DtoBase secret)
  *   - ADR-0057 (ID Generation & Validation — id is a string (UUIDv4 or 24-hex Mongo id); immutable; WARN on overwrite attempt)
- *   - ADR-0074 (DB_STATE-aware DB selection via getDbVar)
+ *   - ADR-0074 (DB_STATE-aware DB selection via getDbVar; _infra DBs state-invariant)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Concrete DTO for env-service configuration records.
@@ -19,6 +20,10 @@
  * - Also acts as the canonical adapter for DB_STATE-aware DB configuration:
  *     • Non-DB vars are accessed via getEnvVar()/tryEnvVar().
  *     • DB vars are accessed via getDbVar(), which applies DB_STATE rules.
+ *
+ * Invariants:
+ * - DTO must not read process.env (ADR-0080). Bootstraps may read process.env,
+ *   but runtime reads must come from vars and/or SvcSandbox identity.
  */
 
 import { DtoBase, DtoValidationError } from "./DtoBase";
@@ -73,17 +78,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
   /** Contract version, e.g. 1. */
   public version = 1;
 
-  /**
-   * Bag of environment-style key/value pairs.
-   * Example keys:
-   * - NV_HTTP_HOST
-   * - NV_HTTP_PORT
-   * - NV_MONGO_URI
-   * - NV_MONGO_DB
-   * - NV_MONGO_COLLECTION
-   * - NV_COLLECTION_ENV_SERVICE_VALUES
-   * - DB_STATE
-   */
+  /** Bag of environment-style key/value pairs. Values are stored as strings. */
   private _vars: Record<string, string> = {};
 
   // ─────────────── Construction ───────────────
@@ -107,42 +102,32 @@ export class EnvServiceDto extends DtoBase implements IDto {
     opts?: { validate?: boolean }
   ): EnvServiceDto {
     const dto = new EnvServiceDto(DtoBase.getSecret());
-
     const j = (json ?? {}) as Partial<EnvServiceJson>;
 
-    // id (optional, but if present must be valid via DtoBase)
     if (typeof j._id === "string" && j._id.trim()) {
       dto.setIdOnce(j._id.trim());
     }
 
-    if (typeof j.env === "string") {
-      dto.env = j.env.trim();
-    }
-    if (typeof j.slug === "string") {
-      dto.slug = j.slug.trim();
-    }
+    if (typeof j.env === "string") dto.env = j.env.trim();
+    if (typeof j.slug === "string") dto.slug = j.slug.trim();
 
     if (typeof j.version === "number") {
       dto.version = Math.trunc(j.version);
     } else if (typeof (j as any).version === "string") {
       const n = Number((j as any).version);
-      if (Number.isFinite(n) && n > 0) {
-        dto.version = Math.trunc(n);
-      }
+      if (Number.isFinite(n) && n > 0) dto.version = Math.trunc(n);
     }
 
-    // vars bag: normalize keys, stringify values
     if (j.vars && typeof j.vars === "object") {
       const normalized: Record<string, string> = {};
       for (const [k, v] of Object.entries(j.vars)) {
-        const key = k.trim();
+        const key = (k ?? "").trim();
         if (!key) continue;
         normalized[key] = String(v);
       }
       dto._vars = normalized;
     }
 
-    // meta passthrough (DtoBase will normalize on toBody)
     dto.setMeta({
       createdAt: j.createdAt,
       updatedAt: j.updatedAt,
@@ -151,20 +136,18 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
     if (opts?.validate) {
       const issues: { path: string; code: string; message: string }[] = [];
-      if (!dto.env) {
+      if (!dto.env)
         issues.push({
           path: "env",
           code: "required",
           message: "env is required",
         });
-      }
-      if (!dto.slug) {
+      if (!dto.slug)
         issues.push({
           path: "slug",
           code: "required",
           message: "slug is required",
         });
-      }
       if (!dto.version || dto.version <= 0) {
         issues.push({
           path: "version",
@@ -189,39 +172,40 @@ export class EnvServiceDto extends DtoBase implements IDto {
     const body: EnvServiceJson = {
       _id: this.hasId() ? this.getId() : undefined,
       type: "env-service",
-
       env: this.env,
       slug: this.slug,
       version: this.version,
-
       vars: { ...this._vars },
     };
 
     return this._finalizeToJson(body);
   }
 
+  // ─────────────── Vars (raw + guarded accessors) ───────────────
+
   /**
-   * DTO-to-DTO patch helper for internal merges (no wire/json boundary).
+   * Raw vars accessor (internal-only).
+   *
+   * Invariants:
+   * - Defensive copy; callers cannot mutate DTO internals.
+   * - Used for runtime composition (e.g., entrypoint builds SvcSandbox vars map).
    */
+  public getVarsRaw(): Record<string, string> {
+    return { ...this._vars };
+  }
+
+  // ─────────────── Patch helpers ───────────────
+
   public patchFrom(other: EnvServiceDto): this {
-    if (other.env) {
-      this.env = other.env;
-    }
-
-    if (other.slug) {
-      this.slug = other.slug;
-    }
-
+    if (other.env) this.env = other.env;
+    if (other.slug) this.slug = other.slug;
     if (typeof other.version === "number" && other.version > 0) {
       this.version = Math.trunc(other.version);
     }
 
     const otherVars = other._vars;
     if (otherVars && Object.keys(otherVars).length > 0) {
-      this._vars = {
-        ...this._vars,
-        ...otherVars,
-      };
+      this._vars = { ...this._vars, ...otherVars };
     }
 
     return this;
@@ -250,52 +234,35 @@ export class EnvServiceDto extends DtoBase implements IDto {
   }
 
   /**
-   * Resolve DB_STATE for this DTO.
+   * Resolve DB_STATE from vars only (no process.env fallback).
    *
-   * Invariants:
-   * - DB_STATE must be non-empty either in vars or process.env.
-   * - No silent default; failure is explicit with Ops guidance.
+   * Note:
+   * - env-service bootstraps (pre-runtime) may read DB_STATE from process.env,
+   *   but runtime DTO reads must be deterministic and explicit.
    */
   private resolveDbState(): string {
-    const fromVars = this._vars[EnvServiceDto.dbStateKey];
-    const fromEnv =
-      typeof process.env.DB_STATE === "string"
-        ? process.env.DB_STATE.trim()
-        : "";
-
-    const value = (fromVars ?? fromEnv ?? "").trim();
-
+    const value = (this._vars[EnvServiceDto.dbStateKey] ?? "").trim();
     if (!value) {
       throw new Error(
-        `ENV_DBSTATE_MISSING: DB_STATE is not defined for env="${this.env}", ` +
+        `ENV_DBSTATE_MISSING: DB_STATE is not defined in vars for env="${this.env}", ` +
           `slug="${this.slug}", version=${this.version}. ` +
-          "Ops: set DB_STATE in env-service vars or process.env for this service " +
-          "(e.g., 'dev', 'smoke', 'prod') so DB selection can be deterministic."
+          'Ops: set "DB_STATE" in the env-service config record vars for this document.'
       );
     }
-
     return value;
   }
 
-  /**
-   * Apply DB_STATE to a base DB name.
-   *
-   * Rules:
-   * - If base ends with '_infra' → state-invariant, returned as-is.
-   * - Otherwise → `${base}_${DB_STATE}`.
-   */
   private decorateDbName(base: string): string {
-    const trimmed = base.trim();
+    const trimmed = (base ?? "").trim();
     if (!trimmed) {
       throw new Error(
         `ENV_DBNAME_INVALID: NV_MONGO_DB is empty for env="${this.env}", ` +
           `slug="${this.slug}", version=${this.version}. ` +
-          "Ops: set NV_MONGO_DB to a non-empty base name (e.g., 'nv', 'env-service_infra')."
+          "Ops: set NV_MONGO_DB to a non-empty base name (e.g., 'nv', 'nv_env_infra')."
       );
     }
 
     if (trimmed.toLowerCase().endsWith("_infra")) {
-      // State-invariant DB (e.g., env-service_infra).
       return trimmed;
     }
 
@@ -305,19 +272,11 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   // ─────────────── ADR-0044/0074: Key/Value + DB-aware API ───────────────
 
-  /**
-   * Generic non-DB env accessor.
-   *
-   * Invariants:
-   * - DB-related keys (NV_MONGO_*, DB collection keys) are forbidden here and must
-   *   go through getDbVar() to ensure DB_STATE rules are applied consistently.
-   */
   public getEnvVar(name: string): string {
     if (this.isDbKey(name)) {
       throw new Error(
         `ENV_DBVAR_USE_GETDBVAR: "${name}" is DB-related and must be accessed via getDbVar("${name}"). ` +
-          `Context: env="${this.env}", slug="${this.slug}", version=${this.version}. ` +
-          "Ops: update callers to use getDbVar() so DB_STATE-aware naming and guardrails are enforced."
+          `Context: env="${this.env}", slug="${this.slug}", version=${this.version}.`
       );
     }
 
@@ -332,13 +291,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return v;
   }
 
-  /**
-   * Best-effort non-DB env accessor.
-   *
-   * Note:
-   * - Returns undefined for missing keys.
-   * - Still enforces DB key guardrail; DB vars must go through getDbVar().
-   */
   public tryEnvVar(name: string): string | undefined {
     if (this.isDbKey(name)) {
       throw new Error(
@@ -357,20 +309,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return Object.keys(this._vars).sort();
   }
 
-  /**
-   * DB-aware accessor.
-   *
-   * Supported keys (for now):
-   * - NV_MONGO_URI
-   * - NV_MONGO_DB  (DB_STATE applied unless name ends with '_infra')
-   * - NV_MONGO_COLLECTION
-   * - NV_MONGO_USER
-   * - NV_MONGO_PASS
-   * - NV_MONGO_OPTIONS
-   *
-   * Options:
-   * - required (default: true) — if false, missing keys return undefined.
-   */
   public getDbVar(
     name: string,
     opts?: { required?: boolean }
@@ -400,15 +338,9 @@ export class EnvServiceDto extends DtoBase implements IDto {
       return this.decorateDbName(value);
     }
 
-    // For URI / user / pass / options we currently return the raw value.
-    // If future ADRs define state-aware URIs, that logic can live here.
     return value;
   }
 
-  /**
-   * Convenience accessor for the resolved DB name after DB_STATE is applied.
-   * Equivalent to getDbVar("NV_MONGO_DB").
-   */
   public getResolvedDbName(): string {
     const name = this.getDbVar("NV_MONGO_DB");
     if (!name) {
@@ -423,7 +355,6 @@ export class EnvServiceDto extends DtoBase implements IDto {
 
   /** @deprecated — use getEnvVar(name) for non-DB keys or getDbVar(name) for DB keys. */
   public getVar(name: string): string {
-    // Preserve legacy behavior but still enforce DB guardrails.
     return this.getEnvVar(name);
   }
 
@@ -432,12 +363,9 @@ export class EnvServiceDto extends DtoBase implements IDto {
     return this.tryEnvVar(name);
   }
 
-  /** Logical environment name accessor (single source of truth). */
   public getEnvLabel(): string {
     return this.env;
   }
-
-  // ─────────────── IDto contract ───────────────
 
   public getType(): string {
     return "env-service";

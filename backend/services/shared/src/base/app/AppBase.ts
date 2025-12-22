@@ -10,6 +10,7 @@
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *   - ADR-0076 (Process Env Guard — NV_PROCESS_ENV_GUARD runtime guardrail)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Orchestrator for Express composition across ALL services.
@@ -18,6 +19,14 @@
  * Invariants:
  * - No implicit S2S mocking.
  * - Deterministic S2S transport may ONLY be injected explicitly (tests).
+ * - SvcSandbox is MANDATORY and is the canonical runtime owner of:
+ *     • problem
+ *     • validated vars
+ *     • capability surfaces (db/s2s/audit/etc.)
+ *
+ * Commit 2 (SvcSandbox hard requirement):
+ * - envLabel is sourced ONLY from ssb (no envDto fallback / optional ctor value).
+ * - If envDto exists, it must agree with ssb env (sanity check).
  */
 
 import type { Express } from "express";
@@ -47,15 +56,22 @@ import {
   isProcessEnvGuardEnabled,
   getProcessEnvGuardState,
 } from "./processEnvGuard";
+import type { SvcSandbox } from "../../sandbox/SvcSandbox";
 
 export type AppBaseCtor = {
   service: string;
   version: number;
-  envLabel?: string;
+
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
   checkDb: boolean;
   edgeMode?: EdgeMode;
+
+  /**
+   * SvcSandbox is MANDATORY (ADR-0080).
+   * If it is not wired, the app must not start.
+   */
+  ssb: SvcSandbox;
 
   /**
    * Explicit-only S2S mocking switch (tests only).
@@ -74,7 +90,6 @@ export abstract class AppBase extends ServiceBase {
   private _booted = false;
 
   protected readonly version: number;
-  private readonly envLabel: string;
   private _envDto: EnvServiceDto;
   private readonly envReloader: () => Promise<EnvServiceDto>;
   protected readonly checkDb: boolean;
@@ -86,6 +101,8 @@ export abstract class AppBase extends ServiceBase {
   private readonly s2sMocksEnabled: boolean;
   private readonly hasInjectedSvcClientTransport: boolean;
 
+  private readonly ssb: SvcSandbox;
+
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
 
@@ -94,10 +111,39 @@ export abstract class AppBase extends ServiceBase {
     this.envReloader = opts.envReloader;
     this.checkDb = opts.checkDb;
 
-    this.envLabel = opts.envLabel ?? this._envDto.getEnvLabel();
     this.edgeMode = opts.edgeMode ?? EdgeMode.Prod;
     this.s2sMocksEnabled = opts.s2sMocksEnabled ?? false;
     this.hasInjectedSvcClientTransport = !!opts.svcClientTransport;
+
+    if (!opts.ssb) {
+      throw new Error(
+        `SSB_MISSING_ON_APPBASE: SvcSandbox is required for service="${opts.service}" v${opts.version}. ` +
+          "Ops/Dev: construct SvcSandbox during boot (after envDto is available) and pass it to AppBase({ ssb })."
+      );
+    }
+    this.ssb = opts.ssb;
+
+    // Commit 2: envLabel is now owned by ssb. envDto must agree.
+    // This prevents “sandbox exists but isn’t authoritative” drift.
+    try {
+      const dtoEnv = (this._envDto.getEnvLabel() ?? "").trim();
+      const ssbEnv = (this.ssb.getEnv() ?? "").trim();
+      if (!ssbEnv) {
+        throw new Error(
+          `SSB_ENV_EMPTY: ssb.getEnv() returned empty for service="${opts.service}" v${opts.version}.`
+        );
+      }
+      if (dtoEnv && dtoEnv !== ssbEnv) {
+        throw new Error(
+          `SSB_ENV_MISMATCH: envDto env="${dtoEnv}" does not match ssb env="${ssbEnv}" for service="${opts.service}" v${opts.version}. ` +
+            "Dev: build ssb using the same env label resolved by envBootstrap/env-service."
+        );
+      }
+    } catch (e: any) {
+      throw new Error(
+        `SSB_ENV_VALIDATION_FAILED: ${(e as Error)?.message ?? String(e)}`
+      );
+    }
 
     this.app = express();
     this.initApp();
@@ -125,8 +171,17 @@ export abstract class AppBase extends ServiceBase {
   }
 
   /**
+   * Sandbox accessor (ADR-0080).
+   *
+   * Invariant:
+   * - Sandbox MUST exist or app construction fails.
+   */
+  public getSandbox(): SvcSandbox {
+    return this.ssb;
+  }
+
+  /**
    * EnvServiceDto accessor (preferred for controllers/handlers).
-   * Note: legacy `app.svcEnv` access is supported by ControllerBase as a compatibility path.
    */
   public getSvcEnv(): EnvServiceDto {
     return this._envDto;
@@ -149,8 +204,17 @@ export abstract class AppBase extends ServiceBase {
     return this.svcClient;
   }
 
+  /**
+   * Commit 2: env label is sourced ONLY from SvcSandbox.
+   */
   public getEnvLabel(): string {
-    return this.envLabel;
+    const env = (this.ssb.getEnv() ?? "").trim();
+    if (!env) {
+      throw new Error(
+        `SSB_ENV_EMPTY: ssb.getEnv() returned empty for service="${this.service}" v${this.version}.`
+      );
+    }
+    return env;
   }
 
   public getEdgeMode(): EdgeMode {
@@ -197,15 +261,42 @@ export abstract class AppBase extends ServiceBase {
 
     installProcessEnvGuard({
       service: this.service,
-      envLabel: this.envLabel,
+      envLabel: this.getEnvLabel(),
       lockImmediately: true,
     });
 
     const st = getProcessEnvGuardState();
     this.log.info(
-      { processEnvGuard: st, envLabel: this.envLabel },
+      { processEnvGuard: st, envLabel: this.getEnvLabel() },
       `[${this.service}] process.env guard enabled`
     );
+  }
+
+  private readRoutePolicyGateConfig(): {
+    facilitatorBaseUrl: string;
+    ttlMs: number;
+  } {
+    // No fallbacks. If the feature is enabled (resolver exists), config must exist.
+    const facilitatorBaseUrl = this._envDto
+      .getEnvVar("SVCFACILITATOR_BASE_URL")
+      .trim();
+    if (!facilitatorBaseUrl) {
+      throw new Error(
+        `ROUTE_POLICY_FACILITATOR_BASE_URL_MISSING: routePolicyGate enabled for service="${this.service}" but SVCFACILITATOR_BASE_URL is missing/empty. ` +
+          "Ops: set SVCFACILITATOR_BASE_URL in env-service for this service."
+      );
+    }
+
+    const rawTtl = this._envDto.getEnvVar("ROUTE_POLICY_TTL_MS").trim();
+    const n = Number(rawTtl);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(
+        `ROUTE_POLICY_TTL_INVALID: routePolicyGate enabled for service="${this.service}" but ROUTE_POLICY_TTL_MS is invalid ("${rawTtl}"). ` +
+          "Ops: set ROUTE_POLICY_TTL_MS to a positive integer string in env-service for this service."
+      );
+    }
+
+    return { facilitatorBaseUrl, ttlMs: Math.trunc(n) };
   }
 
   public async boot(): Promise<void> {
@@ -220,7 +311,7 @@ export abstract class AppBase extends ServiceBase {
         base,
         service: this.service,
         version: this.version,
-        envLabel: this.envLabel,
+        envLabel: this.getEnvLabel(),
         log: this.log,
         readyCheck: this.readyCheck(),
       });
@@ -229,7 +320,7 @@ export abstract class AppBase extends ServiceBase {
         app: this.app,
         base,
         log: this.log,
-        envLabel: this.envLabel,
+        envLabel: this.getEnvLabel(),
         getEnvDto: () => this._envDto,
         setEnvDto: (fresh) => {
           this._envDto = fresh;
@@ -239,21 +330,36 @@ export abstract class AppBase extends ServiceBase {
     }
 
     mountPreRoutingLayer({ app: this.app, service: this.service });
-    mountRoutePolicyGateLayer({
-      app: this.app,
-      service: this.service,
-      log: this.log,
-      resolver: this.getSvcconfigResolver(),
-      envLabel: this.envLabel,
-    });
+
+    const resolver = this.getSvcconfigResolver();
+    if (resolver) {
+      const { facilitatorBaseUrl, ttlMs } = this.readRoutePolicyGateConfig();
+      mountRoutePolicyGateLayer({
+        app: this.app,
+        service: this.service,
+        log: this.log,
+        resolver,
+        facilitatorBaseUrl,
+        ttlMs,
+      });
+    } else {
+      mountRoutePolicyGateLayer({
+        app: this.app,
+        service: this.service,
+        log: this.log,
+        resolver: null,
+      });
+    }
 
     this.mountSecurity();
     mountParserLayer({ app: this.app });
     this.mountRoutes();
+
     mountPostRoutingLayer({
       app: this.app,
-      service: this.service,
-      envLabel: this.envLabel,
+      serviceSlug: this.service,
+      serviceVersion: this.version,
+      envLabel: this.getEnvLabel(),
       log: this.log,
     });
 
@@ -263,10 +369,12 @@ export abstract class AppBase extends ServiceBase {
     this.log.info(
       {
         service: this.service,
-        envLabel: this.envLabel,
+        version: this.version,
+        envLabel: this.getEnvLabel(),
         edgeMode: this.edgeMode,
         s2sMocksEnabled: this.s2sMocksEnabled,
         hasInjectedSvcClientTransport: this.hasInjectedSvcClientTransport,
+        hasSandbox: true,
       },
       "app booted"
     );
@@ -276,7 +384,7 @@ export abstract class AppBase extends ServiceBase {
     const ctx: DbBootContext = {
       service: this.service,
       component: this.constructor.name,
-      envLabel: this.envLabel,
+      envLabel: this.getEnvLabel(),
       checkDb: this.checkDb,
       envDto: this._envDto,
       log: this.log,

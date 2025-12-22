@@ -13,20 +13,16 @@
  *   - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared abstract controller base for all services.
  * - Orchestrates context seeding, preflight, and pipeline execution.
- * - Centralizes finalize-time error logging policy so JSON/HTML/stream
- *   controllers don't have to re-implement it (and drift).
  *
- * Notes:
- * - finalize() is an abstract hook implemented by concrete controller bases
- *   (JSON, HTML, streaming, etc.).
- * - Success responses must still be built from ctx["bag"] (DtoBag) only;
- *   concrete subclasses enforce the wire format.
- * - Finalize-time logging policy is format-agnostic:
- *   negative tests may intentionally provoke 5xx; those must not page Ops.
+ * Invariants:
+ * - SvcSandbox is mandatory; controllers always seed ctx["ssb"].
+ * - No transitional trySandbox() paths.
+ * - No legacy env DTO fallback paths (app.svcEnv).
  */
 
 import type { Request, Response } from "express";
@@ -43,6 +39,7 @@ import {
   preflightContext,
   runPipelineHandlers,
 } from "./controllerContext";
+import type { SvcSandbox } from "../../sandbox/SvcSandbox";
 
 export abstract class ControllerBase {
   protected readonly app: AppBase;
@@ -71,11 +68,19 @@ export abstract class ControllerBase {
   }
 
   public getDtoRegistry(): IDtoRegistry {
-    const reg = (this.app as any)?.getDtoRegistry?.();
-    if (!reg) {
-      throw new Error("DtoRegistry not available from AppBase.");
-    }
-    return reg as IDtoRegistry;
+    // Commit 1: no probing, no fallback, no "any".
+    return this.app.getDtoRegistry();
+  }
+
+  /**
+   * Sandbox access (ADR-0080).
+   *
+   * Invariant:
+   * - AppBase MUST expose getSandbox() and it MUST succeed.
+   * - No try-paths, no compatibility shims.
+   */
+  public getSandbox(): SvcSandbox {
+    return this.app.getSandbox();
   }
 
   /**
@@ -84,48 +89,19 @@ export abstract class ControllerBase {
    * Invariants:
    * - Env DTO is owned by AppBase.
    * - Preferred access is via AppBase.getSvcEnv().
-   * - Legacy direct field access (app.svcEnv) is supported as a temporary
-   *   compatibility path, but should be removed once all apps expose getSvcEnv().
+   * - Commit 1: legacy app.svcEnv compatibility path is removed.
    */
   public getSvcEnv(): EnvServiceDto {
-    const appAny = this.app as any;
-    const envDto = (
-      typeof appAny.getSvcEnv === "function"
-        ? appAny.getSvcEnv()
-        : appAny.svcEnv
-    ) as EnvServiceDto | undefined;
-
-    if (!envDto) {
-      throw new Error(
-        "EnvServiceDto not available from AppBase. " +
-          "Ops/Dev: ensure AppBase is constructed with a concrete EnvServiceDto " +
-          "and exposes it via getSvcEnv()."
-      );
-    }
-
-    return envDto;
+    return this.app.getSvcEnv();
   }
 
-  /**
-   * Runtime environment label accessor.
-   *
-   * Invariants:
-   * - Single source of truth is AppBase (constructed from EN_ENV at boot).
-   * - Controllers use this to seed env into HandlerContext; handlers should
-   *   not read process.env directly.
-   *
-   * Expected AppBase surface:
-   *   - getEnvLabel(): string  // derived from EN_ENV
-   */
   public getEnvLabel(): string {
-    const appAny = this.app as any;
-    const envLabel = appAny.getEnvLabel?.() as string | undefined;
+    const envLabel = this.app.getEnvLabel();
 
     if (!envLabel || typeof envLabel !== "string" || !envLabel.trim()) {
       throw new Error(
         "Environment label missing on AppBase. " +
-          "Expected AppBase.getEnvLabel() to return a non-empty string " +
-          'derived from EN_ENV (e.g., "dev", "stage", "prod").'
+          "Expected AppBase.getEnvLabel() to return a non-empty string."
       );
     }
 
@@ -148,8 +124,15 @@ export abstract class ControllerBase {
     seedHydratorIntoContext(this, ctx, dtoType, opts);
   }
 
+  private seedSandboxIntoContext(ctx: HandlerContext): void {
+    const ssb = this.getSandbox(); // mandatory (will throw if missing)
+    ctx.set("ssb", ssb);
+  }
+
   protected makeContext(req: Request, res: Response): HandlerContext {
-    return makeHandlerContext(this, req, res);
+    const ctx = makeHandlerContext(this, req, res);
+    this.seedSandboxIntoContext(ctx);
+    return ctx;
   }
 
   protected makeDtoOpContext(
@@ -158,7 +141,9 @@ export abstract class ControllerBase {
     op: string,
     opts?: { resolveCollectionName?: boolean }
   ): HandlerContext {
-    return makeDtoOpHandlerContext(this, req, res, op, opts);
+    const ctx = makeDtoOpHandlerContext(this, req, res, op, opts);
+    this.seedSandboxIntoContext(ctx);
+    return ctx;
   }
 
   protected preflight(
@@ -180,24 +165,8 @@ export abstract class ControllerBase {
   // Finalize hook (bag-or-error)
   // ───────────────────────────────────────────
 
-  /**
-   * Finalize the HTTP response from the populated HandlerContext.
-   *
-   * Concrete subclasses (e.g., ControllerJsonBase, ControllerHtmlBase)
-   * must implement this and:
-   * - Build success responses strictly from ctx["bag"] (DtoBag).
-   * - Normalize errors into their chosen wire format.
-   *
-   * Logging policy (especially for negative tests) MUST be delegated to
-   * ControllerBase helpers below to avoid drift across finalize types.
-   */
   protected abstract finalize(ctx: HandlerContext): Promise<void>;
 
-  /**
-   * Whether this controller needs a DTO registry.
-   * Public so controller helpers (ControllerRuntimeDeps) can depend on it.
-   * Override in subclasses if a controller does not require a registry.
-   */
   public needsRegistry(): boolean {
     return true;
   }
@@ -206,24 +175,6 @@ export abstract class ControllerBase {
   // Finalize-time logging policy (format-agnostic)
   // ───────────────────────────────────────────
 
-  /**
-   * Determines whether a 5xx is expected (e.g., negative tests) and therefore
-   * should NOT be logged as ERROR.
-   *
-   * Contract:
-   * - Default: false (real runtime errors are ERROR).
-   * - Test-runner/negative scenarios may mark ctx to signal an expected failure.
-   * - AppBase may optionally provide a policy hook for future ALS-based logic.
-   *
-   * Supported ctx keys (non-exclusive, best-effort):
-   * - ctx["test.expectedError"] === true
-   * - ctx["test.isNegative"] === true
-   * - ctx["testRun.expectedError"] === true
-   * - ctx["runner.expectedError"] === true
-   *
-   * AppBase optional hook:
-   * - app.isExpectedErrorContext?(ctx: HandlerContext): boolean
-   */
   protected isExpectedErrorContext(ctx: HandlerContext): boolean {
     try {
       const b1 = ctx.get<boolean>("test.expectedError");
@@ -238,7 +189,7 @@ export abstract class ControllerBase {
       const b4 = ctx.get<boolean>("runner.expectedError");
       if (b4 === true) return true;
     } catch {
-      // ctx.get() should not throw, but if it does we treat it as "not expected".
+      // ignore
     }
 
     try {
@@ -249,22 +200,12 @@ export abstract class ControllerBase {
         if (r === true) return true;
       }
     } catch {
-      // If a policy hook is buggy, we do not suppress ERRORs.
+      // ignore
     }
 
     return false;
   }
 
-  /**
-   * Centralized finalize-time error logging.
-   *
-   * Why:
-   * - JSON/HTML/stream finalize implementations will differ in wire formatting.
-   * - The *logging policy* must be identical across all controller types.
-   *
-   * Usage:
-   * - Call this AFTER writing the response to the client.
-   */
   protected logFinalizeError(opts: {
     ctx: HandlerContext;
     requestId: string;
@@ -282,7 +223,6 @@ export abstract class ControllerBase {
       opts.messageExpected ??
       "ControllerBase expected error response (negative test)";
 
-    // 4xx: keep as WARN (client/data errors)
     if (status < 500) {
       this.log.warn(
         {
@@ -296,7 +236,6 @@ export abstract class ControllerBase {
       return;
     }
 
-    // 5xx: ERROR unless explicitly marked as expected.
     const expected = this.isExpectedErrorContext(ctx);
 
     if (expected) {

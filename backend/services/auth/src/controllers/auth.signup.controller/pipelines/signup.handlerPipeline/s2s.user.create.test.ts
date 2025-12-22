@@ -1,4 +1,5 @@
 // backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/s2s.user.create.test.ts
+
 /**
  * Docs:
  * - LDD-35 (Handler-level test-runner service)
@@ -22,9 +23,8 @@
  * - Instead:
  *   1) Mint a UserDto from the shared DTO registry.
  *   2) Set fields via the DTO’s setters.
- *   3) Use dto.toBody() as the only source of JSON for the bag.
- * - Test data must be unique (per test instance) to avoid dup collisions; use
- *   HandlerTestBase.suffix() to vary fields like email, name, etc.
+ *   3) Apply a UUIDv4 id via setIdOnce().
+ *   4) Use BagBuilder.fromDtos() to produce a real DtoBag<UserDto>.
  */
 
 import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
@@ -32,9 +32,9 @@ import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/Handler
 
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
-
-// TODO: Adjust this import to your real shared registry location / name.
+import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { UserDtoRegistry as userRegistry } from "@nv/shared/dto/registry/user.dtoRegistry";
+import { newUuid } from "@nv/shared/utils/uuid";
 
 import { S2sUserCreateHandler } from "./s2s.user.create";
 
@@ -54,6 +54,35 @@ interface UserCreateStatusError {
 type UserCreateStatus = UserCreateStatusOk | UserCreateStatusError;
 
 /**
+ * Helper: build a real DtoBag<UserDto> for tests.
+ * - Applies signupUserId via dto.setIdOnce() so bag shape matches the real pipeline.
+ */
+function buildUserBag(
+  signupUserId: string,
+  seed: (dto: UserDto, suffix: string) => void,
+  requestId: string
+): UserBag {
+  const registry = new userRegistry();
+  const dto = registry.newUserDto();
+  const suffix = requestId; // just a stable-ish unique token for this test
+
+  // Seed caller-provided fields
+  seed(dto, suffix);
+
+  // Apply canonical UUIDv4 id immediately, matching pipeline behavior
+  dto.setIdOnce?.(signupUserId);
+
+  const { bag } = BagBuilder.fromDtos([dto], {
+    requestId,
+    limit: 1,
+    total: 1,
+    cursor: null,
+  });
+
+  return bag as UserBag;
+}
+
+/**
  * Canonical happy-path scenario.
  * Used by S2sUserCreateHandler.runTest() via runSingleTest().
  */
@@ -70,51 +99,28 @@ export class S2sUserCreateTest extends HandlerTestBase {
     return false;
   }
 
-  /**
-   * Mint a UserDto via the shared registry, set fields via setters, and build
-   * a bag using dto.toBody(). Uses this.suffix() to keep data unique.
-   */
-  private makeUserBagFromDto(mutate?: (dto: UserDto) => void): UserBag {
-    const dto = new userRegistry().newUserDto();
-    const suffix = this.suffix();
-
-    // Adjust these setter names to match your actual UserDto contract.
-    dto.setGivenName?.(`AuthS2S${suffix}`);
-    dto.setLastName?.(`UserCreate${suffix}`);
-    dto.setEmail?.(`auth.s2s.user.create+${suffix}@example.com`);
-
-    if (mutate) {
-      mutate(dto);
-    }
-
-    const body = dto.toBody();
-
-    const bagLike = {
-      meta: {
-        dtoType: "user",
-      },
-      items: [
-        {
-          id: (dto as any).getId ? (dto as any).getId() : undefined,
-          data: body,
-        },
-      ],
-    };
-
-    return bagLike as unknown as UserBag;
-  }
-
   protected async execute(): Promise<void> {
+    const requestId = "req-auth-s2s-user-create-happy";
     const ctx = this.makeCtx({
-      requestId: "req-auth-s2s-user-create-happy",
+      requestId,
       dtoType: "user",
       op: "s2s.user.create",
     });
 
-    const signupUserId = `auth-s2s-user-create-happy-user-id-${this.suffix()}`;
+    // Happy-path: signup.userId must be a real UUIDv4
+    const signupUserId = newUuid();
     ctx.set("signup.userId", signupUserId);
 
-    const bag = this.makeUserBagFromDto();
+    const bag = buildUserBag(
+      signupUserId,
+      (dto, suffix) => {
+        dto.setGivenName?.(`AuthS2S${suffix}`);
+        dto.setLastName?.(`UserCreate${suffix}`);
+        dto.setEmail?.(`auth.s2s.user.create+${suffix}@example.com`);
+      },
+      requestId
+    );
+
     ctx.set("bag", bag);
 
     await this.runHandler({
@@ -123,24 +129,12 @@ export class S2sUserCreateTest extends HandlerTestBase {
     });
 
     const handlerStatus = ctx.get<string>("handlerStatus");
-    const rawResponseStatus = ctx.get<number>("response.status");
-    const statusCode =
-      rawResponseStatus !== undefined
-        ? rawResponseStatus
-        : ctx.get<number>("status");
-
     const status = ctx.get<UserCreateStatus>("signup.userCreateStatus");
 
     this.assertEq(
       String(handlerStatus ?? ""),
       "ok",
       "handlerStatus should be 'ok' on S2S user.create happy path"
-    );
-
-    this.assertEq(
-      String(statusCode ?? ""),
-      "200",
-      "HTTP status should be 200 on S2S user.create happy path"
     );
 
     this.assert(
@@ -174,49 +168,42 @@ export class S2sUserCreateBadEnvelopeTest extends HandlerTestBase {
     return true;
   }
 
-  private makeValidUserBag(): UserBag {
-    const dto: UserDto = new userRegistry().newUserDto();
-    const suffix = this.suffix();
-
-    dto.setGivenName?.(`AuthS2S-BadEnv-${suffix}`);
-    dto.setLastName?.(`UserCreate-BadEnv-${suffix}`);
-    dto.setEmail?.(`auth.s2s.user.create.badenv+${suffix}@example.com`);
-
-    const body = dto.toBody();
-
-    const bagLike = {
-      meta: {
-        dtoType: "user",
-      },
-      items: [
-        {
-          id: (dto as any).getId ? (dto as any).getId() : undefined,
-          data: body,
-        },
-      ],
-    };
-
-    return bagLike as unknown as UserBag;
-  }
-
   protected async execute(): Promise<void> {
+    const requestId = "req-auth-s2s-user-create-bad-envelope";
     const ctx = this.makeCtx({
-      requestId: "req-auth-s2s-user-create-bad-envelope",
+      requestId,
       dtoType: "user",
       op: "s2s.user.create",
     });
 
-    const signupUserId = `auth-s2s-user-create-bad-envelope-user-id-${this.suffix()}`;
+    const signupUserId = newUuid();
     ctx.set("signup.userId", signupUserId);
 
-    // Start from a valid DTO-backed bag and then corrupt the envelope shape.
-    const goodBag = this.makeValidUserBag();
+    // Start from a valid DtoBag<UserDto> and then corrupt the envelope shape.
+    const goodBag = buildUserBag(
+      signupUserId,
+      (dto, suffix) => {
+        dto.setGivenName?.(`AuthS2S-BadEnv-${suffix}`);
+        dto.setLastName?.(`UserCreate-BadEnv-${suffix}`);
+        dto.setEmail?.(`auth.s2s.user.create.badenv+${suffix}@example.com`);
+      },
+      requestId
+    );
+
+    // Corrupt the envelope: replace items[] with wrong shape.
+    const itemsArray =
+      typeof (goodBag as any).items === "function"
+        ? Array.from((goodBag as any).items())
+        : [];
+
+    const firstItem = itemsArray[0] ?? {};
+
     const badEnvelope = {
       meta: (goodBag as any).meta,
       items: [
         {
-          // Drop `data`, replace with an unexpected field to break shape.
-          payload: (goodBag as any).items?.[0]?.data,
+          // Drop the expected DtoBag item structure; inject a bogus payload.
+          payload: (firstItem as any).data ?? firstItem,
         },
       ],
     };
@@ -229,23 +216,12 @@ export class S2sUserCreateBadEnvelopeTest extends HandlerTestBase {
     });
 
     const handlerStatus = ctx.get<string>("handlerStatus");
-    const rawResponseStatus = ctx.get<number>("response.status");
-    const statusCode =
-      rawResponseStatus !== undefined
-        ? rawResponseStatus
-        : ctx.get<number>("status");
-
     const status = ctx.get<UserCreateStatus>("signup.userCreateStatus");
 
     this.assertEq(
       String(handlerStatus ?? ""),
       "error",
       "handlerStatus should be 'error' when envelope is malformed"
-    );
-
-    this.assert(
-      statusCode !== 200,
-      "HTTP status should not be 200 when envelope is malformed"
     );
 
     this.assert(
@@ -283,48 +259,33 @@ export class S2sUserCreateMissingFieldsTest extends HandlerTestBase {
     return true;
   }
 
-  private makeUserBagWithMissingFields(): UserBag {
-    const dto: UserDto = new userRegistry().newUserDto();
-    const suffix = this.suffix();
-
-    // Seed with valid values first (to match normal flows)...
-    dto.setGivenName?.(`AuthS2S-Missing-${suffix}`);
-    dto.setLastName?.(`UserCreate-Missing-${suffix}`);
-    dto.setEmail?.(`auth.s2s.user.create.missing+${suffix}@example.com`);
-
-    // ...then clear the required fields via setters / allowed mutation.
-    dto.setGivenName?.("");
-    dto.setLastName?.("");
-    dto.setEmail?.("");
-
-    const body = dto.toBody();
-
-    const bagLike = {
-      meta: {
-        dtoType: "user",
-      },
-      items: [
-        {
-          id: (dto as any).getId ? (dto as any).getId() : undefined,
-          data: body,
-        },
-      ],
-    };
-
-    return bagLike as unknown as UserBag;
-  }
-
   protected async execute(): Promise<void> {
+    const requestId = "req-auth-s2s-user-create-missing-fields";
     const ctx = this.makeCtx({
-      requestId: "req-auth-s2s-user-create-missing-fields",
+      requestId,
       dtoType: "user",
       op: "s2s.user.create",
     });
 
-    const signupUserId = `auth-s2s-user-create-missing-fields-user-id-${this.suffix()}`;
+    const signupUserId = newUuid();
     ctx.set("signup.userId", signupUserId);
 
-    const bag = this.makeUserBagWithMissingFields();
+    const bag = buildUserBag(
+      signupUserId,
+      (dto, suffix) => {
+        // Seed with valid values first...
+        dto.setGivenName?.(`AuthS2S-Missing-${suffix}`);
+        dto.setLastName?.(`UserCreate-Missing-${suffix}`);
+        dto.setEmail?.(`auth.s2s.user.create.missing+${suffix}@example.com`);
+
+        // ...then clear the required fields via setters / allowed mutation.
+        dto.setGivenName?.("");
+        dto.setLastName?.("");
+        dto.setEmail?.("");
+      },
+      requestId
+    );
+
     ctx.set("bag", bag);
 
     await this.runHandler({
@@ -333,23 +294,12 @@ export class S2sUserCreateMissingFieldsTest extends HandlerTestBase {
     });
 
     const handlerStatus = ctx.get<string>("handlerStatus");
-    const rawResponseStatus = ctx.get<number>("response.status");
-    const statusCode =
-      rawResponseStatus !== undefined
-        ? rawResponseStatus
-        : ctx.get<number>("status");
-
     const status = ctx.get<UserCreateStatus>("signup.userCreateStatus");
 
     this.assertEq(
       String(handlerStatus ?? ""),
       "error",
       "handlerStatus should be 'error' when required user fields are missing"
-    );
-
-    this.assert(
-      statusCode !== 200,
-      "HTTP status should not be 200 when required fields are missing"
     );
 
     this.assert(

@@ -17,7 +17,7 @@
  * - Provide TWO handler-test scenarios for ToBagUserHandler:
  *   • Happy path: hydrate a singleton UserDto bag from a valid wire payload and
  *     apply ctx["signup.userId"] via setIdOnce().
- *   • Sad path: missing ctx["signup.userId"] yields a 500 precondition failure.
+ *   • Sad path: missing ctx["signup.userId"] yields a precondition failure.
  *
  * ScenarioRunner contract:
  * - This module is discovered via HandlerTestModuleLoader using:
@@ -49,7 +49,7 @@ export class ToBagUserTest extends HandlerTestBase {
   }
 
   protected expectedError(): boolean {
-    // Happy-path smoke: handlerStatus !== "error"; HTTP != 500.
+    // Happy-path smoke: handlerStatus !== "error".
     return false;
   }
 
@@ -71,19 +71,12 @@ export class ToBagUserTest extends HandlerTestBase {
       ctx,
     });
 
+    // Handler rail only; HTTP status is interpreted by rails, not by this test.
     const handlerStatus = ctx.get<string>("handlerStatus");
     this.assertEq(
       String(handlerStatus ?? ""),
       "ok",
       "handlerStatus should be 'ok' on happy path"
-    );
-
-    const responseStatus =
-      ctx.get<number>("response.status") ?? ctx.get<number>("status");
-    this.assertEq(
-      String(responseStatus ?? ""),
-      "200",
-      "response.status should be 200 on happy path"
     );
 
     const bag: any = ctx.get("bag");
@@ -122,7 +115,7 @@ export class ToBagUserTest extends HandlerTestBase {
  * - NO signup.userId set on ctx
  * - Expects:
  *   • handlerStatus = "error"
- *   • status/response.status = 500
+ *   • Rails will interpret HTTP status; test does not assert numeric code.
  */
 export class ToBagUserMissingUserIdTest extends HandlerTestBase {
   public testId(): string {
@@ -130,7 +123,7 @@ export class ToBagUserMissingUserIdTest extends HandlerTestBase {
   }
 
   public testName(): string {
-    return "auth.signup: ToBagUserHandler fails with 500 when signup.userId is missing";
+    return "auth.signup: ToBagUserHandler fails when signup.userId is missing";
   }
 
   protected expectedError(): boolean {
@@ -156,23 +149,14 @@ export class ToBagUserMissingUserIdTest extends HandlerTestBase {
     });
 
     const handlerStatus = ctx.get<string>("handlerStatus");
-    const rawResponseStatus = ctx.get<number>("response.status");
-    const statusCode =
-      rawResponseStatus !== undefined
-        ? rawResponseStatus
-        : ctx.get<number>("status");
-
     this.assertEq(
       String(handlerStatus ?? ""),
       "error",
       "handlerStatus should be 'error' when signup.userId is missing"
     );
 
-    this.assertEq(
-      String(statusCode ?? ""),
-      "500",
-      "status should be 500 for missing signup.userId precondition"
-    );
+    // Numeric HTTP status is interpreted once in the rails and recorded on
+    // HandlerTestDto (railsStatus). We do not assert it here at handler scope.
   }
 }
 
@@ -253,7 +237,7 @@ export async function getScenarios() {
     },
     {
       id: "auth.signup.toBag.user.missingSignupUserId",
-      name: "auth.signup: ToBagUserHandler fails with 500 when signup.userId is missing",
+      name: "auth.signup: ToBagUserHandler fails when signup.userId is missing",
       shortCircuitOnFail: true,
       expectedError: true,
       async run() {

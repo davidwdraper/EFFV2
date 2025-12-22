@@ -1,10 +1,13 @@
 # Build-a-test-guide.md
 
 ## Purpose
+
 A handler-level test verifies that when a handler runs under full rails with specific inputs, the final outputs match expectations — whether the path is happy or sad. Tests behave like calling clients: they supply inputs, run the handler once, and assert final outputs.
 
 ## Philosophy
+
 Tests never inspect internal logic or mid-handler state. They assert only:
+
 - handlerStatus
 - HTTP/rails status
 - final context fields relevant to handler outputs
@@ -12,6 +15,7 @@ Tests never inspect internal logic or mid-handler state. They assert only:
 Sad paths are expected failures: handlerStatus="error", status=500. Happy paths expect no rails error and correct outputs.
 
 ## Components
+
 - Handler: implements execute(), sets handlerStatus, may set ctx fields.
 - HandlerTestBase: wraps handler execution, collects rails signals and assertions.
 - ScenarioRunner: discovers test modules, executes scenarios, writes HandlerTestDto results.
@@ -26,6 +30,7 @@ Every handler-level test file must expose **two entrypoints**:
 2. **Scenario registry** – ordered array consumed by ScenarioRunner.
 
 This ensures:
+
 - handler → test coupling is deterministic
 - scenario ordering is explicit in one place
 - no alias hacks or filename sorting
@@ -50,8 +55,12 @@ Each handler’s test file must define a single canonical test class, named by c
 
 ```ts
 export class CodeXxxTest extends HandlerTestBase {
-  public testId(): string { /* stable id */ }
-  public testName(): string { /* human-readable name */ }
+  public testId(): string {
+    /* stable id */
+  }
+  public testName(): string {
+    /* human-readable name */
+  }
 
   protected expectedError(): boolean {
     return false; // happy-path smoke by default
@@ -128,8 +137,12 @@ Each scenario is a `HandlerTestBase` subclass:
 
 ```ts
 export class ScenarioTest extends HandlerTestBase {
-  public testId(): string { /* unique id */ }
-  public testName(): string { /* human-readable */ }
+  public testId(): string {
+    /* unique id */
+  }
+  public testName(): string {
+    /* human-readable */
+  }
 
   protected expectedError(): boolean {
     return true | false;
@@ -139,8 +152,8 @@ export class ScenarioTest extends HandlerTestBase {
     const ctx = this.makeCtx();
     await this.runHandler({ handlerCtor, ctx });
 
-    this.assertEq(ctx.get("handlerStatus"), /* expected */);
-    this.assertEq(ctx.get("response.status"), /* expected */);
+    this.assertEq(ctx.get("handlerStatus") /* expected */);
+    this.assertEq(ctx.get("response.status") /* expected */);
     // Additional final-state assertions here
   }
 }
@@ -278,6 +291,59 @@ Never:
 - Same ctx setup as happy path.
 - Corrupt `KMS_PROJECT_ID` or similar value so real KMS fails.
 - Assertions:
+
   - `handlerStatus === "error"`
   - HTTP status is 500
   - No JWT fields set on ctx.
+
+  ### DTO-backed S2S tests (no fake bags)
+
+For any handler that works with a DtoBag (e.g., `S2sUserCreateHandler`), tests MUST NOT hand-roll “bag-like” objects or JSON shapes.
+
+Instead, every test follows this pattern:
+
+1. **Create the DTO via its registry**
+
+   - `const dto = new UserDtoRegistry().newUserDto();`
+   - Never `new UserDto()` directly and never construct JSON by hand.
+
+2. **Populate fields via DTO setters only**
+
+   - Use setters for all required data:
+     - `dto.setGivenName("...")`
+     - `dto.setLastName("...")`
+     - `dto.setEmail("...")`
+   - Use `HandlerTestBase.suffix()` (or equivalent) to keep values unique and avoid dup collisions.
+
+3. **Apply the canonical id via `setIdOnce()` _if_ the real pipeline does**
+
+   - For auth.signup, `signup.userId` is minted upstream.
+   - Tests must mirror that:
+     - `dto.setIdOnce(signupUserId);`
+
+4. **Build a real `DtoBag<T>` using shared rails**
+
+   - Never synthesize `{ meta, items }` yourself.
+   - Always use the shared builder, which uses `dto.toBody()` under the hood:
+
+     ```ts
+     const { bag } = BagBuilder.fromDtos([dto], {
+       requestId,
+       limit: 1,
+       total: 1,
+       cursor: null,
+     });
+
+     ctx.set("bag", bag);
+     ```
+
+5. **Handlers/tests never call `getId()` on a DTO that hasn’t had an id applied**
+
+   - If you need the id in tests, either:
+     - Use the known `signup.userId` you passed in, or
+     - Call `dto.getId()` **only after** `setIdOnce()` or `ensureId()` has been used.
+   - A `DTO_ID_MISSING` error means the test or handler violated this contract.
+
+6. **Handler-level tests assert rails + business state, not wire shapes**
+   - Assert `handlerStatus` and business markers (`signup.userCreateStatus`, etc.).
+   - Do **not** assert raw HTTP status or try to interpret the full wire envelope; that belongs to the rails.

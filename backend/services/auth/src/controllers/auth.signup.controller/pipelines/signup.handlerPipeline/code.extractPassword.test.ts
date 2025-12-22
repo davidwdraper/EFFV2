@@ -15,6 +15,7 @@
  *
  * Invariants:
  * - Tests must never log the raw password value; only length is inspected/logged.
+ * - Handler-level tests assert handlerStatus + context mutations, not HTTP codes.
  */
 
 import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
@@ -36,7 +37,7 @@ export class CodeExtractPasswordTest extends HandlerTestBase {
   }
 
   protected expectedError(): boolean {
-    // Happy-path smoke: handlerStatus !== "error"; HTTP != 500.
+    // Happy-path smoke: handlerStatus !== "error".
     return false;
   }
 
@@ -62,14 +63,6 @@ export class CodeExtractPasswordTest extends HandlerTestBase {
       "handlerStatus should be 'ok' on happy path"
     );
 
-    const responseStatus =
-      ctx.get<number>("response.status") ?? ctx.get<number>("status");
-    this.assertEq(
-      String(responseStatus ?? ""),
-      "200",
-      "response.status should be 200 on happy path"
-    );
-
     const stored = ctx.get<string>("signup.passwordClear");
     this.assert(
       typeof stored === "string" && stored.length > 0,
@@ -83,7 +76,7 @@ export class CodeExtractPasswordTest extends HandlerTestBase {
  * - Password present but fails ValidatePassword.
  * - Expects:
  *   • handlerStatus = "error"
- *   • status/response.status = 400
+ *   • signup.passwordClear not set
  */
 export class CodeExtractPasswordWeakTest extends HandlerTestBase {
   public testId(): string {
@@ -114,18 +107,11 @@ export class CodeExtractPasswordWeakTest extends HandlerTestBase {
     });
 
     const handlerStatus = ctx.get<string>("handlerStatus");
-    const responseStatus =
-      ctx.get<number>("response.status") ?? ctx.get<number>("status");
 
     this.assertEq(
       String(handlerStatus ?? ""),
       "error",
       "handlerStatus should be 'error' for weak password"
-    );
-    this.assertEq(
-      String(responseStatus ?? ""),
-      "400",
-      "response.status should be 400 for weak password"
     );
 
     const stored = ctx.get("signup.passwordClear");
@@ -141,7 +127,7 @@ export class CodeExtractPasswordWeakTest extends HandlerTestBase {
  * - No password header at all.
  * - Expects:
  *   • handlerStatus = "error"
- *   • status/response.status = 400
+ *   • signup.passwordClear not set
  */
 export class CodeExtractPasswordMissingTest extends HandlerTestBase {
   public testId(): string {
@@ -170,18 +156,11 @@ export class CodeExtractPasswordMissingTest extends HandlerTestBase {
     });
 
     const handlerStatus = ctx.get<string>("handlerStatus");
-    const responseStatus =
-      ctx.get<number>("response.status") ?? ctx.get<number>("status");
 
     this.assertEq(
       String(handlerStatus ?? ""),
       "error",
       "handlerStatus should be 'error' when password header is missing"
-    );
-    this.assertEq(
-      String(responseStatus ?? ""),
-      "400",
-      "response.status should be 400 when password header is missing"
     );
 
     const stored = ctx.get("signup.passwordClear");
@@ -194,7 +173,7 @@ export class CodeExtractPasswordMissingTest extends HandlerTestBase {
 
 /**
  * ScenarioRunner entrypoint for the handler-level test-runner service.
- * Even with 3 scenarios, we follow the same pattern:
+ * Shape:
  *   - id
  *   - name
  *   - shortCircuitOnFail

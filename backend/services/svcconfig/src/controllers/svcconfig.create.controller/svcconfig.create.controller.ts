@@ -10,6 +10,9 @@
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
+ *
  * Purpose:
  * - Orchestrate PUT /api/svcconfig/v1/:dtoType/create
  * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
@@ -68,7 +71,6 @@ export class SvcconfigCreateController extends ControllerJsonBase {
       // }
 
       default: {
-        // Seed a clear 501 problem into the context (ControllerBase.finalize will serialize)
         ctx.set("handlerStatus", "error");
         ctx.set("response.status", 501);
         ctx.set("response.body", {

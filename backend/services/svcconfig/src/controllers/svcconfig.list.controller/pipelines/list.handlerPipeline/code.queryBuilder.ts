@@ -3,6 +3,9 @@
  * Docs:
  * - ADR-0041/0042
  *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
+ *
  * Purpose:
  * - Parse query params into a safe filter object for known fields only.
  *
@@ -71,7 +74,6 @@ export class CodeQueryBuilder extends HandlerBase {
           stage: "query_builder.input",
           requestId,
           origin: {
-            file: __filename,
             method: "execute",
           },
           issues: [
@@ -163,7 +165,6 @@ export class CodeQueryBuilder extends HandlerBase {
         stage: "query_builder.unhandled",
         requestId,
         origin: {
-          file: __filename,
           method: "execute",
         },
         issues: [

@@ -33,6 +33,7 @@ import { getLogger, type IBoundLogger } from "../../logger/Logger";
 import type { AppBase } from "../../base/app/AppBase";
 import type { IDtoRegistry } from "../../registry/RegistryBase";
 import type { ControllerBase } from "../../base/controller/ControllerBase";
+import type { SvcSandbox } from "../../sandbox/SvcSandbox";
 import {
   getEnvVarFromSandbox,
   resolveMongoConfigWithDbState,
@@ -60,10 +61,10 @@ export abstract class HandlerBase {
    * `ssb` is intentionally short: it should be the only runtime “global”
    * a handler can see. If it isn’t present, the service is mis-wired.
    *
-   * NOTE: We keep the type broad here to avoid guessing the import path.
-   * The *existence* of ssb is enforced, and helpers route env reads through it.
+   * Invariant:
+   * - Sandbox identity is authoritative (ADR-0080). No ctx fallback.
    */
-  protected readonly ssb: unknown;
+  protected readonly ssb: SvcSandbox;
 
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     this.ctx = ctx;
@@ -420,12 +421,13 @@ export abstract class HandlerBase {
   }
 
   protected safeServiceSlug(): string | undefined {
-    // Prefer sandbox identity (ADR-0080). This lets downstream stop guessing.
-    const anySsb = this.ssb as any;
-    if (typeof anySsb?.serviceSlug === "string" && anySsb.serviceSlug.trim()) {
-      return anySsb.serviceSlug.trim();
+    // Sandbox identity is authoritative (ADR-0080). No ctx fallback.
+    try {
+      const slug = this.ssb.getServiceSlug();
+      return typeof slug === "string" && slug.trim() ? slug.trim() : undefined;
+    } catch {
+      return undefined;
     }
-    return this.safeCtxGet<string>("slug");
   }
 
   protected safeDtoType(): string | undefined {

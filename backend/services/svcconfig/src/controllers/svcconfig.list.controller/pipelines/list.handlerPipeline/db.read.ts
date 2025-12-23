@@ -11,6 +11,9 @@
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
+ *
  * Purpose:
  * - Use DbReader<TDto> to fetch a deterministic batch with cursor pagination.
  * - Leave the resulting DtoBag on ctx["bag"]; ControllerBase.finalize()
@@ -29,8 +32,8 @@
  *   - MUST set ctx["response.body"] (problem+json-style object).
  *
  * Notes:
- * - Env is obtained via HandlerBase.getVar("NV_MONGO_URI"/"NV_MONGO_DB")
- *   which is backed by the service's EnvServiceDto (ADR-0044).
+ * - DB config is resolved via HandlerBase.getMongoConfig(), which reads from
+ *   SvcSandbox vars and applies DB_STATE semantics (ADR-0074).
  * - DTO ctor is supplied via ctx["list.dtoCtor"] by the pipeline.
  */
 
@@ -83,7 +86,6 @@ export class DbReadHandler extends HandlerBase {
         stage: "list.dbRead.dtoCtor",
         requestId,
         origin: {
-          file: __filename,
           method: "execute",
         },
         issues: [
@@ -127,7 +129,6 @@ export class DbReadHandler extends HandlerBase {
           stage: "list.dbRead.filter_shape",
           requestId,
           origin: {
-            file: __filename,
             method: "execute",
           },
           issues: [
@@ -168,7 +169,6 @@ export class DbReadHandler extends HandlerBase {
           stage: "list.dbRead.query_shape",
           requestId,
           origin: {
-            file: __filename,
             method: "execute",
           },
           issues: [
@@ -287,7 +287,6 @@ export class DbReadHandler extends HandlerBase {
         stage: "list.dbRead.readBatch",
         requestId,
         origin: {
-          file: __filename,
           method: "execute",
         },
         issues: [

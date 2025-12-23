@@ -8,6 +8,10 @@
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
  *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
  *
  * Purpose:
  * - Consume the UPDATED **singleton DtoBag** from ctx["bag"] and execute an update().

@@ -9,6 +9,9 @@
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0056 (DELETE path uses <DtoTypeKey>) — generalized: :dtoType on every route
  *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
+ *
  * Purpose:
  * - Orchestrate DELETE /api/svcconfig/v1/:dtoType/delete/:id
  * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.

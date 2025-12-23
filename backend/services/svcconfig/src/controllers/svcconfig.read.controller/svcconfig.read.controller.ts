@@ -10,6 +10,10 @@
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *   - ADR-0061 (svcconfig s2s-route — S2S target resolution)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
  *
  * Purpose:
  * - Orchestrate:
@@ -129,13 +133,6 @@ export class SvcconfigReadController extends ControllerJsonBase {
         await this.runPipeline(ctx, steps, { requireRegistry: false });
         break;
       }
-
-      // Future dtoType example:
-      // case "myNewDto": {
-      //   const steps = MyNewDtoReadPipeline.getSteps(ctx, this);
-      //   await this.runPipeline(ctx, steps, { requireRegistry: false });
-      //   break;
-      // }
 
       default: {
         ctx.set("handlerStatus", "error");

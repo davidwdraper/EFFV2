@@ -9,6 +9,11 @@
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
  *
  * Purpose:
  * - Generic list reader used by list-family routes (list, mirror, etc.).
@@ -30,18 +35,21 @@
  *   - MUST NOT set ctx["response.body"] on success.
  * - On error:
  *   - ctx["handlerStatus"] MUST be "error".
- *   - ctx["status"] MUST be set (HTTP status code).
- *   - ctx["error"] MUST carry an NvHandlerError (ProblemDetails source).
+ *   - MUST set ctx["response.status"] (HTTP status code).
+ *   - MUST set ctx["response.body"] (problem+json-style object).
  *
  * Notes:
- * - Env is obtained via HandlerBase.getVar("NV_MONGO_URI"/"NV_MONGO_DB"),
- *   backed by EnvServiceDto (ADR-0044) for each service.
+ * - DB config is obtained via HandlerBase.getMongoConfig(), which reads DB vars
+ *   from SvcSandbox and applies ADR-0074 DB_STATE semantics (domain DBs get
+ *   <base>_<DB_STATE>, *_infra DBs ignore DB_STATE).
  */
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
 import { DbReader } from "../../dto/persistence/dbReader/DbReader";
 import { ControllerBase } from "../../base/controller/ControllerBase";
+
+const ORIGIN_FILE = "backend/services/shared/src/http/handlers/db.read.list.ts";
 
 export class DbReadListHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
@@ -56,7 +64,7 @@ export class DbReadListHandler extends HandlerBase {
   }
 
   protected override async execute(): Promise<void> {
-    const requestId = this.safeCtxGet<string>("requestId");
+    const requestId = this.getRequestId();
 
     this.log.debug(
       {
@@ -70,7 +78,7 @@ export class DbReadListHandler extends HandlerBase {
     // --- Required DTO ctor ---------------------------------------------------
     const dtoCtor = this.safeCtxGet<any>("list.dtoCtor");
     if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
-      this.failWithError({
+      const err = this.failWithError({
         httpStatus: 500,
         title: "dto_ctor_missing",
         detail:
@@ -78,7 +86,7 @@ export class DbReadListHandler extends HandlerBase {
         stage: "config.dtoCtor",
         requestId,
         origin: {
-          file: __filename,
+          file: ORIGIN_FILE,
           method: "execute",
         },
         issues: [
@@ -91,10 +99,22 @@ export class DbReadListHandler extends HandlerBase {
           "dbRead.list — DTO ctor missing or invalid (ctx['list.dtoCtor']).",
         logLevel: "error",
       });
+
+      // Ensure finalize-visible error surface (even if helpers change later).
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", err.httpStatus);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: err.title,
+        status: err.httpStatus,
+        code: "DTO_CTOR_MISSING",
+        detail: err.detail,
+        requestId,
+      });
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
+    // ---- Missing DB config throws (sandbox-owned, DB_STATE-aware) -----------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // --- Filter + pagination -------------------------------------------------
@@ -175,60 +195,53 @@ export class DbReadListHandler extends HandlerBase {
         },
         "dbRead.list — batch read complete"
       );
-    } catch (err) {
+    } catch (rawError) {
       const msg =
-        (err as Error)?.message ??
-        (typeof err === "string" ? err : String(err ?? ""));
+        (rawError as Error)?.message ??
+        (typeof rawError === "string" ? rawError : String(rawError ?? ""));
 
       // Special-case bad cursor → client error, not server error.
-      if (typeof msg === "string" && msg.startsWith("CURSOR_DECODE_INVALID")) {
-        this.failWithError({
-          httpStatus: 400,
-          title: "invalid_cursor",
-          detail: msg,
-          stage: "db.readBatch.cursorDecode",
-          requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-            collection: collectionName || undefined,
+      const isBadCursor =
+        typeof msg === "string" && msg.startsWith("CURSOR_DECODE_INVALID");
+
+      const err = this.failWithError({
+        httpStatus: isBadCursor ? 400 : 500,
+        title: isBadCursor ? "invalid_cursor" : "db_read_failed",
+        detail: msg,
+        stage: isBadCursor ? "db.readBatch.cursorDecode" : "db.readBatch",
+        requestId,
+        origin: {
+          file: ORIGIN_FILE,
+          method: "execute",
+          collection: collectionName || undefined,
+        },
+        issues: [
+          {
+            cursor,
+            limit,
+            filter: isBadCursor ? undefined : filter,
           },
-          issues: [
-            {
-              cursor,
-              limit,
-            },
-          ],
-          rawError: err,
-          logMessage:
-            "dbRead.list — invalid cursor rejected (CURSOR_DECODE_INVALID...).",
-          logLevel: "warn",
-        });
-      } else {
-        this.failWithError({
-          httpStatus: 500,
-          title: "db_read_failed",
-          detail: msg,
-          stage: "db.readBatch",
-          requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-            collection: collectionName || undefined,
-          },
-          issues: [
-            {
-              cursor,
-              limit,
-              filter,
-            },
-          ],
-          rawError: err,
-          logMessage:
-            "dbRead.list — unexpected error during DbReader.readBatch().",
-          logLevel: "error",
-        });
-      }
+        ],
+        rawError,
+        logMessage: isBadCursor
+          ? "dbRead.list — invalid cursor rejected (CURSOR_DECODE_INVALID...)."
+          : "dbRead.list — unexpected error during DbReader.readBatch().",
+        logLevel: isBadCursor ? "warn" : "error",
+      });
+
+      // Ensure finalize-visible error surface (no guessing inside controllers).
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", err.httpStatus);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: err.title,
+        status: err.httpStatus,
+        code: isBadCursor ? "INVALID_CURSOR" : "DB_READ_FAILED",
+        detail: err.detail,
+        requestId,
+      });
+
+      return;
     }
   }
 }

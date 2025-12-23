@@ -7,6 +7,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
@@ -23,18 +24,24 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
 import { buildSvcconfigRouter } from "./routes/svcconfig.route";
+import type { SvcSandbox } from "@nv/shared/sandbox/SvcSandbox";
 
 type CreateAppOptions = {
   slug: string;
   version: number;
   /**
    * Logical environment label for this process (e.g., "dev", "stage", "prod").
-   * - Passed through from envBootstrap.envLabel.
-   * - Any SvcClient created inside this service should use this value for `env`.
+   * NOTE: Convenience only; AppBase must source envLabel from ssb (ADR-0080 Commit 2).
    */
   envLabel: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
+
+  /**
+   * SvcSandbox is mandatory (ADR-0080).
+   * Constructed by ServiceEntrypoint after envDto is available.
+   */
+  ssb: SvcSandbox;
 };
 
 class SvcconfigApp extends AppBase {
@@ -48,11 +55,10 @@ class SvcconfigApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
-      envLabel: opts.envLabel,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // svcconfig is DB-backed: requires NV_MONGO_* and index ensure at boot.
       checkDb: true,
+      ssb: opts.ssb,
     });
 
     this.registry = new Registry();
@@ -82,7 +88,6 @@ export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
   const app = new SvcconfigApp(opts);
-  // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
   await app.boot();
   return { app: app.instance };
 }

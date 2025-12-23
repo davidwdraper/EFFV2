@@ -9,6 +9,10 @@
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; limit semantics)
  *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
  *
  * Purpose:
  * - Orchestrate PATCH /api/svcconfig/v1/:dtoType/update/:id

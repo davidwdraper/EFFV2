@@ -11,6 +11,9 @@
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
+ *
  * Purpose:
  * - Orchestrate "list-family" GET operations for svcconfig:
  *   - Standard list:  GET /api/svcconfig/v1/:dtoType/list
@@ -115,39 +118,6 @@ export class SvcconfigListController extends ControllerJsonBase {
 
         break;
       }
-
-      // Future dtoType example:
-      // case "myNewDto": {
-      //   this.seedHydrator(ctx, "MyNewDto", { validate: true });
-      //   switch (op) {
-      //     case "list": {
-      //       const steps = MyNewDtoListPipeline.getSteps(ctx, this);
-      //       await this.runPipeline(ctx, steps, { requireRegistry: false });
-      //       break;
-      //     }
-      //     default: {
-      //       ctx.set("handlerStatus", "error");
-      //       ctx.set("response.status", 501);
-      //       ctx.set("response.body", {
-      //         code: "NOT_IMPLEMENTED",
-      //         title: "Not Implemented",
-      //         detail: `No list-family pipeline for op='${op}' on dtoType='${dtoType}'`,
-      //         requestId: ctx.get("requestId"),
-      //       });
-      //       this.log.warn(
-      //         {
-      //           event: "pipeline_missing",
-      //           op,
-      //           dtoType,
-      //           callerServiceName: callerServiceName || undefined,
-      //           requestId: ctx.get("requestId"),
-      //         },
-      //         "no list-family pipeline registered for op"
-      //       );
-      //     }
-      //   }
-      //   break;
-      // }
 
       default: {
         ctx.set("handlerStatus", "error");

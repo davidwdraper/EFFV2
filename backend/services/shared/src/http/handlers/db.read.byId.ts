@@ -11,6 +11,10 @@
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *   - ADR-0053 (Bag Purity; only bags on the bus)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
  *
  * Purpose:
  * - Shared GET-by-id handler for typed routes:

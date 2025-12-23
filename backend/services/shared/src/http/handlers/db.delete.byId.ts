@@ -9,6 +9,10 @@
  *   - ADR-0048 (Reader/Writer/Deleter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical wire id="_id")
  *   - ADR-0056 (Typed routes use :dtoType; handler resolves collection via Registry)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
  *
  * Purpose:
  * - Generic DELETE-by-id handler for typed routes:
@@ -21,23 +25,14 @@
  *   - Performs delete via DbDeleter.
  *   - Ensures a DtoBag is present on ctx["bag"] (may be empty).
  *   - Sets handlerStatus="ok".
- *   - Does NOT build a wire payload; ControllerBase.finalize() is responsible
- *     for mapping ctx → HTTP response (status/body) using ctx["bag"] / ctx["error"].
+ *   - Does NOT build a wire payload; ControllerBase.finalize() maps ctx → HTTP.
  * - On error:
- *   - Sets handlerStatus="error".
- *   - Populates ctx["error"] (NvHandlerError) and ctx["status"].
+ *   - Uses failWithError() (sets ctx["error"] + ctx["status"] rails).
  *
  * Assumptions:
  * - Canonical ids are UUIDv4 strings (validated via isValidUuidV4).
  * - Controller exposes a DtoRegistry via controller.getDtoRegistry().
  * - DtoRegistry implements dbCollectionNameByType(dtoType: string): string.
- * - Env configuration provides NV_MONGO_URI and NV_MONGO_DB (SvcEnv-driven).
- *
- * Notes (for shared use):
- * - No env-service–specific DTOs or modules are referenced.
- * - Safe to reuse in any service that:
- *   - Uses UUIDv4 ids, and
- *   - Follows the typed-route pattern with ctx["dtoType"] + DtoRegistry.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -51,9 +46,10 @@ export class DbDeleteByIdHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  /**
-   * One-sentence, ops-facing description of what this handler does.
-   */
+  public override handlerName(): string {
+    return "db.delete.byId";
+  }
+
   protected handlerPurpose(): string {
     return "Delete a single document by UUIDv4 id using typed routes and the DtoRegistry for collection resolution.";
   }
@@ -64,14 +60,14 @@ export class DbDeleteByIdHandler extends HandlerBase {
     this.log.debug(
       {
         event: "execute_start",
-        handler: this.constructor.name,
+        handler: this.getHandlerName(),
         requestId,
       },
-      "dbDeleteById enter"
+      "db.delete.byId enter"
     );
 
     // ---- Extract required params -------------------------------------------
-    const params: any = this.safeCtxGet<any>("params") ?? {};
+    const params = this.safeCtxGet<any>("params") ?? {};
     const rawId = typeof params.id === "string" ? params.id.trim() : "";
     const dtoType = this.safeCtxGet<string>("dtoType") ?? "";
 
@@ -80,19 +76,11 @@ export class DbDeleteByIdHandler extends HandlerBase {
         httpStatus: 400,
         title: "bad_request_missing_dto_type",
         detail: "Missing required path parameter ':dtoType'.",
-        stage: "params.dtoType",
+        stage: "db.delete.byId:params.dtoType",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            reason: "no_dtoType",
-          },
-        ],
-        logMessage:
-          "dbDeleteById — missing :dtoType for typed delete route (DELETE /api/:slug/v:version/:dtoType/delete/:id).",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ reason: "no_dtoType" }],
+        logMessage: "db.delete.byId: missing :dtoType for typed delete route.",
         logLevel: "warn",
       });
       return;
@@ -103,19 +91,11 @@ export class DbDeleteByIdHandler extends HandlerBase {
         httpStatus: 400,
         title: "bad_request_missing_id",
         detail: "Missing required path parameter ':id'.",
-        stage: "params.id",
+        stage: "db.delete.byId:params.id",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            reason: "no_id",
-          },
-        ],
-        logMessage:
-          "dbDeleteById — missing :id for typed delete route (DELETE /api/:slug/v:version/:dtoType/delete/:id).",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ reason: "no_id" }],
+        logMessage: "db.delete.byId: missing :id for typed delete route.",
         logLevel: "warn",
       });
       return;
@@ -126,20 +106,11 @@ export class DbDeleteByIdHandler extends HandlerBase {
         httpStatus: 400,
         title: "bad_request_id_format",
         detail: `Invalid id format '${rawId}'. Expected a UUIDv4 string.`,
-        stage: "params.idFormat",
+        stage: "db.delete.byId:params.idFormat",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            id: rawId,
-            expected: "uuidv4",
-          },
-        ],
-        logMessage:
-          "dbDeleteById — invalid id format; expected UUIDv4 for canonical DTO id.",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ id: rawId, expected: "uuidv4" }],
+        logMessage: "db.delete.byId: invalid id format; expected UUIDv4.",
         logLevel: "warn",
       });
       return;
@@ -148,37 +119,10 @@ export class DbDeleteByIdHandler extends HandlerBase {
     const id = rawId;
 
     // ---- Registry for collection resolution --------------------------------
-    const registry = (this.controller as any).getDtoRegistry?.();
+    const registry = this.controller.getDtoRegistry();
 
-    if (!registry) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "delete_setup_missing",
-        detail:
-          "DTO Registry missing. Ops: ensure the App exposes a per-service DtoRegistry; controller must extend ControllerBase correctly.",
-        stage: "config.registry",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasRegistry: !!registry,
-          },
-        ],
-        logMessage:
-          "dbDeleteById setup missing — controller.getDtoRegistry() returned null/undefined.",
-        logLevel: "error",
-      });
-      return;
-    }
-
-    let collectionName = "";
+    let collectionName: string;
     try {
-      if (typeof registry.dbCollectionNameByType !== "function") {
-        throw new Error("Registry missing dbCollectionNameByType()");
-      }
       collectionName = registry.dbCollectionNameByType(dtoType);
       if (!collectionName || !collectionName.trim()) {
         throw new Error(`No collection mapped for dtoType="${dtoType}"`);
@@ -188,50 +132,27 @@ export class DbDeleteByIdHandler extends HandlerBase {
         httpStatus: 400,
         title: "unknown_dto_type",
         detail:
-          (err as Error)?.message ??
-          `Unable to resolve collection for dtoType "${dtoType}".`,
-        stage: "config.collectionFromDtoType",
+          err instanceof Error
+            ? err.message
+            : `Unable to resolve collection for dtoType "${dtoType}".`,
+        stage: "db.delete.byId:config.collectionFromDtoType",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-          dtoType,
-        },
-        issues: [
-          {
-            dtoType,
-          },
-        ],
+        origin: { file: __filename, method: "execute", dtoType },
+        issues: [{ dtoType }],
         rawError: err,
         logMessage:
-          "dbDeleteById — failed to resolve collection from dtoType via DtoRegistry.",
+          "db.delete.byId: failed to resolve collection from dtoType via DtoRegistry.",
         logLevel: "warn",
       });
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
+    // ---- DB config comes from sandbox rails --------------------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
-    // ---- External edge: DB delete (fine-grained try/catch) -----------------
+    // ---- External edge: DB delete ------------------------------------------
     try {
-      const deleter = new DbDeleter({
-        mongoUri,
-        mongoDb,
-        collectionName,
-      });
-
-      const tgt = await deleter.targetInfo();
-      this.log.debug(
-        {
-          event: "delete_target",
-          collection: tgt.collectionName,
-          id,
-          dtoType,
-          requestId,
-        },
-        "dbDeleteById will target collection"
-      );
+      const deleter = new DbDeleter({ mongoUri, mongoDb, collectionName });
 
       const { deleted } = await deleter.deleteById(id);
 
@@ -240,32 +161,23 @@ export class DbDeleteByIdHandler extends HandlerBase {
           httpStatus: 404,
           title: "not_found",
           detail: "No document matched the supplied id.",
-          stage: "db.deleteById.notFound",
+          stage: "db.delete.byId:db.notFound",
           requestId,
           origin: {
             file: __filename,
             method: "execute",
             collection: collectionName,
           },
-          issues: [
-            {
-              id,
-              collection: collectionName,
-            },
-          ],
-          logMessage:
-            "dbDeleteById — deleteById completed but no document matched the supplied id.",
+          issues: [{ id, collection: collectionName }],
+          logMessage: "db.delete.byId: no document matched supplied id.",
           logLevel: "warn",
         });
         return;
       }
 
-      // ---- Success: ensure a DtoBag is present for finalize() --------------
-      let bag = this.safeCtxGet<DtoBag<any>>("bag");
-      if (!bag) {
-        bag = new DtoBag<any>([]);
-        this.ctx.set("bag", bag);
-      }
+      // Success: ensure a DtoBag is present for finalize().
+      const bag = this.safeCtxGet<DtoBag<any>>("bag") ?? new DtoBag<any>([]);
+      this.ctx.set("bag", bag);
 
       this.ctx.set("handlerStatus", "ok");
 
@@ -278,32 +190,26 @@ export class DbDeleteByIdHandler extends HandlerBase {
           deleted,
           requestId,
         },
-        "dbDeleteById succeeded"
+        "db.delete.byId succeeded"
       );
     } catch (err) {
       this.failWithError({
         httpStatus: 500,
         title: "db_op_failed",
         detail:
-          (err as Error)?.message ??
-          "DbDeleter.deleteById() failed while attempting to delete a document by id.",
-        stage: "db.deleteById",
+          err instanceof Error
+            ? err.message
+            : "DbDeleter.deleteById() failed while attempting to delete a document by id.",
+        stage: "db.delete.byId:db.deleteById",
         requestId,
         origin: {
           file: __filename,
           method: "execute",
           collection: collectionName,
         },
-        issues: [
-          {
-            id,
-            dtoType,
-            collection: collectionName,
-          },
-        ],
+        issues: [{ id, dtoType, collection: collectionName }],
         rawError: err,
-        logMessage:
-          "dbDeleteById failed — unexpected error during DbDeleter.deleteById().",
+        logMessage: "db.delete.byId: unexpected error during deleteById().",
         logLevel: "error",
       });
     }
@@ -311,11 +217,11 @@ export class DbDeleteByIdHandler extends HandlerBase {
     this.log.debug(
       {
         event: "execute_end",
-        handler: this.constructor.name,
+        handler: this.getHandlerName(),
         requestId,
         handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "ok",
       },
-      "dbDeleteById exit"
+      "db.delete.byId exit"
     );
   }
 }

@@ -27,7 +27,7 @@ export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
     // 2) Generic DB → bag handler; writes clone.existingBag.
     new DbReadOneByFilterHandler(ctx, controller),
     // 3) Clone + patch new slug, re-bag to ctx["bag"].
-    new CodeCloneHandler(ctx, controller),
+    new CodePatchHandler(ctx, controller),
     // 4) Shared create write (DbWriter via BagToDbCreateHandler).
     new DbCreateHandler(ctx, controller),
   ];

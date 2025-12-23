@@ -6,6 +6,10 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0047/0048 (All reads return DtoBag)
  *   - ADR-0050 (Wire Bag Envelope)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
  *
  * Purpose:
  * - Populate a DtoBag<TDto> from Mongo based on a filter, and stash it on the ctx bus.
@@ -20,11 +24,11 @@
  *
  * Outputs (ctx):
  * - [targetKey]: DtoBag<TDto>
- * - "dbReader":  DbReader<TDto> (for logging/introspection if desired)
+ * - "db.reader": DbReader<TDto> (for logging/introspection if desired)
  * - "handlerStatus": "ok" | "error"
  *
  * Notes:
- * - This is a **mid-pipeline** helper; it does not build wire payloads.
+ * - This is a mid-pipeline helper; it does not build wire payloads.
  * - Final handlers are responsible for ensuring ctx["bag"] is the canonical
  *   bag used by ControllerBase.finalize().
  */
@@ -40,6 +44,10 @@ export class DbReadOneByFilterHandler extends HandlerBase {
     super(ctx, controller);
   }
 
+  public override handlerName(): string {
+    return "db.readOne.byFilter";
+  }
+
   /**
    * One-sentence, ops-facing description of what this handler does.
    */
@@ -49,28 +57,25 @@ export class DbReadOneByFilterHandler extends HandlerBase {
 
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
+
     this.log.debug(
       {
         event: "execute_enter",
-        handler: this.constructor.name,
+        handler: this.getHandlerName(),
         requestId,
       },
-      "bag.populate.query enter"
+      "db.readOne.byFilter enter"
     );
 
     // ---- Config from ctx ----------------------------------------------------
-    const dtoCtor = this.ctx.get<any>("bag.query.dtoCtor");
+    const dtoCtor = this.safeCtxGet<any>("bag.query.dtoCtor");
     const filter =
-      (this.ctx.get<Record<string, unknown>>("bag.query.filter") as
-        | Record<string, unknown>
-        | undefined) ?? {};
-    const targetKey =
-      (this.ctx.get<string>("bag.query.targetKey") as string | undefined) ??
-      "bag";
+      this.safeCtxGet<Record<string, unknown>>("bag.query.filter") ?? {};
+    const targetKey = this.safeCtxGet<string>("bag.query.targetKey") ?? "bag";
     const validateReads =
-      this.ctx.get<boolean>("bag.query.validateReads") ?? false;
+      this.safeCtxGet<boolean>("bag.query.validateReads") === true;
     const ensureSingleton =
-      this.ctx.get<boolean>("bag.query.ensureSingleton") ?? false;
+      this.safeCtxGet<boolean>("bag.query.ensureSingleton") === true;
 
     if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
       this.failWithError({
@@ -78,12 +83,9 @@ export class DbReadOneByFilterHandler extends HandlerBase {
         title: "bag_query_dto_ctor_missing",
         detail:
           "bag.query.dtoCtor missing or invalid. Dev: set ctx['bag.query.dtoCtor'] to the DTO class (with static fromBody/dbCollectionName).",
-        stage: "config.dtoCtor",
+        stage: "db.readOne.byFilter:config.dtoCtor",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         issues: [
           {
             targetKey,
@@ -92,116 +94,39 @@ export class DbReadOneByFilterHandler extends HandlerBase {
           },
         ],
         logMessage:
-          "bag.populate.query — dtoCtor missing or invalid (bag.query.dtoCtor).",
+          "db.readOne.byFilter: dtoCtor missing/invalid (bag.query.dtoCtor).",
         logLevel: "error",
       });
       return;
     }
 
-    // ---- Env from ControllerBase (no ctx / no process.env) ----------------
-    const svcEnv = (this.controller as any).getSvcEnv?.();
-    if (!svcEnv) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "env_dto_missing",
-        detail:
-          "EnvServiceDto missing from ControllerJsonBase. Ops: ensure AppBase exposes svcEnv and controller extends ControllerJsonBase correctly.",
-        stage: "config.svcEnv",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [],
-        logMessage:
-          "bag.populate.query — svcEnv missing from controller (EnvServiceDto).",
-        logLevel: "error",
-      });
-      return;
-    }
-
-    const svcEnvAny: any = svcEnv;
-    const envVars = svcEnvAny._vars as
-      | Record<string, unknown>
-      | undefined
-      | null;
-
-    if (!envVars || typeof envVars !== "object") {
-      this.failWithError({
-        httpStatus: 500,
-        title: "env_vars_missing",
-        detail:
-          "EnvServiceDto._vars missing or invalid. Ops: ensure EnvServiceDto carries a concrete _vars map for this service.",
-        stage: "config.envVars",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-          service: svcEnvAny?.slug,
-        },
-        issues: [
-          {
-            hasVars: !!envVars,
-            svcEnvSlug: svcEnvAny?.slug,
-            svcEnvEnv: svcEnvAny?.env,
-            svcEnvVersion: svcEnvAny?.version,
-            hasVarsField: Object.prototype.hasOwnProperty.call(
-              svcEnvAny,
-              "_vars"
-            ),
-          },
-        ],
-        logMessage:
-          "bag.populate.query — EnvServiceDto._vars missing or invalid.",
-        logLevel: "error",
-      });
-      return;
-    }
-
-    // Snapshot for debugging
-    this.log.debug(
-      {
-        event: "svcEnv_inspect",
-        svcEnvType: svcEnvAny?.type,
-        svcEnvSlug: svcEnvAny?.slug,
-        svcEnvEnv: svcEnvAny?.env,
-        svcEnvVersion: svcEnvAny?.version,
-        varsKeys: Object.keys(envVars),
-        requestId,
-      },
-      "bag.populate.query — svcEnv snapshot"
-    );
-
-    // ---- Missing DB config throws ------------------------
+    // ---- DB config comes from sandbox rails (ADR-0080 / ADR-0074) ----------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
-    // ---- External edge: DB read (fine-grained try/catch) -------------------
+    // ---- External edge: DB read -------------------------------------------
     let bag: DtoBag<IDto>;
+    let reader: DbReader<any> | undefined;
+
     try {
-      const reader = new DbReader<any>({
+      reader = new DbReader<any>({
         dtoCtor,
         mongoUri,
         mongoDb,
         validateReads,
       });
 
-      this.ctx.set("dbReader", reader);
+      this.ctx.set("db.reader", reader);
 
-      bag = (await reader.readOneBag({
-        filter,
-      })) as DtoBag<IDto>;
+      bag = (await reader.readOneBag({ filter })) as DtoBag<IDto>;
     } catch (err) {
       this.failWithError({
         httpStatus: 500,
         title: "bag_query_failed",
         detail:
           "DbReader.readOneBag() failed while populating a query-based DtoBag. Ops: check Mongo availability, filter shape, and DTO collection configuration.",
-        stage: "db.readOneBag",
+        stage: "db.readOne.byFilter:db.readOneBag",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         issues: [
           {
             targetKey,
@@ -210,8 +135,7 @@ export class DbReadOneByFilterHandler extends HandlerBase {
           },
         ],
         rawError: err,
-        logMessage:
-          "bag.populate.query — DbReader.readOneBag failed while populating bag.",
+        logMessage: "db.readOne.byFilter: DbReader.readOneBag failed.",
         logLevel: "error",
       });
       return;
@@ -219,7 +143,7 @@ export class DbReadOneByFilterHandler extends HandlerBase {
 
     this.ctx.set(targetKey, bag);
 
-    // ---- Business invariant: ensureSingleton (no extra try/catch needed) ---
+    // ---- Business invariant: ensureSingleton -------------------------------
     if (ensureSingleton) {
       const items = Array.from(bag.items());
       const size = items.length;
@@ -235,23 +159,14 @@ export class DbReadOneByFilterHandler extends HandlerBase {
             size === 0
               ? "No records matched the supplied filter."
               : `Invariant breach: expected exactly 1 record for the supplied filter; found ${size}.`,
-          stage: "business.ensureSingleton",
+          stage: "db.readOne.byFilter:business.ensureSingleton",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              targetKey,
-              filter,
-              size,
-            },
-          ],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ targetKey, filter, size }],
           logMessage:
             size === 0
-              ? "bag.populate.query — no records matched filter (ensureSingleton)."
-              : "bag.populate.query — singleton invariant breached (ensureSingleton).",
+              ? "db.readOne.byFilter: no records matched filter (ensureSingleton)."
+              : "db.readOne.byFilter: singleton invariant breached (ensureSingleton).",
           logLevel: size === 0 ? "info" : "error",
         });
         return;
@@ -260,16 +175,17 @@ export class DbReadOneByFilterHandler extends HandlerBase {
 
     // Success
     this.ctx.set("handlerStatus", "ok");
+
     this.log.debug(
       {
         event: "execute_exit",
-        handler: this.constructor.name,
+        handler: this.getHandlerName(),
         targetKey,
-        filterKeys: Object.keys(filter ?? {}),
+        filterKeys: Object.keys(filter),
         ensureSingleton,
         requestId,
       },
-      "bag.populate.query exit"
+      "db.readOne.byFilter exit"
     );
   }
 }

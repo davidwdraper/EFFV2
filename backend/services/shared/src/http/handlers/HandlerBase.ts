@@ -16,13 +16,14 @@
  *   • Access to App, Registry, Logger via controller getters
  *   • Short-circuit on prior failure
  *   • Standardized instrumentation via bound logger
- *   • Thin wrappers over env + error helpers
+ *   • Thin wrappers over sandbox env + error helpers
  *   • Optional per-handler runTest() hook for test-runner
  *
- * Invariants:
+ * Invariants (locked here; downstream stops defending):
  * - Controllers MUST pass `this` into handler constructors.
+ * - SvcSandbox is REQUIRED (no ssb = no handler).
  * - No reading plumbing from ctx (no ctx.get('app'), etc).
- * - Env reads go through controller.getSandbox() via helpers (ADR-0080).
+ * - Handlers never access process.env or transport objects.
  * - Default HandlerBase.runTest() NEVER returns undefined; it yields a
  *   concrete TestError HandlerTestResult w/ reason="NO_TEST_PROVIDED".
  */
@@ -55,8 +56,18 @@ export abstract class HandlerBase {
   protected readonly app: AppBase;
   protected readonly registry: IDtoRegistry;
 
+  /**
+   * `ssb` is intentionally short: it should be the only runtime “global”
+   * a handler can see. If it isn’t present, the service is mis-wired.
+   *
+   * NOTE: We keep the type broad here to avoid guessing the import path.
+   * The *existence* of ssb is enforced, and helpers route env reads through it.
+   */
+  protected readonly ssb: unknown;
+
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     this.ctx = ctx;
+
     if (!controller) {
       throw new Error(
         "ControllerBase is required: new HandlerX(ctx, this). No legacy ctx plumbing."
@@ -65,22 +76,31 @@ export abstract class HandlerBase {
     this.controller = controller;
 
     // HARD REQUIRE: SvcSandbox must exist or the service is mis-wired.
-    // This is the “no seatbelt, no ignition” rule.
-    this.controller.getSandbox();
+    // “No seatbelt, no ignition.”
+    const ssb = this.controller.getSandbox();
+    if (!ssb) {
+      throw new Error(
+        "SvcSandbox is required: ControllerBase.getSandbox() returned null/undefined. " +
+          "Ops: ensure the service is SvcSandbox'd before wiring handlers."
+      );
+    }
+    this.ssb = ssb;
 
-    const app = controller.getApp?.();
-    if (!app)
+    const app = controller.getApp();
+    if (!app) {
       throw new Error("ControllerBase.getApp() returned null/undefined.");
+    }
     this.app = app;
 
-    const registry = controller.getDtoRegistry?.();
-    if (!registry)
+    const registry = controller.getDtoRegistry();
+    if (!registry) {
       throw new Error(
         "ControllerBase.getDtoRegistry() returned null/undefined."
       );
+    }
     this.registry = registry;
 
-    const appLog: IBoundLogger | undefined = (app as any)?.log;
+    const appLog = (app as unknown as { log?: IBoundLogger }).log;
     this.log =
       appLog?.bind?.({
         component: "HandlerBase",
@@ -178,13 +198,6 @@ export abstract class HandlerBase {
 
   /**
    * Convenience helper for the common "single test class" pattern.
-   *
-   * Usage in handlers:
-   *   public override async runTest(): Promise<HandlerTestResult | undefined> {
-   *     return this.runSingleTest(ToBagUserTest);
-   *   }
-   *
-   * Test ctors may accept the init object or ignore it.
    */
   protected async runSingleTest(
     TestCtor: new (init?: any) => HandlerTestBase
@@ -407,14 +420,10 @@ export abstract class HandlerBase {
   }
 
   protected safeServiceSlug(): string | undefined {
-    try {
-      const appAny = this.app as any;
-      if (typeof appAny.getSlug === "function") {
-        const slug = appAny.getSlug();
-        if (typeof slug === "string" && slug.trim()) return slug;
-      }
-    } catch {
-      /* ignore */
+    // Prefer sandbox identity (ADR-0080). This lets downstream stop guessing.
+    const anySsb = this.ssb as any;
+    if (typeof anySsb?.serviceSlug === "string" && anySsb.serviceSlug.trim()) {
+      return anySsb.serviceSlug.trim();
     }
     return this.safeCtxGet<string>("slug");
   }

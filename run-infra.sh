@@ -42,9 +42,9 @@ echo "   ENV_FILE=$ENV_FILE"
 # ======= Service list (current reality) =====================================
 SERVICES=(
   "env-service|backend/services/env-service|pnpm dev"
-  "svcconfig|backend/services/svcconfig|pnpm dev"
-  "prompt|backend/services/prompt|pnpm dev"
-  "gateway|backend/services/gateway|pnpm dev"
+  #"svcconfig|backend/services/svcconfig|pnpm dev"
+  #"prompt|backend/services/prompt|pnpm dev"
+  #"gateway|backend/services/gateway|pnpm dev"
 )
 
 # ======= Helpers =============================================================

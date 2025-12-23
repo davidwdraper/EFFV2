@@ -3,6 +3,9 @@
  * Docs:
  * - Inherit controller + pipeline docs.
  *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
+ *
  * Purpose:
  * - Parse clone.sourceKey ("slug@version@env") and configure the shared
  *   BagPopulateQueryHandler via ctx["bag.query.*"].
@@ -51,143 +54,108 @@ export class CodeCloneHandler extends HandlerBase {
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
 
-    try {
-      const sourceKeyRaw = this.ctx.get("clone.sourceKey");
-      const sourceKey =
-        typeof sourceKeyRaw === "string" ? sourceKeyRaw.trim() : "";
+    const sourceKeyRaw = this.safeCtxGet<unknown>("clone.sourceKey");
+    const sourceKey =
+      typeof sourceKeyRaw === "string" ? sourceKeyRaw.trim() : "";
 
-      if (!sourceKey) {
-        this.failWithError({
-          httpStatus: 400,
-          title: "clone_source_key_missing",
-          detail:
-            "clone.sourceKey is required in the route as 'slug@version@env'.",
-          stage: "clone.sourceKey.missing",
-          requestId,
-          rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          logMessage:
-            "env-service.clone.code.clone: clone.sourceKey is missing or empty.",
-          logLevel: "warn",
-        });
-        return;
-      }
+    if (!sourceKey) {
+      this.failWithError({
+        httpStatus: 400,
+        title: "clone_source_key_missing",
+        detail:
+          "clone.sourceKey is required in the route as 'slug@version@env'.",
+        stage: "code.clone:missing_source_key",
+        requestId,
+        rawError: null,
+        origin: { file: __filename, method: "execute" },
+        logMessage:
+          "env-service.clone.code.clone: clone.sourceKey missing/empty.",
+        logLevel: "warn",
+      });
+      return;
+    }
 
-      const parts = sourceKey.split("@");
-      if (parts.length !== 3) {
-        this.failWithError({
-          httpStatus: 400,
-          title: "clone_source_key_invalid",
-          detail:
-            "clone.sourceKey must be in the form 'slug@version@env' (3 segments).",
-          stage: "clone.sourceKey.segment_count",
-          requestId,
-          rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          logMessage:
-            "env-service.clone.code.clone: clone.sourceKey did not contain exactly 3 segments.",
-          logLevel: "warn",
-        });
-        return;
-      }
+    const parts = sourceKey.split("@");
+    if (parts.length !== 3) {
+      this.failWithError({
+        httpStatus: 400,
+        title: "clone_source_key_invalid",
+        detail:
+          "clone.sourceKey must be in the form 'slug@version@env' (3 segments).",
+        stage: "code.clone:segment_count",
+        requestId,
+        rawError: null,
+        origin: { file: __filename, method: "execute" },
+        logMessage:
+          "env-service.clone.code.clone: clone.sourceKey must have exactly 3 segments.",
+        logLevel: "warn",
+      });
+      return;
+    }
 
-      const [slugRaw, versionStrRaw, envRaw] = parts;
-      const slug = slugRaw.trim();
-      const versionStr = versionStrRaw.trim();
-      const env = envRaw.trim();
+    const [slugRaw, versionStrRaw, envRaw] = parts;
+    const slug = slugRaw.trim();
+    const versionStr = versionStrRaw.trim();
+    const env = envRaw.trim();
 
-      if (!slug || !versionStr || !env) {
-        this.failWithError({
-          httpStatus: 400,
-          title: "clone_source_key_invalid",
-          detail:
-            "clone.sourceKey must contain a non-empty slug, version, and env.",
-          stage: "clone.sourceKey.empty_segments",
-          requestId,
-          rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          logMessage:
-            "env-service.clone.code.clone: one or more clone.sourceKey segments were empty after trim().",
-          logLevel: "warn",
-        });
-        return;
-      }
+    if (!slug || !versionStr || !env) {
+      this.failWithError({
+        httpStatus: 400,
+        title: "clone_source_key_invalid",
+        detail:
+          "clone.sourceKey must contain a non-empty slug, version, and env.",
+        stage: "code.clone:empty_segments",
+        requestId,
+        rawError: null,
+        origin: { file: __filename, method: "execute" },
+        logMessage:
+          "env-service.clone.code.clone: clone.sourceKey had empty segments after trim().",
+        logLevel: "warn",
+      });
+      return;
+    }
 
-      const versionNum = Number(versionStr);
-      if (!Number.isFinite(versionNum)) {
-        this.failWithError({
-          httpStatus: 400,
-          title: "clone_source_version_invalid",
-          detail:
-            "clone.sourceKey version segment must be numeric (e.g. '1', '2').",
-          stage: "clone.sourceKey.version_nan",
-          requestId,
-          rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          logMessage:
-            "env-service.clone.code.clone: version segment of clone.sourceKey was not a finite number.",
-          logLevel: "warn",
-        });
-        return;
-      }
+    const versionNum = Number(versionStr);
+    // Version MUST be a positive integer. No floats, no NaN, no "1e3".
+    if (!Number.isInteger(versionNum) || versionNum <= 0) {
+      this.failWithError({
+        httpStatus: 400,
+        title: "clone_source_version_invalid",
+        detail:
+          "clone.sourceKey version segment must be a positive integer (e.g. '1', '2').",
+        stage: "code.clone:version_invalid",
+        requestId,
+        rawError: null,
+        origin: { file: __filename, method: "execute" },
+        logMessage:
+          "env-service.clone.code.clone: version segment invalid (expected positive integer).",
+        logLevel: "warn",
+      });
+      return;
+    }
 
-      const validateReads =
-        this.ctx.get<boolean>("clone.validateReads") ?? false;
+    const validateReads =
+      this.safeCtxGet<boolean>("clone.validateReads") === true;
 
-      // Configure the shared BagPopulateQueryHandler.
-      this.ctx.set("bag.query.dtoCtor", EnvServiceDto);
-      this.ctx.set("bag.query.filter", {
+    // Configure the shared BagPopulateQueryHandler.
+    this.ctx.set("bag.query.dtoCtor", EnvServiceDto);
+    this.ctx.set("bag.query.filter", { slug, version: versionNum, env });
+    this.ctx.set("bag.query.targetKey", "clone.existingBag");
+    this.ctx.set("bag.query.ensureSingleton", true);
+    this.ctx.set("bag.query.validateReads", validateReads);
+
+    this.ctx.set("handlerStatus", "ok");
+
+    this.log.debug(
+      {
+        event: "clone_query_configured",
         slug,
         version: versionNum,
         env,
-      });
-      this.ctx.set("bag.query.targetKey", "clone.existingBag");
-      this.ctx.set("bag.query.ensureSingleton", true);
-      this.ctx.set("bag.query.validateReads", validateReads);
-
-      this.ctx.set("handlerStatus", "ok");
-
-      this.log.debug(
-        {
-          event: "clone_query_configured",
-          slug,
-          version: versionNum,
-          env,
-          validateReads,
-          requestId,
-        },
-        "env-service.clone.code.clone: configured bag.query.* for BagPopulateQueryHandler"
-      );
-    } catch (err) {
-      // Unexpected handler bug, catch-all
-      this.failWithError({
-        httpStatus: 500,
-        title: "clone_source_key_handler_failure",
-        detail:
-          "Unhandled exception while parsing clone.sourceKey. Ops: inspect logs for requestId and stack frame.",
-        stage: "clone.sourceKey.execute.unhandled",
+        validateReads,
         requestId,
-        rawError: err,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        logMessage:
-          "env-service.clone.code.clone: unhandled exception in handler execute().",
-        logLevel: "error",
-      });
-    }
+      },
+      "env-service.clone.code.clone: configured bag.query.* for BagPopulateQueryHandler"
+    );
   }
 }

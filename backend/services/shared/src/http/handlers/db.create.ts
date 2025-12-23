@@ -7,6 +7,10 @@
  *   - ADR-0048 (All writes accept DtoBag)
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0053 (Bag Purity; final handler leaves DtoBag only)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *
+ * Status:
+ * - SvcSandbox Refactored (ADR-0080)
  *
  * Purpose:
  * - Take a DtoBag<DtoBase> from the ctx bus and persist it via DbWriter.
@@ -24,7 +28,7 @@
  * - "userId": string (optional; typically from JWT, used for meta stamping)
  *
  * Outputs (ctx):
- * - [targetKey]: DtoBag<DtoBase> (now set to the **persisted** bag)
+ * - [targetKey]: DtoBag<DtoBase> (now set to the persisted bag)
  * - "bag": DtoBag<DtoBase> (alias for [targetKey] to satisfy finalize() invariant)
  * - "dbWriter.lastId": string (id used for the insert)
  * - "handlerStatus": "ok" | "error"
@@ -51,9 +55,10 @@ export class DbCreateHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  /**
-   * One-sentence, ops-facing description of what this handler does.
-   */
+  public override handlerName(): string {
+    return "db.create";
+  }
+
   protected handlerPurpose(): string {
     return "Persist a DtoBag<DtoBase> via DbWriter and expose the persisted bag on ctx['bag'].";
   }
@@ -64,35 +69,28 @@ export class DbCreateHandler extends HandlerBase {
     this.log.debug(
       {
         event: "execute_enter",
-        handler: this.constructor.name,
+        handler: this.getHandlerName(),
         requestId,
       },
-      "bag.toDb.create enter"
+      "db.create enter"
     );
 
     // ---- Config / bag validation (no external edge) ------------------------
-    const targetKey =
-      (this.ctx.get<string>("bag.write.targetKey") as string | undefined) ??
-      "bag";
+    const targetKey = this.safeCtxGet<string>("bag.write.targetKey") ?? "bag";
     const ensureSingleton =
-      this.ctx.get<boolean>("bag.write.ensureSingleton") ?? true;
+      this.safeCtxGet<boolean>("bag.write.ensureSingleton") !== false;
 
-    const bag = this.ctx.get<DtoBag<DtoBase>>(targetKey);
+    const bag = this.safeCtxGet<DtoBag<DtoBase>>(targetKey);
     if (!bag) {
       this.failWithError({
         httpStatus: 500,
         title: "bag_write_bag_missing",
-        detail: `No DtoBag found on ctx['${targetKey}']. Dev: ensure upstream handlers populated this entry before bag.toDb.create.handler.`,
-        stage: "config.bag",
+        detail: `No DtoBag found on ctx['${targetKey}']. Dev: ensure upstream handlers populated this entry before db.create.`,
+        stage: "db.create:config.bag",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-          collection: undefined,
-        },
-        issues: [{ targetKey, hasBag: !!bag }],
-        logMessage:
-          "bag.toDb.create — required DtoBag missing from context at targetKey.",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ targetKey, hasBag: false }],
+        logMessage: "db.create: required DtoBag missing at targetKey.",
         logLevel: "error",
       });
       return;
@@ -101,9 +99,6 @@ export class DbCreateHandler extends HandlerBase {
     if (ensureSingleton) {
       const size = Array.from(bag.items()).length;
       if (size !== 1) {
-        const code =
-          size === 0 ? "BAG_WRITE_EMPTY" : "BAG_WRITE_TOO_MANY_ITEMS";
-
         this.failWithError({
           httpStatus: 400,
           title: "bag_write_singleton_violation",
@@ -111,25 +106,21 @@ export class DbCreateHandler extends HandlerBase {
             size === 0
               ? "Create requires exactly one item in the bag; received 0."
               : `Create requires exactly one item in the bag; received ${size}.`,
-          stage: "business.ensureSingleton",
+          stage: "db.create:business.ensureSingleton",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [{ targetKey, size, code }],
-          logMessage:
-            "bag.toDb.create — singleton requirement failed for create operation.",
+          origin: { file: __filename, method: "execute" },
+          issues: [{ targetKey, size }],
+          logMessage: "db.create: singleton requirement failed.",
           logLevel: "warn",
         });
         return;
       }
     }
 
-    // ---- Missing DB config throws ------------------------
+    // ---- Missing DB config throws (sandbox rails) --------------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
-    // ---- External edge: DB write (fine-grained try/catch) ------------------
+    // ---- External edge: DB write ------------------------------------------
     const userId = this.safeCtxGet<string>("userId");
 
     try {
@@ -142,32 +133,29 @@ export class DbCreateHandler extends HandlerBase {
       });
 
       const persistedBag = await writer.write();
-      const persisted = persistedBag.getSingleton();
 
       // Persisted bag back onto the bus:
       this.ctx.set(targetKey, persistedBag);
 
       // Finalize invariant: always expose the persisted bag on ctx["bag"].
-      if (targetKey !== "bag") {
-        this.ctx.set("bag", persistedBag);
-      }
+      if (targetKey !== "bag") this.ctx.set("bag", persistedBag);
 
       // Track last inserted id for downstream diagnostics/logging.
+      const persisted = persistedBag.getSingleton();
       this.ctx.set("dbWriter.lastId", persisted.getId());
 
-      // Success: handler leaves only the bag; finalize() will build the wire payload.
       this.ctx.set("handlerStatus", "ok");
 
       this.log.debug(
         {
           event: "execute_exit",
-          handler: this.constructor.name,
+          handler: this.getHandlerName(),
           targetKey,
           id: persisted.getId(),
           collection: persisted.requireCollectionName(),
           requestId,
         },
-        "bag.toDb.create exit"
+        "db.create exit"
       );
     } catch (err) {
       if (err instanceof DuplicateKeyError) {
@@ -177,19 +165,12 @@ export class DbCreateHandler extends HandlerBase {
           detail:
             err.message ??
             "Duplicate key encountered while attempting to create a new document.",
-          stage: "db.write.duplicateKey",
+          stage: "db.create:db.write.duplicateKey",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              targetKey,
-            },
-          ],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ targetKey }],
           rawError: err,
-          logMessage: "bag.toDb.create — duplicate key on DbWriter.write().",
+          logMessage: "db.create: duplicate key on DbWriter.write().",
           logLevel: "warn",
         });
         return;
@@ -199,23 +180,15 @@ export class DbCreateHandler extends HandlerBase {
         httpStatus: 500,
         title: "bag_write_failed",
         detail:
-          (err as Error)?.message ??
-          "DbWriter.write() failed while persisting a DtoBag.",
-        stage: "db.write",
+          err instanceof Error
+            ? err.message
+            : "DbWriter.write() failed while persisting a DtoBag.",
+        stage: "db.create:db.write",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            targetKey,
-            hasBag: !!bag,
-          },
-        ],
+        origin: { file: __filename, method: "execute" },
+        issues: [{ targetKey, hasBag: true }],
         rawError: err,
-        logMessage:
-          "bag.toDb.create — unexpected error during DbWriter.write().",
+        logMessage: "db.create: unexpected error during DbWriter.write().",
         logLevel: "error",
       });
     }

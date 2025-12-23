@@ -12,7 +12,7 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import { DbReadGetHandler } from "./handlers/dbRead.get.handler";
+import { DbReadGetHandler } from "./dbRead.get.handler";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed required inputs for the read handler

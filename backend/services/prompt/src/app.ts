@@ -3,15 +3,18 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (SvcEnvDto — Key/Value Contract)
+ *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
- * Purpose (template):
+ * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - DB-backed CRUD template: requires NV_MONGO_* and index ensure at boot (checkDb=true).
+ * - DB-backed service: requires NV_MONGO_* and index ensure at boot (checkDb=true).
+ *
+ * Invariants:
+ * - SvcSandbox is REQUIRED: AppBase ctor must receive ssb=true.
  */
 
 import type { Express, Router } from "express";
@@ -23,12 +26,18 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
 import { buildPromptRouter } from "./routes/prompt.route";
+import { SvcSandbox } from "@nv/shared/sandbox/SvcSandbox";
 
 type CreateAppOptions = {
   slug: string;
   version: number;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
+    /**
+   * SvcSandbox is mandatory (ADR-0080).
+   * Constructed by ServiceEntrypoint after envDto is available.
+   */
+  ssb: SvcSandbox;
 };
 
 class PromptApp extends AppBase {
@@ -46,6 +55,8 @@ class PromptApp extends AppBase {
       envReloader: opts.envReloader,
       // prompt is DB-backed: needs NV_MONGO_* and ensureIndexes at boot.
       checkDb: true,
+      // REQUIRED by AppBaseCtor: prompt is a SvcSandbox service.
+      ssb: opts.ssb,
     });
 
     this.registry = new Registry();

@@ -6,7 +6,6 @@
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0056 (DELETE path uses <DtoTypeKey>) — generalized: :dtoType on every route
  *
  * Purpose:
@@ -14,7 +13,7 @@
  * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  */
 
-import { Request, Response } from "express";
+import type { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";

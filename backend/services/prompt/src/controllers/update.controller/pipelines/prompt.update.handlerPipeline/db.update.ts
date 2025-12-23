@@ -5,23 +5,29 @@
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence via Managers)
  *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
- *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
+ *   - ADR-0050 (Wire Bag Envelope; singleton inbound; canonical id="_id")
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
- *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
+ *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *
  * Purpose:
  * - Consume the UPDATED **singleton DtoBag** from ctx["bag"] and execute an update().
  * - Duplicate key → WARN + HTTP 409 (mirrors create).
  *
  * Inputs (ctx):
- * - "bag": DtoBag<PromptDto>   (UPDATED singleton; from CodePatchHandler / ApplyPatchUpdateHandler)
+ * - "bag": DtoBag<PromptDto>   (UPDATED singleton; from CodePatchHandler)
  *
  * Outputs (ctx):
- * - "updatedId": string
- * - "result": { ok: true, id }
- * - "handlerStatus": "ok" | "error"
- * - "response.status": number              (on error; success finalized by controller)
- * - "response.body": RFC7807 problem       (on error)
+ * - Success:
+ *   - "bag": unchanged (still the UPDATED singleton bag)
+ *   - "handlerStatus": "ok"
+ * - Error:
+ *   - "handlerStatus": "error"
+ *   - "response.status"
+ *   - "response.body"
+ *
+ * Invariants:
+ * - On success, this handler MUST NOT write ctx["result"] or ctx["response.body"].
+ *   ControllerBase.finalize() owns the wire payload.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -32,34 +38,22 @@ import {
   DbWriter,
   DuplicateKeyError,
 } from "@nv/shared/dto/persistence/dbWriter/DbWriter";
+import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 export class DbUpdateHandler extends HandlerBase {
-  constructor(ctx: HandlerContext, controller: any) {
+  constructor(ctx: HandlerContext, controller: ControllerJsonBase) {
     super(ctx, controller);
   }
 
-  /**
-   * Handler naming convention:
-   * - db.<dbName>.<collectionName>.<op>
-   *
-   * For prompts:
-   * - DB: nv
-   * - Collection: prompts
-   * - Op: update-one
-   */
   public handlerName(): string {
     return "db.nv.prompts.update-one";
   }
 
-  /**
-   * Short, human-readable description used in logs / consoles.
-   */
   public handlerPurpose(): string {
-    return "DB update: apply singleton PromptDto bag to Mongo and record updatedId/result.";
+    return "DB update: apply singleton PromptDto bag to Mongo; success remains bag-only for controller finalize().";
   }
 
   protected async execute(): Promise<void> {
-    // Normalize requestId to a safe string (HandlerContext.get may return {}).
     const requestIdRaw = this.ctx.get("requestId");
     const requestId =
       typeof requestIdRaw === "string" && requestIdRaw.trim() !== ""
@@ -75,12 +69,11 @@ export class DbUpdateHandler extends HandlerBase {
       "DbUpdateHandler.execute enter"
     );
 
-    // --- Required context ----------------------------------------------------
     const bag = this.ctx.get<DtoBag<any>>("bag");
     if (!bag) {
       this._badRequest(
         "BAG_MISSING",
-        "Updated DtoBag missing. Ensure CodePatchHandler/ApplyPatchUpdateHandler ran.",
+        "Updated DtoBag missing. Ensure CodePatchHandler ran.",
         requestId
       );
       return;
@@ -98,14 +91,9 @@ export class DbUpdateHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
+    // ---- Missing DB config throws (SvcSandbox contract) ---------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
-    // Optional: diagnose whether ControllerBase is actually holding svcEnv.
-    const svcEnv = this.controller.getSvcEnv?.();
-    const hasSvcEnv = !!svcEnv;
-
-    // --- Writer (bag-centric; use DtoBase for DbWriter contract) ------------
     const baseBag = bag as unknown as DtoBag<DtoBase>;
     const writer = new DbWriter<DtoBase>({
       bag: baseBag,
@@ -129,40 +117,25 @@ export class DbUpdateHandler extends HandlerBase {
         "DbUpdateHandler.execute will write to collection"
       );
 
-      // Bag-centric update; writer determines the id from the DTO inside the bag.
-      const { id } = await writer.update();
+      await writer.update();
+
+      // Success: bag already contains the updated DTO (from CodePatchHandler).
+      // Do NOT set ctx["result"] or ctx["response.*"] here.
+      this.ctx.set("handlerStatus", "ok");
 
       this.log.debug(
         {
           event: "update_complete",
           handler: this.handlerName(),
-          id,
           collection: collectionName,
           requestId,
         },
         "DbUpdateHandler.execute update complete"
       );
-
-      this.ctx.set("updatedId", id);
-      this.ctx.set("result", { ok: true, id });
-      this.ctx.set("handlerStatus", "ok");
-      // Success: do NOT set response.status/body; controller finalize() owns the wire.
     } catch (err: any) {
       if (err instanceof DuplicateKeyError) {
         const keyObj = err.key ?? {};
         const keyPath = Object.keys(keyObj).join(",");
-
-        const warning = {
-          code: "DUPLICATE",
-          message: "Unique constraint violation (duplicate key).",
-          detail: (err as Error).message,
-          index: err.index,
-          key: err.key,
-        };
-        this.ctx.set("warnings", [
-          ...(this.ctx.get<any[]>("warnings") ?? []),
-          warning,
-        ]);
 
         const status = 409;
         const problem = {
@@ -202,8 +175,7 @@ export class DbUpdateHandler extends HandlerBase {
         return;
       }
 
-      // Let unexpected errors bubble to the pipeline-level try/catch;
-      // it will log and map to a 500 Problem once, consistently.
+      // Unexpected errors: let rails handle consistent mapping/logging upstream.
       throw err;
     }
 

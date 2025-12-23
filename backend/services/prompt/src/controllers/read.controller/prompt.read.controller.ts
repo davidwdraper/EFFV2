@@ -7,7 +7,6 @@
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *   - ADR-0075 (Controller seeds dtoCtor for db.* read handlers)
@@ -24,7 +23,7 @@
  * - Missing prompt key is acceptable: pipeline returns empty items[] → caller falls back to promptKey.
  */
 
-import { Request, Response } from "express";
+import type { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -171,6 +170,15 @@ export class PromptReadController extends ControllerJsonBase {
           detail: `No read pipeline for dtoType='${dtoType}'`,
           requestId: ctx.get("requestId"),
         });
+        this.log.warn(
+          {
+            event: "pipeline_missing",
+            op: "readByKey",
+            dtoType,
+            requestId: ctx.get("requestId"),
+          },
+          "no read pipeline registered for dtoType (compat)"
+        );
       }
     }
 

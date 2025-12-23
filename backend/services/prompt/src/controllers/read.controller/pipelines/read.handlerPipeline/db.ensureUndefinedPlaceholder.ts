@@ -21,6 +21,7 @@
  * - Does not convert background write failures into request failure.
  * - Fire-and-forget must log failures with triage guidance.
  * - No DB safety policy here: DbWriter owns all edge-mode / safety decisions.
+ * - ctx["bag"] MUST be a real DtoBag (if not, warn + skip; upstream drift must be fixed).
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -66,35 +67,26 @@ export class DbEnsureUndefinedPlaceholderHandler extends HandlerBase {
 
     if (dtoType !== "prompt") return;
 
-    const bag = this.ctx.get("bag") as unknown;
+    const bagUnknown = this.ctx.get("bag") as unknown;
 
-    const bagCount =
-      bag && typeof (bag as any).count === "function"
-        ? Number((bag as any).count())
-        : bag && Array.isArray((bag as any).items)
-        ? Number((bag as any).items.length)
-        : bag && Array.isArray((bag as any)._items)
-        ? Number((bag as any)._items.length)
-        : typeof (bag as any)?.size === "number"
-        ? Number((bag as any).size)
-        : undefined;
-
-    if (bagCount === undefined) {
+    if (!(bagUnknown instanceof DtoBag)) {
       this.log.warn(
         {
-          event: "undefined_prompt_placeholder_skip_unknown_bag_shape",
+          event: "undefined_prompt_placeholder_skip_non_dtobag",
           requestId,
           dtoType,
           language,
           version,
           promptKey,
+          bagType: typeof bagUnknown,
         },
-        "prompt placeholder write skipped: ctx['bag'] shape is unknown (cannot determine item count). Ops: ensure DbReadOneByFilterHandler stashes a standard DtoBag on ctx['bag']."
+        "prompt placeholder write skipped: ctx['bag'] is not a DtoBag. Ops: ensure db.* read handler stashes a standard DtoBag on ctx['bag']."
       );
       return;
     }
 
-    if (bagCount > 0) return;
+    const bag = bagUnknown as DtoBag<unknown>;
+    if (bag.count() > 0) return;
 
     if (
       typeof language !== "string" ||

@@ -3,7 +3,7 @@
  * Docs:
  * - ADR-0041/0042 (Handlers, Context Bus)
  * - ADR-0048 (All reads return DtoBag)
- * - ADR-0050 (Wire Bag Envelope; singleton inbound)
+ * - ADR-0050 (Wire Bag Envelope; singleton inbound; canonical id="_id")
  * - ADR-0053 (Bag Purity; bag-centric processing)
  *
  * Purpose:
@@ -29,32 +29,22 @@ import { PromptDto } from "@nv/shared/dto/prompt.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 export class CodePatchHandler extends HandlerBase {
-  constructor(ctx: HandlerContext, controller: any) {
+  constructor(ctx: HandlerContext, controller: ControllerJsonBase) {
     super(ctx, controller);
   }
 
-  /**
-   * Handler naming convention:
-   * - code.<primaryFunction>[.<sub>...]
-   *
-   * For this handler:
-   * - Primary function: prompt.patch
-   */
   public handlerName(): string {
     return "code.prompt.patch";
   }
 
-  /**
-   * Short, human-readable description used in logs / consoles.
-   */
   public handlerPurpose(): string {
     return 'Patch existing PromptDto with a singleton patch bag and replace ctx["bag"] with the updated singleton.';
   }
 
   protected async execute(): Promise<void> {
-    // Normalize requestId to a safe string (HandlerContext.get may return {}).
     const requestIdRaw = this.ctx.get("requestId");
     const requestId =
       typeof requestIdRaw === "string" && requestIdRaw.trim() !== ""
@@ -70,7 +60,6 @@ export class CodePatchHandler extends HandlerBase {
       "CodePatchHandler.execute enter"
     );
 
-    // ---- Fetch typed bags ---------------------------------------------------
     const existingBag = this.ctx.get<DtoBag<PromptDto>>("existingBag");
     const patchBag = this.ctx.get<DtoBag<PromptDto>>("bag");
 
@@ -107,7 +96,6 @@ export class CodePatchHandler extends HandlerBase {
     const existingItems = Array.from(existingBag.items());
     const patchItems = Array.from(patchBag.items());
 
-    // ---- Enforce singleton semantics on both inputs -------------------------
     if (existingItems.length !== 1) {
       const notFound = existingItems.length === 0;
       const status = notFound ? 404 : 500;
@@ -173,7 +161,6 @@ export class CodePatchHandler extends HandlerBase {
     const existing = existingItems[0];
     const patchDto = patchItems[0];
 
-    // ---- Runtime type sanity (hard fail if pipeline wiring is wrong) -------
     if (!(existing instanceof PromptDto) || !(patchDto instanceof PromptDto)) {
       const status = 400;
       const problem = {
@@ -204,10 +191,9 @@ export class CodePatchHandler extends HandlerBase {
       return;
     }
 
-    // ---- Apply patch via DTO authority -------------------------------------
     try {
       const patchJson = patchDto.toBody() as Record<string, unknown>;
-      existing.patchFrom(patchJson); // no options object
+      existing.patchFrom(patchJson);
 
       this.log.debug(
         {
@@ -248,9 +234,9 @@ export class CodePatchHandler extends HandlerBase {
       return;
     }
 
-    // ---- Re-assert instance collection (prevents DTO_COLLECTION_UNSET) -----
+    // Re-assert instance collection (best-effort; DbWriter will enforce).
     try {
-      const dtoType = this.ctx.get<string>("dtoType"); // "prompt" on this route
+      const dtoType = this.ctx.get<string>("dtoType");
       if (
         dtoType &&
         typeof (this.controller as any).getDtoRegistry === "function"
@@ -262,7 +248,6 @@ export class CodePatchHandler extends HandlerBase {
         }
       }
     } catch (rawError: any) {
-      // Non-fatal; DbWriter will enforce collection presence.
       this.log.warn(
         {
           event: "collection_reassert_failed",
@@ -274,7 +259,6 @@ export class CodePatchHandler extends HandlerBase {
       );
     }
 
-    // ---- Re-bag the UPDATED DTO; replace ctx["bag"] -------------------------
     const dtos: IDto[] = [existing as unknown as IDto];
     const { bag: updatedBag } = BagBuilder.fromDtos(dtos, {
       requestId,
@@ -282,7 +266,7 @@ export class CodePatchHandler extends HandlerBase {
       cursor: null,
       total: 1,
     });
-    (updatedBag as any)?.sealSingleton?.(); // harmless if not implemented
+    (updatedBag as any)?.sealSingleton?.();
 
     this.ctx.set("bag", updatedBag);
     this.ctx.set("handlerStatus", "ok");

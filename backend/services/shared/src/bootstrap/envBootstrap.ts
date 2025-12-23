@@ -6,6 +6,7 @@
  *   - ADR-0039 (svcenv centralized non-secret env)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared environment bootstrap for all services that obtain config from env-service.
@@ -17,9 +18,7 @@
  *     2) Fetch the EnvServiceDto config bag for (envLabel, slug, version).
  * - Work in terms of DtoBag<EnvServiceDto> (no naked DTOs cross this boundary).
  * - Derive HTTP host/port from the primary DTO in the bag.
- * - Expose:
- *     • envLabel (logical environment label for this process; frozen for lifetime)
- *     • a bag-based envReloader with the same env semantics.
+ * - Construct SvcSandbox using the REAL bound logger (no shims).
  *
  * Invariants:
  * - No .env file parsing here except NV_ENV (logical environment label) and NV_ENV_SERVICE_URL
@@ -39,6 +38,9 @@ import {
   type SvcTarget,
 } from "../s2s/SvcClient";
 import { SvcEnvClient } from "../env/svcenvClient";
+import { SvcSandbox } from "../sandbox/SvcSandbox";
+import type { IBoundLogger } from "../logger/Logger";
+import { setLoggerEnv, getLogger } from "../logger/Logger";
 
 export type EnvBootstrapOpts = {
   slug: string;
@@ -78,6 +80,12 @@ export type EnvBootstrapResult = {
    * enforce NV_MONGO_* + ensureIndexes() or skip all DB concerns.
    */
   checkDb: boolean;
+
+  /**
+   * ADR-0080: Transport-agnostic runtime container.
+   * REQUIRED by AppBase ctor for SvcSandbox services.
+   */
+  ssb: SvcSandbox;
 };
 
 /** Minimal console-backed logger for SvcClient during bootstrap. */
@@ -109,7 +117,6 @@ class BootstrapSvcClientLogger implements ISvcClientLogger {
  *
  * Env:
  * - NV_ENV_SERVICE_URL: base URL for env-service
- *   (e.g., "http://127.0.0.1:4001" or "https://env-service.dev.internal:8443").
  */
 class BootstrapEnvSvcResolver implements ISvcconfigResolver {
   public async resolveTarget(
@@ -136,14 +143,12 @@ class BootstrapEnvSvcResolver implements ISvcconfigResolver {
       );
     }
 
-    const target: SvcTarget = {
+    return {
       baseUrl,
       slug: "env-service",
       version,
       isAuthorized: true,
     };
-
-    return target;
   }
 }
 
@@ -175,7 +180,7 @@ function fatal(logFile: string, message: string, err?: unknown): never {
   try {
     fs.writeFileSync(logFile, text + "\n", { flag: "a" });
   } catch {
-    // If we can't write the file, we still log to console.
+    // ignore
   }
 
   // eslint-disable-next-line no-console
@@ -185,24 +190,36 @@ function fatal(logFile: string, message: string, err?: unknown): never {
 }
 
 /**
- * Shared bootstrap for non-env-service backends.
- *
- * Flow:
- * - Instantiates SvcClient (callerSlug/version = opts.slug/version) using:
- *     • console-backed logger
- *     • BootstrapEnvSvcResolver (NV_ENV_SERVICE_URL → env-service baseUrl)
- *     • bootstrapRequestIdProvider
- * - Uses SvcEnvClient to:
- *     • getCurrentEnv({ slug, version })  → envLabel (once, frozen)
- *     • getConfig({ env: envLabel, slug, version }) → DtoBag<EnvServiceDto>
- * - Derives host/port from the primary DTO in the bag.
- * - Returns:
- *     • envLabel   (logical env label for this process)
- *     • envBag     (config bag)
- *     • envReloader (same env label, fresh bag each call)
- *     • host/port
- *     • checkDb    (echo of opts.checkDb for downstream boot logic)
+ * Extract merged vars map from EnvServiceDto.
+ * We rely on DTO truth here; no defaults and no silent missing values.
  */
+function extractVars(
+  primary: EnvServiceDto,
+  logFile: string
+): Record<string, string> {
+  const body = (primary as any)?.toBody?.();
+  const vars = body?.vars;
+
+  if (!vars || typeof vars !== "object") {
+    fatal(
+      logFile,
+      "BOOTSTRAP_ENV_VARS_MISSING: EnvServiceDto.toBody() did not yield a vars map. " +
+        "Ops: ensure EnvServiceDto includes 'vars: Record<string,string>' and env-service returns it."
+    );
+  }
+
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(vars as Record<string, unknown>)) {
+    if (typeof k !== "string" || !k.trim()) continue;
+    if (typeof v !== "string") continue;
+    const kk = k.trim();
+    const vv = v.trim();
+    if (!vv) continue;
+    out[kk] = vv;
+  }
+  return out;
+}
+
 export async function envBootstrap(
   opts: EnvBootstrapOpts
 ): Promise<EnvBootstrapResult> {
@@ -212,7 +229,7 @@ export async function envBootstrap(
   // eslint-disable-next-line no-console
   console.log("[bootstrap] envBootstrap starting", { slug, version, checkDb });
 
-  // 1) Construct SvcClient (new API) and SvcEnvClient
+  // 1) Construct SvcClient and SvcEnvClient
   let svcClient: SvcClient;
   try {
     svcClient = new SvcClient({
@@ -221,22 +238,19 @@ export async function envBootstrap(
       logger: new BootstrapSvcClientLogger(),
       svcconfigResolver: new BootstrapEnvSvcResolver(),
       requestIdProvider: bootstrapRequestIdProvider,
-      // tokenFactory is optional until S2S auth is fully enforced.
     });
   } catch (err) {
     fatal(
       logFile,
       "BOOTSTRAP_SVCCLIENT_INIT_FAILED: Failed to construct SvcClient for envBootstrap. " +
-        "Ops: verify NV_ENV_SERVICE_URL is set and valid, and that no unexpected constructor errors occur.",
+        "Ops: verify NV_ENV_SERVICE_URL is set and valid.",
       err
     );
   }
 
-  const envClient = new SvcEnvClient({
-    svcClient,
-  });
+  const envClient = new SvcEnvClient({ svcClient });
 
-  // 2) Resolve current env label for this service (once, frozen for process lifetime)
+  // 2) Resolve current env label (frozen)
   let envLabel: string;
   try {
     envLabel = await envClient.getCurrentEnv({ slug, version });
@@ -245,12 +259,12 @@ export async function envBootstrap(
       logFile,
       "BOOTSTRAP_CURRENT_ENV_FAILED: Failed to resolve current logical env label for " +
         `slug="${slug}", version=${version}. ` +
-        "Ops: ensure NV_ENV is set (e.g., 'dev', 'stage', 'prod') for this service before start.",
+        "Ops: ensure NV_ENV is set for this service before start.",
       err
     );
   }
 
-  // 3) Fetch EnvServiceDto config bag for that envLabel/slug/version
+  // 3) Fetch EnvServiceDto config bag
   let envBag: DtoBag<EnvServiceDto>;
   try {
     envBag = await envClient.getConfig({ env: envLabel, slug, version });
@@ -258,18 +272,16 @@ export async function envBootstrap(
     fatal(
       logFile,
       "BOOTSTRAP_ENV_CONFIG_FAILED: Failed to fetch EnvServiceDto bag from env-service. " +
-        `Ops: ensure a config document exists for env="${envLabel}", slug="${slug}", version=${version} ` +
-        "and that env-service indexes allow fast lookup by (env, slug, version).",
+        `Ops: ensure a config document exists for env="${envLabel}", slug="${slug}", version=${version}.`,
       err
     );
   }
 
-  // 4) Derive listener host/port from the primary DTO in the bag
-  let primary: EnvServiceDto | undefined;
-  for (const dto of envBag) {
-    primary = dto;
-    break;
-  }
+  // 4) Primary DTO = first item (no iterator loop drift)
+  const first = envBag.items().next();
+  const primary: EnvServiceDto | undefined = first.done
+    ? undefined
+    : first.value;
 
   if (!primary) {
     fatal(
@@ -279,6 +291,38 @@ export async function envBootstrap(
     );
   }
 
+  // 5) Configure REAL logger from envDto and bind bootstrap context.
+  // NOTE: This must use the production logger pipeline (no shims).
+  try {
+    setLoggerEnv(primary);
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_LOGGER_ENV_FAILED: Failed to initialize logger from EnvServiceDto. " +
+        "Ops/Dev: ensure env-service provides required logger vars (e.g., log level/service URLs).",
+      err
+    );
+  }
+
+  let log: IBoundLogger;
+  try {
+    // If your logger getter has a different name, replace this ONE symbol.
+    log = getLogger().bind({
+      service: slug,
+      version,
+      component: "bootstrap",
+      env: envLabel,
+    });
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_LOGGER_GET_FAILED: Failed to obtain bound logger after setLoggerEnv(). " +
+        "Ops/Dev: verify logger module exports a getter for the bound logger instance.",
+      err
+    );
+  }
+
+  // 6) Derive HTTP host/port
   let host: string;
   let port: number;
   try {
@@ -301,20 +345,60 @@ export async function envBootstrap(
     );
   }
 
-  // 5) Bag-based reloader: same envLabel, same client, fresh bag each call.
+  // 7) Build SvcSandbox (ADR-0080) from identity + vars + REAL logger
+  const vars = extractVars(primary, logFile);
+
+  let dbState: string;
+  try {
+    dbState = primary.getEnvVar("DB_STATE");
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_DB_STATE_MISSING: DB_STATE is required for SvcSandbox identity. " +
+        `Ops: add DB_STATE to env-service config for env="${envLabel}", slug="${slug}", version=${version}.`,
+      err
+    );
+  }
+
+  let ssb: SvcSandbox;
+  try {
+    ssb = new SvcSandbox(
+      {
+        serviceSlug: slug,
+        serviceVersion: version,
+        env: envLabel,
+        dbState,
+      },
+      vars,
+      log,
+      {}
+    );
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_SSB_CONSTRUCT_FAILED: Failed to construct SvcSandbox. " +
+        "Ops/Dev: verify env-service vars map and logger wiring.",
+      err
+    );
+  }
+
+  // 8) Bag-based reloader: same envLabel, fresh bag each call.
   const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
     return envClient.getConfig({ env: envLabel, slug, version });
   };
 
-  // eslint-disable-next-line no-console
-  console.log("[bootstrap] envBootstrap complete", {
-    slug,
-    version,
-    envLabel,
-    host,
-    port,
-    checkDb,
-  });
+  log.info(
+    {
+      event: "env_bootstrap_complete",
+      slug,
+      version,
+      envLabel,
+      host,
+      port,
+      checkDb,
+    },
+    "envBootstrap complete"
+  );
 
   return {
     envLabel,
@@ -323,5 +407,6 @@ export async function envBootstrap(
     host,
     port,
     checkDb,
+    ssb,
   };
 }

@@ -2,7 +2,9 @@
 /**
  * Docs:
  * - ADR-0040 (DTO-only persistence via Managers)
- * - ADR-0041/42/43/44
+ * - ADR-0041 (Per-route controllers; single-purpose handlers)
+ * - ADR-0042 (HandlerContext Bus — KISS)
+ * - ADR-0043 (Finalize mapping)
  * - ADR-0048 (Revised — bag-centric reads)
  *
  * Purpose:
@@ -23,9 +25,10 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { IDto } from "@nv/shared/dto/IDto";
+import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 export class DbReadExistingHandler extends HandlerBase {
-  constructor(ctx: HandlerContext, controller: any) {
+  constructor(ctx: HandlerContext, controller: ControllerJsonBase) {
     super(ctx, controller);
   }
 
@@ -42,9 +45,6 @@ export class DbReadExistingHandler extends HandlerBase {
     return "db.nv.prompts.find-one";
   }
 
-  /**
-   * Short, human-readable description used in logs / consoles.
-   */
   public handlerPurpose(): string {
     return 'DB read: load existing Prompt by id into ctx["existingBag"] (does not touch ctx["bag"]).';
   }
@@ -73,7 +73,7 @@ export class DbReadExistingHandler extends HandlerBase {
         status,
         code: "MISSING_ID",
         requestId,
-        hint: "PATCH /api/prompt/v1/<id> with JSON body of fields to update.",
+        hint: "PATCH /api/prompt/v1/<id>/... with JSON body of fields to update.",
       };
 
       this.ctx.set("handlerStatus", "error");
@@ -123,12 +123,8 @@ export class DbReadExistingHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
+    // ---- Missing DB config throws (SvcSandbox contract) ---------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
-
-    // Optional: diagnose whether ControllerBase is actually holding svcEnv.
-    const svcEnv = this.controller.getSvcEnv?.();
-    const hasSvcEnv = !!svcEnv;
 
     // --- Reader + fetch as **BAG** ------------------------------------------
     const validateReads =

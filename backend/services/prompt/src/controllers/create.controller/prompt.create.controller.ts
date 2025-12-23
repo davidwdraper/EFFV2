@@ -8,7 +8,7 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
- *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="_id")
  *
  * Purpose:
  * - Orchestrate PUT /api/prompt/v1/:dtoType/create
@@ -19,7 +19,7 @@
  * - Create requires exactly 1 DTO item; enforced in pipeline handlers.
  */
 
-import { Request, Response } from "express";
+import type { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";

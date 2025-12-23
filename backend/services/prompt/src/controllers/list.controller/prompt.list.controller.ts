@@ -9,7 +9,7 @@
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *
  * Purpose:
  * - Orchestrate GET /api/prompt/v1/:dtoType/list
@@ -20,7 +20,7 @@
  * - DTO is the source of truth; serialization via toBody() (stamps meta).
  */
 
-import { Request, Response } from "express";
+import type { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -54,7 +54,7 @@ export class PromptListController extends ControllerJsonBase {
 
     switch (dtoType) {
       case "prompt": {
-        this.seedHydrator(ctx, "prompt", { validate: false }); // <== don't need to validate
+        this.seedHydrator(ctx, "prompt", { validate: false }); // list reads don't need DTO validation
         const steps = PromptListPipeline.getSteps(ctx, this);
         await this.runPipeline(ctx, steps, { requireRegistry: false });
         break;

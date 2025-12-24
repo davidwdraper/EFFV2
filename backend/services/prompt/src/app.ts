@@ -33,7 +33,7 @@ type CreateAppOptions = {
   version: number;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
-    /**
+  /**
    * SvcSandbox is mandatory (ADR-0080).
    * Constructed by ServiceEntrypoint after envDto is available.
    */
@@ -60,6 +60,12 @@ class PromptApp extends AppBase {
     });
 
     this.registry = new Registry();
+  }
+
+  // adr0082-infra-service-health-boot-check
+  // Endure that infra health checking does not run for prompt.
+  public override isInfraService(): boolean {
+    return true;
   }
 
   /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */

@@ -64,6 +64,12 @@ class SvcconfigApp extends AppBase {
     this.registry = new Registry();
   }
 
+  // adr0082-infra-service-health-boot-check
+  // Endure that infra health checking does not run for svcconfig.
+  public override isInfraService(): boolean {
+    return true;
+  }
+
   /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
   public override getDtoRegistry(): IDtoRegistry {
     return this.registry;

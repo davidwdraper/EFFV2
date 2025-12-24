@@ -82,6 +82,12 @@ class EnvServiceApp extends AppBase {
     );
   }
 
+  // adr0082-infra-service-health-boot-check
+  // Endure that infra health checking does not run for env-service.
+  public override isInfraService(): boolean {
+    return true;
+  }
+
   /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
   public override getDtoRegistry(): IDtoRegistry {
     return this.registry;

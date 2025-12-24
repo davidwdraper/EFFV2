@@ -11,6 +11,7 @@
  *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *   - ADR-0076 (Process Env Guard — NV_PROCESS_ENV_GUARD runtime guardrail)
  *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0082 (Infra Service Health Boot Check)
  *
  * Purpose:
  * - Orchestrator for Express composition across ALL services.
@@ -62,6 +63,8 @@ import {
   getProcessEnvGuardState,
 } from "./processEnvGuard";
 import type { SvcSandbox } from "../../sandbox/SvcSandbox";
+import { SvcEnvClient } from "../../env/svcenvClient";
+import { InfraHealthCheck } from "../../bootstrap/InfraHealthCheck";
 
 export type AppBaseCtor = {
   service: string;
@@ -173,6 +176,21 @@ export abstract class AppBase extends ServiceBase {
 
   protected initApp(): void {
     this.app.disable("x-powered-by");
+  }
+
+  /**
+   * Infra classification hook (ADR-0082).
+   *
+   * Default:
+   * - Domain services return false.
+   *
+   * Infra services:
+   * - Override to true (env-service, svcconfig, log-service, prompts, etc.).
+   *
+   * Used to prevent boot recursion when running infra health checks.
+   */
+  public isInfraService(): boolean {
+    return false;
   }
 
   /**
@@ -320,8 +338,36 @@ export abstract class AppBase extends ServiceBase {
     return { facilitatorBaseUrl, ttlMs: Math.trunc(n) };
   }
 
+  private async maybeRunInfraBootHealthCheck(): Promise<void> {
+    // Infra services must never run infra preflight checks (prevents recursion).
+    if (this.isInfraService()) {
+      this.log.info(
+        { event: "infra_boot_check_skipped", reason: "is_infra_service" },
+        "Infra boot health check skipped (infra service)"
+      );
+      return;
+    }
+
+    // Domain services: enforce infra availability before proceeding with boot.
+    const envClient = new SvcEnvClient({ svcClient: this.svcClient });
+
+    const checker = new InfraHealthCheck({
+      svcClient: this.svcClient,
+      envClient,
+      log: this.log,
+      currentServiceSlug: this.service,
+      envLabel: this.getEnvLabel(),
+    });
+
+    await checker.run();
+  }
+
   public async boot(): Promise<void> {
     if (this._booted) return;
+
+    // ADR-0082: Domain services must hard-fail if infra deps are not healthy.
+    // This happens before DB boot and before routes are mounted.
+    await this.maybeRunInfraBootHealthCheck();
 
     await this.onBoot();
 

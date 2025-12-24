@@ -62,6 +62,12 @@ class GatewayApp extends AppBase {
     });
   }
 
+  // adr0082-infra-service-health-boot-check
+  // Endure that infra health checking does not run for gateway.
+  public override isInfraService(): boolean {
+    return true;
+  }
+
   /**
    * Mount service routes.
    *

@@ -8,6 +8,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
+ *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
  *
  * Purpose:
  * - Edge proxy controller for ALL non-health traffic:
@@ -18,17 +19,17 @@
  * Invariants:
  * - No DTO hydration.
  * - No payload mutation.
- * - Controller sets proxy context only; handler performs S2S call.
+ * - Controller seeds proxy context only; handlers perform S2S call + normalization.
  * - Finalization is raw via ControllerGatewayBase:
  *   • Uses ctx["response.status"] and ctx["response.body"] directly.
  *   • Does NOT depend on DtoBag or wire-bag semantics.
+ * - Never log raw headers or secret-bearing headers.
  */
 
 import type { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 import { ControllerGatewayBase } from "../../base/ControllerGatewayBase";
 import * as GatewayProxyPipeline from "./pipelines/proxy.handlerPipeline";
@@ -39,11 +40,8 @@ export class GatewayProxyController extends ControllerGatewayBase {
   constructor(app: AppBase) {
     super(app);
 
-    // NOTE:
-    // AppBase owns the SvcClient instance; we reach in via `any` here because
-    // gateway is the edge special-case that needs S2S wiring.
-    // This is intentionally localized to this controller.
-    this.svcClient = (app as unknown as { svcClient: SvcClient }).svcClient;
+    // AppBase owns the SvcClient instance; use the public accessor.
+    this.svcClient = app.getSvcClient();
   }
 
   /** Exposed so handlers can obtain the shared SvcClient instance. */
@@ -65,35 +63,27 @@ export class GatewayProxyController extends ControllerGatewayBase {
 
     // We want the *full* inbound path including `/api/...` so SvcClient.callRaw
     // can simply swap host/port and reuse it.
-    //
-    // Example:
-    //   Incoming URL: /api/auth/v1/auth/create
-    //   req.originalUrl: /api/auth/v1/auth/create
     const fullPath = req.originalUrl || req.url || req.path;
 
-    // Derive env label from svcEnv (ADR-0044), but allow handlers to override if needed.
-    const svcEnv = ctx.get<EnvServiceDto | undefined>("svcEnv");
+    // Commit 2: env label is owned by SvcSandbox (via AppBase.getEnvLabel()).
+    // No fallbacks; if env is missing, bootstrap must fail before reaching here.
+    const envLabel = this.getEnvLabel();
 
-    let envLabel = "unknown";
-    if (svcEnv) {
-      try {
-        envLabel = svcEnv.getEnvVar("NV_ENV");
-      } catch {
-        // leave as "unknown"
-      }
-    }
-
-    // somewhere in GatewayProxyController.put/get/etc.
+    // Minimal, safe diagnostics: no raw headers, no secrets.
+    const requestId = ctx.get<string | undefined>("requestId");
     this.log.debug(
       {
-        event: "gateway_proxy_inbound_headers",
-        passwordHeader: req.headers["x-nv-password"],
-        allHeaders: req.headers,
+        event: "gateway_proxy_inbound",
+        requestId,
+        method,
+        targetSlug,
+        targetVersionRaw,
+        fullPath,
+        forwardedHeaderKeys: Object.keys(req.headers ?? {}).slice(0, 50),
       },
-      "Gateway proxy inbound headers"
+      "Gateway proxy inbound request"
     );
 
-    // then:
     ctx.set("proxy.headers", req.headers);
     ctx.set("proxy.slug", targetSlug);
     ctx.set("proxy.version.raw", targetVersionRaw);
@@ -109,7 +99,6 @@ export class GatewayProxyController extends ControllerGatewayBase {
       requireRegistry: false,
     });
 
-    // Let ControllerGatewayBase perform raw finalize using ctx["response.*"].
     await this.finalize(ctx);
   }
 }

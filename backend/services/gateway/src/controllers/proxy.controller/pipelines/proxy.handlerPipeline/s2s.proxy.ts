@@ -17,6 +17,7 @@
  * - Does not mutate or inspect DTOs.
  * - Does not attempt to "fix" worker responses.
  * - Leaves response shape exactly as the worker produced it (best-effort JSON parse).
+ * - No env fallbacks (env must be seeded by controller from AppBase/SSB).
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -48,7 +49,7 @@ export class S2sProxyHandler extends HandlerBase {
       const versionRaw = this.ctx.get<string | undefined>("proxy.version.raw");
       const method = this.ctx.get<HttpMethod | undefined>("proxy.method");
       const fullPath = this.ctx.get<string | undefined>("proxy.fullPath");
-      const envRaw = this.ctx.get<string | undefined>("proxy.env");
+      const env = this.ctx.get<string | undefined>("proxy.env");
       const body = this.ctx.get<unknown>("proxy.body");
       const forwardHeaders = this.ctx.get<ForwardHeaders | undefined>(
         "proxy.forwardHeaders"
@@ -63,10 +64,7 @@ export class S2sProxyHandler extends HandlerBase {
           stage: "proxy.s2s.slug.missing",
           requestId,
           rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           logMessage:
             "gateway.proxy.s2s: ctx['proxy.slug'] missing; route pattern likely misconfigured.",
           logLevel: "error",
@@ -83,10 +81,7 @@ export class S2sProxyHandler extends HandlerBase {
           stage: "proxy.s2s.version.missing",
           requestId,
           rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           logMessage:
             "gateway.proxy.s2s: ctx['proxy.version.raw'] missing; route pattern likely misconfigured.",
           logLevel: "error",
@@ -103,10 +98,7 @@ export class S2sProxyHandler extends HandlerBase {
           stage: "proxy.s2s.method.missing",
           requestId,
           rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           logMessage:
             "gateway.proxy.s2s: ctx['proxy.method'] missing; controller did not seed HTTP method.",
           logLevel: "error",
@@ -123,12 +115,26 @@ export class S2sProxyHandler extends HandlerBase {
           stage: "proxy.s2s.fullPath.missing",
           requestId,
           rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           logMessage:
             "gateway.proxy.s2s: ctx['proxy.fullPath'] missing; controller did not seed originalUrl.",
+          logLevel: "error",
+        });
+        return;
+      }
+
+      if (!env || !env.trim()) {
+        this.failWithError({
+          httpStatus: 500,
+          title: "gateway_proxy_missing_env",
+          detail:
+            "Gateway proxy expected env label on proxy.context but none was provided. Dev: ensure controller seeds `proxy.env` from AppBase.getEnvLabel() (SvcSandbox authoritative).",
+          stage: "proxy.s2s.env.missing",
+          requestId,
+          rawError: null,
+          origin: { file: __filename, method: "execute" },
+          logMessage:
+            "gateway.proxy.s2s: ctx['proxy.env'] missing; controller did not seed env label.",
           logLevel: "error",
         });
         return;
@@ -144,10 +150,7 @@ export class S2sProxyHandler extends HandlerBase {
           stage: "proxy.s2s.version.parse_failed",
           requestId,
           rawError: null,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           logMessage:
             "gateway.proxy.s2s: failed to parse numeric version from proxy.version.raw.",
           logLevel: "error",
@@ -155,26 +158,7 @@ export class S2sProxyHandler extends HandlerBase {
         return;
       }
 
-      const env = envRaw ?? "unknown";
-
-      const controller = this
-        .controller as unknown as GatewayProxyController & {
-        getSvcClient: () => {
-          callRaw: (args: {
-            env: string;
-            slug: string;
-            version: number;
-            method: HttpMethod;
-            fullPath: string;
-            body: unknown;
-            requestId?: string;
-            extraHeaders?: ForwardHeaders;
-          }) => Promise<{
-            status: number;
-            bodyText: string | null;
-          }>;
-        };
-      };
+      const controller = this.controller as unknown as GatewayProxyController;
 
       let svcClient: ReturnType<typeof controller.getSvcClient>;
       try {
@@ -188,10 +172,7 @@ export class S2sProxyHandler extends HandlerBase {
           stage: "proxy.s2s.svcClient.missing",
           requestId,
           rawError: err,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           logMessage:
             "gateway.proxy.s2s: controller.getSvcClient() threw or is unavailable.",
           logLevel: "error",
@@ -211,7 +192,6 @@ export class S2sProxyHandler extends HandlerBase {
           extraHeaders: forwardHeaders,
         });
 
-        // Best-effort JSON parse; if it fails, return raw text.
         let parsedBody: unknown = result.bodyText;
         if (result.bodyText) {
           try {
@@ -245,10 +225,7 @@ export class S2sProxyHandler extends HandlerBase {
           stage: "proxy.s2s.call_failed",
           requestId,
           rawError: err,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           logMessage:
             "gateway.proxy.s2s: SvcClient.callRaw() threw while proxying S2S request.",
           logLevel: "error",
@@ -268,7 +245,6 @@ export class S2sProxyHandler extends HandlerBase {
         return;
       }
     } catch (err) {
-      // Unexpected handler bug, catch-all
       this.failWithError({
         httpStatus: 500,
         title: "gateway_proxy_s2s_handler_failure",
@@ -277,10 +253,7 @@ export class S2sProxyHandler extends HandlerBase {
         stage: "proxy.s2s.execute.unhandled",
         requestId,
         rawError: err,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         logMessage:
           "gateway.proxy.s2s: unhandled exception in handler execute().",
         logLevel: "error",

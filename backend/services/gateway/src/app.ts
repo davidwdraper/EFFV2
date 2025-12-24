@@ -5,15 +5,14 @@
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
- *   - ADR-0045 (Index Hints — boot ensure via shared helper)
- *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
- * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - For gateway, DB/index ensure is ON (checkDb=true).
+ * - Gateway is a pure proxy: NO registry, NO DB/index ensure.
  *
  * Notes:
  * - Health + env reload remain versioned under `/api/gateway/v1/*` (AppBase).
@@ -25,9 +24,8 @@ import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
+import type { SvcSandbox } from "@nv/shared/sandbox/SvcSandbox";
 
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
-import { Registry } from "./registry/Registry";
 import { buildGatewayRouter } from "./routes/gateway.route";
 
 type CreateAppOptions = {
@@ -35,20 +33,20 @@ type CreateAppOptions = {
   version: number;
 
   /**
-   * Logical environment label for this process (e.g., "dev", "stage", "prod").
-   * - Passed through from envBootstrap.getEnvLabel().
-   * - Any SvcClient created inside this service should use this value.
+   * Convenience only; AppBase must source env label from ssb (ADR-0080 Commit 2).
    */
   envLabel: string;
 
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
+
+  /**
+   * SvcSandbox is mandatory (ADR-0080). Entrypoint constructs it.
+   */
+  ssb: SvcSandbox;
 };
 
-class gatewayApp extends AppBase {
-  /** Concrete per-service DTO registry (explicit, no barrels). */
-  private readonly registry: Registry;
-
+class GatewayApp extends AppBase {
   constructor(opts: CreateAppOptions) {
     // Initialize logger first so all subsequent boot logs have proper context.
     setLoggerEnv(opts.envDto);
@@ -58,17 +56,10 @@ class gatewayApp extends AppBase {
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // gateway is NOT db-backed.
+      ssb: opts.ssb,
+      // Gateway is NOT db-backed.
       checkDb: false,
     });
-
-    // AppBase now sources envLabel from envDto; no need to pass it directly.
-    this.registry = new Registry();
-  }
-
-  /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
-  public override getDtoRegistry(): IDtoRegistry {
-    return this.registry;
   }
 
   /**
@@ -78,7 +69,7 @@ class gatewayApp extends AppBase {
    *   /api/gateway/v<version>/health
    *   /api/gateway/v<version>/env/reload
    *
-   * All proxied traffic uses the shared gateway router under `/api`.
+   * All proxied traffic uses the gateway router under `/api`.
    */
   protected override mountRoutes(): void {
     const base = "/api";
@@ -95,8 +86,7 @@ class gatewayApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new gatewayApp(opts);
-  // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
+  const app = new GatewayApp(opts);
   await app.boot();
   return { app: app.instance };
 }

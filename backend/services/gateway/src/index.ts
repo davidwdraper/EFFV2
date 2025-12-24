@@ -5,10 +5,12 @@
  * - ADRs:
  *   - ADR-0014 (ServiceEntrypoint vs ServiceBase)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
  *
- * Purpose (template):
- * - Generic CRUD-style service entrypoint.
- * - Cloned for concrete services; slug/name are replaced by the cloner.
+ * Purpose:
+ * - Gateway service entrypoint.
+ * - Gateway is a pure proxy: no DB, no registry, no index ensure.
  */
 
 import createApp from "./app";
@@ -20,6 +22,6 @@ const SERVICE_VERSION = 1;
 void runServiceEntrypoint({
   slug: SERVICE_SLUG,
   version: SERVICE_VERSION,
-  checkDb: true,
+  checkDb: false,
   createApp,
 });

@@ -27,6 +27,11 @@
  * Commit 2 (SvcSandbox hard requirement):
  * - envLabel is sourced ONLY from ssb (no envDto fallback / optional ctor value).
  * - If envDto exists, it must agree with ssb env (sanity check).
+ *
+ * Commit 3 (Proxy services):
+ * - DtoRegistry is OPTIONAL at AppBase level.
+ * - Only DB-backed services (checkDb=true) may require registry at boot.
+ * - Proxy/edge services (gateway) must compile without implementing getDtoRegistry().
  */
 
 import type { Express } from "express";
@@ -238,7 +243,23 @@ export abstract class AppBase extends ServiceBase {
     return this.promptsClient.render(language, promptKey, params, meta);
   }
 
-  public abstract getDtoRegistry(): IDtoRegistry;
+  /**
+   * DTO Registry accessor.
+   *
+   * Commit 3:
+   * - Registry is OPTIONAL at the AppBase level so proxy/edge services can exist.
+   * - DTO/DB-backed services MUST override this method.
+   *
+   * Fail-fast:
+   * - If any code calls this on a non-DTO service (e.g., gateway), it is a bug.
+   */
+  public getDtoRegistry(): IDtoRegistry {
+    throw new Error(
+      `DTO_REGISTRY_NOT_AVAILABLE: service="${this.service}" v${this.version} does not provide a DtoRegistry. ` +
+        "Dev: only DTO/DB-backed services may call getDtoRegistry(). " +
+        "Ops: gateway/proxy services must not load registry-dependent controllers/handlers."
+    );
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected getSvcconfigResolver(): any | null {
@@ -381,6 +402,9 @@ export abstract class AppBase extends ServiceBase {
   }
 
   protected async onBoot(): Promise<void> {
+    // Proxy/edge services must not require registry at boot.
+    if (!this.checkDb) return;
+
     const ctx: DbBootContext = {
       service: this.service,
       component: this.constructor.name,
@@ -390,6 +414,7 @@ export abstract class AppBase extends ServiceBase {
       log: this.log,
       registry: this.getDtoRegistry(),
     };
+
     await performDbBoot(ctx);
   }
 

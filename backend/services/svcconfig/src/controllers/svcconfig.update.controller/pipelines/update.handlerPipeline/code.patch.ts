@@ -5,10 +5,10 @@
  * - ADR-0048 (All reads return DtoBag)
  * - ADR-0050 (Wire Bag Envelope; singleton inbound)
  * - ADR-0053 (Bag Purity; bag-centric processing)
- * - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Patch the **existing** entity (from ctx["existingBag"]) using the client **patch**

@@ -91,7 +91,7 @@ export class DbUpdateHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws (SvcSandbox contract) ---------------------
+    // ---- Missing DB config throws (SvcRuntime contract) ---------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     const baseBag = bag as unknown as DtoBag<DtoBase>;

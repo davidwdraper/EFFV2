@@ -6,21 +6,21 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0047/0048 (All reads return DtoBag)
  *   - ADR-0050 (Wire Bag Envelope)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Populate a DtoBag<TDto> from Mongo based on a filter, and stash it on the ctx bus.
  * - Generic, reusable handler — analogous to bag.populate.get.handler, but for DB queries.
  *
  * Config (from ctx):
- * - "bag.query.dtoCtor":         DTO class (required; must have fromBody + dbCollectionName)
- * - "bag.query.filter":         Record<string, unknown> (required)
- * - "bag.query.targetKey":      string ctx key to write the bag to (default: "bag")
- * - "bag.query.validateReads":  boolean (default: false)
- * - "bag.query.ensureSingleton":boolean (default: false)
+ * - "bag.query.dtoCtor":          DTO class (required; must have fromBody + dbCollectionName)
+ * - "bag.query.filter":          Record<string, unknown> (required)
+ * - "bag.query.targetKey":       string ctx key to write the bag to (default: "bag")
+ * - "bag.query.validateReads":   boolean (default: false)
+ * - "bag.query.ensureSingleton": boolean (default: false)
  *
  * Outputs (ctx):
  * - [targetKey]: DtoBag<TDto>
@@ -48,15 +48,12 @@ export class DbReadOneByFilterHandler extends HandlerBase {
     return "db.readOne.byFilter";
   }
 
-  /**
-   * One-sentence, ops-facing description of what this handler does.
-   */
   protected handlerPurpose(): string {
     return "Populate a DtoBag<TDto> from Mongo based on a filter and stash it on the ctx bus.";
   }
 
   protected override async execute(): Promise<void> {
-    const requestId = this.safeCtxGet<string>("requestId");
+    const requestId = this.getRequestId();
 
     this.log.debug(
       {
@@ -100,7 +97,7 @@ export class DbReadOneByFilterHandler extends HandlerBase {
       return;
     }
 
-    // ---- DB config comes from sandbox rails (ADR-0080 / ADR-0074) ----------
+    // ---- DB config comes from HandlerBase rails (override OR runtime) -------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // ---- External edge: DB read -------------------------------------------

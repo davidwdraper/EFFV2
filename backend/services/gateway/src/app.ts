@@ -7,7 +7,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
  *
  * Purpose:
@@ -24,7 +24,7 @@ import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
-import type { SvcSandbox } from "@nv/shared/sandbox/SvcSandbox";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 import { buildGatewayRouter } from "./routes/gateway.route";
 
@@ -33,7 +33,7 @@ type CreateAppOptions = {
   version: number;
 
   /**
-   * Convenience only; AppBase must source env label from ssb (ADR-0080 Commit 2).
+   * Convenience only; AppBase must source env label from rt (ADR-0080 Commit 2).
    */
   envLabel: string;
 
@@ -41,9 +41,9 @@ type CreateAppOptions = {
   envReloader: () => Promise<EnvServiceDto>;
 
   /**
-   * SvcSandbox is mandatory (ADR-0080). Entrypoint constructs it.
+   * SvcRuntime is mandatory (ADR-0080). Entrypoint constructs it.
    */
-  ssb: SvcSandbox;
+  rt: SvcRuntime;
 };
 
 class GatewayApp extends AppBase {
@@ -56,16 +56,30 @@ class GatewayApp extends AppBase {
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      ssb: opts.ssb,
+      rt: opts.rt,
       // Gateway is NOT db-backed.
       checkDb: false,
     });
   }
 
-  // adr0082-infra-service-health-boot-check
-  // Endure that infra health checking does not run for gateway.
+  /**
+   * Platform classification.
+   *
+   * Gateway is part of the platform surface (edge/proxy), so we classify it as "infra".
+   * IMPORTANT: this does NOT mean "skip infra boot preflight".
+   */
   public override isInfraService(): boolean {
     return true;
+  }
+
+  /**
+   * ADR-0082 recursion avoidance hook.
+   *
+   * Gateway must still run infra boot health checks, because every request
+   * depends on infra (env-service, svcconfig, etc.) being up.
+   */
+  public override shouldSkipInfraBootHealthCheck(): boolean {
+    return false;
   }
 
   /**

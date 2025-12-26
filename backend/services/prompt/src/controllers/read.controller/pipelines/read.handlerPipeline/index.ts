@@ -44,31 +44,6 @@ export function getSteps(
   ctx: HandlerContext,
   controller: ControllerJsonBase
 ): HandlerBase[] {
-  const filterOpts: BuildFilterHandlerOptions = {
-    fields: [
-      {
-        target: "language",
-        source: "ctx",
-        key: "language",
-        required: true,
-      },
-      {
-        target: "version",
-        source: "ctx",
-        key: "version",
-        required: true,
-      },
-      {
-        target: "promptKey",
-        source: "ctx",
-        key: "promptKey",
-        required: true,
-      },
-    ],
-    idKeyFields: ["language", "version", "promptKey"],
-    idKeyJoinChar: "@",
-  };
-
   return [
     new CodeBuildQueryFilterHandler(ctx, controller, filterOpts),
     new DbReadOneByFilterHandler(ctx, controller),

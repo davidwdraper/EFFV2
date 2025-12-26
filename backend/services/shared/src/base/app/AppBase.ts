@@ -10,7 +10,7 @@
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *   - ADR-0076 (Process Env Guard — NV_PROCESS_ENV_GUARD runtime guardrail)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0082 (Infra Service Health Boot Check)
  *
  * Purpose:
@@ -20,19 +20,24 @@
  * Invariants:
  * - No implicit S2S mocking.
  * - Deterministic S2S transport may ONLY be injected explicitly (tests).
- * - SvcSandbox is MANDATORY and is the canonical runtime owner of:
+ * - SvcRuntime is MANDATORY and is the canonical runtime owner of:
  *     • problem
  *     • validated vars
  *     • capability surfaces (db/s2s/audit/etc.)
  *
- * Commit 2 (SvcSandbox hard requirement):
- * - envLabel is sourced ONLY from ssb (no envDto fallback / optional ctor value).
- * - If envDto exists, it must agree with ssb env (sanity check).
+ * Commit 2 (SvcRuntime hard requirement):
+ * - envLabel is sourced ONLY from rt (no envDto fallback / optional ctor value).
+ * - If envDto exists, it must agree with rt env (sanity check).
  *
  * Commit 3 (Proxy services):
  * - DtoRegistry is OPTIONAL at AppBase level.
  * - Only DB-backed services (checkDb=true) may require registry at boot.
  * - Proxy/edge services (gateway) must compile without implementing getDtoRegistry().
+ *
+ * Commit 4 (Infra boot check hook split):
+ * - `isInfraService()` is platform classification (gateway may be "infra" by role).
+ * - `shouldSkipInfraBootHealthCheck()` is recursion avoidance only.
+ * - Default behavior remains identical: skip boot preflight when isInfraService()=true.
  */
 
 import type { Express } from "express";
@@ -62,7 +67,7 @@ import {
   isProcessEnvGuardEnabled,
   getProcessEnvGuardState,
 } from "./processEnvGuard";
-import type { SvcSandbox } from "../../sandbox/SvcSandbox";
+import type { SvcRuntime } from "../../runtime/SvcRuntime";
 import { SvcEnvClient } from "../../env/svcenvClient";
 import { InfraHealthCheck } from "../../bootstrap/InfraHealthCheck";
 
@@ -76,10 +81,10 @@ export type AppBaseCtor = {
   edgeMode?: EdgeMode;
 
   /**
-   * SvcSandbox is MANDATORY (ADR-0080).
+   * SvcRuntime is MANDATORY (ADR-0080).
    * If it is not wired, the app must not start.
    */
-  ssb: SvcSandbox;
+  rt: SvcRuntime;
 
   /**
    * Explicit-only S2S mocking switch (tests only).
@@ -109,7 +114,7 @@ export abstract class AppBase extends ServiceBase {
   private readonly s2sMocksEnabled: boolean;
   private readonly hasInjectedSvcClientTransport: boolean;
 
-  private readonly ssb: SvcSandbox;
+  private readonly rt: SvcRuntime;
 
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
@@ -123,28 +128,28 @@ export abstract class AppBase extends ServiceBase {
     this.s2sMocksEnabled = opts.s2sMocksEnabled ?? false;
     this.hasInjectedSvcClientTransport = !!opts.svcClientTransport;
 
-    if (!opts.ssb) {
+    if (!opts.rt) {
       throw new Error(
-        `SSB_MISSING_ON_APPBASE: SvcSandbox is required for service="${opts.service}" v${opts.version}. ` +
-          "Ops/Dev: construct SvcSandbox during boot (after envDto is available) and pass it to AppBase({ ssb })."
+        `SSB_MISSING_ON_APPBASE: SvcRuntime is required for service="${opts.service}" v${opts.version}. ` +
+          "Ops/Dev: construct SvcRuntime during boot (after envDto is available) and pass it to AppBase({ rt })."
       );
     }
-    this.ssb = opts.ssb;
+    this.rt = opts.rt;
 
-    // Commit 2: envLabel is now owned by ssb. envDto must agree.
+    // Commit 2: envLabel is now owned by rt. envDto must agree.
     // This prevents “sandbox exists but isn’t authoritative” drift.
     try {
       const dtoEnv = (this._envDto.getEnvLabel() ?? "").trim();
-      const ssbEnv = (this.ssb.getEnv() ?? "").trim();
-      if (!ssbEnv) {
+      const rtEnv = (this.rt.getEnv() ?? "").trim();
+      if (!rtEnv) {
         throw new Error(
-          `SSB_ENV_EMPTY: ssb.getEnv() returned empty for service="${opts.service}" v${opts.version}.`
+          `SSB_ENV_EMPTY: rt.getEnv() returned empty for service="${opts.service}" v${opts.version}.`
         );
       }
-      if (dtoEnv && dtoEnv !== ssbEnv) {
+      if (dtoEnv && dtoEnv !== rtEnv) {
         throw new Error(
-          `SSB_ENV_MISMATCH: envDto env="${dtoEnv}" does not match ssb env="${ssbEnv}" for service="${opts.service}" v${opts.version}. ` +
-            "Dev: build ssb using the same env label resolved by envBootstrap/env-service."
+          `SSB_ENV_MISMATCH: envDto env="${dtoEnv}" does not match rt env="${rtEnv}" for service="${opts.service}" v${opts.version}. ` +
+            "Dev: build rt using the same env label resolved by envBootstrap/env-service."
         );
       }
     } catch (e: any) {
@@ -181,16 +186,36 @@ export abstract class AppBase extends ServiceBase {
   /**
    * Infra classification hook (ADR-0082).
    *
+   * Meaning:
+   * - Platform/service-role classification only.
+   * - This MUST NOT be overloaded as a recursion-avoidance toggle.
+   *
    * Default:
    * - Domain services return false.
    *
-   * Infra services:
-   * - Override to true (env-service, svcconfig, log-service, prompts, etc.).
-   *
-   * Used to prevent boot recursion when running infra health checks.
+   * Infra/platform services:
+   * - Override to true (env-service, svcconfig, gateway, log-service, prompts, etc.).
    */
   public isInfraService(): boolean {
     return false;
+  }
+
+  /**
+   * ADR-0082 recursion avoidance hook.
+   *
+   * Purpose:
+   * - Prevent infra services from running the infra boot health preflight
+   *   in cases where it would recurse or deadlock (env-service, svcconfig, etc.).
+   *
+   * Default behavior:
+   * - Preserve legacy behavior by skipping when isInfraService() is true.
+   *
+   * Important:
+   * - Gateway may be "infra" by platform role but still need preflight checks.
+   *   In that case, gateway should override this to return false.
+   */
+  public shouldSkipInfraBootHealthCheck(): boolean {
+    return this.isInfraService();
   }
 
   /**
@@ -199,8 +224,8 @@ export abstract class AppBase extends ServiceBase {
    * Invariant:
    * - Sandbox MUST exist or app construction fails.
    */
-  public getSandbox(): SvcSandbox {
-    return this.ssb;
+  public getSandbox(): SvcRuntime {
+    return this.rt;
   }
 
   /**
@@ -228,13 +253,13 @@ export abstract class AppBase extends ServiceBase {
   }
 
   /**
-   * Commit 2: env label is sourced ONLY from SvcSandbox.
+   * Commit 2: env label is sourced ONLY from SvcRuntime.
    */
   public getEnvLabel(): string {
-    const env = (this.ssb.getEnv() ?? "").trim();
+    const env = (this.rt.getEnv() ?? "").trim();
     if (!env) {
       throw new Error(
-        `SSB_ENV_EMPTY: ssb.getEnv() returned empty for service="${this.service}" v${this.version}.`
+        `SSB_ENV_EMPTY: rt.getEnv() returned empty for service="${this.service}" v${this.version}.`
       );
     }
     return env;
@@ -339,16 +364,20 @@ export abstract class AppBase extends ServiceBase {
   }
 
   private async maybeRunInfraBootHealthCheck(): Promise<void> {
-    // Infra services must never run infra preflight checks (prevents recursion).
-    if (this.isInfraService()) {
+    // Recursion/deadlock avoidance hook (ADR-0082).
+    if (this.shouldSkipInfraBootHealthCheck()) {
       this.log.info(
-        { event: "infra_boot_check_skipped", reason: "is_infra_service" },
-        "Infra boot health check skipped (infra service)"
+        {
+          event: "infra_boot_check_skipped",
+          reason: "should_skip_infra_boot_health_check",
+          isInfraService: this.isInfraService(),
+        },
+        "Infra boot health check skipped"
       );
       return;
     }
 
-    // Domain services: enforce infra availability before proceeding with boot.
+    // Domain services (and any platform service that opts in): enforce infra availability before proceeding with boot.
     const envClient = new SvcEnvClient({ svcClient: this.svcClient });
 
     const checker = new InfraHealthCheck({
@@ -365,7 +394,7 @@ export abstract class AppBase extends ServiceBase {
   public async boot(): Promise<void> {
     if (this._booted) return;
 
-    // ADR-0082: Domain services must hard-fail if infra deps are not healthy.
+    // ADR-0082: Services that opt in must hard-fail if infra deps are not healthy.
     // This happens before DB boot and before routes are mounted.
     await this.maybeRunInfraBootHealthCheck();
 

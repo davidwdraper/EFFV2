@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0058 (HandlerBase.getVar — strict env accessor)
  *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared helpers used by HandlerBase for:
@@ -16,12 +16,12 @@
  * - HandlerBase.getVar() MUST go through getEnvVarFromSandbox().
  * - DB-related keys (NV_MONGO_*) are **forbidden** via getVar() and must be
  *   accessed via getMongoConfig() → resolveMongoConfigWithDbState().
- * - No svcEnv reads here. SvcSandbox is the canonical runtime owner (ADR-0080).
+ * - No svcEnv reads here. SvcRuntime is the canonical runtime owner (ADR-0080).
  */
 
 import type { ControllerBase } from "../../../base/controller/ControllerBase";
 import type { IBoundLogger } from "../../../logger/Logger";
-import type { SvcSandbox } from "../../../sandbox/SvcSandbox";
+import type { SvcRuntime } from "../../../runtime/SvcRuntime";
 
 type GetEnvVarFromSandboxArgs = {
   controller: ControllerBase;
@@ -44,7 +44,7 @@ export function getEnvVarFromSandbox(
 ): string | undefined {
   const { controller, log, handlerName, key, required } = args;
 
-  const ssb = mustGetSandbox({ controller, log, handlerName, stage: "getVar" });
+  const rt = mustGetSandbox({ controller, log, handlerName, stage: "getVar" });
 
   // DB-related keys must NEVER flow through getVar() — they go through getMongoConfig()
   const dbKeys = new Set<string>([
@@ -60,7 +60,7 @@ export function getEnvVarFromSandbox(
   if (dbKeys.has(key)) {
     const msg =
       `ENV_DBVAR_USE_GETDBVAR: "${key}" is DB-related and must be accessed via getMongoConfig()/getDbVar(). ` +
-      `Context: env="${ssb.getEnv()}", service="${ssb.getServiceSlug()}", version=${ssb.getServiceVersion()}, dbState="${ssb.getDbState()}". ` +
+      `Context: env="${rt.getEnv()}", service="${rt.getServiceSlug()}", version=${rt.getServiceVersion()}, dbState="${rt.getDbState()}". ` +
       "Ops: update callers to use getMongoConfig() so DB_STATE-aware naming and guardrails are enforced.";
 
     log.error(
@@ -68,10 +68,10 @@ export function getEnvVarFromSandbox(
         event: "getVar_db_key_forbidden",
         handler: handlerName,
         key,
-        env: ssb.getEnv(),
-        service: ssb.getServiceSlug(),
-        version: ssb.getServiceVersion(),
-        dbState: ssb.getDbState(),
+        env: rt.getEnv(),
+        service: rt.getServiceSlug(),
+        version: rt.getServiceVersion(),
+        dbState: rt.getDbState(),
       },
       msg
     );
@@ -79,9 +79,9 @@ export function getEnvVarFromSandbox(
     throw new Error(msg);
   }
 
-  // Non-DB key: delegate to SvcSandbox vars
+  // Non-DB key: delegate to SvcRuntime vars
   try {
-    const value = required ? ssb.getVar(key) : ssb.tryVar(key);
+    const value = required ? rt.getVar(key) : rt.tryVar(key);
 
     if (!value && required) {
       log.error(
@@ -133,10 +133,10 @@ type ResolveMongoConfigArgs = {
  * It is the implementation behind HandlerBase.getMongoConfig().
  *
  * Behavior:
- * - Reads BOTH NV_MONGO_URI and NV_MONGO_DB from SvcSandbox vars:
- *     • uri  = ssb.getVar("NV_MONGO_URI")
- *     • base = ssb.getVar("NV_MONGO_DB")
- * - Applies ADR-0074 DB_STATE semantics using SvcSandbox identity:
+ * - Reads BOTH NV_MONGO_URI and NV_MONGO_DB from SvcRuntime vars:
+ *     • uri  = rt.getVar("NV_MONGO_URI")
+ *     • base = rt.getVar("NV_MONGO_DB")
+ * - Applies ADR-0074 DB_STATE semantics using SvcRuntime identity:
  *     • domain DBs: <NV_MONGO_DB>_<DB_STATE>
  *     • *_infra DBs: ignore DB_STATE
  *
@@ -149,7 +149,7 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
 } {
   const { controller, log, handlerName } = args;
 
-  const ssb = mustGetSandbox({
+  const rt = mustGetSandbox({
     controller,
     log,
     handlerName,
@@ -160,12 +160,12 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
   let baseDbName: string;
 
   try {
-    uri = ssb.getVar("NV_MONGO_URI");
-    baseDbName = ssb.getVar("NV_MONGO_DB");
+    uri = rt.getVar("NV_MONGO_URI");
+    baseDbName = rt.getVar("NV_MONGO_DB");
   } catch (err: any) {
     const errMsg = err?.message ?? String(err);
     const msg =
-      "Failed to resolve Mongo configuration via SvcSandbox vars. " +
+      "Failed to resolve Mongo configuration via SvcRuntime vars. " +
       "Ops: verify NV_MONGO_URI and NV_MONGO_DB are present in env-service for this service (root/service merge).";
     log.error(
       {
@@ -178,7 +178,7 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
     throw new Error(`${msg} Detail: ${errMsg}`);
   }
 
-  const dbName = decorateDbNameWithDbState(baseDbName, ssb.getDbState());
+  const dbName = decorateDbNameWithDbState(baseDbName, rt.getDbState());
 
   if (!uri || !dbName) {
     const msg =
@@ -201,9 +201,9 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
       event: "mongo_config_resolved",
       handler: handlerName,
       dbName,
-      dbState: ssb.getDbState(),
+      dbState: rt.getDbState(),
     },
-    "resolveMongoConfigWithDbState: resolved Mongo URI and DB name via SvcSandbox"
+    "resolveMongoConfigWithDbState: resolved Mongo URI and DB name via SvcRuntime"
   );
 
   return { uri, dbName };
@@ -218,7 +218,7 @@ function mustGetSandbox(args: {
   log: IBoundLogger;
   handlerName: string;
   stage: string;
-}): SvcSandbox {
+}): SvcRuntime {
   const { controller, log, handlerName, stage } = args;
 
   try {
@@ -226,11 +226,11 @@ function mustGetSandbox(args: {
   } catch (err: any) {
     const errMsg = err?.message ?? String(err);
     const msg =
-      "SvcSandbox is required but unavailable. " +
-      "Ops/Dev: wire SvcSandbox at service boot and ensure ControllerBase seeds ctx['ssb'].";
+      "SvcRuntime is required but unavailable. " +
+      "Ops/Dev: wire SvcRuntime at service boot and ensure ControllerBase seeds ctx['rt'].";
     log.error(
       {
-        event: "ssb_missing",
+        event: "rt_missing",
         handler: handlerName,
         stage,
         error: errMsg,

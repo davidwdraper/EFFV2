@@ -13,14 +13,14 @@
  *   - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared abstract controller base for all services.
  * - Orchestrates context seeding, preflight, and pipeline execution.
  *
  * Invariants:
- * - SvcSandbox is mandatory; controllers always seed ctx["ssb"].
+ * - SvcRuntime is mandatory; controllers always seed ctx["rt"].
  * - No transitional trySandbox() paths.
  * - No legacy env DTO fallback paths (app.svcEnv).
  */
@@ -39,7 +39,7 @@ import {
   preflightContext,
   runPipelineHandlers,
 } from "./controllerContext";
-import type { SvcSandbox } from "../../sandbox/SvcSandbox";
+import type { SvcRuntime } from "../../runtime/SvcRuntime";
 
 export abstract class ControllerBase {
   protected readonly app: AppBase;
@@ -79,7 +79,7 @@ export abstract class ControllerBase {
    * - AppBase MUST expose getSandbox() and it MUST succeed.
    * - No try-paths, no compatibility shims.
    */
-  public getSandbox(): SvcSandbox {
+  public getSandbox(): SvcRuntime {
     return this.app.getSandbox();
   }
 
@@ -125,8 +125,8 @@ export abstract class ControllerBase {
   }
 
   private seedSandboxIntoContext(ctx: HandlerContext): void {
-    const ssb = this.getSandbox(); // mandatory (will throw if missing)
-    ctx.set("ssb", ssb);
+    const rt = this.getSandbox(); // mandatory (will throw if missing)
+    ctx.set("rt", rt);
   }
 
   protected makeContext(req: Request, res: Response): HandlerContext {

@@ -2,10 +2,10 @@
 /**
  * Docs:
  * - ADR-0041/0042
- * - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Parse query params into a safe filter object for known EnvServiceDto fields only.

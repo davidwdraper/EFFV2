@@ -10,10 +10,10 @@
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Generic list reader used by list-family routes (list, mirror, etc.).
@@ -40,7 +40,7 @@
  *
  * Notes:
  * - DB config is obtained via HandlerBase.getMongoConfig(), which reads DB vars
- *   from SvcSandbox and applies ADR-0074 DB_STATE semantics (domain DBs get
+ *   from SvcRuntime and applies ADR-0074 DB_STATE semantics (domain DBs get
  *   <base>_<DB_STATE>, *_infra DBs ignore DB_STATE).
  */
 

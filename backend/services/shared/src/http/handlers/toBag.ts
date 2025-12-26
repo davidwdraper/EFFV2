@@ -9,10 +9,10 @@
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Populate a DtoBag from a wire bag envelope (one or many).

@@ -128,7 +128,7 @@ export class S2sProxyHandler extends HandlerBase {
           httpStatus: 500,
           title: "gateway_proxy_missing_env",
           detail:
-            "Gateway proxy expected env label on proxy.context but none was provided. Dev: ensure controller seeds `proxy.env` from AppBase.getEnvLabel() (SvcSandbox authoritative).",
+            "Gateway proxy expected env label on proxy.context but none was provided. Dev: ensure controller seeds `proxy.env` from AppBase.getEnvLabel() (SvcRuntime authoritative).",
           stage: "proxy.s2s.env.missing",
           requestId,
           rawError: null,

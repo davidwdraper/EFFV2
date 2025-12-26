@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0043 (Finalize mapping / failure propagation)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Transport-agnostic Problem primitives (RFC7807-ish).
@@ -105,7 +105,7 @@ export class ProblemFactory {
   }
 
   // ───────────────────────────────────────────
-  // Env / config helpers (used by SvcSandbox)
+  // Env / config helpers (used by SvcRuntime)
   // ───────────────────────────────────────────
 
   public envMissing(key: string): ProblemJson {

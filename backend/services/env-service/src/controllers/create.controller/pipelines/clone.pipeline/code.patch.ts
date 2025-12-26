@@ -4,7 +4,7 @@
  * - Inherit controller + pipeline docs.
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Take the single EnvServiceDto in ctx["clone.existingBag"], clone it, patch it

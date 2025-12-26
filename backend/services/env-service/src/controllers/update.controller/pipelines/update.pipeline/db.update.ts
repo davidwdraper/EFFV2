@@ -7,10 +7,10 @@
  *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Consume the UPDATED singleton DtoBag from ctx["bag"] and persist via DbWriter.update().

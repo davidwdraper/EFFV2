@@ -9,10 +9,10 @@
  *   - ADR-0048 (Reader/Writer/Deleter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical wire id="_id")
  *   - ADR-0056 (Typed routes use :dtoType; handler resolves collection via Registry)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Generic DELETE-by-id handler for typed routes:

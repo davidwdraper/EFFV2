@@ -7,7 +7,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
@@ -15,8 +15,8 @@
  * - For env-service, DB/index ensure is ON (checkDb=true).
  *
  * Invariants:
- * - env-service is the first “pure” SvcSandbox service: ssb is REQUIRED here.
- * - Commit 2: envLabel is authoritative from ssb (AppBase.getEnvLabel()).
+ * - env-service is the first “pure” SvcRuntime service: rt is REQUIRED here.
+ * - Commit 2: envLabel is authoritative from rt (AppBase.getEnvLabel()).
  */
 
 import type { Express, Router } from "express";
@@ -28,7 +28,7 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
 import { buildEnvServiceRouter } from "./routes/env-service.route";
-import type { SvcSandbox } from "@nv/shared/sandbox/SvcSandbox";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 type CreateAppOptions = {
   slug: string;
@@ -36,7 +36,7 @@ type CreateAppOptions = {
 
   /**
    * Environment label for this running instance (e.g., "dev", "staging", "prod").
-   * Retained for diagnostics only; AppBase env label is sourced from ssb.
+   * Retained for diagnostics only; AppBase env label is sourced from rt.
    */
   envLabel: string;
 
@@ -46,7 +46,7 @@ type CreateAppOptions = {
   /**
    * ADR-0080: canonical runtime container (mandatory for env-service).
    */
-  ssb: SvcSandbox;
+  rt: SvcRuntime;
 };
 
 class EnvServiceApp extends AppBase {
@@ -65,8 +65,8 @@ class EnvServiceApp extends AppBase {
       // env-service is DB-backed: requires NV_MONGO_* and index ensure at boot.
       checkDb: true,
 
-      // ADR-0080: env-service MUST run with ssb.
-      ssb: opts.ssb,
+      // ADR-0080: env-service MUST run with rt.
+      rt: opts.rt,
     });
 
     this.registry = new Registry();
@@ -75,8 +75,8 @@ class EnvServiceApp extends AppBase {
     this.log.info(
       {
         declaredEnvLabel: opts.envLabel,
-        appEnvLabel: this.getEnvLabel(), // now sourced from ssb
-        ssb: opts.ssb.describe(),
+        appEnvLabel: this.getEnvLabel(), // now sourced from rt
+        rt: opts.rt.describe(),
       },
       "env-service app constructed"
     );

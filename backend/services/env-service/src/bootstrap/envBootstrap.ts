@@ -7,7 +7,7 @@
  *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0074 (DB_STATE + _infra state-invariant DBs)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Bootstrap env-service without svcenvClient or SvcEnvDto.

@@ -10,7 +10,7 @@
  *   - ADR-0056 (DELETE path uses <DtoTypeKey>) — generalized: :dtoType on every route
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Orchestrate DELETE /api/svcconfig/v1/:dtoType/delete/:id

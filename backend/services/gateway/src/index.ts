@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0014 (ServiceEntrypoint vs ServiceBase)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
  *
  * Purpose:

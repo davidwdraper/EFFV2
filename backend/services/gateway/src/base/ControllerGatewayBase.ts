@@ -7,7 +7,7 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
  *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics) // gateway opts OUT
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
  *
  * Purpose:

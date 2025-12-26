@@ -10,7 +10,7 @@
  *   - ADR-0053 (Instantiation discipline via DtoBase secret)
  *   - ADR-0057 (ID Generation & Validation — id is a string (UUIDv4 or 24-hex Mongo id); immutable; WARN on overwrite attempt)
  *   - ADR-0074 (DB_STATE-aware DB selection via getDbVar; _infra DBs state-invariant)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Concrete DTO for env-service configuration records.
@@ -23,7 +23,7 @@
  *
  * Invariants:
  * - DTO must not read process.env (ADR-0080). Bootstraps may read process.env,
- *   but runtime reads must come from vars and/or SvcSandbox identity.
+ *   but runtime reads must come from vars and/or SvcRuntime identity.
  */
 
 import { DtoBase, DtoValidationError } from "./DtoBase";
@@ -188,7 +188,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
    *
    * Invariants:
    * - Defensive copy; callers cannot mutate DTO internals.
-   * - Used for runtime composition (e.g., entrypoint builds SvcSandbox vars map).
+   * - Used for runtime composition (e.g., entrypoint builds SvcRuntime vars map).
    */
   public getVarsRaw(): Record<string, string> {
     return { ...this._vars };

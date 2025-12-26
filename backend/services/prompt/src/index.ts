@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env) [legacy concept; now DB-backed config]
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Pure orchestration entrypoint for prompt service.
@@ -30,7 +30,7 @@ const LOG_FILE = path.resolve(process.cwd(), "prompt-startup-error.log");
 (async () => {
   try {
     // Step 1: Bootstrap and load configuration (env-service-backed config)
-    const { envBag, envReloader, host, port, ssb } = await envBootstrap({
+    const { envBag, envReloader, host, port, rt } = await envBootstrap({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
       logFile: LOG_FILE,
@@ -68,7 +68,7 @@ const LOG_FILE = path.resolve(process.cwd(), "prompt-startup-error.log");
       version: SERVICE_VERSION,
       envDto: primary,
       envReloader: envReloaderForApp,
-      ssb,
+      rt,
     });
 
     // Step 5: Start listening.

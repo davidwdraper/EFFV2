@@ -4,7 +4,7 @@
  * - Inherit controller + pipeline docs.
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Parse clone.sourceKey ("slug@version@env") and configure the shared

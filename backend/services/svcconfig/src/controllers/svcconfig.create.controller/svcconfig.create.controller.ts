@@ -11,7 +11,7 @@
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Orchestrate PUT /api/svcconfig/v1/:dtoType/create

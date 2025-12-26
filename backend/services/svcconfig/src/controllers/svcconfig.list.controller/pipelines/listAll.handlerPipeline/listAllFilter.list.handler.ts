@@ -9,10 +9,10 @@
  *   - ADR-0030 (SvcConfig architecture — env/slug scoped routing)
  *   - ADR-0017 (Problem+JSON error semantics; Ops-guided detail)
  *   - LDD-19 (S2S protocol; x-service-name caller identity)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Build deterministic filter for svcconfig listAll.
@@ -23,7 +23,7 @@
  * - listAll remains fully server-controlled, no client filters applied.
  *
  * Invariants:
- * - Reads runtime vars via HandlerBase.getVar() (SvcSandbox-backed).
+ * - Reads runtime vars via HandlerBase.getVar() (SvcRuntime-backed).
  * - Must not throw out of execute(); all errors are attached via failWithError().
  */
 

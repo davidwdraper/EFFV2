@@ -2,178 +2,61 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
- * - LDDs:
- *   - LDD-03 (envBootstrap & SvcClient)
- *   - LDD-12 (SvcClient & S2S Contract Architecture)
- *   - LDD-19 (S2S Protocol)
- *   - LDD-33 (Security & Hardening)
  * - ADRs:
- *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0047 (DtoBag & Views)
- *   - ADR-0050 (Wire Bag Envelope — canonical wire format)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
  *
  * Purpose:
- * - Shared types and contracts for SvcClient.
- * - Keeps the main SvcClient class file below god-file size and single-concern.
+ * - Central type contracts for SvcClient (DTO + Raw paths).
  *
  * Invariants:
- * - No implicit mocks: transport mocking must be explicit via ISvcClientTransport injection.
+ * - DTO path uses DtoBag-only wire envelopes.
+ * - Raw path treats fullPath as opaque and identical to the inbound URL path
+ *   (including /api prefix and querystring), with only host/port swapped.
  */
 
-import type { DtoBag } from "../dto/DtoBag";
-
-export interface WireBagJson {
-  items: unknown[];
-  meta?: Record<string, unknown>;
-}
-
-/**
- * Raw response envelope used by SvcClient and transport.
- *
- * NOTE:
- * - Does NOT interpret JSON.
- * - Callers decide how (and whether) to parse `bodyText`.
- */
-export interface RawResponse {
-  status: number;
-  headers: Record<string, string>;
-  bodyText: string;
-}
-
-/**
- * Result of resolving a target via svcconfig.
- *
- * This is intentionally abstracted away from svcconfig's concrete DTO shape.
- */
-export interface SvcTarget {
-  baseUrl: string; // e.g. "https://svc-env-dev.internal:8443"
-  slug: string; // target slug ("env-service", "svcconfig", "auth", etc.)
-  version: number; // major API version (1, 2, ...)
-  isAuthorized: boolean; // whether the current caller may call this target
+export type SvcTarget = {
+  slug: string;
+  version: number;
+  baseUrl: string; // e.g. http://localhost:4015
+  isAuthorized: boolean;
   reasonIfNotAuthorized?: string;
-}
+};
 
-/**
- * svcconfig resolver abstraction.
- *
- * Implementations:
- * - Call svcconfig directly (using a plain HTTP client).
- * - Apply call-graph policy to determine isAuthorized.
- * - Special-case svcconfig itself to avoid recursion through SvcClient.
- */
-export interface ISvcconfigResolver {
-  resolveTarget(env: string, slug: string, version: number): Promise<SvcTarget>;
-}
+export type RawResponse = {
+  status: number;
+  bodyText: string;
+  headers: Record<string, string>;
+};
 
-/**
- * KMS/JWT token factory abstraction (placeholder).
- *
- * Current behavior:
- * - Optional dependency: when not supplied, SvcClient omits the Authorization header.
- *
- * Future behavior:
- * - Will become mandatory once verifyS2S is fully enforced across workers.
- */
-export interface IKmsTokenFactory {
-  mintToken(input: {
+export type RequestIdProvider = () => string;
+
+export type ISvcClientLogger = {
+  debug: (msg: string, meta?: Record<string, unknown>) => void;
+  info: (msg: string, meta?: Record<string, unknown>) => void;
+  warn: (msg: string, meta?: Record<string, unknown>) => void;
+  error: (msg: string, meta?: Record<string, unknown>) => void;
+};
+
+export type ISvcconfigResolver = {
+  resolveTarget: (
+    env: string,
+    slug: string,
+    version: number
+  ) => Promise<SvcTarget>;
+};
+
+export type IKmsTokenFactory = {
+  mintToken: (params: {
     env: string;
     callerSlug: string;
     targetSlug: string;
     targetVersion: number;
-  }): Promise<string>;
-}
+  }) => Promise<string>;
+};
 
-/**
- * Provides a requestId when one is not explicitly supplied.
- * Typically wired to the per-request context or a UUID generator.
- */
-export type RequestIdProvider = () => string;
-
-export interface SvcClientCallParams {
-  env: string;
-  slug: string; // target service slug
-  version: number;
-  dtoType: string;
-  op: string;
-  method: "GET" | "PUT" | "PATCH" | "POST" | "DELETE";
-  /**
-   * CRUD identifier used for suffix construction when required.
-   *
-   * Example:
-   * - PATCH update typically targets `/<dtoType>/<op>/<id>`
-   * - DELETE typically targets `/<dtoType>/<op>/<id>`
-   *
-   * NOTE:
-   * - This is a *wire* path identifier, not a Mongo _id.
-   * - SvcClient enforces when/where it is required.
-   */
-  id?: string;
-  bag?: DtoBag<any>;
-  pathSuffix?: string; // optional override for `<dtoType>/<op>`
-  requestId?: string;
-  extraHeaders?: Record<string, string>;
-  timeoutMs?: number;
-}
-
-/**
- * Raw-body S2S call parameters (ADR-0066).
- *
- * Intended primarily for the gateway edge, where the JSON payload must be
- * treated as opaque and forwarded unchanged.
- *
- * For gateway:
- * - `fullPath` is the *entire* inbound path (starting with `/api/...`).
- * - SvcClient.callRaw() will simply swap the host/port via svcconfig and
- *   reuse this path as-is, avoiding any URL gymnastics.
- */
-export interface SvcClientRawCallParams {
-  env: string;
-  slug: string; // target service slug
-  version: number; // API major version (1, 2, ...)
-  method: "GET" | "PUT" | "PATCH" | "POST" | "DELETE";
-  /**
-   * Full inbound path including `/api`.
-   * Example: `/api/auth/v1/auth/create`
-   *
-   * Gateway passes this directly; SvcClient only changes the origin
-   * (scheme/host/port) based on svcconfig.
-   */
-  fullPath: string;
-  body?: unknown; // unmodified JSON or string from caller
-  requestId?: string;
-  extraHeaders?: Record<string, string>;
-  timeoutMs?: number;
-}
-
-/**
- * Minimal logger interface used by SvcClient.
- * Implementations are expected to be backed by the shared logger util.
- */
-export interface ISvcClientLogger {
-  debug(msg: string, meta?: Record<string, unknown>): void;
-  info(msg: string, meta?: Record<string, unknown>): void;
-  warn(msg: string, meta?: Record<string, unknown>): void;
-  error(msg: string, meta?: Record<string, unknown>): void;
-}
-
-/**
- * S2S transport abstraction.
- *
- * Purpose:
- * - Allows explicit, rail-controlled S2S mocking (S2S_MOCKS) without
- *   handlers branching on flags.
- * - Default transport uses fetch + timeout.
- * - Tests may inject a deterministic transport returning known responses.
- *
- * Invariants:
- * - Transport injection must be explicit; there is NO implicit mocking.
- * - A "mock transport" should fail loudly unless it is intentionally
- *   returning deterministic canned responses for a given test.
- */
-export interface ISvcClientTransport {
-  execute(request: {
+export type ISvcClientTransport = {
+  execute: (request: {
     url: string;
     method: string;
     headers: Record<string, string>;
@@ -182,5 +65,60 @@ export interface ISvcClientTransport {
     requestId: string;
     targetSlug: string;
     logPrefix: string;
-  }): Promise<RawResponse>;
-}
+  }) => Promise<RawResponse>;
+};
+
+export type WireBagJson = { items: unknown[]; meta?: unknown };
+
+export type SvcClientCallParams = {
+  env: string;
+  slug: string;
+  version: number;
+  dtoType: string;
+  op: string;
+  method: string;
+  requestId?: string;
+  timeoutMs?: number;
+  /**
+   * DTO wire bag envelope (DtoBag) — required for non-GETs except delete.
+   * The actual DtoBag class lives outside shared/s2s types to avoid circular deps;
+   * callers provide an object supporting toBody().
+   */
+  bag?: { toBody: () => unknown };
+  /**
+   * Optional explicit id (for read/update/delete); if omitted, SvcClient will attempt
+   * to derive _id from the singleton DTO inside the bag.
+   */
+  id?: string;
+  /**
+   * Optional manual override for path suffix (advanced callers only).
+   */
+  pathSuffix?: string;
+  /**
+   * Extra headers for the outbound request (e.g., correlation or edge metadata).
+   */
+  extraHeaders?: Record<string, string>;
+};
+
+export type SvcClientRawCallParams = {
+  env: string;
+  slug: string;
+  version: number;
+  method: string;
+  /**
+   * Opaque inbound full path including `/api/...` and querystring.
+   * Must start with `/api/`.
+   */
+  fullPath: string;
+  requestId?: string;
+  timeoutMs?: number;
+  /**
+   * Raw JSON/body pass-through. For non-GET, if not a string, it will be JSON.stringify()'d.
+   */
+  body?: unknown;
+  /**
+   * Extra headers to include on outbound request (after propagation headers).
+   * Gateway uses this for stripped/normalized client headers.
+   */
+  extraHeaders?: Record<string, string>;
+};

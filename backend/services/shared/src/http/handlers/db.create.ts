@@ -7,10 +7,10 @@
  *   - ADR-0048 (All writes accept DtoBag)
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0053 (Bag Purity; final handler leaves DtoBag only)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Take a DtoBag<DtoBase> from the ctx bus and persist it via DbWriter.

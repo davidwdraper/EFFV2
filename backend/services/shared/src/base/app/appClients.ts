@@ -4,6 +4,8 @@
  * - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  * - LDD-12 (SvcClient S2S contract)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ * - ADR-0082 (Infra Service Health Boot Check)
  *
  * Purpose:
  * - Shared wiring for SvcClient and PromptsClient for AppBase.
@@ -11,13 +13,13 @@
  *
  * Invariants:
  * - No TTL fallback: NV_SVCCONFIG_CACHE_TTL_MS must be explicitly set to a valid integer.
+ * - No resolver fallback: if svcconfig resolver cannot be constructed, boot must fail fast.
  * - No implicit S2S mocking: when S2S_MOCKS is enabled, outbound S2S calls are blocked
  *   unless a deterministic test transport is explicitly injected.
  */
 
 import {
   SvcClient,
-  type SvcTarget,
   type ISvcconfigResolver,
   type ISvcClientLogger,
   type ISvcClientTransport,
@@ -61,6 +63,41 @@ function requirePositiveIntVarFromDto(
   return n;
 }
 
+function requireSvcconfigResolver(opts: {
+  service: string;
+  log: IBoundLogger;
+  loggerAdapter: ISvcClientLogger;
+  envDto: EnvServiceDto;
+  ttlMs: number;
+}): ISvcconfigResolver {
+  const { service, log, loggerAdapter, envDto, ttlMs } = opts;
+
+  // Fail-fast, but with useful Ops guidance.
+  // If SvcconfigResolverWithCache throws, something fundamental is missing (usually NV_SVCCONFIG_URL).
+  try {
+    const resolver = new SvcconfigResolverWithCache({
+      logger: loggerAdapter,
+      ttlMs,
+    });
+
+    log.info(
+      { ttlMs },
+      `[${service}] SvcClient: using svcconfig-backed resolver with TTL cache`
+    );
+
+    return resolver;
+  } catch (err) {
+    // IMPORTANT: no fallback resolver. If we can't build the resolver, the service must not boot.
+    // This avoids a “service looks up but can’t resolve targets” drift state.
+    throw new Error(
+      `SVCCONFIG_RESOLVER_INIT_FAILED: Failed to construct svcconfig resolver for service="${service}". ` +
+        `Likely missing/invalid NV_SVCCONFIG_URL in env-service for env="${envDto.getEnvLabel()}". ` +
+        'Ops: set NV_SVCCONFIG_URL (absolute URL, e.g., "http://localhost:4020") and ensure svcconfig is reachable. ' +
+        `Detail: ${(err as Error)?.message ?? String(err)}`
+    );
+  }
+}
+
 export function createSvcClientForApp(opts: {
   service: string;
   version: number;
@@ -93,36 +130,14 @@ export function createSvcClientForApp(opts: {
     "NV_SVCCONFIG_CACHE_TTL_MS"
   );
 
-  let resolver: ISvcconfigResolver;
-  try {
-    resolver = new SvcconfigResolverWithCache({
-      logger: loggerAdapter,
-      ttlMs,
-    });
-
-    log.info(
-      { ttlMs },
-      `[${service}] SvcClient: using svcconfig-backed resolver with TTL cache`
-    );
-  } catch (err) {
-    const msg =
-      `[${service}] SvcClient resolver not wired. ` +
-      `Cannot resolve svcconfig targets; NV_SVCCONFIG_URL is likely missing or invalid. ` +
-      "Ops: set NV_SVCCONFIG_URL for this process (absolute URL) and ensure svcconfig is reachable.";
-    log.error({ error: (err as Error)?.message }, msg);
-
-    resolver = {
-      async resolveTarget(
-        env: string,
-        slug: string,
-        targetVersion: number
-      ): Promise<SvcTarget> {
-        throw new Error(
-          `${msg} (env="${env}", slug="${slug}", version=${targetVersion})`
-        );
-      },
-    };
-  }
+  // Required resolver. No fallbacks. Ever.
+  const resolver = requireSvcconfigResolver({
+    service,
+    log,
+    loggerAdapter,
+    envDto,
+    ttlMs,
+  });
 
   return new SvcClient({
     callerSlug: service,

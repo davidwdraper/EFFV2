@@ -6,7 +6,7 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
  *   - ADR-0074 (DB_STATE-aware DB selection; _infra state-invariant bootstrap DBs)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Dedicated entrypoint for env-service.
@@ -15,13 +15,13 @@
  *
  * Invariants:
  * - After envBootstrap(), runtime must not read process.env.
- * - SvcSandbox is mandatory for env-service runtime.
+ * - SvcRuntime is mandatory for env-service runtime.
  */
 
 import createApp from "./app";
 import { envBootstrap } from "./bootstrap/envBootstrap";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import { SvcSandbox } from "@nv/shared/sandbox/SvcSandbox";
+import { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 const SERVICE_SLUG = "env-service";
 const SERVICE_VERSION = 1;
@@ -83,10 +83,13 @@ function mergeVarsFromBag(bag: unknown): Record<string, string> {
     const primary = firstDtoFromBag(envBag);
     const envLabel = primary.getEnvLabel();
 
-    // Build merged vars from the merged root+service bag.
-    const vars = mergeVarsFromBag(envBag);
+    // NOTE:
+    // SvcRuntime now requires an EnvServiceDto (ADR-0080). We still need DB_STATE
+    // before runtime construction, so we merge vars *only* to compute dbState.
+    // Runtime itself MUST remain DTO-backed (no cached vars maps).
+    const mergedVars = mergeVarsFromBag(envBag);
 
-    const dbState = (vars["DB_STATE"] ?? "").trim();
+    const dbState = (mergedVars["DB_STATE"] ?? "").trim();
     if (!dbState) {
       throw new Error(
         `BOOTSTRAP_DBSTATE_MISSING: DB_STATE is required for env="${envLabel}", slug="${SERVICE_SLUG}", version=${SERVICE_VERSION}. ` +
@@ -94,16 +97,16 @@ function mergeVarsFromBag(bag: unknown): Record<string, string> {
       );
     }
 
-    // SvcSandbox is the canonical runtime owner (ADR-0080).
+    // SvcRuntime is the canonical runtime owner (ADR-0080).
     // Logger is a minimal boot logger until the shared logger is fully up inside AppBase.
-    const ssb = new SvcSandbox(
+    const rt = new SvcRuntime(
       {
         serviceSlug: SERVICE_SLUG,
         serviceVersion: SERVICE_VERSION,
         env: envLabel,
         dbState,
       },
-      vars,
+      primary,
       bootLogger() as any
     );
 
@@ -113,7 +116,7 @@ function mergeVarsFromBag(bag: unknown): Record<string, string> {
       envLabel,
       envDto: primary,
       envReloader: async () => firstDtoFromBag(await envReloader()),
-      ssb,
+      rt,
     });
 
     app.listen(port, host, () => {
@@ -124,7 +127,7 @@ function mergeVarsFromBag(bag: unknown): Record<string, string> {
         envLabel,
         host,
         port,
-        ssb: ssb.describe(),
+        rt: rt.describe(),
       });
     });
   } catch (err) {

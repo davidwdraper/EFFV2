@@ -12,7 +12,7 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Use DbReader<TDto> to fetch a deterministic batch with cursor pagination.
@@ -33,7 +33,7 @@
  *
  * Notes:
  * - DB config is resolved via HandlerBase.getMongoConfig(), which reads from
- *   SvcSandbox vars and applies DB_STATE semantics (ADR-0074).
+ *   SvcRuntime vars and applies DB_STATE semantics (ADR-0074).
  * - DTO ctor is supplied via ctx["list.dtoCtor"] by the pipeline.
  */
 

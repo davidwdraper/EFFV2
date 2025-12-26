@@ -205,7 +205,7 @@ export class SvcClient {
       });
 
       throw new Error(
-        `SvcClient unauthorized call: caller="${this.callerSlug}" → target="${target.slug}@v${target.version}" in env="${params.env}". Reason: ${reason}`
+        `SvcClient unauthorized call: caller="${this.callerSlug}" → target="${this.callerSlug}@v${this.callerVersion}" → "${target.slug}@v${target.version}" in env="${params.env}". Reason: ${reason}`
       );
     }
 
@@ -303,7 +303,7 @@ export class SvcClient {
 
   public async callRaw(params: SvcClientRawCallParams): Promise<RawResponse> {
     const requestId = params.requestId ?? this.requestIdProvider();
-    const fullPath = (params as any).fullPath as string | undefined;
+    const fullPath = params.fullPath;
 
     this.logger.debug("SvcClient.callRaw.begin", {
       requestId,
@@ -326,6 +326,36 @@ export class SvcClient {
       throw new Error(
         `SvcClient.callRaw requires 'fullPath' (inbound URL path including /api). ` +
           `Caller="${this.callerSlug}" attempted raw call to "${params.slug}@v${params.version}" without fullPath.`
+      );
+    }
+
+    // Gateway contract: treat inbound path as opaque and identical.
+    // No normalization, no reconstruction, no best-effort fixes.
+    if (!fullPath.startsWith("/")) {
+      this.logger.error("SvcClient.callRaw.fullPathNotAbsolute", {
+        requestId,
+        targetSlug: params.slug,
+        targetVersion: params.version,
+        fullPathSnippet: fullPath.slice(0, 256),
+      });
+
+      throw new Error(
+        `SvcClient.callRaw requires 'fullPath' to start with "/". ` +
+          `Caller="${this.callerSlug}" passed an invalid fullPath="${fullPath}".`
+      );
+    }
+
+    if (!fullPath.startsWith("/api/")) {
+      this.logger.error("SvcClient.callRaw.fullPathNotApi", {
+        requestId,
+        targetSlug: params.slug,
+        targetVersion: params.version,
+        fullPathSnippet: fullPath.slice(0, 256),
+      });
+
+      throw new Error(
+        `SvcClient.callRaw requires 'fullPath' to include the inbound "/api/..." prefix (gateway passthrough contract). ` +
+          `Caller="${this.callerSlug}" passed fullPath="${fullPath}".`
       );
     }
 
@@ -352,10 +382,7 @@ export class SvcClient {
     }
 
     const baseTrimmed = target.baseUrl.replace(/\/+$/, "");
-    const normalizedFullPath = fullPath.startsWith("/")
-      ? fullPath
-      : `/${fullPath}`;
-    const url = `${baseTrimmed}${normalizedFullPath}`;
+    const url = `${baseTrimmed}${fullPath}`;
 
     const propagated = getS2SPropagationHeaders();
 
@@ -385,10 +412,11 @@ export class SvcClient {
       headers,
     });
 
+    // Never log raw header values (gateway may proxy secrets).
     this.logger.debug("SvcClient.callRaw.outbound_headers", {
       requestId,
       targetSlug: target.slug,
-      headers,
+      headerKeys: Object.keys(headers),
     });
 
     const response = await this.transport.execute({

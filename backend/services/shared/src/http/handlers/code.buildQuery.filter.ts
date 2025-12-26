@@ -6,10 +6,10 @@
  * - ADR-0043 (Hydration + Failure Propagation)
  * - ADR-0058 (HandlerBase.getVar — Strict Env Accessor)
  * - ADR-0061 (svcconfig s2s-route — S2S target resolution)
- * - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Build a standard Mongo filter object dynamically from a declarative spec,

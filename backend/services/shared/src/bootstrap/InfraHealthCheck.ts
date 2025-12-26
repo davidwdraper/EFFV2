@@ -3,11 +3,11 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0082 (Infra Service Health Boot Check)
  *
  * Purpose:
- * - Boot-time infra dependency verification for DOMAIN services.
+ * - Boot-time infra dependency verification for services that opt in (usually DOMAIN services).
  * - Hard-fail if required infra services are unreachable/unhealthy.
  *
  * Flow:
@@ -23,7 +23,7 @@
  * - No new environment variables; infra list is config-driven via service-root.
  *
  * Notes:
- * - Infra services themselves must not run this (guarded by AppBase.isInfraService()).
+ * - Whether a service runs this check is controlled by AppBase.shouldSkipInfraBootHealthCheck().
  */
 
 import type { IBoundLogger } from "../logger/Logger";
@@ -150,11 +150,6 @@ export class InfraHealthCheck {
     );
   }
 
-  /**
-   * Private helper requested:
-   * - Performs the SvcClient call for health.
-   * - Used for env-service and for additional slugs.
-   */
   private async checkHealth(slug: string): Promise<void> {
     const { svcClient, envLabel, log, currentServiceSlug } = this.opts;
     const clean = (slug ?? "").trim();

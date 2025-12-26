@@ -65,7 +65,7 @@ export class GatewayProxyController extends ControllerGatewayBase {
     // can simply swap host/port and reuse it.
     const fullPath = req.originalUrl || req.url || req.path;
 
-    // Commit 2: env label is owned by SvcSandbox (via AppBase.getEnvLabel()).
+    // Commit 2: env label is owned by SvcRuntime (via AppBase.getEnvLabel()).
     // No fallbacks; if env is missing, bootstrap must fail before reaching here.
     const envLabel = this.getEnvLabel();
 

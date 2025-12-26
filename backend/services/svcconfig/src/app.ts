@@ -7,7 +7,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
@@ -24,24 +24,24 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
 import { buildSvcconfigRouter } from "./routes/svcconfig.route";
-import type { SvcSandbox } from "@nv/shared/sandbox/SvcSandbox";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 type CreateAppOptions = {
   slug: string;
   version: number;
   /**
    * Logical environment label for this process (e.g., "dev", "stage", "prod").
-   * NOTE: Convenience only; AppBase must source envLabel from ssb (ADR-0080 Commit 2).
+   * NOTE: Convenience only; AppBase must source envLabel from rt (ADR-0080 Commit 2).
    */
   envLabel: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 
   /**
-   * SvcSandbox is mandatory (ADR-0080).
+   * SvcRuntime is mandatory (ADR-0080).
    * Constructed by ServiceEntrypoint after envDto is available.
    */
-  ssb: SvcSandbox;
+  rt: SvcRuntime;
 };
 
 class SvcconfigApp extends AppBase {
@@ -58,7 +58,7 @@ class SvcconfigApp extends AppBase {
       envDto: opts.envDto,
       envReloader: opts.envReloader,
       checkDb: true,
-      ssb: opts.ssb,
+      rt: opts.rt,
     });
 
     this.registry = new Registry();

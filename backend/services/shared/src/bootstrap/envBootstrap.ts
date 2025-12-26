@@ -6,7 +6,7 @@
  *   - ADR-0039 (svcenv centralized non-secret env)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared environment bootstrap for all services that obtain config from env-service.
@@ -18,11 +18,12 @@
  *     2) Fetch the EnvServiceDto config bag for (envLabel, slug, version).
  * - Work in terms of DtoBag<EnvServiceDto> (no naked DTOs cross this boundary).
  * - Derive HTTP host/port from the primary DTO in the bag.
- * - Construct SvcSandbox using the REAL bound logger (no shims).
+ * - Construct SvcRuntime using the REAL bound logger (no shims).
  *
  * Invariants:
  * - No .env file parsing here except NV_ENV (logical environment label) and NV_ENV_SERVICE_URL
  *   for bootstrapping env-service location.
+ * - DTO encapsulation is preserved: SvcRuntime must NOT extract and cache vars outside EnvServiceDto.
  * - All failures log concrete Ops guidance and terminate the process with exit code 1.
  */
 
@@ -38,9 +39,8 @@ import {
   type SvcTarget,
 } from "../s2s/SvcClient";
 import { SvcEnvClient } from "../env/svcenvClient";
-import { SvcSandbox } from "../sandbox/SvcSandbox";
-import type { IBoundLogger } from "../logger/Logger";
-import { setLoggerEnv, getLogger } from "../logger/Logger";
+import { SvcRuntime } from "../runtime/SvcRuntime";
+import { setLoggerEnv, getLogger, type IBoundLogger } from "../logger/Logger";
 
 export type EnvBootstrapOpts = {
   slug: string;
@@ -83,9 +83,12 @@ export type EnvBootstrapResult = {
 
   /**
    * ADR-0080: Transport-agnostic runtime container.
-   * REQUIRED by AppBase ctor for SvcSandbox services.
+   * REQUIRED by AppBase ctor for SvcRuntime services.
+   *
+   * Encapsulation:
+   * - rt holds EnvServiceDto (source of truth), not an extracted vars map.
    */
-  ssb: SvcSandbox;
+  rt: SvcRuntime;
 };
 
 /** Minimal console-backed logger for SvcClient during bootstrap. */
@@ -189,35 +192,10 @@ function fatal(logFile: string, message: string, err?: unknown): never {
   process.exit(1);
 }
 
-/**
- * Extract merged vars map from EnvServiceDto.
- * We rely on DTO truth here; no defaults and no silent missing values.
- */
-function extractVars(
-  primary: EnvServiceDto,
-  logFile: string
-): Record<string, string> {
-  const body = (primary as any)?.toBody?.();
-  const vars = body?.vars;
-
-  if (!vars || typeof vars !== "object") {
-    fatal(
-      logFile,
-      "BOOTSTRAP_ENV_VARS_MISSING: EnvServiceDto.toBody() did not yield a vars map. " +
-        "Ops: ensure EnvServiceDto includes 'vars: Record<string,string>' and env-service returns it."
-    );
-  }
-
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(vars as Record<string, unknown>)) {
-    if (typeof k !== "string" || !k.trim()) continue;
-    if (typeof v !== "string") continue;
-    const kk = k.trim();
-    const vv = v.trim();
-    if (!vv) continue;
-    out[kk] = vv;
-  }
-  return out;
+function requireNonEmpty(s: unknown, code: string, detail: string): string {
+  const v = typeof s === "string" ? s.trim() : "";
+  if (!v) throw new Error(`${code}: ${detail}`);
+  return v;
 }
 
 export async function envBootstrap(
@@ -291,33 +269,26 @@ export async function envBootstrap(
     );
   }
 
-  // 5) Configure REAL logger from envDto and bind bootstrap context.
-  // NOTE: This must use the production logger pipeline (no shims).
+  // 5) Configure REAL logger from envDto (no shims) and bind bootstrap context.
   try {
     setLoggerEnv(primary);
   } catch (err) {
     fatal(
       logFile,
       "BOOTSTRAP_LOGGER_ENV_FAILED: Failed to initialize logger from EnvServiceDto. " +
-        "Ops/Dev: ensure env-service provides required logger vars (e.g., log level/service URLs).",
+        "Ops/Dev: ensure env-service provides required logger vars (e.g., LOG_LEVEL).",
       err
     );
   }
 
   let log: IBoundLogger;
   try {
-    // If your logger getter has a different name, replace this ONE symbol.
-    log = getLogger().bind({
-      service: slug,
-      version,
-      component: "bootstrap",
-      env: envLabel,
-    });
+    log = getLogger({ service: slug, component: "envBootstrap" });
   } catch (err) {
     fatal(
       logFile,
       "BOOTSTRAP_LOGGER_GET_FAILED: Failed to obtain bound logger after setLoggerEnv(). " +
-        "Ops/Dev: verify logger module exports a getter for the bound logger instance.",
+        "Ops/Dev: verify Logger.getLogger wiring.",
       err
     );
   }
@@ -326,13 +297,18 @@ export async function envBootstrap(
   let host: string;
   let port: number;
   try {
-    host = primary.getEnvVar("NV_HTTP_HOST");
+    host = requireNonEmpty(
+      primary.getEnvVar("NV_HTTP_HOST"),
+      "BOOTSTRAP_HTTP_HOST_MISSING",
+      `NV_HTTP_HOST is required for env="${envLabel}", slug="${slug}", version=${version}. ` +
+        "Ops: set NV_HTTP_HOST in env-service for this service."
+    );
+
     const rawPort = primary.getEnvVar("NV_HTTP_PORT");
     const n = Number(rawPort);
-    if (!Number.isFinite(n) || n <= 0) {
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
       throw new Error(
-        `NV_HTTP_PORT must be a positive integer, got "${rawPort}". ` +
-          "Ops: correct this value in the env-service config document for this service."
+        `NV_HTTP_PORT must be a positive integer string, got "${rawPort}".`
       );
     }
     port = Math.trunc(n);
@@ -340,44 +316,53 @@ export async function envBootstrap(
     fatal(
       logFile,
       "BOOTSTRAP_HTTP_CONFIG_INVALID: Failed to derive NV_HTTP_HOST/NV_HTTP_PORT " +
-        "from the EnvServiceDto in the config bag. Ops: ensure these keys exist and hold valid values.",
+        `from EnvServiceDto for env="${envLabel}", slug="${slug}", version=${version}. ` +
+        "Ops: ensure these keys exist and are valid.",
       err
     );
   }
 
-  // 7) Build SvcSandbox (ADR-0080) from identity + vars + REAL logger
-  const vars = extractVars(primary, logFile);
-
-  let dbState: string;
+  // 7) Build SvcRuntime (ADR-0080) from identity + EnvServiceDto + REAL logger
+  //
+  // Encapsulation rule:
+  // - We may read DB_STATE to form identity, but runtime must not store a second vars map.
+  let dbStateRaw: string;
   try {
-    dbState = primary.getEnvVar("DB_STATE");
+    dbStateRaw = primary.getEnvVar("DB_STATE");
   } catch (err) {
     fatal(
       logFile,
-      "BOOTSTRAP_DB_STATE_MISSING: DB_STATE is required for SvcSandbox identity. " +
+      "BOOTSTRAP_DB_STATE_MISSING: DB_STATE is required for SvcRuntime identity. " +
         `Ops: add DB_STATE to env-service config for env="${envLabel}", slug="${slug}", version=${version}.`,
       err
     );
   }
 
-  let ssb: SvcSandbox;
+  const dbState = requireNonEmpty(
+    dbStateRaw,
+    "BOOTSTRAP_DB_STATE_MISSING",
+    `DB_STATE is required for env="${envLabel}", slug="${slug}", version=${version}. ` +
+      'Ops: set "DB_STATE" in env-service for this service.'
+  );
+
+  let rt: SvcRuntime;
   try {
-    ssb = new SvcSandbox(
+    rt = new SvcRuntime(
       {
         serviceSlug: slug,
         serviceVersion: version,
         env: envLabel,
         dbState,
       },
-      vars,
+      primary, // <-- DTO stays the source of truth
       log,
       {}
     );
   } catch (err) {
     fatal(
       logFile,
-      "BOOTSTRAP_SSB_CONSTRUCT_FAILED: Failed to construct SvcSandbox. " +
-        "Ops/Dev: verify env-service vars map and logger wiring.",
+      "BOOTSTRAP_RT_CONSTRUCT_FAILED: Failed to construct SvcRuntime. " +
+        "Ops/Dev: verify EnvServiceDto + logger wiring.",
       err
     );
   }
@@ -407,6 +392,6 @@ export async function envBootstrap(
     host,
     port,
     checkDb,
-    ssb,
+    rt,
   };
 }

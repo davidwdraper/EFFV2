@@ -11,10 +11,10 @@
  *   - ADR-0048 (DbReader contract)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id is DTO.id)
  *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Single-record read by primary key only ("id", string).

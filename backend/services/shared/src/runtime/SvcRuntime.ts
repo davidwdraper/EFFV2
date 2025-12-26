@@ -1,15 +1,15 @@
-// backend/services/shared/src/sandbox/SvcSandbox.ts
+// backend/services/shared/src/runtime/SvcRuntime.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Canonical service runtime container, transport-agnostic.
  * - Single source of truth for:
  *   - identity (service/env/version/dbState)
- *   - validated vars (string map)
+ *   - env-backed vars (via EnvServiceDto; no duplication)
  *   - logger handle
  *   - problem factory
  *   - capability slots (db/s2s/audit/etc.)
@@ -18,19 +18,21 @@
  * - No process.env access (ever).
  * - No Express/HTTP constructs (ever).
  * - No default/fallback config values: missing vars throw with Ops guidance.
+ * - DTO encapsulation honored: SvcRuntime does NOT extract/persist a vars map.
  */
 
 import type { IBoundLogger } from "../logger/Logger";
 import { ProblemFactory, type ProblemJson } from "../problem/problem";
+import { EnvServiceDto } from "../dto/env-service.dto";
 
-export type SvcSandboxIdentity = {
+export type SvcRuntimeIdentity = {
   serviceSlug: string;
   serviceVersion: number;
   env: string;
   dbState: string;
 };
 
-export type SvcSandboxCaps = {
+export type SvcRuntimeCaps = {
   /**
    * Capability slots.
    * Keep these as `unknown` until each capability contract is locked.
@@ -43,19 +45,19 @@ export type SvcSandboxCaps = {
   cache?: unknown;
 };
 
-export class SvcSandbox {
+export class SvcRuntime {
   public readonly problem: ProblemFactory;
 
   public constructor(
-    private readonly ident: SvcSandboxIdentity,
-    private readonly vars: Record<string, string>,
+    private readonly ident: SvcRuntimeIdentity,
+    private readonly envDto: EnvServiceDto,
     private readonly log: IBoundLogger,
-    private readonly caps: SvcSandboxCaps = {}
+    private readonly caps: SvcRuntimeCaps = {}
   ) {
     // Validate identity (fail-fast)
     if (!ident?.serviceSlug?.trim()) {
       throw new Error(
-        "SSB_IDENT_INVALID: serviceSlug is required. Ops: construct SvcSandbox with a valid identity."
+        "RT_IDENT_INVALID: serviceSlug is required. Ops: construct SvcRuntime with a valid identity."
       );
     }
     if (
@@ -64,29 +66,29 @@ export class SvcSandbox {
       ident.serviceVersion <= 0
     ) {
       throw new Error(
-        "SSB_IDENT_INVALID: serviceVersion must be a positive number. Ops: construct SvcSandbox with a valid identity."
+        "RT_IDENT_INVALID: serviceVersion must be a positive number. Ops: construct SvcRuntime with a valid identity."
       );
     }
     if (!ident?.env?.trim()) {
       throw new Error(
-        "SSB_IDENT_INVALID: env is required. Ops: construct SvcSandbox with a valid identity."
+        "RT_IDENT_INVALID: env is required. Ops: construct SvcRuntime with a valid identity."
       );
     }
     if (!ident?.dbState?.trim()) {
       throw new Error(
-        "SSB_IDENT_INVALID: dbState is required. Ops: construct SvcSandbox with a valid identity."
+        "RT_IDENT_INVALID: dbState is required. Ops: construct SvcRuntime with a valid identity."
       );
     }
 
-    if (!vars || typeof vars !== "object") {
+    if (!envDto || typeof (envDto as any).getEnvVar !== "function") {
       throw new Error(
-        "SSB_VARS_INVALID: vars map is required. Ops: pass the merged/validated env-service vars into SvcSandbox."
+        "RT_ENV_DTO_INVALID: EnvServiceDto is required. Ops: pass the hydrated EnvServiceDto into SvcRuntime."
       );
     }
 
     if (!log || typeof (log as any).info !== "function") {
       throw new Error(
-        "SSB_LOGGER_INVALID: IBoundLogger is required. Ops: construct logger before sandbox and inject it."
+        "RT_LOGGER_INVALID: IBoundLogger is required. Ops: construct logger before runtime and inject it."
       );
     }
 
@@ -96,18 +98,26 @@ export class SvcSandbox {
       env: ident.env,
     });
 
-    // Boot trace (safe)
+    // Boot trace (safe). We may read raw vars for diagnostics only; we do NOT store them.
+    let varCount: number | undefined = undefined;
+    try {
+      const raw = this.envDto.getVarsRaw();
+      varCount = raw && typeof raw === "object" ? Object.keys(raw).length : 0;
+    } catch {
+      varCount = undefined;
+    }
+
     this.log.debug(
       {
-        event: "ssb_construct",
+        event: "rt_construct",
         service: ident.serviceSlug,
         version: ident.serviceVersion,
         env: ident.env,
         dbState: ident.dbState,
-        varCount: Object.keys(vars).length,
+        varCount,
         caps: Object.keys(caps ?? {}),
       },
-      "SvcSandbox constructed"
+      "SvcRuntime constructed"
     );
   }
 
@@ -132,25 +142,40 @@ export class SvcSandbox {
   }
 
   public describe(): Record<string, unknown> {
+    let varCount: number | undefined = undefined;
+    try {
+      const raw = this.envDto.getVarsRaw();
+      varCount = raw && typeof raw === "object" ? Object.keys(raw).length : 0;
+    } catch {
+      varCount = undefined;
+    }
+
     return {
       serviceSlug: this.ident.serviceSlug,
       serviceVersion: this.ident.serviceVersion,
       env: this.ident.env,
       dbState: this.ident.dbState,
-      varCount: Object.keys(this.vars).length,
+      varCount,
       caps: Object.keys(this.caps ?? {}),
     };
   }
 
   // ───────────────────────────────────────────
-  // Vars (strict)
+  // Env vars (strict, DTO-backed)
   // ───────────────────────────────────────────
 
   public tryVar(key: string): string | undefined {
     const k = (key ?? "").trim();
     if (!k) return undefined;
-    const v = this.vars[k];
-    const s = typeof v === "string" ? v.trim() : "";
+
+    let raw: string;
+    try {
+      raw = this.envDto.getEnvVar(k);
+    } catch {
+      return undefined;
+    }
+
+    const s = typeof raw === "string" ? raw.trim() : "";
     return s ? s : undefined;
   }
 
@@ -158,17 +183,27 @@ export class SvcSandbox {
     const k = (key ?? "").trim();
     if (!k) {
       throw new Error(
-        "SSB_GETVAR_KEY_EMPTY: getVar(key) requires a non-empty key. Ops: fix caller."
+        "RT_GETVAR_KEY_EMPTY: getVar(key) requires a non-empty key. Ops: fix caller."
       );
     }
 
-    const v = this.tryVar(k);
-    if (v !== undefined) return v;
+    // Delegate to DTO, but normalize “present but empty” into a strict missing error.
+    let raw: string;
+    try {
+      raw = this.envDto.getEnvVar(k);
+    } catch {
+      const p: ProblemJson = this.problem.envMissing(k);
+      throw new Error(
+        `RT_ENV_VAR_MISSING: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
+      );
+    }
 
-    // Throw with Ops guidance + consistent problem shape
+    const s = typeof raw === "string" ? raw.trim() : "";
+    if (s) return s;
+
     const p: ProblemJson = this.problem.envMissing(k);
     throw new Error(
-      `SSB_ENV_VAR_MISSING: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
+      `RT_ENV_VAR_MISSING: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
     );
   }
 
@@ -178,7 +213,7 @@ export class SvcSandbox {
     if (!Number.isFinite(n) || !Number.isInteger(n)) {
       const p = this.problem.envInvalid(key, `expected integer, got "${raw}"`);
       throw new Error(
-        `SSB_ENV_VAR_INVALID: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
+        `RT_ENV_VAR_INVALID: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
       );
     }
     return n;
@@ -193,7 +228,7 @@ export class SvcSandbox {
         `expected positive integer, got "${raw}"`
       );
       throw new Error(
-        `SSB_ENV_VAR_INVALID: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
+        `RT_ENV_VAR_INVALID: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
       );
     }
     return n;
@@ -208,29 +243,44 @@ export class SvcSandbox {
   }
 
   // ───────────────────────────────────────────
+  // DTO access (explicit)
+  // ───────────────────────────────────────────
+
+  /**
+   * Expose the EnvServiceDto itself for callers that legitimately need it
+   * (e.g., logger env binding, reload plumbing).
+   *
+   * Invariant:
+   * - Callers MUST NOT cache extracted vars; always ask the DTO/runtime.
+   */
+  public getEnvDto(): EnvServiceDto {
+    return this.envDto;
+  }
+
+  // ───────────────────────────────────────────
   // Capabilities (typed later)
   // ───────────────────────────────────────────
 
-  public getCaps(): SvcSandboxCaps {
+  public getCaps(): SvcRuntimeCaps {
     return this.caps;
   }
 
-  public tryCap<K extends keyof SvcSandboxCaps>(
+  public tryCap<K extends keyof SvcRuntimeCaps>(
     k: K
-  ): SvcSandboxCaps[K] | undefined {
+  ): SvcRuntimeCaps[K] | undefined {
     return this.caps?.[k];
   }
 
-  public getCap<K extends keyof SvcSandboxCaps>(k: K): SvcSandboxCaps[K] {
+  public getCap<K extends keyof SvcRuntimeCaps>(k: K): SvcRuntimeCaps[K] {
     const v = this.tryCap(k);
     if (v === undefined) {
       throw new Error(
-        `SSB_CAPABILITY_MISSING: capability "${String(
+        `RT_CAPABILITY_MISSING: capability "${String(
           k
         )}" is not available for service="${this.ident.serviceSlug}" v${
           this.ident.serviceVersion
         } env="${this.ident.env}". ` +
-          "Ops/Dev: ensure sandbox builder wires this capability before use."
+          "Ops/Dev: ensure runtime builder wires this capability before use."
       );
     }
     return v;

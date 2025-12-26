@@ -6,16 +6,21 @@
  *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
- *   - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared async entrypoint helper for HTTP services.
  * - Owns envBootstrap + EnvServiceDto selection + reloader adaptation +
- *   SvcSandbox construction + listen() + fatal error handling.
+ *   SvcRuntime construction + listen() + fatal error handling.
  *
  * Notes:
  * - env-service is the exception: it uses its own local bootstrap and does NOT
  *   use this entrypoint. Updating this file does not invalidate env-service.
+ *
+ * Invariants (ADR-0080):
+ * - SvcRuntime must not duplicate EnvServiceDto state.
+ * - Runtime stores identity + logger + problem + capability slots.
+ * - Env vars remain encapsulated in EnvServiceDto (runtime may *delegate* access).
  */
 
 import fs from "fs";
@@ -29,9 +34,9 @@ import {
   type IBoundLogger,
 } from "@nv/shared/logger/Logger";
 import {
-  SvcSandbox,
-  type SvcSandboxIdentity,
-} from "@nv/shared/sandbox/SvcSandbox";
+  SvcRuntime,
+  type SvcRuntimeIdentity,
+} from "@nv/shared/runtime/SvcRuntime";
 
 export interface ServiceEntrypointOptions {
   slug: string;
@@ -52,9 +57,9 @@ export interface ServiceEntrypointOptions {
    * exposes an Express-compatible `listen(port, host, cb)` function.
    *
    * Invariants:
-   * - SvcSandbox is mandatory and MUST be injected.
+   * - SvcRuntime is mandatory and MUST be injected.
    * - envLabel is provided for convenience, but AppBase must source envLabel
-   *   from ssb (ADR-0080 Commit 2).
+   *   from rt (ADR-0080 Commit 2).
    */
   createApp: (opts: {
     slug: string;
@@ -62,7 +67,7 @@ export interface ServiceEntrypointOptions {
     envLabel: string;
     envDto: EnvServiceDto;
     envReloader: () => Promise<EnvServiceDto>;
-    ssb: SvcSandbox;
+    rt: SvcRuntime;
   }) => Promise<{
     app: {
       listen: (port: number, host: string, cb: () => void) => void;
@@ -109,7 +114,7 @@ export async function runServiceEntrypoint(
 
     // IMPORTANT:
     // Logger requires SvcEnv to be set (LOG_LEVEL is strict).
-    // We set it here so sandbox + any early logs are safe.
+    // We set it here so runtime + any early logs are safe.
     setLoggerEnv(primary);
 
     const log: IBoundLogger = getLogger({
@@ -130,33 +135,49 @@ export async function runServiceEntrypoint(
       );
     };
 
-    // Step 4: Construct SvcSandbox (ADR-0080)
-    const vars = primary.getVarsRaw();
+    // Step 4: Construct SvcRuntime (ADR-0080)
+    //
+    // DTO encapsulation rule:
+    // - Env vars remain encapsulated inside EnvServiceDto.
+    // - Entrypoint may read minimal identity inputs (dbState) via DTO accessors,
+    //   but must not extract and re-store a vars map inside runtime.
+    let dbStateRaw: string;
+    try {
+      dbStateRaw = primary.getEnvVar("DB_STATE");
+    } catch (e) {
+      throw new Error(
+        `ENTRYPOINT_DB_STATE_MISSING: DB_STATE is required for env="${envLabel}", slug="${slug}", version=${version}. ` +
+          'Ops: set "DB_STATE" in env-service for this service. ' +
+          `Detail: ${(e as Error)?.message ?? String(e)}`
+      );
+    }
 
     const dbState = requireNonEmpty(
-      vars["DB_STATE"],
+      dbStateRaw,
       "ENTRYPOINT_DB_STATE_MISSING",
-      `DB_STATE is required in env-service vars for env="${envLabel}", slug="${slug}", version=${version}. ` +
+      `DB_STATE is required for env="${envLabel}", slug="${slug}", version=${version}. ` +
         'Ops: set "DB_STATE" in env-service for this service.'
     );
 
-    const ident: SvcSandboxIdentity = {
+    const ident: SvcRuntimeIdentity = {
       serviceSlug: slug,
       serviceVersion: version,
       env: envLabel,
       dbState,
     };
 
-    const ssb = new SvcSandbox(ident, vars, log, {});
+    // IMPORTANT:
+    // - Runtime receives the EnvServiceDto (source of truth for vars), not a vars map.
+    const rt = new SvcRuntime(ident, primary, log, {});
 
     // Step 5: Construct and boot the service app.
     const { app } = await createApp({
       slug,
       version,
-      envLabel, // convenience only; AppBase must source env from ssb
+      envLabel, // convenience only; AppBase must source env from rt
       envDto: primary,
       envReloader: envReloaderForApp,
-      ssb,
+      rt,
     });
 
     // Step 6: Start listening.

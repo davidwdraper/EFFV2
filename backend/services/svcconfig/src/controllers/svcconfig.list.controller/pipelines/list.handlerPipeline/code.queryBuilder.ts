@@ -4,7 +4,7 @@
  * - ADR-0041/0042
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Parse query params into a safe filter object for known fields only.

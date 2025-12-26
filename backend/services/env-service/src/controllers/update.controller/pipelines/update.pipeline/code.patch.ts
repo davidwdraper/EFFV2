@@ -4,10 +4,10 @@
  * - ADR-0040 (DTO-only persistence via Managers)
  * - ADR-0041/42/43/44
  * - ADR-0048 (Revised — bag-centric reads)
- * - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
- * - SvcSandbox Refactored (ADR-0080)
+ * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
  * - Build DbReader<TDto> and load existing doc by canonical ctx["id"].

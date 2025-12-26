@@ -8,7 +8,7 @@
  * - ADR-0058 (HandlerBase.getVar — Strict Env Accessor)
  * - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
- * - ADR-0080 (SvcSandbox — Transport-Agnostic Service Runtime)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Abstract base for handlers:
@@ -21,11 +21,18 @@
  *
  * Invariants (locked here; downstream stops defending):
  * - Controllers MUST pass `this` into handler constructors.
- * - SvcSandbox is REQUIRED (no ssb = no handler).
+ * - SvcRuntime is REQUIRED (no rt = no handler).
  * - No reading plumbing from ctx (no ctx.get('app'), etc).
  * - Handlers never access process.env or transport objects.
  * - Default HandlerBase.runTest() NEVER returns undefined; it yields a
  *   concrete TestError HandlerTestResult w/ reason="NO_TEST_PROVIDED".
+ *
+ * Mongo config override (env-service boot edge-case):
+ * - Handlers may use a pipeline-seeded override:
+ *     • ctx["db.mongo.uri"]
+ *     • ctx["db.mongo.dbName"]
+ * - If both are present and non-empty, they win over SvcRuntime vars.
+ * - This is required for env-service /config reads before runtime vars exist.
  */
 
 import { HandlerContext } from "./HandlerContext";
@@ -33,7 +40,7 @@ import { getLogger, type IBoundLogger } from "../../logger/Logger";
 import type { AppBase } from "../../base/app/AppBase";
 import type { IDtoRegistry } from "../../registry/RegistryBase";
 import type { ControllerBase } from "../../base/controller/ControllerBase";
-import type { SvcSandbox } from "../../sandbox/SvcSandbox";
+import type { SvcRuntime } from "../../runtime/SvcRuntime";
 import {
   getEnvVarFromSandbox,
   resolveMongoConfigWithDbState,
@@ -58,13 +65,13 @@ export abstract class HandlerBase {
   protected readonly registry: IDtoRegistry;
 
   /**
-   * `ssb` is intentionally short: it should be the only runtime “global”
+   * `rt` is intentionally short: it should be the only runtime “global”
    * a handler can see. If it isn’t present, the service is mis-wired.
    *
    * Invariant:
    * - Sandbox identity is authoritative (ADR-0080). No ctx fallback.
    */
-  protected readonly ssb: SvcSandbox;
+  protected readonly rt: SvcRuntime;
 
   constructor(ctx: HandlerContext, controller: ControllerBase) {
     this.ctx = ctx;
@@ -76,16 +83,16 @@ export abstract class HandlerBase {
     }
     this.controller = controller;
 
-    // HARD REQUIRE: SvcSandbox must exist or the service is mis-wired.
+    // HARD REQUIRE: SvcRuntime must exist or the service is mis-wired.
     // “No seatbelt, no ignition.”
-    const ssb = this.controller.getSandbox();
-    if (!ssb) {
+    const rt = this.controller.getSandbox();
+    if (!rt) {
       throw new Error(
-        "SvcSandbox is required: ControllerBase.getSandbox() returned null/undefined. " +
-          "Ops: ensure the service is SvcSandbox'd before wiring handlers."
+        "SvcRuntime is required: ControllerBase.getSandbox() returned null/undefined. " +
+          "Ops: ensure the service is SvcRuntime'd before wiring handlers."
       );
     }
-    this.ssb = ssb;
+    this.rt = rt;
 
     const app = controller.getApp();
     if (!app) {
@@ -143,19 +150,6 @@ export abstract class HandlerBase {
     return false;
   }
 
-  /**
-   * Default: NEVER returns undefined.
-   *
-   * Contract:
-   * - Handlers MAY override runTest() and return:
-   *     Promise<HandlerTestResult | undefined>
-   * - `undefined` is reserved for "bad state" / wiring errors:
-   *   • no scenarios,
-   *   • misconfigured test,
-   *   • etc.
-   * - This default implementation always returns a concrete TestError
-   *   HandlerTestResult with reason "NO_TEST_PROVIDED".
-   */
   public async runTest(): Promise<HandlerTestResult | undefined> {
     const handlerName =
       typeof (this as any).getHandlerName === "function"
@@ -180,13 +174,6 @@ export abstract class HandlerBase {
     };
   }
 
-  /**
-   * Build the standard test init payload for handler-level tests.
-   *
-   * Shape is intentionally loose so individual tests can:
-   * - ignore it (no-arg ctor still works)
-   * - or consume `log`, `app`, `registry` as needed.
-   */
   protected buildStandardTestInit(): any {
     return {
       log: this.log,
@@ -197,9 +184,6 @@ export abstract class HandlerBase {
     };
   }
 
-  /**
-   * Convenience helper for the common "single test class" pattern.
-   */
   protected async runSingleTest(
     TestCtor: new (init?: any) => HandlerTestBase
   ): Promise<HandlerTestResult | undefined> {
@@ -368,7 +352,48 @@ export abstract class HandlerBase {
     });
   }
 
+  /**
+   * Mongo config resolution:
+   * 1) Optional pipeline override via ctx["db.mongo.*"] (wins if complete)
+   * 2) Fallback to SvcRuntime vars (DB_STATE-aware) via resolveMongoConfigWithDbState()
+   */
   protected getMongoConfig(): { uri: string; dbName: string } {
+    // 1) Pipeline override (env-service boot edge-case)
+    const oUri = this.safeCtxGet<string>("db.mongo.uri");
+    const oDb = this.safeCtxGet<string>("db.mongo.dbName");
+
+    const uriTrim = typeof oUri === "string" ? oUri.trim() : "";
+    const dbTrim = typeof oDb === "string" ? oDb.trim() : "";
+
+    if (uriTrim && dbTrim) {
+      this.log.debug(
+        {
+          event: "mongo_config_override_used",
+          handler: this.constructor.name,
+          dbName: dbTrim,
+        },
+        "getMongoConfig: using ctx['db.mongo.*'] override"
+      );
+      return { uri: uriTrim, dbName: dbTrim };
+    }
+
+    if (uriTrim || dbTrim) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "mongo_config_override_incomplete",
+        detail:
+          "Mongo override in ctx is incomplete. Dev: if you seed db.mongo overrides, you must set BOTH ctx['db.mongo.uri'] and ctx['db.mongo.dbName'].",
+        stage: `${this.handlerPurpose()}:mongo.override`,
+        origin: { method: "getMongoConfig" },
+        issues: [{ uriPresent: !!uriTrim, dbPresent: !!dbTrim }],
+        logMessage:
+          "mongo_config_override_incomplete: only one db.mongo.* override key was present.",
+        logLevel: "error",
+      });
+      throw new Error("mongo_config_override_incomplete");
+    }
+
+    // 2) Standard path: runtime vars (DB_STATE-aware)
     try {
       return resolveMongoConfigWithDbState({
         controller: this.controller,
@@ -421,9 +446,8 @@ export abstract class HandlerBase {
   }
 
   protected safeServiceSlug(): string | undefined {
-    // Sandbox identity is authoritative (ADR-0080). No ctx fallback.
     try {
-      const slug = this.ssb.getServiceSlug();
+      const slug = this.rt.getServiceSlug();
       return typeof slug === "string" && slug.trim() ? slug.trim() : undefined;
     } catch {
       return undefined;
@@ -439,7 +463,7 @@ export abstract class HandlerBase {
   }
 
   protected failWithError(input: FailWithErrorInput): NvHandlerError {
-    const requestId = input.requestId ?? this.safeCtxGet<string>("requestId");
+    const requestId = input.requestId ?? this.getRequestId();
 
     return logAndAttachHandlerError({
       ctx: this.ctx,

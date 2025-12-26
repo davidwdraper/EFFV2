@@ -123,7 +123,7 @@ export class DbReadExistingHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws (SvcSandbox contract) ---------------------
+    // ---- Missing DB config throws (SvcRuntime contract) ---------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // --- Reader + fetch as **BAG** ------------------------------------------

@@ -12,7 +12,7 @@
  *   and provides minAccessLevel metadata to downstream token validation gates.
  *
  * Rules:
- *  1) TTL cache on (svcconfigId, method, path); negative-cache too.
+ *  1) TTL cache on (cacheKey, method, path); negative-cache too.
  *  2) Save minAccessLevel for the token validation gate (0 if no policy).
  *  3) No JWT & no policy → 401.
  *  4) No JWT & policy → 401 unless minAccessLevel === 0 (public).
@@ -28,11 +28,7 @@
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
-
-export interface ISvcconfigResolver {
-  /** Returns the parent svcconfig ObjectId (24-hex string) for a given slug@version, or null if unknown. */
-  getSvcconfigId(slug: string, version: number): string | null;
-}
+import type { ISvcconfigResolver } from "../../s2s/SvcClient";
 
 type HttpMethod = "PUT" | "POST" | "PATCH" | "GET" | "DELETE";
 
@@ -53,14 +49,31 @@ declare global {
 export interface RoutePolicyGateOpts {
   /** Bound structured logger (ADR-0031). */
   logger: IBoundLogger;
+
+  /**
+   * Canonical env label for THIS process (e.g., "dev", "stage", "prod").
+   * REQUIRED: middleware must not guess env.
+   */
+  envLabel: string;
+
   /** Facilitator base URL (e.g., from SVCFACILITATOR_BASE_URL). */
   facilitatorBaseUrl: string;
+
   /** Route-policy cache TTL in ms (default ≈5000). */
   ttlMs: number;
-  /** Resolver used to map slug@version → svcconfigId. */
+
+  /**
+   * Resolver used to map env+slug+version → target.
+   *
+   * Note:
+   * - This middleware MUST NOT depend on internal persistence identifiers
+   *   (e.g., svcconfigId). It uses service identity only.
+   */
   resolver: ISvcconfigResolver;
+
   /** Optional fetch timeout (ms, default 5000). */
   fetchTimeoutMs?: number;
+
   /** Optional service name for log context. */
   serviceName?: string;
 }
@@ -68,6 +81,7 @@ export interface RoutePolicyGateOpts {
 export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
   const {
     logger,
+    envLabel,
     facilitatorBaseUrl,
     ttlMs,
     resolver,
@@ -76,15 +90,20 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
   } = opts;
 
   if (!logger) throw new Error("[routePolicyGate] logger required");
+  if (!envLabel?.trim()) throw new Error("[routePolicyGate] envLabel required");
   if (!facilitatorBaseUrl?.trim())
     throw new Error("[routePolicyGate] facilitatorBaseUrl required");
   if (!Number.isFinite(ttlMs) || ttlMs <= 0)
     throw new Error("[routePolicyGate] ttlMs must be > 0");
 
+  const env = envLabel.trim();
+
   const log = logger.bind({
     service: serviceName,
     component: "RoutePolicyGate",
+    envLabel: env,
   });
+
   const cache = new Map<string, CacheEntry>();
 
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -92,18 +111,24 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
       // Always bypass health endpoints
       if (req.path.includes("/health")) return next();
 
+      const bearer = hasBearer(req);
+
       log.debug(
-        { url: req.originalUrl, method: req.method },
+        { url: req.originalUrl, method: req.method, bearer },
         "route_policy_enter"
       );
 
       const { slug, version, method, path } = parseApiRequest(req);
 
-      // Resolve svcconfigId using slug@version
-      const svcconfigId = resolver.getSvcconfigId(slug, version);
-      if (!svcconfigId) {
+      // Route policy gate is only meaningful for services that are resolvable.
+      // We do NOT depend on svcconfigId (internal persistence detail); we only
+      // need to know whether the target exists for (env, slug, version).
+      try {
+        await resolver.resolveTarget(env, slug, version);
+      } catch {
         attachPolicy(req, { found: false, min: 0 });
-        if (!hasBearer(req)) {
+
+        if (!bearer) {
           log.info(
             {
               slug,
@@ -121,6 +146,7 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
             "service_unknown_and_no_token"
           );
         }
+
         log.debug(
           {
             slug,
@@ -134,11 +160,14 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
         return next();
       }
 
-      const key = cacheKey(svcconfigId, method, path);
+      // Cache key MUST include env (publish safety); remains version-agnostic by design.
+      const key = cacheKey(env, slug, method, path);
       let entry = cache.get(key);
+
       if (!entry || isExpired(entry)) {
         entry = await fetchPolicy(facilitatorBaseUrl, {
-          svcconfigId,
+          envLabel: env,
+          slug,
           version,
           method,
           path,
@@ -155,11 +184,9 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
           : { found: false, min: 0 }
       );
 
-      const bearer = hasBearer(req);
-
       if (!bearer && !entry.found) {
         log.info(
-          { method, path, svcconfigId, reason: "private_by_default_no_policy" },
+          { method, path, slug, reason: "private_by_default_no_policy" },
           "route_policy_denied"
         );
         return respond(
@@ -175,7 +202,7 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
           {
             method,
             path,
-            svcconfigId,
+            slug,
             minAccessLevel: entry.minAccessLevel,
             reason: "policy_requires_token",
           },
@@ -188,10 +215,10 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
         {
           method,
           path,
-          svcconfigId,
+          slug,
           found: entry.found,
           minAccessLevel: entry.found ? entry.minAccessLevel : 0,
-          bearer: true,
+          bearer,
         },
         "route_policy_pass_to_token_gate"
       );
@@ -214,11 +241,14 @@ export function routePolicyGate(opts: RoutePolicyGateOpts): RequestHandler {
 // ──────────────────────────────── Internals ────────────────────────────────
 
 function cacheKey(
-  svcconfigId: string,
+  envLabel: string,
+  slug: string,
   method: HttpMethod,
   normPath: string
 ): string {
-  return `${svcconfigId}|${method}|${normPath}`;
+  // Publish-safe: env MUST be part of the key.
+  // Version-agnostic by explicit invariant.
+  return `${envLabel}|${slug}|${method}|${normPath}`;
 }
 
 function isExpired(entry: CacheEntry): boolean {
@@ -275,7 +305,8 @@ function normalizePath(input: string): string {
 async function fetchPolicy(
   facilitatorBaseUrl: string,
   args: {
-    svcconfigId: string;
+    envLabel: string;
+    slug: string;
     version: number;
     method: HttpMethod;
     path: string;
@@ -283,13 +314,17 @@ async function fetchPolicy(
     log: IBoundLogger;
   }
 ): Promise<CacheEntry> {
-  const { svcconfigId, version, method, path, timeoutMs, log } = args;
+  const { envLabel, slug, version, method, path, timeoutMs, log } = args;
+
+  // Contract MUST be identity-based for publish-safety:
+  // envLabel + slug + version, not svcconfigId.
   const url =
     `${facilitatorBaseUrl.replace(
       /\/$/,
       ""
     )}/api/svcfacilitator/v1/routePolicy` +
-    `?svcconfigId=${encodeURIComponent(svcconfigId)}` +
+    `?env=${encodeURIComponent(envLabel)}` +
+    `&slug=${encodeURIComponent(slug)}` +
     `&version=${encodeURIComponent(String(version))}` +
     `&method=${encodeURIComponent(method)}` +
     `&path=${encodeURIComponent(path)}`;
@@ -324,6 +359,7 @@ async function fetchPolicy(
 
     const min = Number(policy.minAccessLevel ?? 0);
     const ttl = ttlFrom(json, timeoutMs);
+
     return {
       found: true,
       minAccessLevel: Number.isFinite(min) ? min : 0,

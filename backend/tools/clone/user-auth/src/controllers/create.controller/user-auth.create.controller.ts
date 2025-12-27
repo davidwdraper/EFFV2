@@ -1,21 +1,22 @@
-// backend/services/user-auth/src/controllers/user-auth.read.controller/user-auth.read.controller.ts
+// backend/services/user-auth/src/controllers/user-auth.create.controller/user-auth.create.controller.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0040 (DTO-Only Persistence; reads hydrate DTOs)
+ *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
- *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
+ *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
- * - Orchestrate GET /api/user-auth/v1/:dtoType/read/:id
+ * - Orchestrate PUT /api/user-auth/v1/:dtoType/create
  * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
  *
  * Invariants:
- * - Primary-key only. Canonical id is "id". No fallbacks, no filters.
+ * - Edges are bag-only (payload { items:[{ type:"<dtoType>", ...}] } ).
+ * - Create requires exactly 1 DTO item; enforced in pipeline handlers.
  */
 
 import { Request, Response } from "express";
@@ -24,63 +25,67 @@ import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBas
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
 // Pipelines (one folder per dtoType)
-import * as UserAuthReadPipeline from "./pipelines/user-auth.read.handlerPipeline";
+import * as UserAuthCreatePipeline from "./pipelines/create.handlerPipeline";
 // Future dtoType example (uncomment when adding a new type):
-// import * as MyNewDtoReadPipeline from "./pipelines/myNewDto.read.handlerPipeline";
+// import * as MyNewDtoCreatePipeline from "./pipelines/myNewDto.create.handlerPipeline";
 
-export class UserAuthReadController extends ControllerJsonBase {
+export class UserAuthCreateController extends ControllerJsonBase {
   constructor(app: AppBase) {
     super(app);
   }
 
-  public async get(req: Request, res: Response): Promise<void> {
+  public async put(req: Request, res: Response): Promise<void> {
     const dtoType = req.params.dtoType;
 
     const ctx: HandlerContext = this.makeContext(req, res);
     ctx.set("dtoType", dtoType);
-    ctx.set("op", "read");
+    ctx.set("op", "create");
 
     this.log.debug(
       {
         event: "pipeline_select",
-        op: "read",
+        op: "create",
         dtoType,
         requestId: ctx.get("requestId"),
       },
-      "selecting read pipeline"
+      "selecting create pipeline"
     );
 
     switch (dtoType) {
       case "user-auth": {
-        const steps = UserAuthReadPipeline.getSteps(ctx, this);
-        await this.runPipeline(ctx, steps, { requireRegistry: false }); // read-by-id doesn’t need registry
+        this.seedHydrator(ctx, "user-auth", { validate: true });
+        const steps = UserAuthCreatePipeline.getSteps(ctx, this);
+        await this.runPipeline(ctx, steps, { requireRegistry: true });
         break;
       }
 
       // Future dtoType example:
       // case "myNewDto": {
-      //   const steps = MyNewDtoReadPipeline.getSteps(ctx, this);
-      //   await this.runPipeline(ctx, steps, { requireRegistry: false });
+      //   this.seedHydrator(ctx, "MyNewDto", { validate: true });
+      //   const steps = MyNewDtoCreatePipeline.getSteps(ctx, this);
+      //   await this.runPipeline(ctx, steps, { requireRegistry: true });
       //   break;
       // }
 
       default: {
+        // Seed a clear 501 problem into the context (ControllerBase.finalize will serialize)
         ctx.set("handlerStatus", "error");
         ctx.set("response.status", 501);
         ctx.set("response.body", {
           code: "NOT_IMPLEMENTED",
           title: "Not Implemented",
-          detail: `No read pipeline for dtoType='${dtoType}'`,
+          detail: `No create pipeline for dtoType='${dtoType}'`,
           requestId: ctx.get("requestId"),
         });
+
         this.log.warn(
           {
             event: "pipeline_missing",
-            op: "read",
+            op: "create",
             dtoType,
             requestId: ctx.get("requestId"),
           },
-          "no read pipeline registered for dtoType"
+          "no create pipeline registered for dtoType"
         );
       }
     }

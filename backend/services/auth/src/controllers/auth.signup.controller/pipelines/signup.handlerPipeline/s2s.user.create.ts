@@ -20,7 +20,7 @@
  * Invariants:
  * - Auth remains a MOS (no direct DB writes).
  * - This handler NEVER calls ctx.set("bag", ...).
- * - Handlers do not reach for app/process/env: they use ctx["rt"] and request caps.
+ * - Handlers do not reach for app/process/env: they use `this.rt` and request caps.
  * - On failure, sets handlerStatus="error" via NvHandlerError on ctx["error"].
  * - Additionally, this handler stamps an explicit signup.userCreateStatus flag
  *   on the ctx bus so downstream transactional handlers (rollback, audit, etc.)
@@ -38,7 +38,6 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
-import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
@@ -104,7 +103,7 @@ export class S2sUserCreateHandler extends HandlerBase {
           title: "auth_signup_missing_user_bag",
           detail:
             "Auth signup pipeline expected ctx['bag'] to contain a DtoBag<UserDto> before calling user.create. " +
-            "Dev: ensure HydrateUserBagHandler ran and stored the bag under ctx['bag'].",
+            "Dev: ensure ToBagUserHandler ran and stored the bag under ctx['bag'].",
           stage: "inputs.userBag",
           requestId,
           origin: {
@@ -119,36 +118,8 @@ export class S2sUserCreateHandler extends HandlerBase {
         return;
       }
 
-      // Runtime is the single access door.
-      const rt = this.safeCtxGet<SvcRuntime>("rt");
-      if (!rt) {
-        const status: UserCreateStatus = {
-          ok: false,
-          code: "AUTH_SIGNUP_RT_UNAVAILABLE",
-          message: "Ctx['rt'] was not available.",
-        };
-        this.ctx.set("signup.userCreateStatus", status);
-
-        this.failWithError({
-          httpStatus: 500,
-          title: "auth_signup_rt_unavailable",
-          detail:
-            "Auth signup could not obtain SvcRuntime from ctx['rt']. " +
-            "Dev: ensure ControllerBase seeds ctx['rt'] for all requests.",
-          stage: "config.rt",
-          requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [{ hasRt: !!rt }],
-          logMessage: "auth.signup.callUserCreate: ctx['rt'] missing.",
-          logLevel: "error",
-        });
-        return;
-      }
-
-      env = (rt.getEnv() ?? "").trim();
+      // Runtime identity is authoritative (HandlerBase already hard-requires rt).
+      env = (this.rt.getEnv() ?? "").trim();
       if (!env) {
         const status: UserCreateStatus = {
           ok: false,
@@ -176,9 +147,14 @@ export class S2sUserCreateHandler extends HandlerBase {
         return;
       }
 
-      // Capability: s2s.svcClient (fail-fast if missing)
-      const s2sCap = rt.tryCap("s2s") as { svcClient?: SvcClient } | undefined;
-      const svcClient = s2sCap?.svcClient;
+      // Capability: canonical key is "s2s.svcClient" (wired by AppBase).
+      let svcClient: SvcClient | undefined;
+      try {
+        svcClient = this.rt.tryCap<SvcClient>("s2s.svcClient");
+      } catch (err) {
+        // tryCap can throw if the factory throws (build failed).
+        svcClient = undefined;
+      }
 
       if (!svcClient || typeof (svcClient as any).call !== "function") {
         const status: UserCreateStatus = {
@@ -197,7 +173,7 @@ export class S2sUserCreateHandler extends HandlerBase {
           stage: "config.rt.cap.s2s.svcClient",
           requestId,
           origin: { file: __filename, method: "execute" },
-          issues: [{ hasS2sCap: !!s2sCap, hasSvcClient: !!svcClient }],
+          issues: [{ hasSvcClient: !!svcClient }],
           logMessage:
             "auth.signup.callUserCreate: missing rt cap s2s.svcClient.",
           logLevel: "error",

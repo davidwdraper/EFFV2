@@ -7,20 +7,21 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
  * - Shared async entrypoint helper for HTTP services.
  * - Owns envBootstrap + EnvServiceDto selection + reloader adaptation +
- *   SvcRuntime construction + listen() + fatal error handling.
+ *   createApp() + listen() + fatal error handling.
  *
  * Notes:
  * - env-service is the exception: it uses its own local bootstrap and does NOT
- *   use this entrypoint. Updating this file does not invalidate env-service.
+ *   use this entrypoint.
  *
- * Invariants (ADR-0080):
- * - SvcRuntime must not duplicate EnvServiceDto state.
- * - Runtime stores identity + logger + problem + capability slots.
- * - Env vars remain encapsulated in EnvServiceDto (runtime may *delegate* access).
+ * Invariants:
+ * - Posture is REQUIRED and is the single source of truth for boot rails (ADR-0084).
+ * - Entrypoint must not pass/own checkDb (derived by AppBase from posture).
+ * - envBootstrap constructs SvcRuntime once and returns it.
  */
 
 import fs from "fs";
@@ -28,24 +29,20 @@ import path from "path";
 import { envBootstrap } from "@nv/shared/bootstrap/envBootstrap";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import {
-  setLoggerEnv,
-  getLogger,
-  type IBoundLogger,
-} from "@nv/shared/logger/Logger";
-import {
-  SvcRuntime,
-  type SvcRuntimeIdentity,
-} from "@nv/shared/runtime/SvcRuntime";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 
 export interface ServiceEntrypointOptions {
   slug: string;
   version: number;
+
   /**
-   * If true, envBootstrap will verify DB connectivity/indexes as part of boot.
-   * For non-DB daemons or special cases, this can be false.
+   * ADR-0084: REQUIRED.
+   * Declares the service posture (mos, db, api, fs, stream, etc.).
+   * Boot rails derive from this posture (AppBase derives checkDb).
    */
-  checkDb?: boolean;
+  posture: SvcPosture;
+
   /**
    * Optional override for the startup error log filename.
    * Defaults to "<slug>-startup-error.log" in process.cwd().
@@ -53,17 +50,17 @@ export interface ServiceEntrypointOptions {
   logFileBasename?: string;
 
   /**
-   * Service-specific app factory. Must construct and return an object that
-   * exposes an Express-compatible `listen(port, host, cb)` function.
+   * Service-specific app factory.
    *
    * Invariants:
    * - SvcRuntime is mandatory and MUST be injected.
-   * - envLabel is provided for convenience, but AppBase must source envLabel
-   *   from rt (ADR-0080 Commit 2).
+   * - posture is mandatory and MUST be passed through to AppBase.
+   * - envLabel is convenience only; AppBase must source envLabel from rt.
    */
   createApp: (opts: {
     slug: string;
     version: number;
+    posture: SvcPosture;
     envLabel: string;
     envDto: EnvServiceDto;
     envReloader: () => Promise<EnvServiceDto>;
@@ -75,117 +72,69 @@ export interface ServiceEntrypointOptions {
   }>;
 }
 
-function requireNonEmpty(s: unknown, code: string, detail: string): string {
-  const v = typeof s === "string" ? s.trim() : "";
-  if (!v) throw new Error(`${code}: ${detail}`);
-  return v;
-}
-
 export async function runServiceEntrypoint(
   opts: ServiceEntrypointOptions
 ): Promise<void> {
-  const { slug, version, createApp, checkDb = true } = opts;
+  const { slug, version, posture, createApp } = opts;
   const logFileBasename = opts.logFileBasename ?? `${slug}-startup-error.log`;
   const logFile = path.resolve(process.cwd(), logFileBasename);
 
   try {
-    // Step 1: Bootstrap and load configuration (env-service-backed config)
-    const { envLabel, envBag, envReloader, host, port } = await envBootstrap({
-      slug,
-      version,
-      logFile,
-      checkDb,
-    });
+    // Step 1: Bootstrap and load configuration + runtime.
+    // ADR-0084: posture is required; no checkDb flag exists here.
+    const { envLabel, envBag, envReloader, host, port, rt } =
+      await envBootstrap({
+        slug,
+        version,
+        posture,
+        logFile,
+      });
 
-    // Step 2: Extract the primary EnvServiceDto from the bag (should be exactly one)
-    let primary: EnvServiceDto | undefined;
-    for (const dto of envBag) {
-      primary = dto;
-      break;
-    }
+    // Step 2: Extract primary EnvServiceDto (first item, deterministic).
+    const it = (envBag as unknown as DtoBag<EnvServiceDto>).items();
+    const first = it.next();
+    const primary: EnvServiceDto | undefined = first.done
+      ? undefined
+      : first.value;
 
     if (!primary) {
       throw new Error(
         "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No EnvServiceDto in envBag after envBootstrap. " +
-          "Ops: verify env-service has a config record for this service (env@slug@version) " +
-          "and that envBootstrap is querying with the correct keys."
+          "Ops: verify env-service has a config record for this service (env@slug@version)."
       );
     }
 
-    // IMPORTANT:
-    // Logger requires SvcEnv to be set (LOG_LEVEL is strict).
-    // We set it here so runtime + any early logs are safe.
-    setLoggerEnv(primary);
-
-    const log: IBoundLogger = getLogger({
-      service: slug,
-      component: "ServiceEntrypoint",
-    });
-
-    // Step 3: Adapt the bag-based reloader into a single-DTO reloader for the AppBase/logger.
+    // Step 3: Adapt bag reloader to single-DTO reloader.
     const envReloaderForApp = async (): Promise<EnvServiceDto> => {
-      const bag: DtoBag<EnvServiceDto> = await envReloader();
-      for (const dto of bag) {
-        return dto;
-      }
+      const bag: DtoBag<EnvServiceDto> = (await envReloader()) as any;
+      const iter = bag.items();
+      const one = iter.next();
+      if (!one.done && one.value) return one.value;
+
       throw new Error(
         "ENV_RELOADER_EMPTY_BAG: envReloader returned an empty bag. " +
-          "Ops: ensure the service’s EnvServiceDto config record still exists in env-service " +
-          "and matches (env, slug, version) expected by envBootstrap."
+          "Ops: ensure the service’s EnvServiceDto config record still exists in env-service."
       );
     };
 
-    // Step 4: Construct SvcRuntime (ADR-0080)
-    //
-    // DTO encapsulation rule:
-    // - Env vars remain encapsulated inside EnvServiceDto.
-    // - Entrypoint may read minimal identity inputs (dbState) via DTO accessors,
-    //   but must not extract and re-store a vars map inside runtime.
-    let dbStateRaw: string;
-    try {
-      dbStateRaw = primary.getEnvVar("DB_STATE");
-    } catch (e) {
-      throw new Error(
-        `ENTRYPOINT_DB_STATE_MISSING: DB_STATE is required for env="${envLabel}", slug="${slug}", version=${version}. ` +
-          'Ops: set "DB_STATE" in env-service for this service. ' +
-          `Detail: ${(e as Error)?.message ?? String(e)}`
-      );
-    }
-
-    const dbState = requireNonEmpty(
-      dbStateRaw,
-      "ENTRYPOINT_DB_STATE_MISSING",
-      `DB_STATE is required for env="${envLabel}", slug="${slug}", version=${version}. ` +
-        'Ops: set "DB_STATE" in env-service for this service.'
-    );
-
-    const ident: SvcRuntimeIdentity = {
-      serviceSlug: slug,
-      serviceVersion: version,
-      env: envLabel,
-      dbState,
-    };
-
-    // IMPORTANT:
-    // - Runtime receives the EnvServiceDto (source of truth for vars), not a vars map.
-    const rt = new SvcRuntime(ident, primary, log, {});
-
-    // Step 5: Construct and boot the service app.
+    // Step 4: Construct and boot the service app.
     const { app } = await createApp({
       slug,
       version,
+      posture,
       envLabel, // convenience only; AppBase must source env from rt
       envDto: primary,
       envReloader: envReloaderForApp,
       rt,
     });
 
-    // Step 6: Start listening.
+    // Step 5: Listen.
     app.listen(port, host, () => {
       // eslint-disable-next-line no-console
       console.info("[entrypoint] http_listening", {
         slug,
         version,
+        posture,
         envLabel,
         host,
         port,
@@ -200,7 +149,7 @@ export async function runServiceEntrypoint(
         flag: "a",
       });
     } catch {
-      // If we can't write to file, at least log to console.
+      // ignore
     }
     // eslint-disable-next-line no-console
     console.error(msg);

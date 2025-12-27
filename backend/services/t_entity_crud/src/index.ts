@@ -6,102 +6,37 @@
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose (template):
  * - Pure orchestration entrypoint for a CRUD-style xxx service.
- * - Delegates config loading + runtime construction to envBootstrap().
- * - Unwraps the EnvServiceDto (from envBag) for createApp().
+ * - Delegates config loading + runtime construction to envBootstrap() via ServiceEntrypoint.
+ * - Declares identity + posture only; avoids per-service bootstrap drift.
  *
  * Invariants:
  * - No process.env reads here (bootstrap owns it).
- * - Runtime handle is `rt` (SvcRuntime), not “sandbox”.
+ * - Posture is the single source of truth (no checkDb duplication).
+ * - No EnvServiceDto unwrapping logic in service code (shared entrypoint owns it).
  */
 
-import fs from "fs";
-import path from "path";
+import { runServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
+import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 import createApp from "./app";
-import { envBootstrap } from "@nv/shared/bootstrap/envBootstrap";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { DtoBag } from "@nv/shared/dto/DtoBag";
 
 // ———————————————————————————————————————————————————————————————
 // Service identity
 // ———————————————————————————————————————————————————————————————
 const SERVICE_SLUG = "xxx";
 const SERVICE_VERSION = 1;
-const LOG_FILE = path.resolve(process.cwd(), "xxx-startup-error.log");
+
+// Template posture: CRUD entity services are DB owners.
+const POSTURE: SvcPosture = "db";
 
 (async () => {
-  try {
-    // Step 1: Bootstrap and load configuration + runtime (env-service-backed config)
-    const { envBag, envReloader, host, port, envLabel, rt } =
-      await envBootstrap({
-        slug: SERVICE_SLUG,
-        version: SERVICE_VERSION,
-        logFile: LOG_FILE,
-        checkDb: true,
-      });
-
-    // Step 2: Extract the primary EnvServiceDto from the bag (first item)
-    const it = (envBag as unknown as DtoBag<EnvServiceDto>).items();
-    const first = it.next();
-    const primary = first.done ? undefined : first.value;
-
-    if (!primary) {
-      throw new Error(
-        "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No EnvServiceDto in envBag after envBootstrap. " +
-          "Ops: verify env-service has a config record for this service (env@slug@version)."
-      );
-    }
-
-    // Step 3: Adapt the bag-based reloader into a single-DTO reloader for AppBase/logger.
-    const envReloaderForApp = async (): Promise<EnvServiceDto> => {
-      const bag: DtoBag<EnvServiceDto> = (await envReloader()) as any;
-      const iter = bag.items();
-      const one = iter.next();
-      if (!one.done && one.value) return one.value;
-
-      throw new Error(
-        "ENV_RELOADER_EMPTY_BAG: envReloader returned an empty bag. " +
-          "Ops: ensure the service’s EnvServiceDto config record still exists in env-service."
-      );
-    };
-
-    // Step 4: Construct and boot the service app.
-    const { app } = await createApp({
-      slug: SERVICE_SLUG,
-      version: SERVICE_VERSION,
-      envLabel, // keep if your AppBase still uses it
-      envDto: primary,
-      envReloader: envReloaderForApp,
-      rt, // <-- REQUIRED by AppBase for SvcRuntime services
-    });
-
-    // Step 5: Start listening.
-    app.listen(port, host, () => {
-      // eslint-disable-next-line no-console
-      console.info("[entrypoint] http_listening", {
-        slug: SERVICE_SLUG,
-        version: SERVICE_VERSION,
-        host,
-        port,
-        envLabel,
-      });
-    });
-  } catch (err) {
-    const msg = `[entrypoint] unhandled_bootstrap_error: ${
-      (err as Error)?.message ?? String(err)
-    }`;
-    try {
-      fs.writeFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`, {
-        flag: "a",
-      });
-    } catch {
-      // ignore
-    }
-    // eslint-disable-next-line no-console
-    console.error(msg);
-    // eslint-disable-next-line no-process-exit
-    process.exit(1);
-  }
+  await runServiceEntrypoint({
+    slug: SERVICE_SLUG,
+    version: SERVICE_VERSION,
+    posture: POSTURE,
+    createApp,
+  });
 })();

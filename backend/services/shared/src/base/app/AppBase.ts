@@ -12,38 +12,17 @@
  *   - ADR-0076 (Process Env Guard — NV_PROCESS_ENV_GUARD runtime guardrail)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0082 (Infra Service Health Boot Check)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
  * - Orchestrator for Express composition across ALL services.
  * - Holds boot-time decisions so downstream wiring never re-reads env.
  *
  * Invariants:
- * - No implicit S2S mocking.
- * - Deterministic S2S transport may ONLY be injected explicitly (tests).
- * - SvcRuntime is MANDATORY and is the canonical runtime owner of:
- *     • problem
- *     • validated vars
- *     • capability slots (lazy, explicit)
- *
- * Commit 2 (SvcRuntime hard requirement):
- * - envLabel is sourced ONLY from rt (no envDto fallback / optional ctor value).
- * - If envDto exists, it must agree with rt env (sanity check).
- *
- * Commit 3 (Proxy services):
- * - DtoRegistry is OPTIONAL at AppBase level.
- * - Only DB-backed services (checkDb=true) may require registry at boot.
- * - Proxy/edge services (gateway) must compile without implementing getDtoRegistry().
- *
- * Commit 4 (Infra boot check hook split):
- * - `isInfraService()` is platform classification (gateway may be "infra" by role).
- * - `shouldSkipInfraBootHealthCheck()` is recursion avoidance only.
- * - Default behavior remains identical: skip boot preflight when isInfraService()=true.
- *
- * Commit 5 (SvcRuntime capabilities):
- * - AppBase wires only the BASELINE capability surface by default (S2S).
- * - Additional caps must be opted-in per service by overriding wireRuntimeCaps().
- * - Handlers must not reach for app.getSvcClient(), app.getEnvLabel(), etc.
- * - Runtime is the single access door: rt.getCap("s2s"), rt.getCap("promptsClient"), etc.
+ * - SvcRuntime is MANDATORY.
+ * - Service posture is the single source of truth for boot rails.
+ * - Baseline capability surface is wired here (lazy factories).
+ * - Handlers must access capabilities through rt only.
  */
 
 import type { Express } from "express";
@@ -55,6 +34,7 @@ import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
 import { SvcClient, type ISvcClientTransport } from "@nv/shared/s2s/SvcClient";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
 import { performDbBoot, type DbBootContext } from "./appBoot";
+import type { ISvcconfigResolver } from "@nv/shared/s2s/SvcClient";
 import {
   mountPreRoutingLayer,
   mountRoutePolicyGateLayer,
@@ -76,19 +56,20 @@ import {
 import type { SvcRuntime } from "../../runtime/SvcRuntime";
 import { SvcEnvClient } from "../../env/svcenvClient";
 import { InfraHealthCheck } from "../../bootstrap/InfraHealthCheck";
+import { type SvcPosture, isDbPosture } from "../../runtime/SvcPosture";
 
 export type AppBaseCtor = {
   service: string;
   version: number;
 
+  posture: SvcPosture;
+
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
-  checkDb: boolean;
   edgeMode?: EdgeMode;
 
   /**
    * SvcRuntime is MANDATORY (ADR-0080).
-   * If it is not wired, the app must not start.
    */
   rt: SvcRuntime;
 
@@ -99,7 +80,6 @@ export type AppBaseCtor = {
 
   /**
    * Deterministic S2S transport (tests only).
-   * When provided, overrides BOTH fetch and blocked transports.
    */
   svcClientTransport?: ISvcClientTransport;
 };
@@ -111,6 +91,8 @@ export abstract class AppBase extends ServiceBase {
   protected readonly version: number;
   private _envDto: EnvServiceDto;
   private readonly envReloader: () => Promise<EnvServiceDto>;
+
+  protected readonly posture: SvcPosture;
   protected readonly checkDb: boolean;
 
   private readonly edgeMode: EdgeMode;
@@ -126,7 +108,9 @@ export abstract class AppBase extends ServiceBase {
     this.version = opts.version;
     this._envDto = opts.envDto;
     this.envReloader = opts.envReloader;
-    this.checkDb = opts.checkDb;
+
+    this.posture = opts.posture;
+    this.checkDb = isDbPosture(this.posture);
 
     this.edgeMode = opts.edgeMode ?? EdgeMode.Prod;
     this.s2sMocksEnabled = opts.s2sMocksEnabled ?? false;
@@ -135,47 +119,39 @@ export abstract class AppBase extends ServiceBase {
 
     if (!opts.rt) {
       throw new Error(
-        `SSB_MISSING_ON_APPBASE: SvcRuntime is required for service="${opts.service}" v${opts.version}. ` +
+        `SVCRUNTIME_MISSING: SvcRuntime is required for service="${opts.service}" v${opts.version}. ` +
           "Ops/Dev: construct SvcRuntime during boot (after envDto is available) and pass it to AppBase({ rt })."
       );
     }
     this.rt = opts.rt;
 
-    // Commit 2: envLabel is now owned by rt. envDto must agree.
-    // This prevents “runtime exists but isn’t authoritative” drift.
+    // envLabel is owned by rt. envDto must agree.
     try {
       const dtoEnv = (this._envDto.getEnvLabel() ?? "").trim();
       const rtEnv = (this.rt.getEnv() ?? "").trim();
       if (!rtEnv) {
         throw new Error(
-          `SSB_ENV_EMPTY: rt.getEnv() returned empty for service="${opts.service}" v${opts.version}.`
+          `SVCRUNTIME_ENV_EMPTY: rt.getEnv() returned empty for service="${opts.service}" v${opts.version}.`
         );
       }
       if (dtoEnv && dtoEnv !== rtEnv) {
         throw new Error(
-          `SSB_ENV_MISMATCH: envDto env="${dtoEnv}" does not match rt env="${rtEnv}" for service="${opts.service}" v${opts.version}. ` +
+          `SVCRUNTIME_ENV_MISMATCH: envDto env="${dtoEnv}" does not match rt env="${rtEnv}" for service="${opts.service}" v${opts.version}. ` +
             "Dev: build rt using the same env label resolved by envBootstrap/env-service."
         );
       }
     } catch (e: any) {
       throw new Error(
-        `SSB_ENV_VALIDATION_FAILED: ${(e as Error)?.message ?? String(e)}`
+        `SVCRUNTIME_ENV_VALIDATION_FAILED: ${
+          (e as Error)?.message ?? String(e)
+        }`
       );
     }
 
     this.app = express();
     this.initApp();
 
-    // ───────────────────────────────────────────
-    // Commit 5: Wire runtime capabilities (LAZY, explicit)
-    // ───────────────────────────────────────────
-    //
-    // Default behavior:
-    // - Wire only the baseline capability surface (S2S) required by common rails.
-    //
-    // Per-service opt-in:
-    // - Services override wireRuntimeCaps() to add additional caps (prompts, audit, db, etc.).
-    //
+    // Wire baseline runtime capabilities (lazy, explicit).
     this.wireRuntimeCaps();
   }
 
@@ -184,22 +160,24 @@ export abstract class AppBase extends ServiceBase {
   }
 
   /**
-   * Capability wiring hook (ADR-0080).
+   * Capability wiring hook (ADR-0080 / ADR-0084).
    *
    * Default:
-   * - Wire the S2S capability (SvcClient) into rt under the canonical key "s2s".
+   * - Wire the baseline S2S capability into rt under the canonical key
+   *   "s2s.svcClient".
    *
    * Override:
-   * - Services can add caps like "promptsClient", "audit", etc.
+   * - Services may opt into additional caps by overriding and calling helpers.
    *
    * Rules:
    * - No fallbacks.
    * - Factories MUST either return a concrete instance or throw.
-   * - Factories MUST be deterministic (no hidden randomness aside from requestId generation inside clients).
    */
   protected wireRuntimeCaps(): void {
-    // Baseline S2S client
-    this.rt.setCapFactory("s2s", (rt) => {
+    // Canonical S2S cap key used by handlers (e.g., "s2s.svcClient").
+    const capKey = "s2s.svcClient";
+
+    this.rt.setCapFactory(capKey, (_rt) => {
       return createSvcClientForApp({
         service: this.service,
         version: this.version,
@@ -209,18 +187,22 @@ export abstract class AppBase extends ServiceBase {
         transport: this.svcClientTransport,
       });
     });
+
+    // Compile-safe, deterministic breadcrumb: proves which AppBase build is running.
+    this.log.info(
+      {
+        event: "rt_cap_factory_wired",
+        capKey,
+        service: this.service,
+        version: this.version,
+      },
+      "wired runtime cap factory"
+    );
   }
 
-  /**
-   * Convenience helper for services that opt into prompts.
-   *
-   * Note:
-   * - We keep this as an explicit opt-in so AppBase does not “accidentally”
-   *   give every service a prompts dependency.
-   */
   protected wirePromptsClientCap(): void {
     this.rt.setCapFactory("promptsClient", (rt) => {
-      const svcClient = rt.getCap<SvcClient>("s2s");
+      const svcClient = rt.getCap<SvcClient>("s2s.svcClient");
       return createPromptsClientForApp({
         service: this.service,
         log: this.log,
@@ -231,60 +213,19 @@ export abstract class AppBase extends ServiceBase {
     });
   }
 
-  /**
-   * Infra classification hook (ADR-0082).
-   *
-   * Meaning:
-   * - Platform/service-role classification only.
-   * - This MUST NOT be overloaded as a recursion-avoidance toggle.
-   *
-   * Default:
-   * - Domain services return false.
-   *
-   * Infra/platform services:
-   * - Override to true (env-service, svcconfig, gateway, log-service, prompts, etc.).
-   */
   public isInfraService(): boolean {
     return false;
   }
 
-  /**
-   * ADR-0082 recursion avoidance hook.
-   *
-   * Purpose:
-   * - Prevent infra services from running the infra boot health preflight
-   *   in cases where it would recurse or deadlock (env-service, svcconfig, etc.).
-   *
-   * Default behavior:
-   * - Preserve legacy behavior by skipping when isInfraService() is true.
-   *
-   * Important:
-   * - Gateway may be "infra" by platform role but still need preflight checks.
-   *   In that case, gateway should override this to return false.
-   */
   public shouldSkipInfraBootHealthCheck(): boolean {
     return this.isInfraService();
   }
 
-  /**
-   * Runtime accessor (ADR-0080).
-   *
-   * Invariant:
-   * - Runtime MUST exist or app construction fails.
-   */
   public getRuntime(): SvcRuntime {
     return this.rt;
   }
 
-  /**
-   * EnvServiceDto accessor (preferred for controllers/handlers).
-   */
   public getSvcEnv(): EnvServiceDto {
-    return this._envDto;
-  }
-
-  /** Legacy accessor (kept for compatibility; prefer getSvcEnv()). */
-  public get svcEnv(): EnvServiceDto {
     return this._envDto;
   }
 
@@ -292,36 +233,19 @@ export abstract class AppBase extends ServiceBase {
     return this.log;
   }
 
-  /**
-   * PromptsClient accessor (opt-in capability).
-   *
-   * Invariant:
-   * - If a service calls this without wiring the cap, it is a bug.
-   */
   public getPromptsClient(): PromptsClient {
     return this.rt.getCap<PromptsClient>("promptsClient");
   }
 
-  /**
-   * SvcClient accessor (baseline capability).
-   *
-   * Invariant:
-   * - "s2s" must exist for any service that performs S2S calls.
-   * - If a service truly does not need S2S, it may override wireRuntimeCaps()
-   *   (but then infra boot health checks and any S2S usage must be disabled).
-   */
   public getSvcClient(): SvcClient {
-    return this.rt.getCap<SvcClient>("s2s");
+    return this.rt.getCap<SvcClient>("s2s.svcClient");
   }
 
-  /**
-   * Commit 2: env label is sourced ONLY from SvcRuntime.
-   */
   public getEnvLabel(): string {
     const env = (this.rt.getEnv() ?? "").trim();
     if (!env) {
       throw new Error(
-        `SSB_ENV_EMPTY: rt.getEnv() returned empty for service="${this.service}" v${this.version}.`
+        `SVCRUNTIME_ENV_EMPTY: rt.getEnv() returned empty for service="${this.service}" v${this.version}.`
       );
     }
     return env;
@@ -335,13 +259,6 @@ export abstract class AppBase extends ServiceBase {
     return this.s2sMocksEnabled;
   }
 
-  /**
-   * Convenience wrapper used by HTML controllers (and any future UX surfaces).
-   * This keeps prompt semantics centralized behind PromptsClient.
-   *
-   * Note:
-   * - This will hard-fail if the service did not opt in via wirePromptsClientCap().
-   */
   public async prompt(
     language: string,
     promptKey: string,
@@ -351,26 +268,15 @@ export abstract class AppBase extends ServiceBase {
     return this.getPromptsClient().render(language, promptKey, params, meta);
   }
 
-  /**
-   * DTO Registry accessor.
-   *
-   * Commit 3:
-   * - Registry is OPTIONAL at the AppBase level so proxy/edge services can exist.
-   * - DTO/DB-backed services MUST override this method.
-   *
-   * Fail-fast:
-   * - If any code calls this on a non-DTO service (e.g., gateway), it is a bug.
-   */
   public getDtoRegistry(): IDtoRegistry {
     throw new Error(
       `DTO_REGISTRY_NOT_AVAILABLE: service="${this.service}" v${this.version} does not provide a DtoRegistry. ` +
-        "Dev: only DTO/DB-backed services may call getDtoRegistry(). " +
-        "Ops: gateway/proxy services must not load registry-dependent controllers/handlers."
+        "Dev: only DB posture services may call getDtoRegistry()."
     );
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  protected getSvcconfigResolver(): any | null {
+  protected getSvcconfigResolver(): ISvcconfigResolver | null {
     return null;
   }
 
@@ -405,7 +311,6 @@ export abstract class AppBase extends ServiceBase {
     facilitatorBaseUrl: string;
     ttlMs: number;
   } {
-    // No fallbacks. If the feature is enabled (resolver exists), config must exist.
     const facilitatorBaseUrl = this._envDto
       .getEnvVar("SVCFACILITATOR_BASE_URL")
       .trim();
@@ -429,7 +334,6 @@ export abstract class AppBase extends ServiceBase {
   }
 
   private async maybeRunInfraBootHealthCheck(): Promise<void> {
-    // Recursion/deadlock avoidance hook (ADR-0082).
     if (this.shouldSkipInfraBootHealthCheck()) {
       this.log.info(
         {
@@ -459,10 +363,7 @@ export abstract class AppBase extends ServiceBase {
   public async boot(): Promise<void> {
     if (this._booted) return;
 
-    // ADR-0082: Services that opt in must hard-fail if infra deps are not healthy.
-    // This happens before DB boot and before routes are mounted.
     await this.maybeRunInfraBootHealthCheck();
-
     await this.onBoot();
 
     const base = this.healthBasePath();
@@ -499,6 +400,7 @@ export abstract class AppBase extends ServiceBase {
         app: this.app,
         service: this.service,
         log: this.log,
+        envLabel: this.getEnvLabel(),
         resolver,
         facilitatorBaseUrl,
         ttlMs,
@@ -508,6 +410,7 @@ export abstract class AppBase extends ServiceBase {
         app: this.app,
         service: this.service,
         log: this.log,
+        envLabel: this.getEnvLabel(),
         resolver: null,
       });
     }
@@ -531,6 +434,7 @@ export abstract class AppBase extends ServiceBase {
       {
         service: this.service,
         version: this.version,
+        posture: this.posture,
         envLabel: this.getEnvLabel(),
         edgeMode: this.edgeMode,
         s2sMocksEnabled: this.s2sMocksEnabled,
@@ -542,7 +446,6 @@ export abstract class AppBase extends ServiceBase {
   }
 
   protected async onBoot(): Promise<void> {
-    // Proxy/edge services must not require registry at boot.
     if (!this.checkDb) return;
 
     const ctx: DbBootContext = {

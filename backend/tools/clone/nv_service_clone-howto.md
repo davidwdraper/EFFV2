@@ -1,1 +1,1 @@
-python3 ./nv_service_clone.py --in t_entity_crud.zip --slug auth
+python3 ./nv_service_clone.py --in t_entity_crud.zip --slug user-auth

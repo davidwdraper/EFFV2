@@ -38,7 +38,6 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
-import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 
 type UserBag = DtoBag<UserDto>;
@@ -64,57 +63,37 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
     return "s2s.user.delete.onFailure";
   }
 
-  public override async run(): Promise<void> {
+  /**
+   * This is a compensating handler.
+   * It MUST be allowed to run after the pipeline has entered an error state.
+   */
+  protected override canRunAfterError(): boolean {
+    return true;
+  }
+
+  protected override async execute(): Promise<void> {
+    const requestId = this.safeCtxGet<string>("requestId");
+
     const status = this.safeCtxGet<number>("status");
     const handlerStatus = this.safeCtxGet<string>("handlerStatus");
+
     const priorFailure =
       (typeof status === "number" && status >= 400) ||
       handlerStatus === "error";
 
     if (!priorFailure) {
-      return super.run();
+      this.log.debug(
+        {
+          event: "rollback_skip_no_failure",
+          requestId,
+          status: status ?? null,
+          handlerStatus: handlerStatus ?? "ok",
+        },
+        "auth.signup.rollbackUserOnAuthCreateFailure: pipeline not in error state — no rollback"
+      );
+      return;
     }
 
-    this.log.pipeline(
-      {
-        event: "execute_start",
-        handler: this.constructor.name,
-        status,
-        handlerStatus,
-        priorFailure,
-        overrideGate: true,
-      },
-      "S2sUserDeleteOnFailureHandler.run: enter (ignoring prior-failure gate)"
-    );
-
-    try {
-      await this.execute();
-    } catch (err) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "auth_signup_rollback_handler_failure",
-        detail:
-          "Unhandled exception while attempting user.delete rollback after user-auth.create failure.",
-        stage: "rollback.handler_unhandled",
-        rawError: err,
-        logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: unhandled exception in rollback handler",
-      });
-    }
-
-    this.log.pipeline(
-      {
-        event: "execute_end",
-        handler: this.constructor.name,
-        handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "error",
-        status: this.safeCtxGet<number>("status") ?? 500,
-      },
-      "S2sUserDeleteOnFailureHandler.run: exit"
-    );
-  }
-
-  protected override async execute(): Promise<void> {
-    const requestId = this.safeCtxGet<string>("requestId");
     const userCreateStatus = this.safeCtxGet<UserCreateStatus>(
       "signup.userCreateStatus"
     );
@@ -138,10 +117,7 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
 
     if (userAuthCreateStatus && userAuthCreateStatus.ok === true) {
       this.log.debug(
-        {
-          event: "rollback_skip_auth_ok",
-          requestId,
-        },
+        { event: "rollback_skip_auth_ok", requestId },
         "auth.signup.rollbackUserOnAuthCreateFailure: userAuthCreateStatus.ok === true — no rollback"
       );
       return;
@@ -157,10 +133,7 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
           "credentials; inspect the user service for orphaned records and correct manually.",
         stage: "rollback.user_id_missing",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         issues: [{ hasSignupUserId: !!signupUserId }],
         logMessage:
           "auth.signup.rollbackUserOnAuthCreateFailure: missing signup.userId; cannot safely rollback user",
@@ -170,7 +143,6 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
     }
 
     const userBag = this.safeCtxGet<UserBag>("bag");
-
     if (!userBag) {
       this.failWithError({
         httpStatus: 500,
@@ -182,38 +154,16 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
           "orphaned records and correct manually.",
         stage: "rollback.user_bag_missing",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         issues: [{ hasUserBag: !!userBag, userId: signupUserId }],
         logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: ctx['bag'] missing; cannot construct DtoBag for user.delete",
+          "auth.signup.rollbackUserOnAuthCreateFailure: ctx['bag'] missing; cannot call user.delete safely",
         logLevel: "error",
       });
       return;
     }
 
-    const rt = this.safeCtxGet<SvcRuntime>("rt");
-    if (!rt) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "auth_signup_rollback_rt_unavailable",
-        detail:
-          "Auth signup rollback could not obtain SvcRuntime from ctx['rt']. " +
-          "Dev: ensure ControllerBase seeds ctx['rt'] for all requests.",
-        stage: "rollback.rt_unavailable",
-        requestId,
-        origin: { file: __filename, method: "execute" },
-        issues: [{ hasRt: !!rt }],
-        logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: ctx['rt'] missing during rollback",
-        logLevel: "error",
-      });
-      return;
-    }
-
-    const env = (rt.getEnv() ?? "").trim();
+    const env = (this.rt.getEnv() ?? "").trim();
     if (!env) {
       this.failWithError({
         httpStatus: 500,
@@ -232,20 +182,18 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
       return;
     }
 
-    const s2sCap = rt.tryCap("s2s") as { svcClient?: SvcClient } | undefined;
-    const svcClient = s2sCap?.svcClient;
-
+    const svcClient = this.rt.tryCap<SvcClient>("s2s.svcClient");
     if (!svcClient || typeof (svcClient as any).call !== "function") {
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_rollback_svcclient_cap_missing",
         detail:
           'Auth signup rollback requires SvcRuntime capability "s2s.svcClient" to call user.delete. ' +
-          "Dev/Ops: wire rt caps for auth so rollback handlers can run deterministically.",
+          "Dev/Ops: ensure AppBase wires the cap under the canonical key so rollback handlers can run deterministically.",
         stage: "rollback.cap.s2s.svcClient",
         requestId,
         origin: { file: __filename, method: "execute" },
-        issues: [{ hasS2sCap: !!s2sCap, hasSvcClient: !!svcClient }],
+        issues: [{ hasSvcClient: !!svcClient }],
         logMessage:
           "auth.signup.rollbackUserOnAuthCreateFailure: missing rt cap s2s.svcClient during rollback",
         logLevel: "error",
@@ -254,19 +202,11 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
     }
 
     this.log.info(
-      {
-        event: "rollback_begin",
-        requestId,
-        env,
-        userId: signupUserId,
-      },
+      { event: "rollback_begin", requestId, env, userId: signupUserId },
       "auth.signup.rollbackUserOnAuthCreateFailure: attempting compensating user.delete"
     );
 
     try {
-      // IMPORTANT:
-      // - SvcClient.call returns WireBagJson (wire JSON), not DtoBag<UserDto>.
-      // - This handler does not need the returned payload.
       const _wire = await svcClient.call({
         env,
         slug: "user",
@@ -280,63 +220,34 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
       });
       void _wire;
 
+      this.ctx.set("signup.userRolledBack", true);
+
       this.log.info(
-        {
-          event: "rollback_ok",
-          requestId,
-          env,
-          userId: signupUserId,
-        },
+        { event: "rollback_ok", requestId, env, userId: signupUserId },
         "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback succeeded"
       );
 
-      this.ctx.set("signup.userRolledBack", true);
-
+      // Keep pipeline in error state; we are compensating, not "fixing" the request.
       this.failWithError({
         httpStatus: 502,
         title: "auth_signup_userauth_failed_user_rolled_back",
         detail:
           "Auth signup failed while creating user-auth credentials, but the previously " +
           "created user record was rolled back via user.delete. " +
-          "Ops: inspect the user-auth service for errors and confirm that no orphaned auth " +
-          "records exist for this userId.",
+          "Ops: inspect user-auth logs and confirm no orphaned auth records exist for this userId.",
         stage: "rollback.user_delete_ok",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         issues: [{ env, userId: signupUserId, userRolledBack: true }],
         logMessage:
           "auth.signup.rollbackUserOnAuthCreateFailure: auth failure + successful user rollback",
         logLevel: "error",
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
+      const message =
+        err instanceof Error ? err.message : String(err ?? "Unknown error");
 
       this.ctx.set("signup.userRolledBack", false);
-
-      this.failWithError({
-        httpStatus: 500,
-        title: "auth_signup_userauth_failed_user_rollback_failed",
-        detail:
-          "Auth signup failed while creating user-auth credentials, and an attempt to " +
-          "rollback the previously created user record via user.delete also failed. " +
-          "Ops: the system may now contain a User without credentials; inspect the user and " +
-          "user-auth services for inconsistencies and correct manually. Check service logs " +
-          "for the underlying rollback error and KMS/JWT/DB connectivity.",
-        stage: "rollback.user_delete_failed",
-        requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [{ env, userId: signupUserId, userRolledBack: false }],
-        rawError: err,
-        logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback FAILED",
-        logLevel: "error",
-      });
 
       this.log.error(
         {
@@ -346,8 +257,26 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
           userId: signupUserId,
           error: message,
         },
-        "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback FAILED (see failWithError details)"
+        "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback FAILED"
       );
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_userauth_failed_user_rollback_failed",
+        detail:
+          "Auth signup failed while creating user-auth credentials, and an attempt to " +
+          "rollback the previously created user record via user.delete also failed. " +
+          "Ops: the system may now contain a User without credentials; inspect user and " +
+          "user-auth services for inconsistencies and correct manually.",
+        stage: "rollback.user_delete_failed",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ env, userId: signupUserId, userRolledBack: false }],
+        rawError: err,
+        logMessage:
+          "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback FAILED",
+        logLevel: "error",
+      });
     }
   }
 }

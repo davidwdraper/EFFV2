@@ -7,7 +7,11 @@
     "outDir": "dist",
     "composite": true
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*",
+    "../shared/src/http/handlers/db.readExisting.ts",
+    "../shared/src/http/handlers/db.update.ts"
+  ],
   "exclude": ["dist", "node_modules"],
   "references": [{ "path": "../shared" }]
 }

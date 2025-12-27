@@ -18,12 +18,10 @@
 import type { Express } from "express";
 import express = require("express");
 import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
-import {
-  routePolicyGate,
-  type ISvcconfigResolver,
-} from "@nv/shared/middleware/policy/routePolicyGate";
+import { routePolicyGate } from "@nv/shared/middleware/policy/routePolicyGate";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
 import { createProblemMiddleware } from "@nv/shared/problem/createProblemMiddleware";
+import type { ISvcconfigResolver } from "@nv/shared/s2s/SvcClient";
 
 export function mountPreRoutingLayer(opts: {
   app: Express;
@@ -37,6 +35,17 @@ export function mountRoutePolicyGateLayer(opts: {
   app: Express;
   service: string;
   log: IBoundLogger;
+
+  /**
+   * REQUIRED when resolver is provided.
+   * AppBase is the single source of truth (rt.getEnv()).
+   */
+  envLabel?: string;
+
+  /**
+   * Canonical resolver contract (S2S).
+   * If null, the feature is disabled.
+   */
   resolver: ISvcconfigResolver | null;
 
   /**
@@ -46,24 +55,35 @@ export function mountRoutePolicyGateLayer(opts: {
   facilitatorBaseUrl?: string;
   ttlMs?: number;
 }): void {
-  const { app, service, log, resolver, facilitatorBaseUrl, ttlMs } = opts;
+  const { app, service, log, envLabel, resolver, facilitatorBaseUrl, ttlMs } =
+    opts;
   if (!resolver) return;
+
+  if (!envLabel || !envLabel.trim()) {
+    throw new Error(
+      `ROUTE_POLICY_ENV_LABEL_MISSING: routePolicyGate enabled for service="${service}" but envLabel is missing/empty. ` +
+        "Dev: AppBase must pass rt.getEnv() into mountRoutePolicyGateLayer()."
+    );
+  }
 
   if (!facilitatorBaseUrl || !facilitatorBaseUrl.trim()) {
     throw new Error(
-      `ROUTE_POLICY_FACILITATOR_BASE_URL_MISSING: routePolicyGate enabled for service="${service}" but facilitatorBaseUrl is missing/empty. Ops: set SVCFACILITATOR_BASE_URL in env-service for this service.`
+      `ROUTE_POLICY_FACILITATOR_BASE_URL_MISSING: routePolicyGate enabled for service="${service}" but facilitatorBaseUrl is missing/empty. ` +
+        "Ops: set SVCFACILITATOR_BASE_URL in env-service for this service."
     );
   }
 
   if (!Number.isFinite(ttlMs) || (ttlMs as number) <= 0) {
     throw new Error(
-      `ROUTE_POLICY_TTL_INVALID: routePolicyGate enabled for service="${service}" but ttlMs is invalid. Ops: set ROUTE_POLICY_TTL_MS to a positive integer string in env-service for this service.`
+      `ROUTE_POLICY_TTL_INVALID: routePolicyGate enabled for service="${service}" but ttlMs is invalid. ` +
+        "Ops: set ROUTE_POLICY_TTL_MS to a positive integer string in env-service for this service."
     );
   }
 
   app.use(
     routePolicyGate({
       logger: log,
+      envLabel: envLabel.trim(),
       serviceName: service,
       ttlMs: Math.trunc(ttlMs as number),
       facilitatorBaseUrl: facilitatorBaseUrl.trim(),

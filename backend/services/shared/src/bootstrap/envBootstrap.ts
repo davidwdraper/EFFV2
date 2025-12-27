@@ -7,6 +7,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
  * - Shared environment bootstrap for all services that obtain config from env-service.
@@ -19,6 +20,7 @@
  * - Work in terms of DtoBag<EnvServiceDto> (no naked DTOs cross this boundary).
  * - Derive HTTP host/port from the primary DTO in the bag.
  * - Construct SvcRuntime using the REAL bound logger (no shims).
+ * - Enforce posture-derived boot rails (DB/WAL requirements).
  *
  * Invariants:
  * - No .env file parsing here except NV_ENV (logical environment label) and NV_ENV_SERVICE_URL
@@ -39,44 +41,29 @@ import {
   type SvcTarget,
 } from "../s2s/SvcClient";
 import { SvcEnvClient } from "../env/svcenvClient";
-import { SvcRuntime, type SvcRuntimeCaps } from "../runtime/SvcRuntime";
+import { SvcRuntime } from "../runtime/SvcRuntime";
 import { setLoggerEnv, getLogger, type IBoundLogger } from "../logger/Logger";
+import {
+  type SvcPosture,
+  isDbPosture,
+  requiresWalFs,
+} from "../runtime/SvcPosture";
 
 export type EnvBootstrapOpts = {
   slug: string;
   version: number;
+
   /**
-   * CHECK_DB:
-   * - true  => service is DB-backed; callers are expected to:
-   *            • enforce NV_MONGO_* presence
-   *            • run registry.ensureIndexes() at boot
-   * - false => MOS / non-DB service; callers should NOT touch NV_MONGO_* or indexes.
-   *
-   * NOTE:
-   * - This flag is intentionally required so new services (or cloner output)
-   *   must explicitly declare their DB posture.
+   * ADR-0084: Service posture is the single source of truth.
+   * envBootstrap derives and enforces all boot rails from posture.
    */
-  checkDb: boolean;
+  posture: SvcPosture;
+
   /**
    * Optional explicit startup log path. If omitted, defaults to:
    *   <cwd>/<slug>-startup-error.log
    */
   logFile?: string;
-
-  /**
-   * ADR-0080: Runtime caps wiring is service-owned.
-   *
-   * Why:
-   * - envBootstrap must not "guess" how to build svcconfig-based resolution
-   *   for arbitrary services (boot recursion risk).
-   * - Services can wire caps as instances or lazy factories once they know
-   *   their concrete boot strategy.
-   *
-   * Examples:
-   * - { s2s: (rt) => ({ svcClient: new SvcClient(...) }) }
-   * - { db:  (rt) => ({ mongo: new MongoClient(...) }) }
-   */
-  runtimeCaps?: SvcRuntimeCaps;
 };
 
 export type EnvBootstrapResult = {
@@ -90,11 +77,11 @@ export type EnvBootstrapResult = {
   envReloader: () => Promise<DtoBag<EnvServiceDto>>;
   host: string;
   port: number;
+
   /**
-   * Echo of opts.checkDb so downstream boot code can decide whether to
-   * enforce NV_MONGO_* + ensureIndexes() or skip all DB concerns.
+   * Echo of posture (single source of truth).
    */
-  checkDb: boolean;
+  posture: SvcPosture;
 
   /**
    * ADR-0080: Transport-agnostic runtime container.
@@ -213,14 +200,80 @@ function requireNonEmpty(s: unknown, code: string, detail: string): string {
   return v;
 }
 
+function requirePositiveIntString(
+  raw: string,
+  code: string,
+  detail: string
+): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw new Error(`${code}: ${detail} Got "${raw}".`);
+  }
+  return Math.trunc(n);
+}
+
+function enforcePostureRails(
+  logFile: string,
+  posture: SvcPosture,
+  envLabel: string,
+  slug: string,
+  version: number,
+  envDto: EnvServiceDto
+): void {
+  // DB posture: require DB vars AND WAL FS vars.
+  if (isDbPosture(posture)) {
+    try {
+      requireNonEmpty(
+        envDto.getEnvVar("NV_MONGO_URI"),
+        "BOOTSTRAP_MONGO_URI_MISSING",
+        `NV_MONGO_URI is required for posture="db" (env="${envLabel}", slug="${slug}", version=${version}). ` +
+          "Ops: set NV_MONGO_URI in env-service."
+      );
+      requireNonEmpty(
+        envDto.getEnvVar("NV_MONGO_DB"),
+        "BOOTSTRAP_MONGO_DB_MISSING",
+        `NV_MONGO_DB is required for posture="db" (env="${envLabel}", slug="${slug}", version=${version}). ` +
+          "Ops: set NV_MONGO_DB in env-service."
+      );
+    } catch (err) {
+      fatal(
+        logFile,
+        "BOOTSTRAP_DB_VARS_INVALID: DB posture requires Mongo vars.",
+        err
+      );
+    }
+
+    if (requiresWalFs(posture)) {
+      try {
+        requireNonEmpty(
+          envDto.getEnvVar("NV_WAL_DIR"),
+          "BOOTSTRAP_WAL_DIR_MISSING",
+          `NV_WAL_DIR is required for posture="db" WAL backing (env="${envLabel}", slug="${slug}", version=${version}). ` +
+            "Ops: set NV_WAL_DIR in env-service."
+        );
+        // Optional but recommended: rotation / sizing rails can be added here later.
+      } catch (err) {
+        fatal(
+          logFile,
+          "BOOTSTRAP_WAL_VARS_INVALID: DB posture requires WAL filesystem vars.",
+          err
+        );
+      }
+    }
+  }
+
+  // Non-db postures: do NOT validate DB vars here; they are forbidden by design,
+  // but we avoid probing DTO internals for key existence to preserve encapsulation.
+}
+
 export async function envBootstrap(
   opts: EnvBootstrapOpts
 ): Promise<EnvBootstrapResult> {
-  const { slug, version, checkDb } = opts;
+  const { slug, version, posture } = opts;
   const logFile = resolveLogFile(slug, opts.logFile);
 
   // eslint-disable-next-line no-console
-  console.log("[bootstrap] envBootstrap starting", { slug, version, checkDb });
+  console.log("[bootstrap] envBootstrap starting", { slug, version, posture });
 
   // 1) Construct SvcClient and SvcEnvClient
   let svcClient: SvcClient;
@@ -308,7 +361,10 @@ export async function envBootstrap(
     );
   }
 
-  // 6) Derive HTTP host/port
+  // 6) Enforce posture-derived rails (DB/WAL requirements, etc.)
+  enforcePostureRails(logFile, posture, envLabel, slug, version, primary);
+
+  // 7) Derive HTTP host/port
   let host: string;
   let port: number;
   try {
@@ -320,13 +376,11 @@ export async function envBootstrap(
     );
 
     const rawPort = primary.getEnvVar("NV_HTTP_PORT");
-    const n = Number(rawPort);
-    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
-      throw new Error(
-        `NV_HTTP_PORT must be a positive integer string, got "${rawPort}".`
-      );
-    }
-    port = Math.trunc(n);
+    port = requirePositiveIntString(
+      rawPort,
+      "BOOTSTRAP_HTTP_PORT_INVALID",
+      `NV_HTTP_PORT must be a positive integer string for env="${envLabel}", slug="${slug}", version=${version}.`
+    );
   } catch (err) {
     fatal(
       logFile,
@@ -337,7 +391,7 @@ export async function envBootstrap(
     );
   }
 
-  // 7) Build SvcRuntime (ADR-0080) from identity + EnvServiceDto + REAL logger
+  // 8) Build SvcRuntime (ADR-0080) from identity + EnvServiceDto + REAL logger
   let dbStateRaw: string;
   try {
     dbStateRaw = primary.getEnvVar("DB_STATE");
@@ -368,7 +422,7 @@ export async function envBootstrap(
       },
       primary, // DTO stays the source of truth
       log,
-      opts.runtimeCaps ?? {}
+      {} // caps are wired ONLY by AppBase (ADR-0084 posture rails + ADR-0080 caps model)
     );
   } catch (err) {
     fatal(
@@ -379,7 +433,7 @@ export async function envBootstrap(
     );
   }
 
-  // 8) Bag-based reloader: same envLabel, fresh bag each call.
+  // 9) Bag-based reloader: same envLabel, fresh bag each call.
   const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
     return envClient.getConfig({ env: envLabel, slug, version });
   };
@@ -392,8 +446,7 @@ export async function envBootstrap(
       envLabel,
       host,
       port,
-      checkDb,
-      caps: Object.keys(opts.runtimeCaps ?? {}),
+      posture,
     },
     "envBootstrap complete"
   );
@@ -404,7 +457,7 @@ export async function envBootstrap(
     envReloader,
     host,
     port,
-    checkDb,
+    posture,
     rt,
   };
 }

@@ -147,7 +147,7 @@ export class DbDeleteByIdHandler extends HandlerBase {
       return;
     }
 
-    // ---- DB config comes from sandbox rails --------------------------------
+    // ---- DB config comes from runtime rails --------------------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // ---- External edge: DB delete ------------------------------------------

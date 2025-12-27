@@ -117,7 +117,7 @@ export class DbCreateHandler extends HandlerBase {
       }
     }
 
-    // ---- Missing DB config throws (sandbox rails) --------------------------
+    // ---- Missing DB config throws (runtime rails) --------------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // ---- External edge: DB write ------------------------------------------

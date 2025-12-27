@@ -16,7 +16,7 @@
  *   • Access to App, Registry, Logger via controller getters
  *   • Short-circuit on prior failure
  *   • Standardized instrumentation via bound logger
- *   • Thin wrappers over sandbox env + error helpers
+ *   • Thin wrappers over runtime env + error helpers
  *   • Optional per-handler runTest() hook for test-runner
  *
  * Invariants (locked here; downstream stops defending):
@@ -42,7 +42,7 @@ import type { IDtoRegistry } from "../../registry/RegistryBase";
 import type { ControllerBase } from "../../base/controller/ControllerBase";
 import type { SvcRuntime } from "../../runtime/SvcRuntime";
 import {
-  getEnvVarFromSandbox,
+  getEnvVarFromRuntime,
   resolveMongoConfigWithDbState,
 } from "./handlerBaseExt/envHelpers";
 import {
@@ -69,7 +69,7 @@ export abstract class HandlerBase {
    * a handler can see. If it isn’t present, the service is mis-wired.
    *
    * Invariant:
-   * - Sandbox identity is authoritative (ADR-0080). No ctx fallback.
+   * - Runtime identity is authoritative (ADR-0080). No ctx fallback.
    */
   protected readonly rt: SvcRuntime;
 
@@ -85,10 +85,10 @@ export abstract class HandlerBase {
 
     // HARD REQUIRE: SvcRuntime must exist or the service is mis-wired.
     // “No seatbelt, no ignition.”
-    const rt = this.controller.getSandbox();
+    const rt = this.controller.getRuntime();
     if (!rt) {
       throw new Error(
-        "SvcRuntime is required: ControllerBase.getSandbox() returned null/undefined. " +
+        "SvcRuntime is required: ControllerBase.getRuntime() returned null/undefined. " +
           "Ops: ensure the service is SvcRuntime'd before wiring handlers."
       );
     }
@@ -126,7 +126,7 @@ export abstract class HandlerBase {
       {
         event: "construct",
         handlerStatus: this.ctx.get<string>("handlerStatus") ?? "ok",
-        hasSandbox: true,
+        hasRuntime: true,
       },
       "HandlerBase ctor"
     );
@@ -343,7 +343,7 @@ export abstract class HandlerBase {
   protected getVar(key: string, required: false): string | undefined;
   protected getVar(key: string, required: true): string;
   protected getVar(key: string, required: boolean = false): string | undefined {
-    return getEnvVarFromSandbox({
+    return getEnvVarFromRuntime({
       controller: this.controller,
       log: this.log,
       handlerName: this.constructor.name,
@@ -407,7 +407,7 @@ export abstract class HandlerBase {
         title: "mongo_config_error",
         detail:
           msg +
-          " Ops: verify NV_MONGO_URI, NV_MONGO_DB, DB_STATE, and sandbox wiring. `_infra` DBs are state-invariant; domain DBs require DB_STATE decoration.",
+          " Ops: verify NV_MONGO_URI, NV_MONGO_DB, DB_STATE, and runtime wiring. `_infra` DBs are state-invariant; domain DBs require DB_STATE decoration.",
         stage: `${this.handlerPurpose()}:mongo.config`,
         rawError: err,
         origin: { method: "getMongoConfig" },

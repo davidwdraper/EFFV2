@@ -137,7 +137,7 @@ export abstract class AppBase extends ServiceBase {
     this.rt = opts.rt;
 
     // Commit 2: envLabel is now owned by rt. envDto must agree.
-    // This prevents “sandbox exists but isn’t authoritative” drift.
+    // This prevents “runtime exists but isn’t authoritative” drift.
     try {
       const dtoEnv = (this._envDto.getEnvLabel() ?? "").trim();
       const rtEnv = (this.rt.getEnv() ?? "").trim();
@@ -219,12 +219,12 @@ export abstract class AppBase extends ServiceBase {
   }
 
   /**
-   * Sandbox accessor (ADR-0080).
+   * Runtime accessor (ADR-0080).
    *
    * Invariant:
-   * - Sandbox MUST exist or app construction fails.
+   * - Runtime MUST exist or app construction fails.
    */
-  public getSandbox(): SvcRuntime {
+  public getRuntime(): SvcRuntime {
     return this.rt;
   }
 
@@ -470,7 +470,7 @@ export abstract class AppBase extends ServiceBase {
         edgeMode: this.edgeMode,
         s2sMocksEnabled: this.s2sMocksEnabled,
         hasInjectedSvcClientTransport: this.hasInjectedSvcClientTransport,
-        hasSandbox: true,
+        hasRuntime: true,
       },
       "app booted"
     );

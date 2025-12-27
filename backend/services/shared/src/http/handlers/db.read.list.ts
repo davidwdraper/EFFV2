@@ -114,7 +114,7 @@ export class DbReadListHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws (sandbox-owned, DB_STATE-aware) -----------
+    // ---- Missing DB config throws (runtime-owned, DB_STATE-aware) -----------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // --- Filter + pagination -------------------------------------------------

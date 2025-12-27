@@ -23,7 +23,7 @@
  *
  * Invariants:
  * - Handlers never touch process.env, never touch Express, never build wire.
- * - Mongo config must come from HandlerBase.getMongoConfig() (sandbox-driven).
+ * - Mongo config must come from HandlerBase.getMongoConfig() (runtime-driven).
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";

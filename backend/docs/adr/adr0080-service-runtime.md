@@ -1,11 +1,12 @@
-adr0080-service-sandbox
+adr0080-service-runtime
 
-# ADR-0080: Service Sandbox (SvcSandbox) — Transport-Agnostic Service Runtime
+# ADR-0080: Service Runtime (SvcRuntime) — Transport-Agnostic Service Runtime
 
 ## Status
+
 WORK IN PROGRESS — Accepted (Iterative)
 
-This ADR intentionally defines a *living* contract. It will evolve as implementation
+This ADR intentionally defines a _living_ contract. It will evolve as implementation
 and testing reveal sharper boundaries.
 
 ## Context
@@ -18,16 +19,17 @@ As the NowVibin (NV) backend matured, handler-level testing exposed a systemic f
 - Controllers and handlers had no single, authoritative source of service configuration.
 
 This caused:
+
 - Tests that passed without performing real DB writes or S2S calls.
 - Configuration drift between runtime and tests.
 - Increasing difficulty reasoning about where a value originated.
 
-To resolve this, we introduce a **Service Sandbox** (`SvcSandbox`) that represents the
-*entire service runtime environment*, fully decoupled from transport concerns.
+To resolve this, we introduce a **Service Runtime** (`SvcRuntime`) that represents the
+_entire service runtime environment_, fully decoupled from transport concerns.
 
 ## Decision
 
-Introduce a **SvcSandbox** abstraction that:
+Introduce a **SvcRuntime** abstraction that:
 
 1. Encapsulates the full service runtime:
    - identity
@@ -40,7 +42,7 @@ Introduce a **SvcSandbox** abstraction that:
 4. Is injected into controllers, and then into handlers.
 5. Is the **only** location where environment variables are read and validated.
 
-In running code, the sandbox instance will be referenced as:
+In running code, the runtime instance will be referenced as:
 
 - `ssb`
 
@@ -48,27 +50,31 @@ for brevity and clarity inside handlers.
 
 ## Non-Goals
 
-SvcSandbox explicitly does NOT:
+SvcRuntime explicitly does NOT:
+
 - Know anything about HTTP, Express, headers, routes, or status codes.
 - Build wire responses or envelopes.
 - Contain per-request state (those belong in HandlerContext).
 
 ## High-Level Shape
 
-SvcSandbox represents a **service runtime**, not a request.
+SvcRuntime represents a **service runtime**, not a request.
 
 ### Identity
+
 - `serviceSlug: string`
 - `serviceVersion: number`
 - `env: string`
 - `dbState: string`
 
 ### Configuration
+
 - Raw vars: `Record<string, string>`
 - Typed config: validated, parsed values
 - Mock flags (DB_MOCKS, S2S_MOCKS) validated once
 
 ### Capabilities
+
 - `logger`
 - `problem` (RFC7807 factory)
 - `db` (facade)
@@ -78,6 +84,7 @@ SvcSandbox represents a **service runtime**, not a request.
 - `cache` (optional)
 
 ### Helpers / Rails
+
 - `getVar(key)`
 - `tryVar(key)`
 - `getDbVar(key)`
@@ -85,6 +92,7 @@ SvcSandbox represents a **service runtime**, not a request.
 - `describe()` — safe diagnostics (no secrets)
 
 ### Lifecycle
+
 - `init()` — boot, validate, connect
 - `dispose()` — teardown
 
@@ -92,16 +100,18 @@ SvcSandbox represents a **service runtime**, not a request.
 
 The following boundary is locked:
 
-- **SvcSandbox** = service-wide runtime, transport-free
+- **SvcRuntime** = service-wide runtime, transport-free
 - **HandlerContext** = request-scoped data, transport-adapted
 - **Controllers** = translate transport → HandlerContext → handlers
 
 Handlers may access:
+
 - `ctx`
 - `ssb`
 - DTOs / `DtoBag`s
 
 Handlers must never access:
+
 - `process.env`
 - Express `req/res`
 - transport-specific constructs
@@ -109,28 +119,31 @@ Handlers must never access:
 ## Test-Runner Implications
 
 The test-runner:
-- Builds a SvcSandbox targeting the *service under test*
+
+- Builds a SvcRuntime targeting the _service under test_
 - Scopes it to the pipeline being executed
 - Executes handlers exactly as runtime would
 
 This allows:
+
 - Real DB + real S2S tests (when allowed by flags)
 - Deterministic, faithful pipeline execution
 - Elimination of test-only masking logic
 
 ## Special Cases
 
-Two services diverge only in **sandbox construction**, not interface:
+Two services diverge only in **runtime construction**, not interface:
 
 - `env-service`
 - `svcconfig`
 
-They use specialized sandbox builders but expose the same SvcSandbox contract to
+They use specialized runtime builders but expose the same SvcRuntime contract to
 controllers and handlers.
 
 ## Consequences
 
 ### Positive
+
 - Single source of truth for service configuration
 - Deterministic, faithful handler testing
 - Strict separation of concerns
@@ -138,6 +151,7 @@ controllers and handlers.
 - Easier reasoning about failures
 
 ### Tradeoffs
+
 - Slightly heavier boot logic
 - Requires discipline: no shortcuts to globals
 - Initial refactor cost
@@ -145,7 +159,7 @@ controllers and handlers.
 ## Open Questions / To Be Refined
 
 - Exact typing of `config` vs `vars`
-- Index-building responsibilities in sandbox `init()`
+- Index-building responsibilities in runtime `init()`
 - Cache lifecycle ownership
 - Metrics surface area
 - CLI / cron execution patterns

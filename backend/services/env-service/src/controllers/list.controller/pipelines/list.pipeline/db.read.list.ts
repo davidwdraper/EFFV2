@@ -30,7 +30,7 @@
  *   - Use HandlerBase.failWithError(...) for problem+json responses.
  *
  * Notes:
- * - Pull DB config via sandbox rails (HandlerBase.getMongoConfig()).
+ * - Pull DB config via runtime rails (HandlerBase.getMongoConfig()).
  * - Resolve dtoCtor via DtoRegistry + ctx["dtoType"] (no dtoCtor on ctx required).
  * - Pagination metadata is exposed on ctx for finalize() (e.g., ctx["list.nextCursor"]).
  */
@@ -108,7 +108,7 @@ export class DbReadListHandler extends HandlerBase {
       return;
     }
 
-    // ---- DB config (sandbox rails) ----------------------------------------
+    // ---- DB config (runtime rails) ----------------------------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // ---- Filter + pagination params from ctx ------------------------------

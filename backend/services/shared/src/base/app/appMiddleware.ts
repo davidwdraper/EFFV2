@@ -11,7 +11,7 @@
  *   error funnel for AppBase.
  *
  * Invariants:
- * - No process.env reads here (sandbox / svcenv is the single source of truth).
+ * - No process.env reads here (runtime / svcenv is the single source of truth).
  * - No silent fallbacks. If a feature is enabled, its required config must exist.
  */
 

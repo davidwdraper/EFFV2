@@ -28,7 +28,7 @@
  *   - failWithError(...) sets handlerStatus="error" + response.status/body
  *
  * Invariants:
- * - No controller.getSvcEnv() checks (sandbox owns env plumbing).
+ * - No controller.getSvcEnv() checks (runtime owns env plumbing).
  * - No success payload outside ctx["bag"].
  */
 

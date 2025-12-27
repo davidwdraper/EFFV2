@@ -10,7 +10,7 @@
  * - Transport-agnostic Problem primitives (RFC7807-ish).
  * - Single source of truth for:
  *   - ProblemJson wire shape
- *   - ProblemFactory helpers used by sandbox/handlers/controllers
+ *   - ProblemFactory helpers used by runtime/handlers/controllers
  *
  * Invariants:
  * - No Express/HTTP framework imports.

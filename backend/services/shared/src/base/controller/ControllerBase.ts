@@ -21,7 +21,7 @@
  *
  * Invariants:
  * - SvcRuntime is mandatory; controllers always seed ctx["rt"].
- * - No transitional trySandbox() paths.
+ * - No transitional tryRuntime() paths.
  * - No legacy env DTO fallback paths (app.svcEnv).
  */
 
@@ -73,14 +73,14 @@ export abstract class ControllerBase {
   }
 
   /**
-   * Sandbox access (ADR-0080).
+   * Runtime access (ADR-0080).
    *
    * Invariant:
-   * - AppBase MUST expose getSandbox() and it MUST succeed.
+   * - AppBase MUST expose getRuntime() and it MUST succeed.
    * - No try-paths, no compatibility shims.
    */
-  public getSandbox(): SvcRuntime {
-    return this.app.getSandbox();
+  public getRuntime(): SvcRuntime {
+    return this.app.getRuntime();
   }
 
   /**
@@ -124,14 +124,14 @@ export abstract class ControllerBase {
     seedHydratorIntoContext(this, ctx, dtoType, opts);
   }
 
-  private seedSandboxIntoContext(ctx: HandlerContext): void {
-    const rt = this.getSandbox(); // mandatory (will throw if missing)
+  private seedRuntimeIntoContext(ctx: HandlerContext): void {
+    const rt = this.getRuntime(); // mandatory (will throw if missing)
     ctx.set("rt", rt);
   }
 
   protected makeContext(req: Request, res: Response): HandlerContext {
     const ctx = makeHandlerContext(this, req, res);
-    this.seedSandboxIntoContext(ctx);
+    this.seedRuntimeIntoContext(ctx);
     return ctx;
   }
 
@@ -142,7 +142,7 @@ export abstract class ControllerBase {
     opts?: { resolveCollectionName?: boolean }
   ): HandlerContext {
     const ctx = makeDtoOpHandlerContext(this, req, res, op, opts);
-    this.seedSandboxIntoContext(ctx);
+    this.seedRuntimeIntoContext(ctx);
     return ctx;
   }
 

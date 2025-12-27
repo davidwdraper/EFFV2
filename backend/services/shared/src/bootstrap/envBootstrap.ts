@@ -20,13 +20,20 @@
  * - Work in terms of DtoBag<EnvServiceDto> (no naked DTOs cross this boundary).
  * - Derive HTTP host/port from the primary DTO in the bag.
  * - Construct SvcRuntime using the REAL bound logger (no shims).
- * - Enforce posture-derived boot rails (DB/WAL requirements).
+ * - Enforce posture-derived boot rails (DB requirements).
  *
  * Invariants:
  * - No .env file parsing here except NV_ENV (logical environment label) and NV_ENV_SERVICE_URL
  *   for bootstrapping env-service location.
  * - DTO encapsulation is preserved: SvcRuntime must NOT extract and cache vars outside EnvServiceDto.
  * - All failures log concrete Ops guidance and terminate the process with exit code 1.
+ *
+ * NOTE (important / current reality):
+ * - WAL is NOT a posture-derived requirement today.
+ * - WAL is a capability (future: "db.wal") that must be explicitly wired by AppBase.
+ * - Therefore: envBootstrap MUST NOT require NV_WAL_DIR (or any WAL vars) just because posture is "db".
+ *   If/when WAL is introduced, the validation belongs behind an explicit capability gate (rt.hasCap("db.wal"))
+ *   which is not available in envBootstrap (caps are wired later by AppBase).
  */
 
 import fs from "fs";
@@ -43,11 +50,7 @@ import {
 import { SvcEnvClient } from "../env/svcenvClient";
 import { SvcRuntime } from "../runtime/SvcRuntime";
 import { setLoggerEnv, getLogger, type IBoundLogger } from "../logger/Logger";
-import {
-  type SvcPosture,
-  isDbPosture,
-  requiresWalFs,
-} from "../runtime/SvcPosture";
+import { type SvcPosture, isDbPosture } from "../runtime/SvcPosture";
 
 export type EnvBootstrapOpts = {
   slug: string;
@@ -220,17 +223,24 @@ function enforcePostureRails(
   version: number,
   envDto: EnvServiceDto
 ): void {
-  // DB posture: require DB vars AND WAL FS vars.
+  /**
+   * DB posture: require ONLY DB vars here.
+   *
+   * WAL is a capability (future "db.wal"), not a posture rail today, and
+   * envBootstrap cannot know which caps will be wired (that happens in AppBase).
+   *
+   * Therefore: DO NOT validate WAL vars here.
+   */
   if (isDbPosture(posture)) {
     try {
       requireNonEmpty(
-        envDto.getEnvVar("NV_MONGO_URI"),
+        envDto.getDbVar("NV_MONGO_URI"),
         "BOOTSTRAP_MONGO_URI_MISSING",
         `NV_MONGO_URI is required for posture="db" (env="${envLabel}", slug="${slug}", version=${version}). ` +
           "Ops: set NV_MONGO_URI in env-service."
       );
       requireNonEmpty(
-        envDto.getEnvVar("NV_MONGO_DB"),
+        envDto.getDbVar("NV_MONGO_DB"),
         "BOOTSTRAP_MONGO_DB_MISSING",
         `NV_MONGO_DB is required for posture="db" (env="${envLabel}", slug="${slug}", version=${version}). ` +
           "Ops: set NV_MONGO_DB in env-service."
@@ -241,24 +251,6 @@ function enforcePostureRails(
         "BOOTSTRAP_DB_VARS_INVALID: DB posture requires Mongo vars.",
         err
       );
-    }
-
-    if (requiresWalFs(posture)) {
-      try {
-        requireNonEmpty(
-          envDto.getEnvVar("NV_WAL_DIR"),
-          "BOOTSTRAP_WAL_DIR_MISSING",
-          `NV_WAL_DIR is required for posture="db" WAL backing (env="${envLabel}", slug="${slug}", version=${version}). ` +
-            "Ops: set NV_WAL_DIR in env-service."
-        );
-        // Optional but recommended: rotation / sizing rails can be added here later.
-      } catch (err) {
-        fatal(
-          logFile,
-          "BOOTSTRAP_WAL_VARS_INVALID: DB posture requires WAL filesystem vars.",
-          err
-        );
-      }
     }
   }
 
@@ -361,7 +353,7 @@ export async function envBootstrap(
     );
   }
 
-  // 6) Enforce posture-derived rails (DB/WAL requirements, etc.)
+  // 6) Enforce posture-derived rails (DB requirements only; WAL is cap-driven)
   enforcePostureRails(logFile, posture, envLabel, slug, version, primary);
 
   // 7) Derive HTTP host/port

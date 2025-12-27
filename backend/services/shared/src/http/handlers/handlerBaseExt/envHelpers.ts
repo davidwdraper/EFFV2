@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0058 (HandlerBase.getVar — strict env accessor)
- *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar(), and `_infra` DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
@@ -31,14 +31,16 @@ type GetEnvVarFromRuntimeArgs = {
   required: boolean;
 };
 
-/**
- * Guarded accessor used by HandlerBase.getVar().
- *
- * Behavior:
- * - Reads ONLY from controller.getRuntime().getVar()/tryVar().
- * - For DB-related keys (NV_MONGO_*):
- *     • throws ENV_DBVAR_USE_GETDBVAR to force callers over to getMongoConfig()
- */
+const DB_KEYS = new Set<string>([
+  "NV_MONGO_URI",
+  "NV_MONGO_DB",
+  "NV_MONGO_COLLECTION",
+  "NV_MONGO_COLLECTIONS",
+  "NV_MONGO_USER",
+  "NV_MONGO_PASS",
+  "NV_MONGO_OPTIONS",
+]);
+
 export function getEnvVarFromRuntime(
   args: GetEnvVarFromRuntimeArgs
 ): string | undefined {
@@ -46,22 +48,11 @@ export function getEnvVarFromRuntime(
 
   const rt = mustGetRuntime({ controller, log, handlerName, stage: "getVar" });
 
-  // DB-related keys must NEVER flow through getVar() — they go through getMongoConfig()
-  const dbKeys = new Set<string>([
-    "NV_MONGO_URI",
-    "NV_MONGO_DB",
-    "NV_MONGO_COLLECTION",
-    "NV_MONGO_COLLECTIONS",
-    "NV_MONGO_USER",
-    "NV_MONGO_PASS",
-    "NV_MONGO_OPTIONS",
-  ]);
-
-  if (dbKeys.has(key)) {
+  if (DB_KEYS.has(key)) {
     const msg =
-      `ENV_DBVAR_USE_GETDBVAR: "${key}" is DB-related and must be accessed via getMongoConfig()/getDbVar(). ` +
+      `ENV_DBVAR_USE_GETDBVAR: "${key}" is DB-related and must be accessed via getMongoConfig()/rt.getDbVar("${key}"). ` +
       `Context: env="${rt.getEnv()}", service="${rt.getServiceSlug()}", version=${rt.getServiceVersion()}, dbState="${rt.getDbState()}". ` +
-      "Ops: update callers to use getMongoConfig() so DB_STATE-aware naming and guardrails are enforced.";
+      "Dev: for handlers, call getMongoConfig(); for boot/db wiring, call rt.getDbVar().";
 
     log.error(
       {
@@ -79,7 +70,6 @@ export function getEnvVarFromRuntime(
     throw new Error(msg);
   }
 
-  // Non-DB key: delegate to SvcRuntime vars
   try {
     const value = required ? rt.getVar(key) : rt.tryVar(key);
 
@@ -127,22 +117,6 @@ type ResolveMongoConfigArgs = {
   handlerName: string;
 };
 
-/**
- * Canonical Mongo config resolver for handlers.
- *
- * It is the implementation behind HandlerBase.getMongoConfig().
- *
- * Behavior:
- * - Reads BOTH NV_MONGO_URI and NV_MONGO_DB from SvcRuntime vars:
- *     • uri  = rt.getVar("NV_MONGO_URI")
- *     • base = rt.getVar("NV_MONGO_DB")
- * - Applies ADR-0074 DB_STATE semantics using SvcRuntime identity:
- *     • domain DBs: <NV_MONGO_DB>_<DB_STATE>
- *     • *_infra DBs: ignore DB_STATE
- *
- * This function NEVER calls getEnvVarFromRuntime() for DB vars, so it does not
- * trip the guardrail that protects HandlerBase.getVar().
- */
 export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
   uri: string;
   dbName: string;
@@ -157,19 +131,20 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
   });
 
   let uri: string;
-  let baseDbName: string;
+  let dbName: string;
 
   try {
-    uri = rt.getVar("NV_MONGO_URI");
-    baseDbName = rt.getVar("NV_MONGO_DB");
+    // ADR-0074: DB vars must be read via getDbVar()
+    uri = rt.getDbVar("NV_MONGO_URI");
+    dbName = rt.getDbVar("NV_MONGO_DB"); // already DB_STATE-decorated by runtime
   } catch (err: any) {
     const errMsg = err?.message ?? String(err);
     const msg =
-      "Failed to resolve Mongo configuration via SvcRuntime vars. " +
+      "Failed to resolve Mongo configuration via SvcRuntime DB vars. " +
       "Ops: verify NV_MONGO_URI and NV_MONGO_DB are present in env-service for this service (root/service merge).";
     log.error(
       {
-        event: "mongo_config_runtime_vars_failed",
+        event: "mongo_config_runtime_dbvars_failed",
         handler: handlerName,
         error: errMsg,
       },
@@ -178,11 +153,9 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
     throw new Error(`${msg} Detail: ${errMsg}`);
   }
 
-  const dbName = decorateDbNameWithDbState(baseDbName, rt.getDbState());
-
   if (!uri || !dbName) {
     const msg =
-      "Mongo configuration incomplete: NV_MONGO_URI or NV_MONGO_DB is missing/empty after runtime resolution. " +
+      "Mongo configuration incomplete: NV_MONGO_URI or NV_MONGO_DB is missing/empty after runtime DB var resolution. " +
       "Ops: fix the env-service document(s) for this service/version.";
     log.error(
       {
@@ -203,7 +176,7 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
       dbName,
       dbState: rt.getDbState(),
     },
-    "resolveMongoConfigWithDbState: resolved Mongo URI and DB name via SvcRuntime"
+    "resolveMongoConfigWithDbState: resolved Mongo URI and DB name via SvcRuntime DB vars"
   );
 
   return { uri, dbName };
@@ -239,24 +212,4 @@ function mustGetRuntime(args: {
     );
     throw new Error(`${msg} Detail: ${errMsg}`);
   }
-}
-
-function decorateDbNameWithDbState(base: string, dbState: string): string {
-  const b = (base ?? "").trim();
-  if (!b) {
-    throw new Error(
-      'ENV_DBNAME_INVALID: NV_MONGO_DB is empty. Ops: set NV_MONGO_DB to a non-empty base name (e.g., "nv", "nv_env_infra").'
-    );
-  }
-
-  const state = (dbState ?? "").trim();
-  if (!state) {
-    throw new Error(
-      'ENV_DBSTATE_MISSING: DB_STATE is empty. Ops: set DB_STATE (e.g., "dev", "test", "stage") in the env-service config record(s).'
-    );
-  }
-
-  if (b.toLowerCase().endsWith("_infra")) return b;
-
-  return `${b}_${state}`;
 }

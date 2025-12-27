@@ -3,6 +3,7 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar(), and `_infra` DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
@@ -20,17 +21,12 @@
  * - No default/fallback config values: missing vars throw with Ops guidance.
  * - DTO encapsulation honored: SvcRuntime does NOT extract/persist a vars map.
  *
- * Commit:
- * - Runtime var reads use EnvServiceDto.getVarsRaw() so DB keys are readable
- *   at runtime (HandlerBase.getVar remains guarded in envHelpers.ts).
- * - Allows envDto rotation on /env/reload so SvcRuntime and AppBase never drift.
- *
- * Caps:
- * - Capabilities are LAZY and EXPLICIT:
- *   • a cap slot may be an instance OR a factory function
- *   • factories are invoked at first request, cached, and returned
- * - Requested-but-missing caps hard-fail with ops-grade errors.
- * - No "it worked because something else instantiated it".
+ * DB vars (ADR-0074):
+ * - DB-related keys (NV_MONGO_*) MUST be read via getDbVar()/tryDbVar().
+ * - getVar()/tryVar() MUST reject DB vars to enforce the guardrail.
+ * - DB_STATE decoration:
+ *   • NV_MONGO_DB returns "<base>_<dbState>" for domain DBs
+ *   • "*_infra" DBs ignore DB_STATE and return "<base>"
  */
 
 import type { IBoundLogger } from "../logger/Logger";
@@ -48,20 +44,20 @@ export type SvcRuntimeCapName = "db" | "s2s" | "audit" | "metrics" | "cache";
 
 export type SvcRuntimeCapFactory<TCap = unknown> = (rt: SvcRuntime) => TCap;
 
-/**
- * Caps container:
- * - Each slot may be:
- *   • an already-constructed instance
- *   • a factory (lazy) which will be invoked once and cached
- *
- * NOTE:
- * - Unknown caps are allowed at runtime via setCap()/setCapFactory()
- *   (string keys), but we keep a typed baseline for the common ones.
- */
 export type SvcRuntimeCaps = Partial<
   Record<SvcRuntimeCapName, unknown | SvcRuntimeCapFactory>
 > &
   Record<string, unknown | SvcRuntimeCapFactory | undefined>;
+
+const DB_KEYS = new Set<string>([
+  "NV_MONGO_URI",
+  "NV_MONGO_DB",
+  "NV_MONGO_COLLECTION",
+  "NV_MONGO_COLLECTIONS",
+  "NV_MONGO_USER",
+  "NV_MONGO_PASS",
+  "NV_MONGO_OPTIONS",
+]);
 
 export class SvcRuntime {
   public readonly problem: ProblemFactory;
@@ -175,6 +171,10 @@ export class SvcRuntime {
     const k = (key ?? "").trim();
     if (!k) return undefined;
 
+    if (DB_KEYS.has(k)) {
+      throw this.makeDbVarGuardrailError(k, "tryVar");
+    }
+
     const raw = this.tryVarRaw(k);
     const s = typeof raw === "string" ? raw.trim() : "";
     return s ? s : undefined;
@@ -188,6 +188,10 @@ export class SvcRuntime {
       );
     }
 
+    if (DB_KEYS.has(k)) {
+      throw this.makeDbVarGuardrailError(k, "getVar");
+    }
+
     const raw = this.tryVarRaw(k);
     const s = typeof raw === "string" ? raw.trim() : "";
     if (s) return s;
@@ -195,6 +199,52 @@ export class SvcRuntime {
     const p: ProblemJson = this.problem.envMissing(k);
     throw new Error(
       `RT_ENV_VAR_MISSING: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
+    );
+  }
+
+  /**
+   * DB var access (ADR-0074).
+   *
+   * Rules:
+   * - Only DB keys allowed here.
+   * - NV_MONGO_DB applies DB_STATE decoration (unless *_infra).
+   */
+  public tryDbVar(key: string): string | undefined {
+    const k = (key ?? "").trim();
+    if (!k) return undefined;
+
+    if (!DB_KEYS.has(k)) {
+      throw new Error(
+        `RT_TRYDBVAR_NOT_DB_KEY: "${k}" is not a DB var key. Dev: use tryVar("${k}") for non-DB vars.`
+      );
+    }
+
+    if (k === "NV_MONGO_DB") {
+      const base = this.tryVarRaw(k);
+      const baseTrim = typeof base === "string" ? base.trim() : "";
+      if (!baseTrim) return undefined;
+      return this.decorateDbNameWithDbState(baseTrim, this.ident.dbState);
+    }
+
+    const raw = this.tryVarRaw(k);
+    const s = typeof raw === "string" ? raw.trim() : "";
+    return s ? s : undefined;
+  }
+
+  public getDbVar(key: string): string {
+    const k = (key ?? "").trim();
+    if (!k) {
+      throw new Error(
+        "RT_GETDBVAR_KEY_EMPTY: getDbVar(key) requires a non-empty key. Ops: fix caller."
+      );
+    }
+
+    const v = this.tryDbVar(k);
+    if (v !== undefined) return v;
+
+    const p: ProblemJson = this.problem.envMissing(k);
+    throw new Error(
+      `RT_ENV_DBVAR_MISSING: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
     );
   }
 
@@ -360,14 +410,6 @@ export class SvcRuntime {
     return v;
   }
 
-  /**
-   * Intentionally no requireSvcClient<T>() helper.
-   *
-   * Why:
-   * - It invites generic drift and false type safety.
-   * - Handlers should ask for the *cap they need* (e.g., "s2s") and use its shape.
-   */
-
   // ───────────────────────────────────────────
   // Internals
   // ───────────────────────────────────────────
@@ -390,5 +432,25 @@ export class SvcRuntime {
     } catch {
       return undefined;
     }
+  }
+
+  private makeDbVarGuardrailError(key: string, method: string): Error {
+    const msg =
+      `ENV_DBVAR_USE_GETDBVAR: "${key}" is DB-related and must be accessed via getDbVar("${key}"). ` +
+      `Context: env="${this.ident.env}", slug="${this.ident.serviceSlug}", version=${this.ident.serviceVersion}. ` +
+      `Dev: replace rt.${method}("${key}") with rt.getDbVar("${key}").`;
+    return new Error(msg);
+  }
+
+  private decorateDbNameWithDbState(base: string, dbState: string): string {
+    const b = (base ?? "").trim();
+    if (!b) return "";
+
+    const st = (dbState ?? "").trim();
+    if (!st) return "";
+
+    if (b.toLowerCase().endsWith("_infra")) return b;
+
+    return `${b}_${st}`;
   }
 }

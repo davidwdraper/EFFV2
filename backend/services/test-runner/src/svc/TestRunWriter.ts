@@ -50,7 +50,11 @@ import { SvcClient } from "@nv/shared/s2s/SvcClient";
  * - These are TEST verdict labels only; rails metadata is kept on the DTO
  *   (railsVerdict / railsStatus / railsHandlerStatus).
  */
-export type TestHandlerTerminalStatus = "Passed" | "Failed" | "TestError";
+export type TestHandlerTerminalStatus =
+  | "Passed"
+  | "Failed"
+  | "Skipped"
+  | "TestError";
 
 /**
  * Runner-owned wrapper around a HandlerTestDto.
@@ -82,12 +86,12 @@ export interface HandlerTestRecord {
 /**
  * Minimal writer contract.
  *
- * StepIterator lifecycle per opted-in handler:
+ * StepIterator lifecycle per handler step:
  *   1) Mint HandlerTestDto via shared registry.
  *   2) Seed DTO with contract metadata (index path, handler name, target, times).
  *   3) Mint HandlerTestRecord with dto + run metadata.
- *   4) await writer.startHandlerTest(record)   // insert initial record
- *   5) Execute handler.runTest() inside dto.runScenario(...)
+ *   4) await writer.startHandlerTest(record)    // insert initial record
+ *   5) Execute scenarios via ScenarioRunner     // test-module orchestration
  *   6) Populate record.terminalStatus / error fields / rawResult.
  *   7) await writer.finalizeHandlerTest(record) // update record
  */

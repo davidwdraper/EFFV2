@@ -7,11 +7,15 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - For xxx, DB/index ensure is ON (checkDb=true).
+ * - DB-backed service: requires NV_MONGO_* and index ensure at boot (checkDb=true).
+ *
+ * Invariants:
+ * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
  */
 
 import type { Express, Router } from "express";
@@ -19,8 +23,9 @@ import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
-
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+
 import { Registry } from "./registry/Registry";
 import { buildXxxRouter } from "./routes/xxx.route";
 
@@ -30,14 +35,18 @@ type CreateAppOptions = {
   /**
    * Logical environment label for this process (e.g., "dev", "stage", "prod").
    * - Passed through from envBootstrap.envLabel.
-   * - Any SvcClient created inside this service should use this value for `env`.
    */
   envLabel: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
+  /**
+   * SvcRuntime is mandatory (ADR-0080).
+   * Constructed by envBootstrap() after envDto is available.
+   */
+  rt: SvcRuntime;
 };
 
-class xxxApp extends AppBase {
+class XxxApp extends AppBase {
   /** Concrete per-service DTO registry (explicit, no barrels). */
   private readonly registry: Registry;
 
@@ -48,11 +57,12 @@ class xxxApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
-      envLabel: opts.envLabel,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // xxx is DB-backed: requires NV_MONGO_* and index ensure at boot.
+      // xxx is DB-backed: needs NV_MONGO_* and ensureIndexes at boot.
       checkDb: true,
+      // REQUIRED by AppBaseCtor: xxx is a SvcRuntime service.
+      rt: opts.rt,
     });
 
     this.registry = new Registry();
@@ -81,7 +91,7 @@ class xxxApp extends AppBase {
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new xxxApp(opts);
+  const app = new XxxApp(opts);
   // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
   await app.boot();
   return { app: app.instance };

@@ -142,10 +142,6 @@ export abstract class HandlerBase {
     return this.handlerName();
   }
 
-  public hasTest(): boolean {
-    return false;
-  }
-
   protected canRunAfterError(): boolean {
     return false;
   }

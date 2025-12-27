@@ -15,11 +15,13 @@
  * Invariants:
  * - One registry per service.
  * - No reflection or dynamic imports — explicit ctor map only.
- * - Instance collection name is seeded from each DTO class's dbCollectionName().
+ * - Instance collection name is seeded from each DTO class's dbCollectionName()
+ *   for DTOs that participate in persistence.
  */
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
 import { AuthDto } from "@nv/shared/dto/auth.dto";
+import { UserAuthDto } from "@nv/shared/dto/user-auth.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
@@ -35,17 +37,22 @@ export class Registry extends ServiceRegistryBase {
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
       ["auth"]: AuthDto as unknown as DtoCtor<IDto>,
-      // Add new DTOs here as the service grows:
+      ["user-auth"]: UserAuthDto as unknown as DtoCtor<IDto>,
+      // add new DTOs here as you grow the service:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,
     };
   }
 
   /**
-   * Hook for attaching UserType (and other per-request security context)
+   * Hook for attaching UserType (and any other per-request security context)
    * to a DTO instance.
    *
-   * The auth template does not apply field-level security by default,
-   * so this implementation is a strict pass-through.
+   * Auth v1:
+   * - No field-level security or per-user shaping yet.
+   * - DTOs are passed through unchanged.
+   *
+   * Later, when Auth starts shaping data by UserType/roles, this is the place
+   * to attach that context or adjust DTO views.
    */
   protected applyUserType<T extends IDto = IDto>(dto: T): T {
     return dto;
@@ -53,19 +60,38 @@ export class Registry extends ServiceRegistryBase {
 
   // ─────────────── Convenience constructors (optional) ───────────────
 
-  /** Create a new AuthDto instance with a seeded collection. */
+  /** Create a new AuthDto instance. */
   public newAuthDto(): AuthDto {
     const dto = new AuthDto(this.secret);
-    dto.setCollectionName(AuthDto.dbCollectionName());
+    // MOS: no collection needed for auth v1.
+    // dto.setCollectionName(AuthDto.dbCollectionName());
     return dto;
   }
 
-  /** Hydrate an AuthDto from JSON (validates if requested) and seed collection. */
+  /** Hydrate an AuthDto from JSON (validates if requested). */
   public fromJsonAuth(json: unknown, opts?: { validate?: boolean }): AuthDto {
-    const dto = AuthDto.fromBody(json, {
-      validate: !!opts?.validate,
-    });
-    dto.setCollectionName(AuthDto.dbCollectionName());
+    const dto = AuthDto.fromBody(json, { validate: !!opts?.validate });
+    // MOS: no collection needed for auth v1.
+    // dto.setCollectionName(AuthDto.dbCollectionName());
+    return dto;
+  }
+
+  /** Create a new UserAuthDto instance. */
+  public newUserAuthDto(): UserAuthDto {
+    const dto = new UserAuthDto(this.secret);
+    // MOS: no collection needed for auth v1.
+    // dto.setCollectionName(AuthDto.dbCollectionName());
+    return dto;
+  }
+
+  /** Hydrate an AuthDto from JSON (validates if requested). */
+  public fromJsonUserAuth(
+    json: unknown,
+    opts?: { validate?: boolean }
+  ): UserAuthDto {
+    const dto = UserAuthDto.fromBody(json, { validate: !!opts?.validate });
+    // MOS: no collection needed for auth v1.
+    // dto.setCollectionName(AuthDto.dbCollectionName());
     return dto;
   }
 }

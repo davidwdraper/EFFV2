@@ -4,18 +4,15 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
- *   - ADR-0045 (Index Hints — boot ensure via shared helper)
+ *   - ADR-0044 (SvcEnvDto — Key/Value Contract)
+ *   - ADR-0045 (Index Hints — boot ensure via shared helper)   // (future, if auth ever goes DB-backed)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
- *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
- * Purpose:
+ * Purpose (MOS):
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - DB-backed service: requires NV_MONGO_* and index ensure at boot (checkDb=true).
- *
- * Invariants:
- * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
+ * - Auth is a MOS (micro-orchestrator service) with **no DB**:
+ *   • AppBase.checkDb = false → no NV_MONGO_* reads, no ensureIndexes() at boot.
  */
 
 import type { Express, Router } from "express";
@@ -23,27 +20,16 @@ import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
-import { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
+import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
 import { buildAuthRouter } from "./routes/auth.route";
 
 type CreateAppOptions = {
   slug: string;
   version: number;
-  /**
-   * Logical environment label for this process (e.g., "dev", "stage", "prod").
-   * - Passed through from envBootstrap.envLabel.
-   */
-  envLabel: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
-  /**
-   * SvcRuntime is mandatory (ADR-0080).
-   * Constructed by envBootstrap() after envDto is available.
-   */
-  rt: SvcRuntime;
 };
 
 class AuthApp extends AppBase {
@@ -59,10 +45,8 @@ class AuthApp extends AppBase {
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // auth is DB-backed: needs NV_MONGO_* and ensureIndexes at boot.
-      checkDb: true,
-      // REQUIRED by AppBaseCtor: auth is a SvcRuntime service.
-      rt: opts.rt,
+      // Auth is a MOS: no DB/indexes at boot; AppBase will skip ensureIndexes().
+      checkDb: false,
     });
 
     this.registry = new Registry();
@@ -83,7 +67,7 @@ class AuthApp extends AppBase {
 
     const r: Router = buildAuthRouter(this);
     this.app.use(base, r);
-    this.log.info({ base, env: this.getEnvLabel() }, "routes mounted");
+    this.log.info({ base }, "routes mounted");
   }
 }
 
@@ -92,7 +76,7 @@ export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
   const app = new AuthApp(opts);
-  // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
+  // AppBase.boot() now handles MOS vs DB behavior via checkDb.
   await app.boot();
   return { app: app.instance };
 }

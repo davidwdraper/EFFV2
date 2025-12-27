@@ -1,20 +1,15 @@
-// backend/services/xxx/src/index.ts
+// backend/services/auth/src/index.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
+ *   - ADR-0039 (svcenv centralized non-secret env) [legacy concept; now DB-backed config]
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
- *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose (template):
- * - Pure orchestration entrypoint for a CRUD-style xxx service.
- * - Delegates config loading + runtime construction to envBootstrap().
+ * - Pure orchestration entrypoint for a CRUD-style service cloned from auth.
+ * - Delegates DB + config loading to envBootstrap().
  * - Unwraps the EnvServiceDto (from envBag) for createApp().
- *
- * Invariants:
- * - No process.env reads here (bootstrap owns it).
- * - Runtime handle is `rt` (SvcRuntime), not “sandbox”.
  */
 
 import fs from "fs";
@@ -25,45 +20,47 @@ import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 
 // ———————————————————————————————————————————————————————————————
-// Service identity
+// Service identity (template — overridden by clone slug/name)
 // ———————————————————————————————————————————————————————————————
-const SERVICE_SLUG = "xxx";
+const SERVICE_SLUG = "auth";
 const SERVICE_VERSION = 1;
-const LOG_FILE = path.resolve(process.cwd(), "xxx-startup-error.log");
+const LOG_FILE = path.resolve(process.cwd(), "auth-startup-error.log");
 
 (async () => {
   try {
-    // Step 1: Bootstrap and load configuration + runtime (env-service-backed config)
-    const { envBag, envReloader, host, port, envLabel, rt } =
-      await envBootstrap({
-        slug: SERVICE_SLUG,
-        version: SERVICE_VERSION,
-        logFile: LOG_FILE,
-        checkDb: true,
-      });
+    // Step 1: Bootstrap and load configuration (env-service-backed config)
+    const { envBag, envReloader, host, port } = await envBootstrap({
+      slug: SERVICE_SLUG,
+      version: SERVICE_VERSION,
+      logFile: LOG_FILE,
+      checkDb: false,
+    });
 
-    // Step 2: Extract the primary EnvServiceDto from the bag (first item)
-    const it = (envBag as unknown as DtoBag<EnvServiceDto>).items();
-    const first = it.next();
-    const primary = first.done ? undefined : first.value;
+    // Step 2: Extract the primary EnvServiceDto from the bag (should always be exactly one)
+    let primary: EnvServiceDto | undefined;
+    for (const dto of envBag as unknown as Iterable<EnvServiceDto>) {
+      primary = dto;
+      break;
+    }
 
     if (!primary) {
       throw new Error(
         "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No EnvServiceDto in envBag after envBootstrap. " +
-          "Ops: verify env-service has a config record for this service (env@slug@version)."
+          "Ops: verify env-service has a config record for this service (env@slug@version) " +
+          "and that envBootstrap is querying with the correct keys."
       );
     }
 
-    // Step 3: Adapt the bag-based reloader into a single-DTO reloader for AppBase/logger.
+    // Step 3: Adapt the bag-based reloader into a single-DTO reloader for the AppBase/logger.
     const envReloaderForApp = async (): Promise<EnvServiceDto> => {
-      const bag: DtoBag<EnvServiceDto> = (await envReloader()) as any;
-      const iter = bag.items();
-      const one = iter.next();
-      if (!one.done && one.value) return one.value;
-
+      const bag: DtoBag<EnvServiceDto> = await envReloader();
+      for (const dto of bag as unknown as Iterable<EnvServiceDto>) {
+        return dto;
+      }
       throw new Error(
         "ENV_RELOADER_EMPTY_BAG: envReloader returned an empty bag. " +
-          "Ops: ensure the service’s EnvServiceDto config record still exists in env-service."
+          "Ops: ensure the service’s EnvServiceDto config record still exists in env-service " +
+          "and matches (env, slug, version, level) expected by envBootstrap."
       );
     };
 
@@ -71,21 +68,17 @@ const LOG_FILE = path.resolve(process.cwd(), "xxx-startup-error.log");
     const { app } = await createApp({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
-      envLabel, // keep if your AppBase still uses it
       envDto: primary,
       envReloader: envReloaderForApp,
-      rt, // <-- REQUIRED by AppBase for SvcRuntime services
     });
 
     // Step 5: Start listening.
     app.listen(port, host, () => {
-      // eslint-disable-next-line no-console
       console.info("[entrypoint] http_listening", {
         slug: SERVICE_SLUG,
         version: SERVICE_VERSION,
         host,
         port,
-        envLabel,
       });
     });
   } catch (err) {
@@ -97,7 +90,7 @@ const LOG_FILE = path.resolve(process.cwd(), "xxx-startup-error.log");
         flag: "a",
       });
     } catch {
-      // ignore
+      // If we can't write to file, at least log to console.
     }
     // eslint-disable-next-line no-console
     console.error(msg);

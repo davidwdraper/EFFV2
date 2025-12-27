@@ -7,11 +7,7 @@
     "outDir": "dist",
     "composite": true
   },
-  "include": [
-    "src/**/*",
-    "../shared/src/http/handlers/db.readExisting.ts",
-    "../shared/src/http/handlers/db.update.ts"
-  ],
+  "include": ["src/**/*", "../auth/src/controllers/auth.signup.controller"],
   "exclude": ["dist", "node_modules"],
   "references": [{ "path": "../shared" }]
 }

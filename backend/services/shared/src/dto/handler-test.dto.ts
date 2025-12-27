@@ -31,7 +31,12 @@ import type { IDto } from "./IDto";
 
 // Test status is the TEST VERDICT ONLY.
 // Rails metadata is kept separately (railsVerdict / railsStatus / railsHandlerStatus).
-export type HandlerTestStatus = "Started" | "Passed" | "Failed" | "TestError";
+export type HandlerTestStatus =
+  | "Started"
+  | "Passed"
+  | "Failed"
+  | "Skipped"
+  | "TestError";
 
 export type HandlerTestScenarioStatus = "Passed" | "Failed";
 
@@ -680,7 +685,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
    * Compute final TEST status from scenarios (single truth).
    * - Any Failed => Failed
    * - Else at least one Passed => Passed
-   * - Else (no scenarios) => TestError
+   * - Else (no scenarios) => Skipped
    *
    * Rails metadata (railsVerdict / railsStatus / railsHandlerStatus) is derived
    * from the first scenario.details, if present, but DOES NOT affect status.
@@ -698,7 +703,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
     const scenarios = this._scenarios;
 
     if (!scenarios.length) {
-      this._status = "TestError";
+      this._status = "Skipped";
       return;
     }
 
@@ -707,6 +712,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
     } else if (scenarios.some((s) => s.status === "Passed")) {
       this._status = "Passed";
     } else {
+      // Defensive: should never happen because scenario status is locked.
       this._status = "TestError";
     }
 
@@ -855,6 +861,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
       j.status === "Started" ||
       j.status === "Passed" ||
       j.status === "Failed" ||
+      j.status === "Skipped" ||
       j.status === "TestError"
     ) {
       dto.setStatus(j.status);

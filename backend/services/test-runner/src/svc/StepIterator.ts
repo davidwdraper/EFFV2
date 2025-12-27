@@ -12,17 +12,16 @@
  * - StepIterator: iterate resolved handler steps for a single pipeline.
  *
  * Responsibilities (100,000 ft, per LDD-39 + HandlerTestDto + ScenarioRunner):
- * - For each handler step that opts in via hasTest():
+ * - For each handler step:
  *   1) Mint and seed a fresh HandlerTestDto (no leaks between steps).
  *   2) Immediately persist a "started" HandlerTestRecord via TestRunWriter.
  *   3) Delegate scenario execution to ScenarioRunner (test-module orchestration).
  *   4) Derive final test status from HandlerTestDto.finalizeFromScenarios()
  *      and finalize the HandlerTestRecord via TestRunWriter.
  *
- * Non-responsibilities:
- * - No per-scenario loops (ScenarioRunner owns that).
- * - No user-facing assertions or test semantics.
- * - No JSON inspection; DTO + test modules own shapes.
+ * Notes:
+ * - hasTest() is NOT used as a gate anymore.
+ *   “No module / no scenarios” => Skipped (not TestError).
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -127,36 +126,6 @@ export class StepIterator {
           ? (step as any).getHandlerName()
           : step.constructor.name;
 
-      let hasTest = false;
-
-      // 1) hasTest() gate (opt-in only).
-      try {
-        hasTest =
-          typeof (step as any).hasTest === "function"
-            ? (step as any).hasTest()
-            : false;
-      } catch (err) {
-        // hasTest() throwing means rails are broken; treat as opted-in and record.
-        hasTest = true;
-
-        const msgErr =
-          err instanceof Error ? err.message : String(err ?? "unknown error");
-
-        if (log?.error) {
-          log.error(
-            {
-              event: "step_hasTest_threw",
-              index: indexRelativePath,
-              stepIndex: i,
-              stepCount: steps.length,
-              handler: handlerName,
-              error: msgErr,
-            },
-            "Pipeline step hasTest() threw"
-          );
-        }
-      }
-
       if (log?.info) {
         log.info(
           {
@@ -165,21 +134,15 @@ export class StepIterator {
             stepIndex: i,
             stepCount: steps.length,
             handler: handlerName,
-            hasTest,
           },
           "Pipeline step inspected"
         );
       }
 
-      if (!hasTest) {
-        continue;
-      }
-
       // ──────────────────────────────────────────────────────────────
-      // 2) Opted-in => mint a fresh HandlerTestDto + HandlerTestRecord
+      // 1) Mint a fresh HandlerTestDto + HandlerTestRecord (always)
       // ──────────────────────────────────────────────────────────────
 
-      const startedAtMs = Date.now();
       const handlerTestDto: HandlerTestDto =
         this.handlerTestRegistry.newHandlerTestDto();
 
@@ -204,15 +167,15 @@ export class StepIterator {
         handlerName,
         targetServiceSlug: target.serviceSlug,
         targetServiceVersion: target.serviceVersion,
-        // rawResult is now scenario-level; we keep this explicit for compatibility.
+        // rawResult is scenario-level; keep explicit for compatibility.
         rawResult: null,
       };
 
-      // IMPORTANT: We NO LONGER expose HandlerTestDto on ctx.
+      // IMPORTANT: We do NOT expose HandlerTestDto on ctx.
       // Tests must not know about DTOs; ScenarioRunner + DTO own test recording.
 
       // ──────────────────────────────────────────────────────────────
-      // 3) Start: immediately persist the new record via the writer.
+      // 2) Start: immediately persist the new record via the writer.
       // ──────────────────────────────────────────────────────────────
 
       try {
@@ -230,16 +193,16 @@ export class StepIterator {
               handler: handlerName,
               error: msgErr,
             },
-            "Failed to start handler-test record; skipping test execution"
+            "Failed to start handler-test record; skipping scenario execution"
           );
         }
 
-        // If we can’t start the record, we do NOT run the test for this handler.
+        // If we can’t start the record, we do NOT run scenarios for this handler.
         continue;
       }
 
       // ──────────────────────────────────────────────────────────────
-      // 4) Execute all scenarios via ScenarioRunner
+      // 3) Execute scenarios via ScenarioRunner
       // ──────────────────────────────────────────────────────────────
 
       try {
@@ -268,8 +231,7 @@ export class StepIterator {
       }
 
       // Stamp finishedAt/duration and derive final TEST status from scenarios.
-      const finishedAtMs = Date.now();
-      const finishedAtIso = new Date(finishedAtMs).toISOString();
+      const finishedAtIso = new Date().toISOString();
       handlerTestDto.setFinishedAt(finishedAtIso);
 
       try {
@@ -306,6 +268,9 @@ export class StepIterator {
         case "Failed":
           terminalStatus = "Failed";
           break;
+        case "Skipped":
+          terminalStatus = "Skipped";
+          break;
         case "Started":
         case "TestError":
         default:
@@ -332,7 +297,7 @@ export class StepIterator {
       record.errorStack = errStack;
 
       // ──────────────────────────────────────────────────────────────
-      // 5) Finalize record exactly once
+      // 4) Finalize record exactly once
       // ──────────────────────────────────────────────────────────────
 
       try {

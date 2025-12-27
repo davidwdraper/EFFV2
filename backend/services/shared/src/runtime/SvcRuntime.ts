@@ -19,6 +19,11 @@
  * - No Express/HTTP constructs (ever).
  * - No default/fallback config values: missing vars throw with Ops guidance.
  * - DTO encapsulation honored: SvcRuntime does NOT extract/persist a vars map.
+ *
+ * Commit:
+ * - Runtime var reads use EnvServiceDto.getVarsRaw() so DB keys are readable
+ *   at runtime (HandlerBase.getVar remains guarded in envHelpers.ts).
+ * - Allows envDto rotation on /env/reload so SvcRuntime and AppBase never drift.
  */
 
 import type { IBoundLogger } from "../logger/Logger";
@@ -33,11 +38,6 @@ export type SvcRuntimeIdentity = {
 };
 
 export type SvcRuntimeCaps = {
-  /**
-   * Capability slots.
-   * Keep these as `unknown` until each capability contract is locked.
-   * (We’ll tighten types once the builders are wired for all services.)
-   */
   db?: unknown;
   s2s?: unknown;
   audit?: unknown;
@@ -48,13 +48,15 @@ export type SvcRuntimeCaps = {
 export class SvcRuntime {
   public readonly problem: ProblemFactory;
 
+  // NOTE: envDto is mutable by design (env reload). It remains DTO-backed truth.
+  private envDto: EnvServiceDto;
+
   public constructor(
     private readonly ident: SvcRuntimeIdentity,
-    private readonly envDto: EnvServiceDto,
+    envDto: EnvServiceDto,
     private readonly log: IBoundLogger,
     private readonly caps: SvcRuntimeCaps = {}
   ) {
-    // Validate identity (fail-fast)
     if (!ident?.serviceSlug?.trim()) {
       throw new Error(
         "RT_IDENT_INVALID: serviceSlug is required. Ops: construct SvcRuntime with a valid identity."
@@ -80,7 +82,7 @@ export class SvcRuntime {
       );
     }
 
-    if (!envDto || typeof (envDto as any).getEnvVar !== "function") {
+    if (!envDto || typeof (envDto as any).getVarsRaw !== "function") {
       throw new Error(
         "RT_ENV_DTO_INVALID: EnvServiceDto is required. Ops: pass the hydrated EnvServiceDto into SvcRuntime."
       );
@@ -92,20 +94,13 @@ export class SvcRuntime {
       );
     }
 
+    this.envDto = envDto;
+
     this.problem = new ProblemFactory({
       serviceSlug: ident.serviceSlug,
       serviceVersion: ident.serviceVersion,
       env: ident.env,
     });
-
-    // Boot trace (safe). We may read raw vars for diagnostics only; we do NOT store them.
-    let varCount: number | undefined = undefined;
-    try {
-      const raw = this.envDto.getVarsRaw();
-      varCount = raw && typeof raw === "object" ? Object.keys(raw).length : 0;
-    } catch {
-      varCount = undefined;
-    }
 
     this.log.debug(
       {
@@ -114,7 +109,7 @@ export class SvcRuntime {
         version: ident.serviceVersion,
         env: ident.env,
         dbState: ident.dbState,
-        varCount,
+        varCount: this.safeVarCount(this.envDto),
         caps: Object.keys(caps ?? {}),
       },
       "SvcRuntime constructed"
@@ -142,39 +137,25 @@ export class SvcRuntime {
   }
 
   public describe(): Record<string, unknown> {
-    let varCount: number | undefined = undefined;
-    try {
-      const raw = this.envDto.getVarsRaw();
-      varCount = raw && typeof raw === "object" ? Object.keys(raw).length : 0;
-    } catch {
-      varCount = undefined;
-    }
-
     return {
       serviceSlug: this.ident.serviceSlug,
       serviceVersion: this.ident.serviceVersion,
       env: this.ident.env,
       dbState: this.ident.dbState,
-      varCount,
+      varCount: this.safeVarCount(this.envDto),
       caps: Object.keys(this.caps ?? {}),
     };
   }
 
   // ───────────────────────────────────────────
-  // Env vars (strict, DTO-backed)
+  // Vars (strict, runtime-owned)
   // ───────────────────────────────────────────
 
   public tryVar(key: string): string | undefined {
     const k = (key ?? "").trim();
     if (!k) return undefined;
 
-    let raw: string;
-    try {
-      raw = this.envDto.getEnvVar(k);
-    } catch {
-      return undefined;
-    }
-
+    const raw = this.tryVarRaw(k);
     const s = typeof raw === "string" ? raw.trim() : "";
     return s ? s : undefined;
   }
@@ -187,17 +168,7 @@ export class SvcRuntime {
       );
     }
 
-    // Delegate to DTO, but normalize “present but empty” into a strict missing error.
-    let raw: string;
-    try {
-      raw = this.envDto.getEnvVar(k);
-    } catch {
-      const p: ProblemJson = this.problem.envMissing(k);
-      throw new Error(
-        `RT_ENV_VAR_MISSING: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
-      );
-    }
-
+    const raw = this.tryVarRaw(k);
     const s = typeof raw === "string" ? raw.trim() : "";
     if (s) return s;
 
@@ -234,6 +205,70 @@ export class SvcRuntime {
     return n;
   }
 
+  /**
+   * Env reload hook.
+   *
+   * Invariants:
+   * - fresh env/slug/version MUST match runtime identity.
+   * - We do not extract/store a second vars map; we rotate the DTO reference only.
+   */
+  public setEnvDto(fresh: EnvServiceDto): void {
+    if (!fresh || typeof (fresh as any).getVarsRaw !== "function") {
+      throw new Error(
+        "RT_ENV_DTO_INVALID: setEnvDto(fresh) requires a valid EnvServiceDto."
+      );
+    }
+
+    const freshEnv = (fresh.getEnvLabel?.() ?? fresh.env ?? "")
+      .toString()
+      .trim();
+    const freshSlug = (fresh.slug ?? "").toString().trim();
+    const freshVersion = Number.isFinite(fresh.version)
+      ? Math.trunc(fresh.version)
+      : Number.NaN;
+
+    if (freshEnv && freshEnv !== this.ident.env) {
+      throw new Error(
+        `RT_ENV_RELOAD_MISMATCH: fresh env="${freshEnv}" does not match runtime env="${this.ident.env}". ` +
+          "Ops/Dev: do not reload a different env into a running process; fix caller/service wiring."
+      );
+    }
+
+    if (freshSlug && freshSlug !== this.ident.serviceSlug) {
+      throw new Error(
+        `RT_ENV_RELOAD_MISMATCH: fresh slug="${freshSlug}" does not match runtime serviceSlug="${this.ident.serviceSlug}". ` +
+          "Ops/Dev: do not reload config for a different service."
+      );
+    }
+
+    if (
+      Number.isFinite(freshVersion) &&
+      freshVersion !== this.ident.serviceVersion
+    ) {
+      throw new Error(
+        `RT_ENV_RELOAD_MISMATCH: fresh version=${freshVersion} does not match runtime serviceVersion=${this.ident.serviceVersion}. ` +
+          "Ops/Dev: do not reload config for a different major version."
+      );
+    }
+
+    const beforeCount = this.safeVarCount(this.envDto);
+    const afterCount = this.safeVarCount(fresh);
+
+    this.envDto = fresh;
+
+    this.log.info(
+      {
+        event: "rt_env_reloaded",
+        service: this.ident.serviceSlug,
+        version: this.ident.serviceVersion,
+        env: this.ident.env,
+        beforeVarCount: beforeCount,
+        afterVarCount: afterCount,
+      },
+      "SvcRuntime envDto reloaded"
+    );
+  }
+
   // ───────────────────────────────────────────
   // Logger
   // ───────────────────────────────────────────
@@ -246,19 +281,12 @@ export class SvcRuntime {
   // DTO access (explicit)
   // ───────────────────────────────────────────
 
-  /**
-   * Expose the EnvServiceDto itself for callers that legitimately need it
-   * (e.g., logger env binding, reload plumbing).
-   *
-   * Invariant:
-   * - Callers MUST NOT cache extracted vars; always ask the DTO/runtime.
-   */
   public getEnvDto(): EnvServiceDto {
     return this.envDto;
   }
 
   // ───────────────────────────────────────────
-  // Capabilities (typed later)
+  // Capabilities
   // ───────────────────────────────────────────
 
   public getCaps(): SvcRuntimeCaps {
@@ -284,5 +312,29 @@ export class SvcRuntime {
       );
     }
     return v;
+  }
+
+  // ───────────────────────────────────────────
+  // Internals
+  // ───────────────────────────────────────────
+
+  private tryVarRaw(key: string): string | undefined {
+    try {
+      const raw = this.envDto.getVarsRaw();
+      const v = (raw as any)?.[key];
+      if (v === undefined || v === null) return undefined;
+      return String(v);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private safeVarCount(dto: EnvServiceDto): number | undefined {
+    try {
+      const raw = dto.getVarsRaw();
+      return raw && typeof raw === "object" ? Object.keys(raw).length : 0;
+    } catch {
+      return undefined;
+    }
   }
 }

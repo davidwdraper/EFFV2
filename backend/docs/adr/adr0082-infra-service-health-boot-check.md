@@ -1,6 +1,7 @@
 # adr0082-infra-service-health-boot-check
 
 ## Status
+
 Accepted
 
 ## Context
@@ -15,6 +16,7 @@ including (but not limited to):
 - prompts
 
 As NV moves toward:
+
 - S2S-based logging,
 - WAL-backed writers,
 - and infra-mediated runtime configuration,
@@ -37,10 +39,12 @@ Introduce a shared boot-time component called **InfraHealthCheck** with
 the following behavior:
 
 1. **env-service is always checked first**
+
    - If env-service is unreachable or unhealthy, the service **must not start**.
    - No further infra checks are attempted.
 
 2. After env-service is confirmed healthy:
+
    - Fetch the `service-root` configuration record from env-service.
    - Read a required config variable:
      - `INFRA_BOOT_SVCS`
@@ -48,6 +52,7 @@ the following behavior:
      must be healthy before startup may proceed.
 
 3. Each infra service listed in `INFRA_BOOT_SVCS`:
+
    - Is checked via a canonical health endpoint.
    - Is checked using the same SvcClient path the service will use at runtime.
    - Must respond healthy within a bounded retry window.
@@ -68,7 +73,7 @@ InfraHealthCheck is allowed a **single, explicit exception** to the
   - the service version
 
 This exception exists solely to allow infra health checking to occur
-*before* service-specific configuration is fully available.
+_before_ service-specific configuration is fully available.
 
 No other process.env access is permitted.
 
@@ -79,23 +84,27 @@ InfraHealthCheck includes a private helper:
 - `checkHealth(slug: string): Promise<void>`
 
 This helper:
+
 - Performs the SvcClient call to the service’s health endpoint
 - Applies a bounded retry strategy (small number of attempts with short sleeps)
 - Logs failures with concrete ops guidance
 - Throws on failure; success is silent
 
 This helper is reused for:
+
 - env-service
 - all additional infra services listed in `INFRA_BOOT_SVCS`
 
 ## Failure Semantics (Hard Fail)
 
 If any required infra service:
+
 - is unreachable,
 - fails its health check,
 - or returns an invalid response,
 
 the domain service:
+
 - logs a startup failure using the real logger,
 - emits ops-actionable diagnostics,
 - exits the process with a non-zero code,
@@ -114,6 +123,7 @@ InfraHealthCheck is wired into the `t_entity_crud` template so that:
 ## Consequences
 
 ### Positive
+
 - Deterministic, observable startup behavior
 - Clear separation between infra readiness and runtime logic
 - Config-driven control of infra dependencies
@@ -121,6 +131,7 @@ InfraHealthCheck is wired into the `t_entity_crud` template so that:
 - Strong alignment with WAL-backed and S2S-first architecture
 
 ### Tradeoffs
+
 - Slightly longer startup time due to bounded health checks
 - Requires infra services to expose reliable health endpoints
 - Misconfiguration of `INFRA_BOOT_SVCS` will prevent service startup
@@ -133,6 +144,7 @@ These tradeoffs are accepted in favor of correctness and operational safety.
 - ADR-0044 (EnvServiceDto — Key/Value Contract)
 - ADR-0072 / ADR-0073 (Test-Runner and S2S architecture)
 - NowVibin Backend — Core SOP (Reduced, Clean)
+
 ## Infra Service Opt-Out (AppBase.isInfraService)
 
 InfraHealthCheck must **not** run for infrastructure services themselves, to avoid

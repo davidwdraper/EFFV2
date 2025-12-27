@@ -8,6 +8,7 @@
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose (single concern):
  * - Compensating transaction for signup: if user.create succeeded but
@@ -37,6 +38,8 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 
 type UserBag = DtoBag<UserDto>;
 
@@ -57,12 +60,10 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
     return "Compensating transaction: delete the created User when user-auth.create fails during signup.";
   }
 
-  /**
-   * Special run() override:
-   * - This handler is *allowed* to run even when prior handlers failed.
-   * - We still rely on execute() gates to decide whether to actually attempt
-   *   rollback (userCreateStatus, userAuthCreateStatus, signup.userId, etc).
-   */
+  protected handlerName(): string {
+    return "s2s.user.delete.onFailure";
+  }
+
   public override async run(): Promise<void> {
     const status = this.safeCtxGet<number>("status");
     const handlerStatus = this.safeCtxGet<string>("handlerStatus");
@@ -70,13 +71,10 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
       (typeof status === "number" && status >= 400) ||
       handlerStatus === "error";
 
-    // If no prior failure, just use the normal HandlerBase behavior.
     if (!priorFailure) {
       return super.run();
     }
 
-    // Otherwise, we intentionally *bypass* the short-circuit to attempt a
-    // compensating transaction.
     this.log.pipeline(
       {
         event: "execute_start",
@@ -125,7 +123,6 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
     );
     const signupUserId = this.safeCtxGet<string>("signup.userId");
 
-    // --- Gate 1: nothing to roll back if user was never created ----------------
     if (!userCreateStatus || userCreateStatus.ok !== true) {
       this.log.debug(
         {
@@ -139,7 +136,6 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
       return;
     }
 
-    // --- Gate 2: if userAuthCreateStatus is explicitly ok, do NOT rollback -----
     if (userAuthCreateStatus && userAuthCreateStatus.ok === true) {
       this.log.debug(
         {
@@ -151,9 +147,6 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
       return;
     }
 
-    // At this point the only reasonable interpretation is:
-    // - user.create succeeded,
-    // - user-auth.create failed or did not complete.
     if (!signupUserId || signupUserId.trim().length === 0) {
       this.failWithError({
         httpStatus: 500,
@@ -168,11 +161,7 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
           file: __filename,
           method: "execute",
         },
-        issues: [
-          {
-            hasSignupUserId: !!signupUserId,
-          },
-        ],
+        issues: [{ hasSignupUserId: !!signupUserId }],
         logMessage:
           "auth.signup.rollbackUserOnAuthCreateFailure: missing signup.userId; cannot safely rollback user",
         logLevel: "error",
@@ -180,7 +169,6 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
       return;
     }
 
-    // We stay DTO-only: reuse the MOS DtoBag<UserDto> from ctx["bag"].
     const userBag = this.safeCtxGet<UserBag>("bag");
 
     if (!userBag) {
@@ -198,12 +186,7 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
           file: __filename,
           method: "execute",
         },
-        issues: [
-          {
-            hasUserBag: !!userBag,
-            userId: signupUserId,
-          },
-        ],
+        issues: [{ hasUserBag: !!userBag, userId: signupUserId }],
         logMessage:
           "auth.signup.rollbackUserOnAuthCreateFailure: ctx['bag'] missing; cannot construct DtoBag for user.delete",
         logLevel: "error",
@@ -211,108 +194,64 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
       return;
     }
 
-    // Get AppBase and SvcClient.
-    const controller = this.controller as ControllerBase;
-    const app = controller.getApp?.() as
-      | {
-          getEnvLabel?: () => string;
-          getSvcClient?: () => unknown;
-        }
-      | undefined;
-
-    if (!app || typeof app.getEnvLabel !== "function") {
+    const rt = this.safeCtxGet<SvcRuntime>("rt");
+    if (!rt) {
       this.failWithError({
         httpStatus: 500,
-        title: "auth_signup_rollback_env_unavailable",
+        title: "auth_signup_rollback_rt_unavailable",
         detail:
-          "Auth signup attempted to rollback a previously created user after auth failure, " +
-          "but could not resolve the environment label from AppBase. " +
-          "Ops: ensure AuthApp extends AppBase and envBootstrap/env-service are configured.",
-        stage: "rollback.env_unavailable",
+          "Auth signup rollback could not obtain SvcRuntime from ctx['rt']. " +
+          "Dev: ensure ControllerBase seeds ctx['rt'] for all requests.",
+        stage: "rollback.rt_unavailable",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasApp: !!app,
-            hasGetEnvLabel: !!app && typeof app.getEnvLabel === "function",
-          },
-        ],
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasRt: !!rt }],
         logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: AppBase.getEnvLabel() unavailable during rollback",
+          "auth.signup.rollbackUserOnAuthCreateFailure: ctx['rt'] missing during rollback",
         logLevel: "error",
       });
       return;
     }
 
-    const env = app.getEnvLabel();
+    const env = (rt.getEnv() ?? "").trim();
     if (!env) {
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_rollback_env_empty",
         detail:
           "Auth signup attempted to rollback a previously created user after auth failure, " +
-          "but AppBase.getEnvLabel() returned an empty environment. " +
-          "Ops: verify env-service configuration for this service.",
+          "but rt.getEnv() returned an empty environment. Ops: verify env-service configuration for this service.",
         stage: "rollback.env_empty",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            env: env ?? null,
-          },
-        ],
+        origin: { file: __filename, method: "execute" },
+        issues: [{ env: env ?? null }],
         logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: AppBase.getEnvLabel() returned empty env",
+          "auth.signup.rollbackUserOnAuthCreateFailure: rt.getEnv() returned empty env",
         logLevel: "error",
       });
       return;
     }
 
-    if (typeof app.getSvcClient !== "function") {
+    const s2sCap = rt.tryCap("s2s") as { svcClient?: SvcClient } | undefined;
+    const svcClient = s2sCap?.svcClient;
+
+    if (!svcClient || typeof (svcClient as any).call !== "function") {
       this.failWithError({
         httpStatus: 500,
-        title: "auth_signup_rollback_svcclient_unavailable",
+        title: "auth_signup_rollback_svcclient_cap_missing",
         detail:
-          "Auth signup attempted to rollback a previously created user after auth failure, " +
-          "but could not obtain SvcClient from the application rails. " +
-          "Dev: ensure AppBase wiring exposes getSvcClient() for MOS-style handlers.",
-        stage: "rollback.svcclient_unavailable",
+          'Auth signup rollback requires SvcRuntime capability "s2s.svcClient" to call user.delete. ' +
+          "Dev/Ops: wire rt caps for auth so rollback handlers can run deterministically.",
+        stage: "rollback.cap.s2s.svcClient",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasGetSvcClient: !!app && typeof app.getSvcClient === "function",
-          },
-        ],
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasS2sCap: !!s2sCap, hasSvcClient: !!svcClient }],
         logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: AppBase.getSvcClient() unavailable during rollback",
+          "auth.signup.rollbackUserOnAuthCreateFailure: missing rt cap s2s.svcClient during rollback",
         logLevel: "error",
       });
       return;
     }
-
-    const svcClient = app.getSvcClient() as {
-      call: <TBag>(opts: {
-        env: string;
-        slug: string;
-        version: number;
-        dtoType: string;
-        op: string;
-        method: string;
-        bag?: TBag;
-        id?: string;
-        requestId?: string;
-      }) => Promise<TBag | void>;
-    };
 
     this.log.info(
       {
@@ -325,8 +264,10 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
     );
 
     try {
-      // DTO-only rails: pass a DtoBag<UserDto> plus id for the delete.
-      const _ignored = await svcClient.call<UserBag>({
+      // IMPORTANT:
+      // - SvcClient.call returns WireBagJson (wire JSON), not DtoBag<UserDto>.
+      // - This handler does not need the returned payload.
+      const _wire = await svcClient.call({
         env,
         slug: "user",
         version: 1,
@@ -337,7 +278,7 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
         bag: userBag,
         requestId,
       });
-      void _ignored;
+      void _wire;
 
       this.log.info(
         {
@@ -351,8 +292,6 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
 
       this.ctx.set("signup.userRolledBack", true);
 
-      // Keep handlerStatus="error" to reflect that signup as a whole failed,
-      // but clarify that the user record was rolled back.
       this.failWithError({
         httpStatus: 502,
         title: "auth_signup_userauth_failed_user_rolled_back",
@@ -367,13 +306,7 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
           file: __filename,
           method: "execute",
         },
-        issues: [
-          {
-            env,
-            userId: signupUserId,
-            userRolledBack: true,
-          },
-        ],
+        issues: [{ env, userId: signupUserId, userRolledBack: true }],
         logMessage:
           "auth.signup.rollbackUserOnAuthCreateFailure: auth failure + successful user rollback",
         logLevel: "error",
@@ -398,13 +331,7 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
           file: __filename,
           method: "execute",
         },
-        issues: [
-          {
-            env,
-            userId: signupUserId,
-            userRolledBack: false,
-          },
-        ],
+        issues: [{ env, userId: signupUserId, userRolledBack: false }],
         rawError: err,
         logMessage:
           "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback FAILED",

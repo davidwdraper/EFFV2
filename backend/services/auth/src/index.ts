@@ -34,12 +34,16 @@ const LOG_FILE = path.resolve(process.cwd(), "auth-startup-error.log");
 (async () => {
   try {
     // Step 1: Bootstrap and load configuration + runtime (env-service-backed config)
+    //
+    // NOTE:
+    // - auth is a MOS (no direct DB writes). checkDb MUST be false.
+    // - S2S caps are wired by AppBase (from the real SvcClient), not here.
     const { envBag, envReloader, host, port, envLabel, rt } =
       await envBootstrap({
         slug: SERVICE_SLUG,
         version: SERVICE_VERSION,
         logFile: LOG_FILE,
-        checkDb: true,
+        checkDb: false,
       });
 
     // Step 2: Extract the primary EnvServiceDto from the bag (first item)
@@ -71,7 +75,7 @@ const LOG_FILE = path.resolve(process.cwd(), "auth-startup-error.log");
     const { app } = await createApp({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
-      envLabel, // keep if your AppBase still uses it
+      envLabel, // keep if AppBase still uses it
       envDto: primary,
       envReloader: envReloaderForApp,
       rt, // <-- REQUIRED by AppBase for SvcRuntime services

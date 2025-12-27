@@ -24,6 +24,13 @@
  * - Runtime var reads use EnvServiceDto.getVarsRaw() so DB keys are readable
  *   at runtime (HandlerBase.getVar remains guarded in envHelpers.ts).
  * - Allows envDto rotation on /env/reload so SvcRuntime and AppBase never drift.
+ *
+ * Caps:
+ * - Capabilities are LAZY and EXPLICIT:
+ *   • a cap slot may be an instance OR a factory function
+ *   • factories are invoked at first request, cached, and returned
+ * - Requested-but-missing caps hard-fail with ops-grade errors.
+ * - No "it worked because something else instantiated it".
  */
 
 import type { IBoundLogger } from "../logger/Logger";
@@ -37,19 +44,30 @@ export type SvcRuntimeIdentity = {
   dbState: string;
 };
 
-export type SvcRuntimeCaps = {
-  db?: unknown;
-  s2s?: unknown;
-  audit?: unknown;
-  metrics?: unknown;
-  cache?: unknown;
-};
+export type SvcRuntimeCapName = "db" | "s2s" | "audit" | "metrics" | "cache";
+
+export type SvcRuntimeCapFactory<TCap = unknown> = (rt: SvcRuntime) => TCap;
+
+/**
+ * Caps container:
+ * - Each slot may be:
+ *   • an already-constructed instance
+ *   • a factory (lazy) which will be invoked once and cached
+ *
+ * NOTE:
+ * - Unknown caps are allowed at runtime via setCap()/setCapFactory()
+ *   (string keys), but we keep a typed baseline for the common ones.
+ */
+export type SvcRuntimeCaps = Partial<
+  Record<SvcRuntimeCapName, unknown | SvcRuntimeCapFactory>
+> &
+  Record<string, unknown | SvcRuntimeCapFactory | undefined>;
 
 export class SvcRuntime {
   public readonly problem: ProblemFactory;
 
-  // NOTE: envDto is mutable by design (env reload). It remains DTO-backed truth.
   private envDto: EnvServiceDto;
+  private readonly capCache: Map<string, unknown>;
 
   public constructor(
     private readonly ident: SvcRuntimeIdentity,
@@ -95,6 +113,7 @@ export class SvcRuntime {
     }
 
     this.envDto = envDto;
+    this.capCache = new Map<string, unknown>();
 
     this.problem = new ProblemFactory({
       serviceSlug: ident.serviceSlug,
@@ -144,6 +163,7 @@ export class SvcRuntime {
       dbState: this.ident.dbState,
       varCount: this.safeVarCount(this.envDto),
       caps: Object.keys(this.caps ?? {}),
+      capCache: Array.from(this.capCache.keys()),
     };
   }
 
@@ -205,49 +225,10 @@ export class SvcRuntime {
     return n;
   }
 
-  /**
-   * Env reload hook.
-   *
-   * Invariants:
-   * - fresh env/slug/version MUST match runtime identity.
-   * - We do not extract/store a second vars map; we rotate the DTO reference only.
-   */
   public setEnvDto(fresh: EnvServiceDto): void {
     if (!fresh || typeof (fresh as any).getVarsRaw !== "function") {
       throw new Error(
         "RT_ENV_DTO_INVALID: setEnvDto(fresh) requires a valid EnvServiceDto."
-      );
-    }
-
-    const freshEnv = (fresh.getEnvLabel?.() ?? fresh.env ?? "")
-      .toString()
-      .trim();
-    const freshSlug = (fresh.slug ?? "").toString().trim();
-    const freshVersion = Number.isFinite(fresh.version)
-      ? Math.trunc(fresh.version)
-      : Number.NaN;
-
-    if (freshEnv && freshEnv !== this.ident.env) {
-      throw new Error(
-        `RT_ENV_RELOAD_MISMATCH: fresh env="${freshEnv}" does not match runtime env="${this.ident.env}". ` +
-          "Ops/Dev: do not reload a different env into a running process; fix caller/service wiring."
-      );
-    }
-
-    if (freshSlug && freshSlug !== this.ident.serviceSlug) {
-      throw new Error(
-        `RT_ENV_RELOAD_MISMATCH: fresh slug="${freshSlug}" does not match runtime serviceSlug="${this.ident.serviceSlug}". ` +
-          "Ops/Dev: do not reload config for a different service."
-      );
-    }
-
-    if (
-      Number.isFinite(freshVersion) &&
-      freshVersion !== this.ident.serviceVersion
-    ) {
-      throw new Error(
-        `RT_ENV_RELOAD_MISMATCH: fresh version=${freshVersion} does not match runtime serviceVersion=${this.ident.serviceVersion}. ` +
-          "Ops/Dev: do not reload config for a different major version."
       );
     }
 
@@ -286,25 +267,90 @@ export class SvcRuntime {
   }
 
   // ───────────────────────────────────────────
-  // Capabilities
+  // Capabilities (lazy, cached, fail-fast)
   // ───────────────────────────────────────────
 
-  public getCaps(): SvcRuntimeCaps {
+  public getCapsRaw(): SvcRuntimeCaps {
     return this.caps;
   }
 
-  public tryCap<K extends keyof SvcRuntimeCaps>(
-    k: K
-  ): SvcRuntimeCaps[K] | undefined {
-    return this.caps?.[k];
+  public setCap(name: string, instance: unknown): void {
+    const k = (name ?? "").trim();
+    if (!k) {
+      throw new Error(
+        "RT_SET_CAP_KEY_EMPTY: setCap(name, instance) requires a non-empty name. Ops: fix caller."
+      );
+    }
+    (this.caps as any)[k] = instance;
+    this.capCache.delete(k);
   }
 
-  public getCap<K extends keyof SvcRuntimeCaps>(k: K): SvcRuntimeCaps[K] {
-    const v = this.tryCap(k);
+  public setCapFactory(name: string, factory: SvcRuntimeCapFactory): void {
+    const k = (name ?? "").trim();
+    if (!k) {
+      throw new Error(
+        "RT_SET_CAP_KEY_EMPTY: setCapFactory(name, factory) requires a non-empty name. Ops: fix caller."
+      );
+    }
+    if (typeof factory !== "function") {
+      throw new Error(
+        "RT_SET_CAP_FACTORY_INVALID: setCapFactory(name, factory) requires a function factory. Ops: fix caller."
+      );
+    }
+    (this.caps as any)[k] = factory;
+    this.capCache.delete(k);
+  }
+
+  public tryCap<TCap = unknown>(name: string): TCap | undefined {
+    const k = (name ?? "").trim();
+    if (!k) return undefined;
+
+    if (this.capCache.has(k)) {
+      return this.capCache.get(k) as TCap;
+    }
+
+    const slot = (this.caps as any)?.[k] as
+      | unknown
+      | SvcRuntimeCapFactory
+      | undefined;
+
+    if (slot === undefined) return undefined;
+
+    if (typeof slot === "function") {
+      let built: unknown;
+      try {
+        built = (slot as SvcRuntimeCapFactory)(this);
+      } catch (err) {
+        const detail =
+          err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        throw new Error(
+          `RT_CAPABILITY_BUILD_FAILED: capability "${k}" factory threw for service="${this.ident.serviceSlug}" v${this.ident.serviceVersion} env="${this.ident.env}". ` +
+            `Detail: ${detail} ` +
+            "Ops/Dev: fix the runtime builder/factory wiring for this capability."
+        );
+      }
+
+      if (built === undefined) {
+        throw new Error(
+          `RT_CAPABILITY_BUILD_INVALID: capability "${k}" factory returned undefined for service="${this.ident.serviceSlug}" v${this.ident.serviceVersion} env="${this.ident.env}". ` +
+            "Ops/Dev: factories must return a concrete instance or throw."
+        );
+      }
+
+      this.capCache.set(k, built);
+      return built as TCap;
+    }
+
+    this.capCache.set(k, slot);
+    return slot as TCap;
+  }
+
+  public getCap<TCap = unknown>(name: string): TCap {
+    const v = this.tryCap<TCap>(name);
     if (v === undefined) {
       throw new Error(
         `RT_CAPABILITY_MISSING: capability "${String(
-          k
+          (name ?? "").trim()
         )}" is not available for service="${this.ident.serviceSlug}" v${
           this.ident.serviceVersion
         } env="${this.ident.env}". ` +
@@ -313,6 +359,14 @@ export class SvcRuntime {
     }
     return v;
   }
+
+  /**
+   * Intentionally no requireSvcClient<T>() helper.
+   *
+   * Why:
+   * - It invites generic drift and false type safety.
+   * - Handlers should ask for the *cap they need* (e.g., "s2s") and use its shape.
+   */
 
   // ───────────────────────────────────────────
   // Internals

@@ -12,10 +12,12 @@
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - DB-backed service: requires NV_MONGO_* and index ensure at boot (checkDb=true).
+ * - MOS service: does NOT own a DB (checkDb=false).
  *
  * Invariants:
  * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
+ * - Handlers do not reach for app/process/env; they use ctx["rt"] and request caps.
+ * - Runtime caps are wired ONLY in AppBase (single source of truth).
  */
 
 import type { Express, Router } from "express";
@@ -32,13 +34,20 @@ import { buildAuthRouter } from "./routes/auth.route";
 type CreateAppOptions = {
   slug: string;
   version: number;
+
   /**
    * Logical environment label for this process (e.g., "dev", "stage", "prod").
-   * - Passed through from envBootstrap.envLabel.
+   * Passed through from envBootstrap.envLabel.
+   *
+   * Note:
+   * - AppBase now treats rt.getEnv() as authoritative (Commit 2).
+   * - This value is kept here for caller compatibility and logging/debug only.
    */
   envLabel: string;
+
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
+
   /**
    * SvcRuntime is mandatory (ADR-0080).
    * Constructed by envBootstrap() after envDto is available.
@@ -59,13 +68,22 @@ class AuthApp extends AppBase {
       version: opts.version,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // auth is DB-backed: needs NV_MONGO_* and ensureIndexes at boot.
-      checkDb: true,
+
+      // auth is MOS: it does NOT enforce NV_MONGO_* or ensureIndexes().
+      checkDb: false,
+
       // REQUIRED by AppBaseCtor: auth is a SvcRuntime service.
       rt: opts.rt,
     });
 
     this.registry = new Registry();
+
+    // IMPORTANT:
+    // - No rt cap wiring here.
+    // - AppBase wires the baseline "s2s" capability (SvcClient) into rt lazily.
+    //
+    // If auth ever needs prompts, it can opt-in by overriding wireRuntimeCaps()
+    // in this class and calling this.wirePromptsClientCap().
   }
 
   /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
@@ -92,7 +110,6 @@ export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
   const app = new AuthApp(opts);
-  // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
   await app.boot();
   return { app: app.instance };
 }

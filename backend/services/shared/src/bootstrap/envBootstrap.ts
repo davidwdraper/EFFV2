@@ -39,7 +39,7 @@ import {
   type SvcTarget,
 } from "../s2s/SvcClient";
 import { SvcEnvClient } from "../env/svcenvClient";
-import { SvcRuntime } from "../runtime/SvcRuntime";
+import { SvcRuntime, type SvcRuntimeCaps } from "../runtime/SvcRuntime";
 import { setLoggerEnv, getLogger, type IBoundLogger } from "../logger/Logger";
 
 export type EnvBootstrapOpts = {
@@ -62,6 +62,21 @@ export type EnvBootstrapOpts = {
    *   <cwd>/<slug>-startup-error.log
    */
   logFile?: string;
+
+  /**
+   * ADR-0080: Runtime caps wiring is service-owned.
+   *
+   * Why:
+   * - envBootstrap must not "guess" how to build svcconfig-based resolution
+   *   for arbitrary services (boot recursion risk).
+   * - Services can wire caps as instances or lazy factories once they know
+   *   their concrete boot strategy.
+   *
+   * Examples:
+   * - { s2s: (rt) => ({ svcClient: new SvcClient(...) }) }
+   * - { db:  (rt) => ({ mongo: new MongoClient(...) }) }
+   */
+  runtimeCaps?: SvcRuntimeCaps;
 };
 
 export type EnvBootstrapResult = {
@@ -323,9 +338,6 @@ export async function envBootstrap(
   }
 
   // 7) Build SvcRuntime (ADR-0080) from identity + EnvServiceDto + REAL logger
-  //
-  // Encapsulation rule:
-  // - We may read DB_STATE to form identity, but runtime must not store a second vars map.
   let dbStateRaw: string;
   try {
     dbStateRaw = primary.getEnvVar("DB_STATE");
@@ -354,9 +366,9 @@ export async function envBootstrap(
         env: envLabel,
         dbState,
       },
-      primary, // <-- DTO stays the source of truth
+      primary, // DTO stays the source of truth
       log,
-      {}
+      opts.runtimeCaps ?? {}
     );
   } catch (err) {
     fatal(
@@ -381,6 +393,7 @@ export async function envBootstrap(
       host,
       port,
       checkDb,
+      caps: Object.keys(opts.runtimeCaps ?? {}),
     },
     "envBootstrap complete"
   );

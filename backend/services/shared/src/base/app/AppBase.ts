@@ -23,7 +23,7 @@
  * - SvcRuntime is MANDATORY and is the canonical runtime owner of:
  *     • problem
  *     • validated vars
- *     • capability surfaces (db/s2s/audit/etc.)
+ *     • capability slots (lazy, explicit)
  *
  * Commit 2 (SvcRuntime hard requirement):
  * - envLabel is sourced ONLY from rt (no envDto fallback / optional ctor value).
@@ -38,6 +38,12 @@
  * - `isInfraService()` is platform classification (gateway may be "infra" by role).
  * - `shouldSkipInfraBootHealthCheck()` is recursion avoidance only.
  * - Default behavior remains identical: skip boot preflight when isInfraService()=true.
+ *
+ * Commit 5 (SvcRuntime capabilities):
+ * - AppBase wires only the BASELINE capability surface by default (S2S).
+ * - Additional caps must be opted-in per service by overriding wireRuntimeCaps().
+ * - Handlers must not reach for app.getSvcClient(), app.getEnvLabel(), etc.
+ * - Runtime is the single access door: rt.getCap("s2s"), rt.getCap("promptsClient"), etc.
  */
 
 import type { Express } from "express";
@@ -107,12 +113,10 @@ export abstract class AppBase extends ServiceBase {
   private readonly envReloader: () => Promise<EnvServiceDto>;
   protected readonly checkDb: boolean;
 
-  protected readonly svcClient: SvcClient;
-  protected readonly promptsClient: PromptsClient;
-
   private readonly edgeMode: EdgeMode;
   private readonly s2sMocksEnabled: boolean;
   private readonly hasInjectedSvcClientTransport: boolean;
+  private readonly svcClientTransport?: ISvcClientTransport;
 
   private readonly rt: SvcRuntime;
 
@@ -127,6 +131,7 @@ export abstract class AppBase extends ServiceBase {
     this.edgeMode = opts.edgeMode ?? EdgeMode.Prod;
     this.s2sMocksEnabled = opts.s2sMocksEnabled ?? false;
     this.hasInjectedSvcClientTransport = !!opts.svcClientTransport;
+    this.svcClientTransport = opts.svcClientTransport;
 
     if (!opts.rt) {
       throw new Error(
@@ -161,26 +166,69 @@ export abstract class AppBase extends ServiceBase {
     this.app = express();
     this.initApp();
 
-    this.svcClient = createSvcClientForApp({
-      service: this.service,
-      version: this.version,
-      log: this.log,
-      envDto: this._envDto,
-      s2sMocksEnabled: this.s2sMocksEnabled,
-      transport: opts.svcClientTransport,
-    });
-
-    this.promptsClient = createPromptsClientForApp({
-      service: this.service,
-      log: this.log,
-      svcClient: this.svcClient,
-      getEnvLabel: () => this.getEnvLabel(),
-      getRequestId: undefined,
-    });
+    // ───────────────────────────────────────────
+    // Commit 5: Wire runtime capabilities (LAZY, explicit)
+    // ───────────────────────────────────────────
+    //
+    // Default behavior:
+    // - Wire only the baseline capability surface (S2S) required by common rails.
+    //
+    // Per-service opt-in:
+    // - Services override wireRuntimeCaps() to add additional caps (prompts, audit, db, etc.).
+    //
+    this.wireRuntimeCaps();
   }
 
   protected initApp(): void {
     this.app.disable("x-powered-by");
+  }
+
+  /**
+   * Capability wiring hook (ADR-0080).
+   *
+   * Default:
+   * - Wire the S2S capability (SvcClient) into rt under the canonical key "s2s".
+   *
+   * Override:
+   * - Services can add caps like "promptsClient", "audit", etc.
+   *
+   * Rules:
+   * - No fallbacks.
+   * - Factories MUST either return a concrete instance or throw.
+   * - Factories MUST be deterministic (no hidden randomness aside from requestId generation inside clients).
+   */
+  protected wireRuntimeCaps(): void {
+    // Baseline S2S client
+    this.rt.setCapFactory("s2s", (rt) => {
+      return createSvcClientForApp({
+        service: this.service,
+        version: this.version,
+        log: this.log,
+        envDto: this._envDto,
+        s2sMocksEnabled: this.s2sMocksEnabled,
+        transport: this.svcClientTransport,
+      });
+    });
+  }
+
+  /**
+   * Convenience helper for services that opt into prompts.
+   *
+   * Note:
+   * - We keep this as an explicit opt-in so AppBase does not “accidentally”
+   *   give every service a prompts dependency.
+   */
+  protected wirePromptsClientCap(): void {
+    this.rt.setCapFactory("promptsClient", (rt) => {
+      const svcClient = rt.getCap<SvcClient>("s2s");
+      return createPromptsClientForApp({
+        service: this.service,
+        log: this.log,
+        svcClient,
+        getEnvLabel: () => this.getEnvLabel(),
+        getRequestId: undefined,
+      });
+    });
   }
 
   /**
@@ -244,12 +292,26 @@ export abstract class AppBase extends ServiceBase {
     return this.log;
   }
 
+  /**
+   * PromptsClient accessor (opt-in capability).
+   *
+   * Invariant:
+   * - If a service calls this without wiring the cap, it is a bug.
+   */
   public getPromptsClient(): PromptsClient {
-    return this.promptsClient;
+    return this.rt.getCap<PromptsClient>("promptsClient");
   }
 
+  /**
+   * SvcClient accessor (baseline capability).
+   *
+   * Invariant:
+   * - "s2s" must exist for any service that performs S2S calls.
+   * - If a service truly does not need S2S, it may override wireRuntimeCaps()
+   *   (but then infra boot health checks and any S2S usage must be disabled).
+   */
   public getSvcClient(): SvcClient {
-    return this.svcClient;
+    return this.rt.getCap<SvcClient>("s2s");
   }
 
   /**
@@ -276,6 +338,9 @@ export abstract class AppBase extends ServiceBase {
   /**
    * Convenience wrapper used by HTML controllers (and any future UX surfaces).
    * This keeps prompt semantics centralized behind PromptsClient.
+   *
+   * Note:
+   * - This will hard-fail if the service did not opt in via wirePromptsClientCap().
    */
   public async prompt(
     language: string,
@@ -283,7 +348,7 @@ export abstract class AppBase extends ServiceBase {
     params?: Record<string, string | number>,
     meta: Record<string, unknown> = {}
   ): Promise<string> {
-    return this.promptsClient.render(language, promptKey, params, meta);
+    return this.getPromptsClient().render(language, promptKey, params, meta);
   }
 
   /**
@@ -377,11 +442,11 @@ export abstract class AppBase extends ServiceBase {
       return;
     }
 
-    // Domain services (and any platform service that opts in): enforce infra availability before proceeding with boot.
-    const envClient = new SvcEnvClient({ svcClient: this.svcClient });
+    const svcClient = this.getSvcClient();
+    const envClient = new SvcEnvClient({ svcClient });
 
     const checker = new InfraHealthCheck({
-      svcClient: this.svcClient,
+      svcClient,
       envClient,
       log: this.log,
       currentServiceSlug: this.service,

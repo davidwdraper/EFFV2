@@ -301,3 +301,8 @@ When fixing issues or bugs, never offer two or more solutions when one is clearl
 - No passive “can be wired later.”
 - No comments implying skipped invariants.
 - Every invariant is either enforced in code or explicitly failed.
+
+## Required changes
+
+- if we need to change the rails, we change the rails. We don't do compatability with the intent of returning to fix things.
+- No technical debt ... ever. We fix as we go and leave everything 100% before moving on, even if it means going back through whats been written and patching.

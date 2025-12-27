@@ -9,6 +9,7 @@
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
  *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Use the hydrated DtoBag<UserDto> from ctx["bag"] to call the `user`
@@ -19,6 +20,7 @@
  * Invariants:
  * - Auth remains a MOS (no direct DB writes).
  * - This handler NEVER calls ctx.set("bag", ...).
+ * - Handlers do not reach for app/process/env: they use ctx["rt"] and request caps.
  * - On failure, sets handlerStatus="error" via NvHandlerError on ctx["error"].
  * - Additionally, this handler stamps an explicit signup.userCreateStatus flag
  *   on the ctx bus so downstream transactional handlers (rollback, audit, etc.)
@@ -35,6 +37,8 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
+import type { SvcClient } from "@nv/shared/s2s/SvcClient";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
@@ -58,9 +62,6 @@ export class S2sUserCreateHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  /**
-   * One-sentence, ops-facing description of what this handler does.
-   */
   protected handlerPurpose(): string {
     return "Call the user service create endpoint with the hydrated UserDto bag while leaving ctx['bag'] untouched.";
   }
@@ -69,14 +70,6 @@ export class S2sUserCreateHandler extends HandlerBase {
     return "s2s.user.create";
   }
 
-  public override hasTest(): boolean {
-    return true;
-  }
-
-  /**
-   * Test hook used by the handler-level test harness.
-   * Uses the same scenario entrypoint the test-runner relies on.
-   */
   public override async runTest(): Promise<HandlerTestResult | undefined> {
     return this.runSingleTest(S2sUserCreateTest);
   }
@@ -126,47 +119,41 @@ export class S2sUserCreateHandler extends HandlerBase {
         return;
       }
 
-      // Get AppBase and env label from the rails.
-      const controller = this.controller;
-      const app = controller.getApp() as {
-        getEnvLabel?: () => string;
-        getSvcClient?: () => unknown;
-      };
-
-      if (!app || typeof app.getEnvLabel !== "function") {
+      // Runtime is the single access door.
+      const rt = this.safeCtxGet<SvcRuntime>("rt");
+      if (!rt) {
         const status: UserCreateStatus = {
           ok: false,
-          code: "AUTH_SIGNUP_ENV_UNAVAILABLE",
-          message: "AuthApp.getEnvLabel() was not available.",
+          code: "AUTH_SIGNUP_RT_UNAVAILABLE",
+          message: "Ctx['rt'] was not available.",
         };
         this.ctx.set("signup.userCreateStatus", status);
 
         this.failWithError({
           httpStatus: 500,
-          title: "auth_signup_env_unavailable",
+          title: "auth_signup_rt_unavailable",
           detail:
-            "Auth signup could not resolve the environment label from AppBase. " +
-            "Dev/Ops: ensure AuthApp extends AppBase and that getEnvLabel() is exposed correctly.",
-          stage: "config.app.envLabel",
+            "Auth signup could not obtain SvcRuntime from ctx['rt']. " +
+            "Dev: ensure ControllerBase seeds ctx['rt'] for all requests.",
+          stage: "config.rt",
           requestId,
           origin: {
             file: __filename,
             method: "execute",
           },
-          issues: [{ hasApp: !!app, hasGetEnvLabel: !!app?.getEnvLabel }],
-          logMessage:
-            "auth.signup.callUserCreate: getEnvLabel() not available on app.",
+          issues: [{ hasRt: !!rt }],
+          logMessage: "auth.signup.callUserCreate: ctx['rt'] missing.",
           logLevel: "error",
         });
         return;
       }
 
-      env = app.getEnvLabel();
+      env = (rt.getEnv() ?? "").trim();
       if (!env) {
         const status: UserCreateStatus = {
           ok: false,
           code: "AUTH_SIGNUP_ENV_EMPTY",
-          message: "AppBase.getEnvLabel() returned an empty env label.",
+          message: "rt.getEnv() returned an empty env label.",
         };
         this.ctx.set("signup.userCreateStatus", status);
 
@@ -174,65 +161,49 @@ export class S2sUserCreateHandler extends HandlerBase {
           httpStatus: 500,
           title: "auth_signup_env_empty",
           detail:
-            "Auth signup resolved an empty environment label from AppBase.getEnvLabel(). " +
+            "Auth signup resolved an empty environment label from SvcRuntime. " +
             "Ops: verify envBootstrap/env-service configuration for this service.",
-          stage: "config.app.envLabel.empty",
+          stage: "config.rt.env.empty",
           requestId,
           origin: {
             file: __filename,
             method: "execute",
           },
           issues: [{ env }],
-          logMessage:
-            "auth.signup.callUserCreate: empty env label from getEnvLabel().",
+          logMessage: "auth.signup.callUserCreate: empty env label from rt.",
           logLevel: "error",
         });
         return;
       }
 
-      if (typeof app.getSvcClient !== "function") {
+      // Capability: s2s.svcClient (fail-fast if missing)
+      const s2sCap = rt.tryCap("s2s") as { svcClient?: SvcClient } | undefined;
+      const svcClient = s2sCap?.svcClient;
+
+      if (!svcClient || typeof (svcClient as any).call !== "function") {
         const status: UserCreateStatus = {
           ok: false,
-          code: "AUTH_SIGNUP_SVCCLIENT_UNAVAILABLE",
-          message: "AppBase.getSvcClient() was not available.",
+          code: "AUTH_SIGNUP_SVCCLIENT_CAP_MISSING",
+          message: 'SvcRuntime capability "s2s.svcClient" was not available.',
         };
         this.ctx.set("signup.userCreateStatus", status);
 
         this.failWithError({
           httpStatus: 500,
-          title: "auth_signup_svcclient_unavailable",
+          title: "auth_signup_svcclient_cap_missing",
           detail:
-            "Auth signup could not obtain SvcClient from the application rails. " +
-            "Dev: ensure AppBase wiring exposes getSvcClient() for MOS-style handlers.",
-          stage: "config.app.svcClient",
+            'Auth signup requires SvcRuntime capability "s2s.svcClient" to call the user worker. ' +
+            "Dev/Ops: wire rt caps during envBootstrap/AppBase construction for auth (svcClient must be present).",
+          stage: "config.rt.cap.s2s.svcClient",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [{ hasGetSvcClient: !!app.getSvcClient }],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ hasS2sCap: !!s2sCap, hasSvcClient: !!svcClient }],
           logMessage:
-            "auth.signup.callUserCreate: getSvcClient() not available on app.",
+            "auth.signup.callUserCreate: missing rt cap s2s.svcClient.",
           logLevel: "error",
         });
         return;
       }
-
-      // NOTE: SvcClient.call signature is intentionally a bit generic here so it
-      // can be reused by the rollback handler for delete operations.
-      const svcClient = app.getSvcClient() as {
-        call: <TBag>(opts: {
-          env: string;
-          slug: string;
-          version: number;
-          dtoType: string;
-          op: string;
-          method: string;
-          bag?: TBag;
-          id?: string;
-          requestId?: string;
-        }) => Promise<TBag>;
-      };
 
       const signupUserId = this.safeCtxGet<string>("signup.userId");
 
@@ -250,20 +221,20 @@ export class S2sUserCreateHandler extends HandlerBase {
 
       // ---- External S2S call to user worker --------------------------------
       try {
-        const returnedBag = await svcClient.call<UserBag>({
+        // IMPORTANT:
+        // - SvcClient.call returns WireBagJson (wire JSON), not a hydrated DtoBag<T>.
+        // - This handler does not need the returned payload (hydrate is the bag writer).
+        const _wire = await svcClient.call({
           env,
-          slug: "user", // target worker service slug
-          version: 1, // user service major version
-          dtoType: "user", // dtoType in URL: /api/user/v1/user/create
+          slug: "user",
+          version: 1,
+          dtoType: "user",
           op: "create",
           method: "PUT",
           bag,
           requestId,
         });
-
-        // HydrateUserBagHandler is the ONLY writer of ctx["bag"].
-        // We explicitly do not reassign it here.
-        void returnedBag;
+        void _wire;
 
         const status: UserCreateStatus = {
           ok: true,
@@ -342,7 +313,6 @@ export class S2sUserCreateHandler extends HandlerBase {
         });
       }
     } catch (err) {
-      // Catch-all for unexpected bugs inside the handler.
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_user_create_handler_failure",

@@ -10,6 +10,7 @@
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
  *   - ADR-0071 (Auth Signup JWT Placement — ctx + meta.tokens.userAuth)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose (single concern):
  * - Mint a client-facing auth JWT for a successfully created user + user-auth
@@ -20,7 +21,7 @@
  * - ctx["signup.userCreateStatus"]      → { ok: true/false, ... }
  * - ctx["signup.userAuthCreateStatus"]  → { ok: true/false, ... }
  *
- * Env (from env-service via svcEnv.getVar, NOT process.env):
+ * Env (from env-service via getVar, NOT process.env):
  * - KMS_PROJECT_ID
  * - KMS_LOCATION_ID
  * - KMS_KEY_RING_ID
@@ -54,6 +55,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 import { MinterEnv, type MinterEnvShape } from "@nv/shared/security/MinterEnv";
 import { Minter } from "@nv/shared/security/Minter";
@@ -66,7 +68,7 @@ import { KmsJwtSigner } from "@nv/shared/security/KmsJwtSigner";
 
 // Test harness wiring
 import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { CodeMintUserAuthTokenTest } from "./code.mintUserAuthToken.test";
+import { MintUserAuthTokenHappyScenario } from "./code.mintUserAuthToken.test";
 
 // Status summaries from upstream handlers
 type UserCreateStatus =
@@ -107,7 +109,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
    * - Uses the same scenario entrypoint as the test-runner (CodeMintUserAuthTokenTest).
    */
   public override async runTest(): Promise<HandlerTestResult | undefined> {
-    return this.runSingleTest(CodeMintUserAuthTokenTest);
+    return this.runSingleTest(MintUserAuthTokenHappyScenario);
   }
 
   protected handlerPurpose(): string {
@@ -162,11 +164,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
           file: __filename,
           method: "execute",
         },
-        issues: [
-          {
-            hasUserId: !!userId,
-          },
-        ],
+        issues: [{ hasUserId: !!userId }],
         logMessage:
           "auth.signup.mintUserAuthToken: missing signup.userId; cannot mint token",
         logLevel: "error",
@@ -174,18 +172,14 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
       return;
     }
 
-    // Best-effort env label for error context
+    // Diagnostics-only env label from SvcRuntime (no app fishing)
     let envLabel: string | undefined;
     try {
-      const appAny = this.app as any;
-      if (typeof appAny.getEnvLabel === "function") {
-        const label = appAny.getEnvLabel();
-        if (typeof label === "string" && label.trim() !== "") {
-          envLabel = label.trim();
-        }
-      }
+      const rt = this.safeCtxGet<SvcRuntime>("rt");
+      const e = (rt?.getEnv?.() ?? "").toString().trim();
+      envLabel = e ? e : undefined;
     } catch {
-      // Ignore, this is only for diagnostics.
+      envLabel = undefined;
     }
 
     let provider: MintProvider;
@@ -314,11 +308,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
           file: __filename,
           method: "execute",
         },
-        issues: [
-          {
-            env: envLabel ?? null,
-          },
-        ],
+        issues: [{ env: envLabel ?? null }],
         rawError: err,
         logMessage:
           "auth.signup.mintUserAuthToken: invalid or missing env vars for auth token minting.",
@@ -397,13 +387,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
           file: __filename,
           method: "execute",
         },
-        issues: [
-          {
-            sub: userId,
-            aud,
-            env: envLabel ?? null,
-          },
-        ],
+        issues: [{ sub: userId, aud, env: envLabel ?? null }],
         rawError: err,
         logMessage:
           "auth.signup.mintUserAuthToken: token mint FAILED via MintProvider.getToken().",

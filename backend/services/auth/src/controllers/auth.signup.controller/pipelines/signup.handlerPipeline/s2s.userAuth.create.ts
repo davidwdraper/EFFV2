@@ -24,7 +24,6 @@
  * Invariants:
  * - Auth MOS does not write directly to DB; all persistence is via the
  *   `user-auth` worker.
- * - DTO type `user-auth` MUST be registered in the DTO registry.
  * - This handler NEVER calls ctx.set("bag", ...); the edge response remains
  *   the UserDto bag seeded earlier in the pipeline.
  * - Handlers do not reach for app/process/env: they use `this.rt` and request caps.
@@ -37,6 +36,7 @@
 
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserAuthDto } from "@nv/shared/dto/user-auth.dto";
+import { UserAuthDtoRegistry } from "@nv/shared/dto/registry/user-auth.dtoRegistry";
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -113,66 +113,12 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
         return;
       }
 
-      // ── DTO creation via registry (HandlerBase already exposes this.registry)
-      const reg = this.registry as any;
-
-      const dtoTypeKey = "user-auth";
-      const hasDtoType =
-        typeof reg.has === "function" ? reg.has(dtoTypeKey) : true;
-
-      if (!hasDtoType) {
-        const status: UserAuthCreateStatus = {
-          ok: false,
-          code: "AUTH_SIGNUP_USER_AUTH_DTO_UNREGISTERED",
-          message: "DTO type 'user-auth' not registered in the DTO registry.",
-        };
-        this.ctx.set("signup.userAuthCreateStatus", status);
-
-        this.failWithError({
-          httpStatus: 500,
-          title: "auth_signup_user_auth_dto_unregistered",
-          detail:
-            "DTO type 'user-auth' is not registered in the DTO registry. " +
-            "Dev: register UserAuthDto under dtoType='user-auth' in the service registry.",
-          stage: "config.registry.dtoType",
-          requestId,
-          origin: { file: __filename, method: "execute" },
-          issues: [{ dtoTypeKey, hasDtoType }],
-          logMessage:
-            "auth.signup.callUserAuthCreate: 'user-auth' dtoType not registered.",
-          logLevel: "error",
-        });
-        return;
-      }
-
-      if (typeof reg.newUserAuthDto !== "function") {
-        const status: UserAuthCreateStatus = {
-          ok: false,
-          code: "AUTH_SIGNUP_NEW_USER_AUTH_DTO_UNAVAILABLE",
-          message: "DTO registry does not expose newUserAuthDto().",
-        };
-        this.ctx.set("signup.userAuthCreateStatus", status);
-
-        this.failWithError({
-          httpStatus: 500,
-          title: "auth_signup_new_user_auth_dto_unavailable",
-          detail:
-            "DTO registry does not expose newUserAuthDto(). " +
-            "Dev: add a typed factory newUserAuthDto() so MOS pipelines can create UserAuthDto from in-memory data.",
-          stage: "config.registry.factory",
-          requestId,
-          origin: { file: __filename, method: "execute" },
-          issues: [{ hasNewUserAuthDto: false }],
-          logMessage:
-            "auth.signup.callUserAuthCreate: newUserAuthDto() factory missing.",
-          logLevel: "error",
-        });
-        return;
-      }
+      // ── Mint DTO via shared minting registry (NOT the Auth service Registry) ──
+      const userAuthRegistry = new UserAuthDtoRegistry();
 
       let userAuthDto: UserAuthDto;
       try {
-        userAuthDto = reg.newUserAuthDto() as UserAuthDto;
+        userAuthDto = userAuthRegistry.newUserAuthDto();
         (userAuthDto as any).setUserId(userId);
         (userAuthDto as any).setHash(hash);
         (userAuthDto as any).setHashAlgo(hashAlgo);

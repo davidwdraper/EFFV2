@@ -18,15 +18,20 @@
  * - Instance collection name is seeded from each DTO class's dbCollectionName().
  */
 
-import { DtoBase } from "@nv/shared/dto/DtoBase";
 import { UserAuthDto } from "@nv/shared/dto/user-auth.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
+import { UserAuthDtoRegistry } from "@nv/shared/dto/registry/user-auth.dtoRegistry";
 
 export class Registry extends ServiceRegistryBase {
-  /** Shared secret used by DTO constructors that enforce instantiation discipline. */
-  private readonly secret = DtoBase.getSecret();
+  /**
+   * Shared user-auth DTO registry:
+   * - Instantiation helpers live in shared (UserAuthDtoRegistry).
+   * - This service registry focuses on service-local concerns
+   *   (index hints, persistence, etc.).
+   */
+  private readonly userAuthRegistry = new UserAuthDtoRegistry();
 
   /**
    * Explicit map of registry type keys → DTO constructors.
@@ -51,21 +56,18 @@ export class Registry extends ServiceRegistryBase {
     return dto;
   }
 
-  // ─────────────── Convenience constructors (optional) ───────────────
+  // ─────────────── Convenience constructors (delegated) ───────────────
 
   /** Create a new UserAuthDto instance with a seeded collection. */
   public newUserAuthDto(): UserAuthDto {
-    const dto = new UserAuthDto(this.secret);
-    dto.setCollectionName(UserAuthDto.dbCollectionName());
-    return dto;
+    return this.userAuthRegistry.newUserAuthDto();
   }
 
-  /** Hydrate an UserAuthDto from JSON (validates if requested) and seed collection. */
-  public fromJsonUserAuth(json: unknown, opts?: { validate?: boolean }): UserAuthDto {
-    const dto = UserAuthDto.fromBody(json, {
-      validate: !!opts?.validate,
-    });
-    dto.setCollectionName(UserAuthDto.dbCollectionName());
-    return dto;
+  /** Hydrate a UserAuthDto from JSON (validates if requested) and seed collection. */
+  public fromJsonUserAuth(
+    json: unknown,
+    opts?: { validate?: boolean }
+  ): UserAuthDto {
+    return this.userAuthRegistry.fromJsonUserAuth(json, opts);
   }
 }

@@ -9,12 +9,12 @@
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
  *
  * Purpose:
- * - Wire the gateway proxy controller to all non-health routes under `/api`.
- * - Paths are relative to `/api` (mounted in app.ts).
+ * - Catch-all proxy router for service traffic.
+ * - Mounted at `/api` by GatewayApp.
  *
  * Invariants:
- * - Health/env reload are mounted separately by AppBase under `/api/gateway/v1/*`.
- * - All other traffic is routed here and proxied to worker services.
+ * - Gateway-owned health/env reload are mounted separately by AppBase under `/api/gateway/v1/*`.
+ * - All other traffic matching `/api/:targetSlug/v:targetVersion/*` is proxied as-is.
  */
 
 import { Router } from "express";

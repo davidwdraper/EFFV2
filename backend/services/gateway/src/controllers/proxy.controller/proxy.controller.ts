@@ -3,102 +3,145 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0041 (Per-route controllers; single-purpose handlers)
- *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
- *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
+ *   - ADR-#### (Gateway Proxy Client Fast Path)
  *
  * Purpose:
- * - Edge proxy controller for ALL non-health traffic:
+ * - Edge proxy controller for ALL non-gateway-owned traffic:
  *     /api/:targetSlug/v:targetVersion/*
- * - Extracts proxy context from the inbound HTTP request and delegates to a
- *   single pipeline that calls SvcClient.callRaw().
  *
  * Invariants:
- * - No DTO hydration.
- * - No payload mutation.
- * - Controller seeds proxy context only; handlers perform S2S call + normalization.
- * - Finalization is raw via ControllerGatewayBase:
- *   • Uses ctx["response.status"] and ctx["response.body"] directly.
- *   • Does NOT depend on DtoBag or wire-bag semantics.
- * - Never log raw headers or secret-bearing headers.
+ * - Gateway is a proxy: no DTO registry, no DTO hydration, no HandlerBase pipelines.
+ * - Outbound path MUST match inbound path exactly (only host/port differs).
+ * - Never log raw header values or secret-bearing headers.
  */
 
 import type { Request, Response } from "express";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
-import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { SvcClient } from "@nv/shared/s2s/SvcClient";
+import { GatewayProxyClient } from "../../proxy/GatewayProxyClient";
 
-import { ControllerGatewayBase } from "../../base/ControllerGatewayBase";
-import * as GatewayProxyPipeline from "./pipelines/proxy.handlerPipeline";
+type HttpMethod = "GET" | "PUT" | "PATCH" | "POST" | "DELETE";
 
-export class GatewayProxyController extends ControllerGatewayBase {
-  private readonly svcClient: SvcClient;
+function asHttpMethod(x: string): HttpMethod {
+  const up = x.toUpperCase();
+  if (
+    up === "GET" ||
+    up === "PUT" ||
+    up === "PATCH" ||
+    up === "POST" ||
+    up === "DELETE"
+  )
+    return up;
+  throw new Error(`GATEWAY_UNSUPPORTED_METHOD: method="${x}"`);
+}
+
+function parseMajorVersion(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0)
+    throw new Error(`GATEWAY_INVALID_TARGET_VERSION: raw="${raw}"`);
+  return n;
+}
+
+function firstHeader(h: string | string[] | undefined): string | undefined {
+  if (!h) return undefined;
+  return Array.isArray(h) ? h[0] : h;
+}
+
+function ensureRequestId(req: Request): string {
+  const existing = firstHeader(req.headers["x-request-id"] as any);
+  if (existing && existing.trim()) return existing.trim();
+  return `gw-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeInboundHeaders(req: Request): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(req.headers ?? {})) {
+    if (v === undefined) continue;
+    const s = firstHeader(v as any);
+    if (s === undefined) continue;
+    out[k.toLowerCase()] = String(s);
+  }
+  return out;
+}
+
+export class GatewayProxyController {
+  private readonly app: AppBase;
+  private readonly proxyClient: GatewayProxyClient;
 
   constructor(app: AppBase) {
-    super(app);
-
-    // AppBase owns the SvcClient instance; use the public accessor.
-    this.svcClient = app.getSvcClient();
-  }
-
-  /** Exposed so handlers can obtain the shared SvcClient instance. */
-  public getSvcClient(): SvcClient {
-    return this.svcClient;
+    this.app = app;
+    this.proxyClient = new GatewayProxyClient({
+      svcClient: app.getSvcClient(),
+    });
   }
 
   public async handle(req: Request, res: Response): Promise<void> {
-    const ctx: HandlerContext = this.makeContext(req, res);
-
     const targetSlug = req.params.targetSlug;
-    const targetVersionRaw = req.params.targetVersion;
-    const method = req.method.toUpperCase() as
-      | "GET"
-      | "PUT"
-      | "PATCH"
-      | "POST"
-      | "DELETE";
+    const targetVersion = parseMajorVersion(req.params.targetVersion);
+    const method = asHttpMethod(req.method);
 
-    // We want the *full* inbound path including `/api/...` so SvcClient.callRaw
-    // can simply swap host/port and reuse it.
-    const fullPath = req.originalUrl || req.url || req.path;
+    const fullPath = req.originalUrl || req.url || req.path; // MUST include /api/...
 
-    // Commit 2: env label is owned by SvcRuntime (via AppBase.getEnvLabel()).
-    // No fallbacks; if env is missing, bootstrap must fail before reaching here.
-    const envLabel = this.getEnvLabel();
+    const envLabel = this.app.getEnvLabel();
+    const requestId = ensureRequestId(req);
+    const headers = normalizeInboundHeaders(req);
 
-    // Minimal, safe diagnostics: no raw headers, no secrets.
-    const requestId = ctx.get<string | undefined>("requestId");
-    this.log.debug(
+    this.app.getLogger().debug(
       {
         event: "gateway_proxy_inbound",
         requestId,
         method,
         targetSlug,
-        targetVersionRaw,
+        targetVersion,
         fullPath,
-        forwardedHeaderKeys: Object.keys(req.headers ?? {}).slice(0, 50),
+        env: envLabel,
+        headerKeys: Object.keys(req.headers ?? {}).slice(0, 80),
       },
-      "Gateway proxy inbound request"
+      "Gateway proxy inbound"
     );
 
-    ctx.set("proxy.headers", req.headers);
-    ctx.set("proxy.slug", targetSlug);
-    ctx.set("proxy.version.raw", targetVersionRaw);
-    ctx.set("proxy.method", method);
-    ctx.set("proxy.env", envLabel);
-    ctx.set("proxy.fullPath", fullPath);
-    ctx.set("proxy.body", req.body);
+    try {
+      const out = await this.proxyClient.proxy({
+        env: envLabel,
+        slug: targetSlug,
+        version: targetVersion,
+        method,
+        fullPath,
+        requestId,
+        headers,
+        body: req.body,
+      });
 
-    const steps = GatewayProxyPipeline.getSteps(ctx, this);
+      // Pass through status/bodyText. Keep it simple.
+      res.status(out.status);
 
-    await this.runPipeline(ctx, steps, {
-      // Gateway proxy does not use DTO registry; it forwards raw JSON.
-      requireRegistry: false,
-    });
+      const ct = out.headers?.["content-type"];
+      if (ct) res.setHeader("Content-Type", ct);
 
-    await this.finalize(ctx);
+      // Body is raw text from FetchSvcClientTransport.
+      // If upstream returned JSON, it is already JSON text.
+      if (!out.bodyText) {
+        res.end();
+        return;
+      }
+
+      res.send(out.bodyText);
+    } catch (err) {
+      const msg = (err as Error)?.message ?? String(err);
+      res.status(502).json({
+        httpStatus: 502,
+        title: "gateway_proxy_failed",
+        detail: msg,
+        requestId,
+        origin: {
+          service: "gateway",
+          controller: "GatewayProxyController",
+          op: "proxy",
+        },
+      });
+    }
   }
 }

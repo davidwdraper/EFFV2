@@ -8,101 +8,65 @@
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
- *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
- * - Orchestration-only app. Defines order; no business logic or helpers here.
- * - Gateway is a pure proxy: NO registry, NO DB/index ensure.
+ * - Gateway is a pure proxy service.
+ * - Mounts a catch-all proxy router under `/api` so inbound service paths remain
+ *   identical end-to-end (only the target port/host differs).
  *
- * Notes:
- * - Health + env reload remain versioned under `/api/gateway/v1/*` (AppBase).
- * - All proxied traffic is mounted under `/api` and handled by the proxy controller.
+ * Invariants:
+ * - Posture is the single source of truth (no checkDb duplication).
+ * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
+ * - Gateway-owned health/env reload remain under `/api/gateway/v1/*` (AppBase).
+ * - Proxy router MUST be mounted at `/api` (not `/api/gateway/v1`).
  */
 
 import type { Express, Router } from "express";
-import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import { setLoggerEnv } from "@nv/shared/logger/Logger";
+import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
-
+import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 import { buildGatewayRouter } from "./routes/gateway.route";
 
-type CreateAppOptions = {
+export type CreateAppOptions = {
   slug: string;
   version: number;
-
-  /**
-   * Convenience only; AppBase must source env label from rt (ADR-0080 Commit 2).
-   */
-  envLabel: string;
+  posture: SvcPosture;
 
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 
-  /**
-   * SvcRuntime is mandatory (ADR-0080). Entrypoint constructs it.
-   */
   rt: SvcRuntime;
 };
 
 class GatewayApp extends AppBase {
   constructor(opts: CreateAppOptions) {
-    // Initialize logger first so all subsequent boot logs have proper context.
-    setLoggerEnv(opts.envDto);
-
     super({
       service: opts.slug,
       version: opts.version,
+      posture: opts.posture,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
       rt: opts.rt,
-      // Gateway is NOT db-backed.
-      checkDb: false,
     });
   }
 
-  /**
-   * Platform classification.
-   *
-   * Gateway is part of the platform surface (edge/proxy), so we classify it as "infra".
-   * IMPORTANT: this does NOT mean "skip infra boot preflight".
-   */
-  public override isInfraService(): boolean {
-    return true;
-  }
-
-  /**
-   * ADR-0082 recursion avoidance hook.
-   *
-   * Gateway must still run infra boot health checks, because every request
-   * depends on infra (env-service, svcconfig, etc.) being up.
-   */
-  public override shouldSkipInfraBootHealthCheck(): boolean {
-    return false;
-  }
-
-  /**
-   * Mount service routes.
-   *
-   * Health + env reload are mounted by AppBase under:
-   *   /api/gateway/v<version>/health
-   *   /api/gateway/v<version>/env/reload
-   *
-   * All proxied traffic uses the gateway router under `/api`.
-   */
   protected override mountRoutes(): void {
+    // Health/env-reload are mounted by AppBase under `/api/gateway/v1/*`.
+    // Proxy traffic MUST be mounted at `/api` so the inbound path is unchanged.
     const base = "/api";
+
     const r: Router = buildGatewayRouter(this);
     this.app.use(base, r);
+
     this.log.info(
-      { base, envLabel: this.getEnvLabel() },
-      "gateway proxy routes mounted"
+      { base, env: this.getEnvLabel(), posture: this.posture },
+      "routes mounted"
     );
   }
 }
 
-/** Public factory: constructs, boots, and returns the Express instance holder. */
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {

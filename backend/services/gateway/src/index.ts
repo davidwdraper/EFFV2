@@ -3,25 +3,40 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0014 (ServiceEntrypoint vs ServiceBase)
+ *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
- *   - ADR-#### (AppBase Optional DTO Registry for Proxy Services)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
- * Purpose:
- * - Gateway service entrypoint.
- * - Gateway is a pure proxy: no DB, no registry, no index ensure.
+ * Purpose (template):
+ * - Pure orchestration entrypoint for a CRUD-style gateway service.
+ * - Delegates config loading + runtime construction to envBootstrap() via ServiceEntrypoint.
+ * - Declares identity + posture only; avoids per-service bootstrap drift.
+ *
+ * Invariants:
+ * - No process.env reads here (bootstrap owns it).
+ * - Posture is the single source of truth (no checkDb duplication).
+ * - No EnvServiceDto unwrapping logic in service code (shared entrypoint owns it).
  */
 
-import createApp from "./app";
 import { runServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
+import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
+import createApp from "./app";
 
+// ———————————————————————————————————————————————————————————————
+// Service identity
+// ———————————————————————————————————————————————————————————————
 const SERVICE_SLUG = "gateway";
 const SERVICE_VERSION = 1;
 
-void runServiceEntrypoint({
-  slug: SERVICE_SLUG,
-  version: SERVICE_VERSION,
-  checkDb: false,
-  createApp,
-});
+// Template posture: CRUD entity services are DB owners.
+const POSTURE: SvcPosture = "mos";
+
+(async () => {
+  await runServiceEntrypoint({
+    slug: SERVICE_SLUG,
+    version: SERVICE_VERSION,
+    posture: POSTURE,
+    createApp,
+  });
+})();

@@ -44,15 +44,6 @@ export class CodeExtractPasswordHandler extends HandlerBase {
   }
 
   /**
-   * Test-runner contract:
-   * - StepIterator inspects hasTest().
-   * - When true, it calls runTest() once for this handler.
-   */
-  public override hasTest(): boolean {
-    return true;
-  }
-
-  /**
    * Canonical handler-test entrypoint:
    * - Bridges this handler to its primary smoke test class.
    * - ScenarioRunner separately uses getScenarios() from the test module.

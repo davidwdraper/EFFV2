@@ -14,7 +14,7 @@
  * - "update.dtoCtor": DTO class (required; must expose static fromBody())
  *
  * Outputs (ctx):
- * - "existingBag": DtoBag<DtoBase>  (size 0 or 1)
+ * - "existingBag": DtoBag<DtoBase>  (size 0..1)
  * - "dbReader": DbReader<DtoBase>
  * - "handlerStatus": "ok" | "error"
  * - On error only:
@@ -33,9 +33,6 @@ export class DbReadExistingHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  /**
-   * One-sentence, ops-facing description of what this handler does.
-   */
   protected handlerPurpose(): string {
     return "Load an existing document by ctx['id'] via DbReader and expose it as ctx['existingBag'] (0..1 items).";
   }
@@ -44,15 +41,10 @@ export class DbReadExistingHandler extends HandlerBase {
     const requestId = this.safeCtxGet<string>("requestId");
 
     this.log.debug(
-      {
-        event: "execute_enter",
-        handler: this.constructor.name,
-        requestId,
-      },
+      { event: "execute_enter", handler: this.constructor.name, requestId },
       "db.readExisting enter"
     );
 
-    // --- Required id --------------------------------------------------------
     const id = String(this.ctx.get("id") ?? "").trim();
     if (!id) {
       this.failWithError({
@@ -61,59 +53,35 @@ export class DbReadExistingHandler extends HandlerBase {
         detail: "Path param :id is required to load an existing document.",
         stage: "config.id",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            idValue: this.ctx.get("id"),
-          },
-        ],
-        logMessage:
-          "db.readExisting — ctx['id'] is missing or empty for existing read.",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ idValue: this.ctx.get("id") }],
+        logMessage: "db.readExisting — ctx['id'] is missing or empty.",
         logLevel: "warn",
       });
       return;
     }
 
-    // --- Required dtoCtor ---------------------------------------------------
     const dtoCtor = this.ctx.get<any>("update.dtoCtor");
     if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
       this.failWithError({
         httpStatus: 500,
         title: "dto_ctor_missing",
         detail:
-          "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromBody(). Dev: ensure controller seeds a valid DTO ctor for this update pipeline.",
+          "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromBody(). Dev: ensure controller seeds a valid DTO ctor.",
         stage: "config.dtoCtor",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasDtoCtor: !!dtoCtor,
-            hasFromBody: !!dtoCtor?.fromBody,
-          },
-        ],
-        logMessage:
-          "db.readExisting — missing or invalid dtoCtor on ctx['update.dtoCtor'].",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasDtoCtor: !!dtoCtor, hasFromBody: !!dtoCtor?.fromBody }],
+        logMessage: "db.readExisting — invalid ctx['update.dtoCtor'].",
         logLevel: "error",
       });
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
-
-    const svcEnv = this.controller.getSvcEnv?.();
-    const hasSvcEnv = !!svcEnv;
-
     const validateReads =
       this.ctx.get<boolean>("update.validateReads") ?? false;
 
-    // --- Reader + fetch as **BAG** -----------------------------------------
     let existingBag: DtoBag<IDto>;
 
     try {
@@ -138,19 +106,10 @@ export class DbReadExistingHandler extends HandlerBase {
           "DbReader.readOneBagById() failed while reading existing document.",
         stage: "db.read",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            id,
-            validateReads,
-          },
-        ],
+        origin: { file: __filename, method: "execute" },
+        issues: [{ id, validateReads }],
         rawError: err,
-        logMessage:
-          "db.readExisting — unexpected error during DbReader.readOneBagById().",
+        logMessage: "db.readExisting — DbReader.readOneBagById() threw.",
         logLevel: "error",
       });
       return;
@@ -165,18 +124,9 @@ export class DbReadExistingHandler extends HandlerBase {
         detail: "No document found for supplied :id.",
         stage: "business.notFound",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            id,
-            size,
-          },
-        ],
-        logMessage:
-          "db.readExisting — existingBag is empty; no document found for id.",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ id, size }],
+        logMessage: "db.readExisting — existingBag empty.",
         logLevel: "warn",
       });
       return;
@@ -187,27 +137,17 @@ export class DbReadExistingHandler extends HandlerBase {
         httpStatus: 500,
         title: "multiple_matches",
         detail:
-          "Invariant breach: multiple records matched primary key lookup. Check unique index on _id and upstream normalization.",
+          "Invariant breach: multiple records matched primary key lookup. Check unique index on _id.",
         stage: "business.multipleMatches",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            id,
-            size,
-          },
-        ],
-        logMessage:
-          "db.readExisting — expected singleton bag for id read but got multiple items.",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ id, size }],
+        logMessage: "db.readExisting — expected singleton bag, got many.",
         logLevel: "error",
       });
       return;
     }
 
-    // Success: we have exactly one item in existingBag; ctx["bag"] is untouched.
     this.ctx.set("handlerStatus", "ok");
 
     this.log.debug(

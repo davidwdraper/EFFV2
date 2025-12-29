@@ -13,7 +13,7 @@
  * Purpose:
  * - JSON wire-format controller base.
  * - Builds HTTP responses strictly from HandlerContext.
- * - Delegates ALL error logging policy to ControllerBase.
+ * - Delegates finalize-error logging policy to ControllerExpressBase.
  *
  * Invariants:
  * - Success responses MUST come from ctx["bag"] (DtoBag-like).
@@ -22,18 +22,18 @@
  */
 
 import type { Response } from "express";
-import { ControllerBase } from "./ControllerBase";
+import { ControllerExpressBase } from "./ControllerExpressBase";
 import type { HandlerContext } from "../../http/handlers/HandlerContext";
 import type { NvHandlerError } from "../../http/handlers/handlerBaseExt/errorHelpers";
 
-export abstract class ControllerJsonBase extends ControllerBase {
+export abstract class ControllerJsonBase extends ControllerExpressBase {
   /**
    * Finalize a JSON HTTP response.
    *
    * Flow:
-   * 1) If ctx indicates error → write JSON error body (Problem+JSON is a higher-level policy).
-   * 2) Else → require ctx["bag"] and serialize it.
-   * 3) Delegate logging decisions to ControllerBase.
+   * 1) If ctx indicates error → write JSON error body.
+   * 2) Else → require ctx["bag"] and serialize it via toBody().
+   * 3) Delegate error logging policy to ControllerExpressBase.
    */
   protected async finalize(ctx: HandlerContext): Promise<void> {
     const res = ctx.get<Response>("res");
@@ -64,7 +64,6 @@ export abstract class ControllerJsonBase extends ControllerBase {
 
       res.status(status).json(body);
 
-      // Centralized logging policy lives in ControllerBase
       this.logFinalizeError({
         ctx,
         requestId,
@@ -79,14 +78,8 @@ export abstract class ControllerJsonBase extends ControllerBase {
     // ───────────────────────────────────────────
     // Success path
     // ───────────────────────────────────────────
-    // NOTE:
-    // - DtoBag is generic (DtoBag<T>), so the controller must not type it directly.
-    // - Controller output must use the polymorphic body serializer (ADR-0069):
-    //     - toBody() for wire bodies (controller boundary)
-    //     - toJson() remains an internal/persistence-oriented shape emitter
     const bag = ctx.get<any>("bag");
     if (!bag || typeof bag.toBody !== "function") {
-      // This is a controller/handler contract violation → 500
       const body = {
         title: "missing_response_bag",
         detail:
@@ -110,7 +103,6 @@ export abstract class ControllerJsonBase extends ControllerBase {
     }
 
     const payload = bag.toBody();
-
     res.status(status).json(payload);
 
     this.log.debug(

@@ -19,14 +19,16 @@
  *   4) Derive final test status from HandlerTestDto.finalizeFromScenarios()
  *      and finalize the HandlerTestRecord via TestRunWriter.
  *
- * Notes:
- * - hasTest() is NOT used as a gate anymore.
- *   “No module / no scenarios” => Skipped (not TestError).
+ * SOP (no backwards compat):
+ * - ScenarioRunner requires ScenarioDeps.
+ * - Sidecars MUST accept deps in getScenarios(deps) and run(deps).
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import { HandlerContext as HandlerContextCtor } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
 
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
@@ -37,11 +39,7 @@ import type {
   TestRunWriter,
 } from "./TestRunWriter";
 
-import {
-  ScenarioRunner,
-  type HandlerTestModuleLoader,
-  type ScenarioRunnerLogger,
-} from "./ScenarioRunner";
+import { ScenarioRunner, type HandlerTestModuleLoader } from "./ScenarioRunner";
 
 type LoggerLike = {
   info?: (obj: unknown, msg?: string) => void;
@@ -50,18 +48,7 @@ type LoggerLike = {
 };
 
 export class StepIterator {
-  /**
-   * Shared registry for minting HandlerTestDto instances.
-   *
-   * Invariant:
-   * - This is the ONLY place in the test-runner service that mints
-   *   HandlerTestDto instances. ID is minted immediately via ensureId().
-   */
   private readonly handlerTestRegistry = new HandlerTestDtoRegistry();
-
-  /**
-   * Loader used by ScenarioRunner to locate per-handler test modules.
-   */
   private readonly moduleLoader: HandlerTestModuleLoader;
 
   public constructor(loader: HandlerTestModuleLoader) {
@@ -79,44 +66,43 @@ export class StepIterator {
       serviceSlug: string;
       serviceVersion: number;
     };
+    app?: AppBase;
   }): Promise<void> {
     const { ctx, steps, indexRelativePath, testRunId, writer, target } = input;
 
     const log = ctx.get<LoggerLike>("log");
 
-    // Hard fail if orchestrator forgot to provide target metadata.
     if (!target) {
       const msg =
         "StepIterator.execute: missing target metadata (serviceSlug/serviceVersion).";
-      if (log?.error) {
-        log.error(
-          {
-            event: "stepIterator_missing_target",
-            index: indexRelativePath,
-            stepCount: steps.length,
-            testRunId,
-          },
-          msg
-        );
-      }
+      log?.error?.(
+        {
+          event: "stepIterator_missing_target",
+          index: indexRelativePath,
+          stepCount: steps.length,
+          testRunId,
+        },
+        msg
+      );
       throw new Error(msg);
     }
 
     // ScenarioRunner is created per execute() so it can use this ctx's logger.
-    const scenarioRunnerLogger: ScenarioRunnerLogger | undefined = log
-      ? {
-          debug: (msg, meta) =>
-            log.info?.({ event: "debug", ...(meta || {}) }, msg),
-          info: (msg, meta) => log.info?.(meta || {}, msg),
-          warn: (msg, meta) => log.warn?.(meta || {}, msg),
-          error: (msg, meta) => log.error?.(meta || {}, msg),
-        }
-      : undefined;
-
     const scenarioRunner = new ScenarioRunner({
       loader: this.moduleLoader,
-      logger: scenarioRunnerLogger,
+      logger: log
+        ? {
+            debug: (msg, meta) =>
+              log.info?.({ event: "debug", ...(meta || {}) }, msg),
+            info: (msg, meta) => log.info?.(meta || {}, msg),
+            warn: (msg, meta) => log.warn?.(meta || {}, msg),
+            error: (msg, meta) => log.error?.(meta || {}, msg),
+          }
+        : undefined,
     });
+
+    // AppBase is not used by most tests today, but it’s part of deps.
+    const app = input.app as AppBase;
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -126,36 +112,27 @@ export class StepIterator {
           ? (step as any).getHandlerName()
           : step.constructor.name;
 
-      if (log?.info) {
-        log.info(
-          {
-            event: "step_inspected",
-            index: indexRelativePath,
-            stepIndex: i,
-            stepCount: steps.length,
-            handler: handlerName,
-          },
-          "Pipeline step inspected"
-        );
-      }
-
-      // ──────────────────────────────────────────────────────────────
-      // 1) Mint a fresh HandlerTestDto + HandlerTestRecord (always)
-      // ──────────────────────────────────────────────────────────────
+      log?.info?.(
+        {
+          event: "step_inspected",
+          index: indexRelativePath,
+          stepIndex: i,
+          stepCount: steps.length,
+          handler: handlerName,
+        },
+        "Pipeline step inspected"
+      );
 
       const handlerTestDto: HandlerTestDto =
         this.handlerTestRegistry.newHandlerTestDto();
 
-      // Invariant: ID MUST be minted immediately and never replaced.
       handlerTestDto.ensureId();
 
-      // Seed required header fields (write-once).
       handlerTestDto.setIndexRelativePathOnce(indexRelativePath);
       handlerTestDto.setHandlerNameOnce(handlerName);
       handlerTestDto.setTargetServiceSlugOnce(target.serviceSlug);
       handlerTestDto.setTargetServiceVersionOnce(target.serviceVersion);
 
-      // Mark the test as started; this stamps startedAt if not already set.
       handlerTestDto.markStarted();
 
       const record: HandlerTestRecord = {
@@ -167,16 +144,8 @@ export class StepIterator {
         handlerName,
         targetServiceSlug: target.serviceSlug,
         targetServiceVersion: target.serviceVersion,
-        // rawResult is scenario-level; keep explicit for compatibility.
         rawResult: null,
       };
-
-      // IMPORTANT: We do NOT expose HandlerTestDto on ctx.
-      // Tests must not know about DTOs; ScenarioRunner + DTO own test recording.
-
-      // ──────────────────────────────────────────────────────────────
-      // 2) Start: immediately persist the new record via the writer.
-      // ──────────────────────────────────────────────────────────────
 
       try {
         await writer.startHandlerTest(record);
@@ -184,53 +153,95 @@ export class StepIterator {
         const msgErr =
           err instanceof Error ? err.message : String(err ?? "unknown error");
 
-        if (log?.error) {
-          log.error(
-            {
-              event: "testHandler_start_failed",
-              index: indexRelativePath,
-              stepIndex: i,
-              handler: handlerName,
-              error: msgErr,
-            },
-            "Failed to start handler-test record; skipping scenario execution"
-          );
-        }
-
-        // If we can’t start the record, we do NOT run scenarios for this handler.
+        log?.error?.(
+          {
+            event: "testHandler_start_failed",
+            index: indexRelativePath,
+            stepIndex: i,
+            handler: handlerName,
+            error: msgErr,
+          },
+          "Failed to start handler-test record; skipping scenario execution"
+        );
         continue;
       }
 
-      // ──────────────────────────────────────────────────────────────
-      // 3) Execute scenarios via ScenarioRunner
-      // ──────────────────────────────────────────────────────────────
+      // Build deps ONCE per handler step. Scenarios get fresh ctx via makeScenarioCtx().
+      const deps = {
+        step,
+        controller: input.controller,
+        app,
+        pipelineCtx: ctx,
+        makeScenarioCtx: (seed: {
+          requestId: string;
+          dtoType?: string;
+          op?: string;
+        }) => {
+          const sc = new HandlerContextCtor();
+
+          sc.set("requestId", seed.requestId);
+          sc.set("status", 200);
+          sc.set("handlerStatus", "ok");
+
+          if (seed.dtoType) sc.set("dtoType", seed.dtoType);
+          if (seed.op) sc.set("op", seed.op);
+
+          // Carry pipeline visibility keys (diagnostics only).
+          try {
+            sc.set("pipeline", ctx.get("pipeline"));
+          } catch {
+            // ignore
+          }
+          try {
+            sc.set(
+              "testRunner.index.absolutePath",
+              ctx.get("testRunner.index.absolutePath")
+            );
+          } catch {
+            // ignore
+          }
+          try {
+            sc.set(
+              "testRunner.index.relativePath",
+              ctx.get("testRunner.index.relativePath")
+            );
+          } catch {
+            // ignore
+          }
+
+          // Reuse the same logger instance if present.
+          try {
+            sc.set("log", ctx.get("log"));
+          } catch {
+            // ignore
+          }
+
+          return sc;
+        },
+        target,
+      };
 
       try {
-        await scenarioRunner.run(handlerTestDto);
+        await scenarioRunner.run(handlerTestDto, deps);
       } catch (err) {
         const msgErr =
           err instanceof Error ? err.message : String(err ?? "unknown error");
 
-        if (log?.error) {
-          log.error(
-            {
-              event: "scenarioRunner_run_threw",
-              index: indexRelativePath,
-              stepIndex: i,
-              stepCount: steps.length,
-              handler: handlerName,
-              error: msgErr,
-            },
-            "ScenarioRunner.run threw unexpectedly"
-          );
-        }
+        log?.error?.(
+          {
+            event: "scenarioRunner_run_threw",
+            index: indexRelativePath,
+            stepIndex: i,
+            stepCount: steps.length,
+            handler: handlerName,
+            error: msgErr,
+          },
+          "ScenarioRunner.run threw unexpectedly"
+        );
 
-        // If ScenarioRunner blows up, we mark TestError; finalizeFromScenarios
-        // will treat empty/partial scenarios appropriately.
         handlerTestDto.markTestError();
       }
 
-      // Stamp finishedAt/duration and derive final TEST status from scenarios.
       const finishedAtIso = new Date().toISOString();
       handlerTestDto.setFinishedAt(finishedAtIso);
 
@@ -240,24 +251,21 @@ export class StepIterator {
         const msgErr =
           err instanceof Error ? err.message : String(err ?? "unknown error");
 
-        if (log?.error) {
-          log.error(
-            {
-              event: "handlerTest_finalizeFromScenarios_threw",
-              index: indexRelativePath,
-              stepIndex: i,
-              stepCount: steps.length,
-              handler: handlerName,
-              error: msgErr,
-            },
-            "HandlerTestDto.finalizeFromScenarios threw"
-          );
-        }
+        log?.error?.(
+          {
+            event: "handlerTest_finalizeFromScenarios_threw",
+            index: indexRelativePath,
+            stepIndex: i,
+            stepCount: steps.length,
+            handler: handlerName,
+            error: msgErr,
+          },
+          "HandlerTestDto.finalizeFromScenarios threw"
+        );
 
         handlerTestDto.markTestError();
       }
 
-      // Map DTO test status → terminal status for the record.
       const dtoStatus = handlerTestDto.getStatus();
       let terminalStatus: TestHandlerTerminalStatus;
 
@@ -278,7 +286,6 @@ export class StepIterator {
           break;
       }
 
-      // Pull a top-level error summary from the first failing scenario, if any.
       const scenarios = handlerTestDto.getScenarios();
       let errMsg: string | undefined;
       let errStack: string | undefined;
@@ -291,14 +298,9 @@ export class StepIterator {
         }
       }
 
-      // Populate outcome metadata on the record.
       record.terminalStatus = terminalStatus;
       record.errorMessage = errMsg;
       record.errorStack = errStack;
-
-      // ──────────────────────────────────────────────────────────────
-      // 4) Finalize record exactly once
-      // ──────────────────────────────────────────────────────────────
 
       try {
         await writer.finalizeHandlerTest(record);
@@ -306,21 +308,17 @@ export class StepIterator {
         const msgErr =
           err instanceof Error ? err.message : String(err ?? "unknown error");
 
-        if (log?.error) {
-          log.error(
-            {
-              event: "testHandler_finalize_failed",
-              index: indexRelativePath,
-              stepIndex: i,
-              handler: handlerName,
-              error: msgErr,
-              intendedStatus: terminalStatus,
-            },
-            "Failed to finalize handler-test record"
-          );
-        }
-
-        // Nothing more to do; failure to finalize is a rail concern, not test logic.
+        log?.error?.(
+          {
+            event: "testHandler_finalize_failed",
+            index: indexRelativePath,
+            stepIndex: i,
+            handler: handlerName,
+            error: msgErr,
+            intendedStatus: terminalStatus,
+          },
+          "Failed to finalize handler-test record"
+        );
         continue;
       }
     }

@@ -50,10 +50,6 @@ export class CodePasswordHashHandler extends HandlerBase {
     return "code.passwordHash";
   }
 
-  public override hasTest(): boolean {
-    return true;
-  }
-
   /**
    * Test hook used by the handler-level test harness.
    * Uses the same scenario entrypoint the test-runner relies on.

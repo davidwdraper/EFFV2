@@ -96,15 +96,6 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
   }
 
   /**
-   * Test opt-in:
-   * - StepIterator / ScenarioRunner will see this true and look for
-   *   a matching test module for this handler.
-   */
-  public hasTest(): boolean {
-    return true;
-  }
-
-  /**
    * Test hook used by the handler-level test harness:
    * - Uses the same scenario entrypoint as the test-runner (CodeMintUserAuthTokenTest).
    */

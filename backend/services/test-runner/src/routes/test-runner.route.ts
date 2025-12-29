@@ -33,3 +33,12 @@ export function buildTestRunnerRouter(app: AppBase): ReturnType<typeof Router> {
 
   return r;
 }
+
+/*
+curl -i -X POST \
+  "http://localhost:5010/api/test-runner/v1/test-runner/run-test" \
+  -H "Content-Type: application/json" \
+  -H "x-request-id: manual-test-runner-001"
+
+
+*/

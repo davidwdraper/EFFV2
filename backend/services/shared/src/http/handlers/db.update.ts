@@ -7,23 +7,10 @@
  *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
- *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  *
  * Purpose:
- * - Consume the UPDATED **singleton DtoBag<DtoBase>** from ctx["bag"] and execute an update().
+ * - Consume the UPDATED singleton DtoBag<DtoBase> from ctx["bag"] and execute an update().
  * - Duplicate key → WARN + HTTP 409 (mirrors create).
- *
- * Inputs (ctx):
- * - "bag": DtoBag<DtoBase>   (UPDATED singleton; from code.patch / ApplyPatchUpdateHandler)
- *
- * Outputs (ctx):
- * - On success:
- *   - "bag": DtoBag<DtoBase> (same updated bag that was passed in)
- *   - "updatedId": string    (id that was updated; for diagnostics/logging)
- *   - "handlerStatus": "ok"
- * - On error only:
- *   - ctx["error"]: NvHandlerError (mapped to ProblemDetails by finalize)
- *   - ctx["handlerStatus"]: "error"
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -40,9 +27,6 @@ export class DbUpdateHandler extends HandlerBase {
     super(ctx, controller);
   }
 
-  /**
-   * One-sentence, ops-facing description of what this handler does.
-   */
   protected handlerPurpose(): string {
     return "Persist an updated singleton DtoBag<DtoBase> via DbWriter.update() using the id inside the bag.";
   }
@@ -51,15 +35,10 @@ export class DbUpdateHandler extends HandlerBase {
     const requestId = this.safeCtxGet<string>("requestId");
 
     this.log.debug(
-      {
-        event: "execute_enter",
-        handler: this.constructor.name,
-        requestId,
-      },
+      { event: "execute_enter", handler: this.constructor.name, requestId },
       "bag.toDb.update enter"
     );
 
-    // --- Required bag -------------------------------------------------------
     const bag = this.ctx.get<DtoBag<DtoBase>>("bag");
     if (!bag) {
       this.failWithError({
@@ -69,18 +48,9 @@ export class DbUpdateHandler extends HandlerBase {
           "Updated DtoBag missing from ctx['bag']. Dev: ensure upstream patch handler populated ctx['bag'] before db.update.",
         stage: "config.bag",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasBag: !!bag,
-            targetKey: "bag",
-          },
-        ],
-        logMessage:
-          "bag.toDb.update — required DtoBag missing from context at ctx['bag'].",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasBag: !!bag, targetKey: "bag" }],
+        logMessage: "bag.toDb.update — ctx['bag'] missing.",
         logLevel: "warn",
       });
       return;
@@ -89,9 +59,6 @@ export class DbUpdateHandler extends HandlerBase {
     const items = Array.from(bag.items());
     const size = items.length;
     if (size !== 1) {
-      const code =
-        size === 0 ? "BAG_UPDATE_EMPTY" : "BAG_UPDATE_TOO_MANY_ITEMS";
-
       this.failWithError({
         httpStatus: 400,
         title: "bag_update_singleton_violation",
@@ -101,31 +68,15 @@ export class DbUpdateHandler extends HandlerBase {
             : `Update requires exactly one item in the bag; received ${size}.`,
         stage: "business.ensureSingleton",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            size,
-            code,
-            targetKey: "bag",
-          },
-        ],
-        logMessage:
-          "bag.toDb.update — singleton requirement failed for update operation.",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ size, targetKey: "bag" }],
+        logMessage: "bag.toDb.update — singleton requirement failed.",
         logLevel: "warn",
       });
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
     const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
-
-    const svcEnv = this.controller.getSvcEnv?.();
-    const hasSvcEnv = !!svcEnv;
-
-    // --- Writer (bag-centric; use DtoBase for DbWriter contract) ------------
     const baseBag = bag as DtoBag<DtoBase>;
 
     try {
@@ -150,7 +101,6 @@ export class DbUpdateHandler extends HandlerBase {
         "bag.toDb.update will write to collection"
       );
 
-      // Bag-centric update; writer determines the id from the DTO inside the bag.
       const { id } = await writer.update();
 
       this.ctx.set("updatedId", id);
@@ -179,20 +129,10 @@ export class DbUpdateHandler extends HandlerBase {
             "Unique constraint violation (duplicate key) during update.",
           stage: "db.update.duplicateKey",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              key: err.key,
-              index: err.index,
-              keyPath,
-            },
-          ],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ key: err.key, index: err.index, keyPath }],
           rawError: err,
-          logMessage:
-            "bag.toDb.update — duplicate key on DbWriter.update() (returning 409).",
+          logMessage: "bag.toDb.update — duplicate key (409).",
           logLevel: "warn",
         });
         return;
@@ -206,22 +146,12 @@ export class DbUpdateHandler extends HandlerBase {
           "DbWriter.update() failed while persisting an updated DtoBag.",
         stage: "db.update",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasBag: !!bag,
-            size,
-          },
-        ],
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasBag: !!bag, size }],
         rawError: err,
-        logMessage:
-          "bag.toDb.update — unexpected error during DbWriter.update().",
+        logMessage: "bag.toDb.update — DbWriter.update() threw.",
         logLevel: "error",
       });
-      return;
     }
   }
 }

@@ -19,7 +19,7 @@
  * - No process.env access (ever).
  * - No Express/HTTP constructs (ever).
  * - No default/fallback config values: missing vars throw with Ops guidance.
- * - DTO encapsulation honored: SvcRuntime does NOT extract/persist a vars map.
+ * - DTO encapsulation honored: EnvServiceDto never rides in ctx; it lives inside rt.
  *
  * DB vars (ADR-0074):
  * - DB-related keys (NV_MONGO_*) MUST be read via getDbVar()/tryDbVar().
@@ -252,7 +252,10 @@ export class SvcRuntime {
     const raw = this.getVar(key);
     const n = Number(raw);
     if (!Number.isFinite(n) || !Number.isInteger(n)) {
-      const p = this.problem.envInvalid(key, `expected integer, got "${raw}"`);
+      const p = /* istanbul ignore next */ this.problem.envInvalid(
+        key,
+        `expected integer, got "${raw}"`
+      );
       throw new Error(
         `RT_ENV_VAR_INVALID: ${p.detail} ${p.ops ? `Ops: ${p.ops}` : ""}`
       );
@@ -309,11 +312,20 @@ export class SvcRuntime {
   }
 
   // ───────────────────────────────────────────
-  // DTO access (explicit)
+  // Env DTO access (rt-internal; never in ctx)
   // ───────────────────────────────────────────
 
-  public getEnvDto(): EnvServiceDto {
+  public tryGetSvcEnvDto(): EnvServiceDto | undefined {
     return this.envDto;
+  }
+
+  public getSvcEnvDto(): EnvServiceDto {
+    return this.envDto;
+  }
+
+  /** @deprecated Use getSvcEnvDto() */
+  public getEnvDto(): EnvServiceDto {
+    return this.getSvcEnvDto();
   }
 
   // ───────────────────────────────────────────

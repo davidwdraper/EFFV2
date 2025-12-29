@@ -8,6 +8,7 @@
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
@@ -16,12 +17,14 @@
  *
  * Invariants:
  * - env-service is the first “pure” SvcRuntime service: rt is REQUIRED here.
+ * - posture is REQUIRED by AppBaseCtor and must be provided by the entrypoint.
  * - Commit 2: envLabel is authoritative from rt (AppBase.getEnvLabel()).
  */
 
 import type { Express, Router } from "express";
 import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
+import type { AppBaseCtor } from "@nv/shared/base/app/AppBase";
 import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
@@ -30,9 +33,19 @@ import { Registry } from "./registry/Registry";
 import { buildEnvServiceRouter } from "./routes/env-service.route";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
+// AppBase.ts defines SvcPosture but does not export it.
+// We derive the public posture type from the exported ctor contract instead.
+type SvcPosture = AppBaseCtor["posture"];
+
 type CreateAppOptions = {
   slug: string;
   version: number;
+
+  /**
+   * ADR-0084: rail posture (required by AppBaseCtor).
+   * Caller (index.ts) supplies the correct constant; no literals here.
+   */
+  posture: SvcPosture;
 
   /**
    * Environment label for this running instance (e.g., "dev", "staging", "prod").
@@ -60,10 +73,9 @@ class EnvServiceApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
+      posture: opts.posture,
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      // env-service is DB-backed: requires NV_MONGO_* and index ensure at boot.
-      checkDb: true,
 
       // ADR-0080: env-service MUST run with rt.
       rt: opts.rt,
@@ -76,6 +88,7 @@ class EnvServiceApp extends AppBase {
       {
         declaredEnvLabel: opts.envLabel,
         appEnvLabel: this.getEnvLabel(), // now sourced from rt
+        posture: opts.posture,
         rt: opts.rt.describe(),
       },
       "env-service app constructed"
@@ -83,7 +96,7 @@ class EnvServiceApp extends AppBase {
   }
 
   // adr0082-infra-service-health-boot-check
-  // Endure that infra health checking does not run for env-service.
+  // Ensure that infra health checking does not run for env-service.
   public override isInfraService(): boolean {
     return true;
   }

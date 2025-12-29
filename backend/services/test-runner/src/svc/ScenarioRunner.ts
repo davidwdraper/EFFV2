@@ -20,22 +20,72 @@
  *   - applies short-circuit rules (“happy first, abort on fail”),
  *   - maps scenario results into DTO’s scenario shape.
  * - Test modules:
- *   - ONLY declare scenarios and provide run() functions.
+ *   - ONLY declare scenarios and provide run(deps) functions.
  *   - NEVER touch HandlerTestDto directly.
  * - HandlerTestDto:
  *   - Stores header and scenarios.
  *   - Provides runScenario() and finalizeFromScenarios().
  *   - Knows NOTHING about how many scenarios exist or how they’re orchestrated.
+ *
+ * SOP (no backwards compat):
+ * - getScenarios(deps) is REQUIRED.
+ * - scenario.run(deps) is REQUIRED.
+ * - Old sidecars that export getScenarios() or run() without deps MUST be fixed.
  */
 
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
 import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
+import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
+import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
+import type { AppBase } from "@nv/shared/base/app/AppBase";
+
+export type ScenarioDeps = {
+  /**
+   * The *already-instantiated* handler step from the pipeline index.ts,
+   * created with the target controller/app. This is the identity fix.
+   */
+  step: HandlerBase;
+
+  /**
+   * The controller that built the pipeline steps. Useful for richer tests.
+   */
+  controller: ControllerBase;
+
+  /**
+   * The target service app used to construct the controller/steps.
+   */
+  app: AppBase;
+
+  /**
+   * The pipeline-level context created by IndexIterator (includes logging keys).
+   * Note: scenario contexts should still be fresh per scenario; this is for
+   * diagnostics only.
+   */
+  pipelineCtx: HandlerContext;
+
+  /**
+   * Helper to mint a fresh HandlerContext for the scenario.
+   * (Tests that use HandlerTestBase may ignore this.)
+   */
+  makeScenarioCtx: (seed: {
+    requestId: string;
+    dtoType?: string;
+    op?: string;
+  }) => HandlerContext;
+
+  /**
+   * Target metadata (identity).
+   */
+  target: { serviceSlug: string; serviceVersion: number };
+};
+
 /**
  * How ScenarioRunner sees a scenario definition from the test module.
  *
  * IMPORTANT:
- * - scenario.run() returns HandlerTestResult from HandlerTestBase.run().
+ * - scenario.run(deps) returns HandlerTestResult from HandlerTestBase.run().
  * - We do NOT re-interpret expectedError/railsVerdict here; that lives in
  *   HandlerTestDto._normalizeScenarioStatus().
  */
@@ -44,14 +94,17 @@ export interface HandlerTestScenarioDef {
   name: string;
   expectedError: boolean;
   shortCircuitOnFail?: boolean; // default true if undefined
-  run: () => Promise<HandlerTestResult>;
+  run: (deps: ScenarioDeps) => Promise<HandlerTestResult>;
 }
 
 /**
  * Contract for a per-handler test module (e.g. code.passwordHash.test.ts).
+ *
+ * SOP:
+ * - getScenarios(deps) is REQUIRED (no arity sniffing / no compat).
  */
 export interface HandlerTestModule {
-  getScenarios(): Promise<HandlerTestScenarioDef[]>;
+  getScenarios: (deps: ScenarioDeps) => Promise<HandlerTestScenarioDef[]>;
 }
 
 /**
@@ -89,15 +142,19 @@ export class ScenarioRunner {
   /**
    * Run all scenarios for the handler described by `dto`.
    *
-   * - If no test module is found → dto is returned unchanged.
-   * - If getScenarios() fails → records a module-error scenario and returns.
+   * SOP behavior:
+   * - If no test module is found → dto is returned unchanged (Skipped handled later).
+   * - If getScenarios(deps) fails → records a module-error scenario and returns.
    * - Otherwise:
    *   - runs each scenario in order,
    *   - records results via dto.runScenario(...),
    *   - applies short-circuit based on scenario.shortCircuitOnFail,
    *   - calls dto.finalizeFromScenarios() to compute final status.
    */
-  public async run(dto: HandlerTestDto): Promise<HandlerTestDto> {
+  public async run(
+    dto: HandlerTestDto,
+    deps: ScenarioDeps
+  ): Promise<HandlerTestDto> {
     this.log?.debug("ScenarioRunner.start", {
       targetServiceSlug: dto.getTargetServiceSlug(),
       targetServiceVersion: dto.getTargetServiceVersion(),
@@ -121,7 +178,10 @@ export class ScenarioRunner {
 
     let scenarios: HandlerTestScenarioDef[];
     try {
-      scenarios = await module.getScenarios();
+      if (typeof module.getScenarios !== "function") {
+        throw new Error("Test module missing getScenarios(deps)");
+      }
+      scenarios = await module.getScenarios(deps);
     } catch (err: any) {
       await this.recordModuleErrorScenario(dto, err);
       dto.finalizeFromScenarios();
@@ -147,7 +207,7 @@ export class ScenarioRunner {
 
       const beforeCount = dto.getScenarios().length;
 
-      await this.runOneScenario(dto, scenario);
+      await this.runOneScenario(dto, scenario, deps);
 
       const scenariosAfter = dto.getScenarios();
       const last =
@@ -186,48 +246,28 @@ export class ScenarioRunner {
     return dto;
   }
 
-  /**
-   * Run a single scenario definition, recording the result on the DTO using
-   * HandlerTestDto.runScenario().
-   *
-   * Mapping:
-   * - scenario.run() → HandlerTestResult (from HandlerTestBase.run()).
-   * - We wrap that into ScenarioResult for HandlerTestDto.runScenario().
-   * - HandlerTestDto._normalizeScenarioStatus() interprets:
-   *   • outcome (passed/failed),
-   *   • expectedError (negative scenario),
-   *   • railsVerdict (ok / rails_error / test_bug),
-   *   • failedAssertions.
-   */
   private async runOneScenario(
     dto: HandlerTestDto,
-    scenario: HandlerTestScenarioDef
+    scenario: HandlerTestScenarioDef,
+    deps: ScenarioDeps
   ): Promise<void> {
     await dto.runScenario(
       scenario.name,
       async () => {
-        const result = await this.safeScenarioRun(scenario);
-
+        const result = await this.safeScenarioRun(scenario, deps);
         const isPassed = result.outcome === "passed";
 
         return {
           status: isPassed ? "Passed" : "Failed",
-          // IMPORTANT: we pass the full HandlerTestResult through as details
-          // so HandlerTestDto._normalizeScenarioStatus can see outcome,
-          // expectedError, railsVerdict, failedAssertions, etc.
           details: result,
         };
       },
-      {
-        // We already catch exceptions in safeScenarioRun(), so we never want
-        // runScenario to rethrow. It should just record the scenario.
-        rethrowOnRailError: false,
-      }
+      { rethrowOnRailError: false }
     );
   }
 
   /**
-   * Wraps scenario.run() so any thrown error becomes a synthetic HandlerTestResult
+   * Wraps scenario.run(deps) so any thrown error becomes a synthetic HandlerTestResult
    * instead of killing the whole handler test.
    *
    * NOTE:
@@ -236,10 +276,11 @@ export class ScenarioRunner {
    * - This is a belt-and-suspenders guard for truly broken test modules.
    */
   private async safeScenarioRun(
-    scenario: HandlerTestScenarioDef
+    scenario: HandlerTestScenarioDef,
+    deps: ScenarioDeps
   ): Promise<HandlerTestResult> {
     try {
-      const result = await scenario.run();
+      const result: HandlerTestResult = await scenario.run(deps);
 
       // Ensure id/name continuity in case a test forgot to set them.
       const testId =
@@ -272,7 +313,6 @@ export class ScenarioRunner {
       this.log?.error("ScenarioRunner.scenarioException", {
         scenarioId: scenario.id,
         scenarioName: scenario.name,
-        handlerName: undefined,
         errorName: err?.name,
         errorMessage: err?.message,
       });
@@ -301,11 +341,8 @@ export class ScenarioRunner {
   }
 
   /**
-   * If getScenarios() itself fails, record a synthetic rail-error scenario so
-   * the DTO still reflects something went wrong, instead of silently succeeding.
-   *
-   * We model this as a Failed scenario with a synthetic HandlerTestResult
-   * (railsVerdict="test_bug").
+   * If getScenarios(deps) itself fails, record a synthetic test-bug scenario so
+   * the DTO reflects something went wrong instead of silently succeeding.
    */
   private async recordModuleErrorScenario(
     dto: HandlerTestDto,
@@ -324,11 +361,11 @@ export class ScenarioRunner {
       err instanceof Error ? err.message : String(err ?? "unknown error");
 
     await dto.runScenario(
-      "test-module: getScenarios() failure",
+      "test-module: getScenarios(deps) failure",
       async () => {
         const synthetic: HandlerTestResult = {
           testId: "module-error",
-          name: "test-module: getScenarios() failure",
+          name: "test-module: getScenarios(deps) failure",
           outcome: "failed",
           expectedError: false,
           assertionCount: 0,
@@ -341,10 +378,7 @@ export class ScenarioRunner {
           railsResponseStatus: undefined,
         };
 
-        return {
-          status: "Failed",
-          details: synthetic,
-        };
+        return { status: "Failed", details: synthetic };
       },
       { rethrowOnRailError: false }
     );

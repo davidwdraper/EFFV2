@@ -13,7 +13,7 @@
  * Purpose:
  * - Abstract base for handlers:
  *   • DI of HandlerContext + ControllerBase (required)
- *   • Access to App, Registry, Logger via controller getters
+ *   • Access to App, Registry (optional), Logger via controller getters
  *   • Short-circuit on prior failure
  *   • Standardized instrumentation via bound logger
  *   • Thin wrappers over runtime env + error helpers
@@ -26,6 +26,12 @@
  * - Handlers never access process.env or transport objects.
  * - Default HandlerBase.runTest() NEVER returns undefined; it yields a
  *   concrete TestError HandlerTestResult w/ reason="NO_TEST_PROVIDED".
+ *
+ * Registry rule (critical fix):
+ * - Non-DB posture services (e.g., test-runner, auth) MUST be able to construct handlers.
+ * - Therefore: HandlerBase MUST NOT require a DTO registry during construction.
+ * - Handlers that actually need a registry must access it explicitly; it will
+ *   hard-fail if missing (correct rail).
  *
  * Mongo config override (env-service boot edge-case):
  * - Handlers may use a pipeline-seeded override:
@@ -62,7 +68,17 @@ export abstract class HandlerBase {
 
   protected readonly controller: ControllerBase;
   protected readonly app: AppBase;
-  protected readonly registry: IDtoRegistry;
+
+  /**
+   * Registry is OPTIONAL at runtime.
+   * - DB posture services provide it.
+   * - MOS/non-DB services do not.
+   *
+   * IMPORTANT:
+   * - Do not touch registry during construction in a way that can throw.
+   * - Handlers that need it must call this.registry (getter) or getRegistry().
+   */
+  private readonly _registry?: IDtoRegistry;
 
   /**
    * `rt` is intentionally short: it should be the only runtime “global”
@@ -85,28 +101,37 @@ export abstract class HandlerBase {
 
     // HARD REQUIRE: SvcRuntime must exist or the service is mis-wired.
     // “No seatbelt, no ignition.”
-    const rt = this.controller.getRuntime();
+    const rt = (this.controller as any).getRuntime?.();
     if (!rt) {
       throw new Error(
         "SvcRuntime is required: ControllerBase.getRuntime() returned null/undefined. " +
           "Ops: ensure the service is SvcRuntime'd before wiring handlers."
       );
     }
-    this.rt = rt;
+    this.rt = rt as SvcRuntime;
 
-    const app = controller.getApp();
+    const app = (controller as any).getApp?.();
     if (!app) {
       throw new Error("ControllerBase.getApp() returned null/undefined.");
     }
-    this.app = app;
+    this.app = app as AppBase;
 
-    const registry = controller.getDtoRegistry();
-    if (!registry) {
-      throw new Error(
-        "ControllerBase.getDtoRegistry() returned null/undefined."
-      );
+    // Registry is OPTIONAL — do NOT hard-fail here.
+    // Prefer a soft accessor if present, otherwise try/catch the strict getter.
+    let reg: IDtoRegistry | undefined;
+    try {
+      const anyController = controller as any;
+
+      if (typeof anyController.tryGetDtoRegistry === "function") {
+        reg = anyController.tryGetDtoRegistry() as IDtoRegistry | undefined;
+      } else if (typeof anyController.getDtoRegistry === "function") {
+        // Some controllers throw for non-DB services (correct); we swallow here.
+        reg = anyController.getDtoRegistry() as IDtoRegistry | undefined;
+      }
+    } catch {
+      reg = undefined;
     }
-    this.registry = registry;
+    this._registry = reg;
 
     const appLog = (app as unknown as { log?: IBoundLogger }).log;
     this.log =
@@ -127,9 +152,48 @@ export abstract class HandlerBase {
         event: "construct",
         handlerStatus: this.ctx.get<string>("handlerStatus") ?? "ok",
         hasRuntime: true,
+        hasRegistry: !!this._registry,
       },
       "HandlerBase ctor"
     );
+  }
+
+  /**
+   * Strict registry accessor (DB posture only).
+   *
+   * Use when:
+   * - the handler truly needs registry-backed behavior (DTO construction, index hints, etc).
+   *
+   * Behavior:
+   * - Throws if the current service does not provide a registry.
+   */
+  protected getRegistry(): IDtoRegistry {
+    if (!this._registry) {
+      throw new Error(
+        `DTO_REGISTRY_REQUIRED: Handler="${this.constructor.name}" attempted to use a DtoRegistry, but the current service does not provide one. ` +
+          "Dev: only DB posture services provide a registry. Refactor the handler to not require registry, or run it in a DB posture service."
+      );
+    }
+    return this._registry;
+  }
+
+  /**
+   * Convenience getter so existing code can keep using `this.registry`
+   * without turning every callsite into `this.getRegistry()`.
+   *
+   * NOTE:
+   * - This will throw (correctly) if used in a non-DB service.
+   */
+  protected get registry(): IDtoRegistry {
+    return this.getRegistry();
+  }
+
+  /**
+   * Optional registry peek (rare).
+   * - Useful for MOS-safe test harnesses that can proceed without it.
+   */
+  protected tryGetRegistry(): IDtoRegistry | undefined {
+    return this._registry;
   }
 
   protected abstract handlerPurpose(): string;
@@ -175,7 +239,8 @@ export abstract class HandlerBase {
       log: this.log,
       harness: {
         app: this.app,
-        registry: this.registry,
+        // Registry may be absent for MOS services; tests that require it must fail explicitly.
+        registry: this.tryGetRegistry(),
       },
     };
   }

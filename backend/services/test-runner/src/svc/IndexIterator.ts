@@ -96,12 +96,13 @@ export class IndexIterator {
       // 4) StepIterator executes handler tests via ScenarioRunner
       await stepIterator.execute({
         ctx,
-        controller,
+        controller: controller as any,
         steps,
         indexRelativePath: index.relativePath,
         testRunId: input.testRunId,
         writer: input.writer,
         target,
+        app: input.app, // ✅ was incorrectly passed as "targetApp"
       });
     }
   }

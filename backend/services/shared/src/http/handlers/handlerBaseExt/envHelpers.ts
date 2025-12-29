@@ -75,11 +75,7 @@ export function getEnvVarFromRuntime(
 
     if (!value && required) {
       log.error(
-        {
-          event: "getVar_required_empty",
-          handler: handlerName,
-          key,
-        },
+        { event: "getVar_required_empty", handler: handlerName, key },
         `Required runtime var '${key}' is empty.`
       );
       throw new Error(
@@ -134,9 +130,8 @@ export function resolveMongoConfigWithDbState(args: ResolveMongoConfigArgs): {
   let dbName: string;
 
   try {
-    // ADR-0074: DB vars must be read via getDbVar()
     uri = rt.getDbVar("NV_MONGO_URI");
-    dbName = rt.getDbVar("NV_MONGO_DB"); // already DB_STATE-decorated by runtime
+    dbName = rt.getDbVar("NV_MONGO_DB"); // DB_STATE decoration lives in runtime
   } catch (err: any) {
     const errMsg = err?.message ?? String(err);
     const msg =
@@ -195,19 +190,26 @@ function mustGetRuntime(args: {
   const { controller, log, handlerName, stage } = args;
 
   try {
-    return controller.getRuntime();
+    const anyController = controller as any;
+
+    if (typeof anyController.getRuntime !== "function") {
+      throw new Error("ControllerBase.getRuntime() is not a function.");
+    }
+
+    const rt = anyController.getRuntime() as SvcRuntime;
+
+    if (!rt) {
+      throw new Error("ControllerBase.getRuntime() returned null/undefined.");
+    }
+
+    return rt;
   } catch (err: any) {
     const errMsg = err?.message ?? String(err);
     const msg =
       "SvcRuntime is required but unavailable. " +
-      "Ops/Dev: wire SvcRuntime at service boot and ensure ControllerBase seeds ctx['rt'].";
+      "Ops/Dev: ensure ControllerBase exposes getRuntime() and the service is SvcRuntime-wired at boot.";
     log.error(
-      {
-        event: "rt_missing",
-        handler: handlerName,
-        stage,
-        error: errMsg,
-      },
+      { event: "rt_missing", handler: handlerName, stage, error: errMsg },
       msg
     );
     throw new Error(`${msg} Detail: ${errMsg}`);

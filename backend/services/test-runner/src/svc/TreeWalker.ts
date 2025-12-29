@@ -20,6 +20,7 @@ export type TreeWalkerResult = {
 export class TreeWalker {
   public execute(): TreeWalkerResult {
     const absolutePath =
+      // for testing purposes, use a hard-coded path
       "/Users/ddraper005/eff/backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/index.ts";
 
     // V1: infer rootDir and relativePath from the hard-coded absolute path.

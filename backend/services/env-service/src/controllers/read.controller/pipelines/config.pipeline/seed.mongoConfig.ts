@@ -4,20 +4,23 @@
  * - SOP: pipeline-specific seeders live in the pipeline; no shared “scenario logic”
  * - ADRs:
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0074 (DB_STATE guardrail, `_infra` DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Seed ctx["db.mongo.*"] overrides so downstream shared DB LEGO handlers can
- *   read Mongo *without* relying on SvcRuntime vars being populated yet.
+ *   read Mongo without relying on any ctx-held EnvServiceDto.
  *
  * Why this exists:
  * - env-service is special at boot: its runtime vars ultimately come from its
  *   own config, but reading that config requires Mongo access first.
  *
+ * Contract (hard):
+ * - ctx["rt"] ALWAYS (required)
+ * - ctx["svcEnv"] NEVER (deleted)
+ *
  * Inputs (ctx):
- * - "svcEnv": EnvServiceDto (required; seeded by ControllerBase.makeContext)
+ * - "rt": SvcRuntime (required)
  *
  * Outputs (ctx):
  * - "db.mongo.uri": string
@@ -26,14 +29,14 @@
  *
  * Invariants:
  * - No IO. This only seeds ctx.
- * - No process.env reads. Use the seeded svcEnv DTO.
- * - DB vars MUST be read via svcEnv.getDbVar(...) (guardrail enforced).
+ * - No process.env reads.
+ * - DB vars MUST be read via rt.getDbVar(...) (guardrail enforced).
  * - Hard-fail if the DB name is not "_infra" to avoid accidental DB_STATE decoration.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 export class SeedMongoConfigHandler extends HandlerBase {
   public constructor(ctx: HandlerContext, controller: any) {
@@ -41,61 +44,61 @@ export class SeedMongoConfigHandler extends HandlerBase {
   }
 
   public override handlerName(): string {
-    return "seed.mongoConfig";
+    return "code.seedMongoConfig";
   }
 
   protected handlerPurpose(): string {
-    return "Seed ctx['db.mongo.*'] overrides from svcEnv so DB handlers can run before runtime vars are available.";
+    return "Seed ctx['db.mongo.*'] overrides from rt DB vars so DB handlers can run during env-service boot.";
   }
 
   protected override async execute(): Promise<void> {
     const requestId = this.getRequestId();
 
-    const svcEnv = this.safeCtxGet<EnvServiceDto>("svcEnv");
-    if (!svcEnv) {
+    const rt = this.safeCtxGet<SvcRuntime>("rt");
+    if (!rt) {
       this.failWithError({
         httpStatus: 500,
-        title: "seed_mongo_config_svcenv_missing",
+        title: "seed_mongo_config_rt_missing",
         detail:
-          "svcEnv missing in ctx. Dev/Ops: ControllerBase.makeContext must seed ctx['svcEnv'] for env-service.",
-        stage: "seed.mongoConfig:svcEnv_missing",
+          "SvcRuntime missing in ctx. Dev/Ops: ensure the controller seeds ctx['rt'] for this request (SvcRuntime is required by boot rails).",
+        stage: "seed.mongoConfig:rt_missing",
         requestId,
         origin: { file: __filename, method: "execute" },
-        logMessage: "seed.mongoConfig: ctx['svcEnv'] missing.",
+        logMessage: "seed.mongoConfig: ctx['rt'] missing.",
         logLevel: "error",
       });
       return;
     }
 
-    // DB vars MUST come through getDbVar() (guardrail).
     let uri = "";
     let dbName = "";
     try {
-      const anyEnv = svcEnv as any;
-
-      if (typeof anyEnv.getDbVar !== "function") {
-        throw new Error(
-          "EnvServiceDto.getDbVar is missing. Dev: EnvServiceDto must expose getDbVar(key) for NV_MONGO_* keys."
-        );
-      }
-
-      uri = anyEnv.getDbVar("NV_MONGO_URI");
-      dbName = anyEnv.getDbVar("NV_MONGO_DB");
+      uri = rt.getDbVar("NV_MONGO_URI");
+      dbName = rt.getDbVar("NV_MONGO_DB");
     } catch (err) {
+      this.log.error(
+        {
+          event: "seed_mongo_config_dbvars_missing",
+          requestId,
+          rt: rt.describe(),
+        },
+        "seed.mongoConfig: rt.getDbVar() failed while seeding mongo override"
+      );
+
       this.failWithError({
         httpStatus: 500,
         title: "seed_mongo_config_dbvars_missing",
         detail:
-          "Unable to read NV_MONGO_URI/NV_MONGO_DB from svcEnv via getDbVar() while seeding pipeline Mongo override. " +
-          "Ops: ensure env-service root/service merge produces these DB vars for env-service.",
+          "Unable to read NV_MONGO_URI/NV_MONGO_DB from rt.getDbVar() while seeding pipeline Mongo override. " +
+          "Ops: ensure env-service runtime is constructed from a bootstrap EnvServiceDto that contains NV_MONGO_URI and NV_MONGO_DB for the config DB.",
         stage: "seed.mongoConfig:dbvars_missing",
         requestId,
         origin: { file: __filename, method: "execute" },
         rawError: err,
         issues: [
-          { keys: ["NV_MONGO_URI", "NV_MONGO_DB"], accessor: "getDbVar" },
+          { keys: ["NV_MONGO_URI", "NV_MONGO_DB"], accessor: "rt.getDbVar" },
         ],
-        logMessage: "seed.mongoConfig: missing NV_MONGO_* DB vars in svcEnv.",
+        logMessage: "seed.mongoConfig: missing NV_MONGO_* DB vars in rt.",
         logLevel: "error",
       });
       return;
@@ -109,18 +112,17 @@ export class SeedMongoConfigHandler extends HandlerBase {
         httpStatus: 500,
         title: "seed_mongo_config_dbvars_empty",
         detail:
-          "NV_MONGO_URI/NV_MONGO_DB are empty after reading from svcEnv.getDbVar(). Ops: set both to non-empty strings in env-service config.",
+          "NV_MONGO_URI/NV_MONGO_DB are empty after reading from rt.getDbVar(). Ops: set both to non-empty strings in env-service bootstrap config.",
         stage: "seed.mongoConfig:dbvars_empty",
         requestId,
         origin: { file: __filename, method: "execute" },
         issues: [{ uriPresent: !!uriTrim, dbPresent: !!dbTrim }],
-        logMessage: "seed.mongoConfig: NV_MONGO_* DB vars empty in svcEnv.",
+        logMessage: "seed.mongoConfig: NV_MONGO_* DB vars empty in rt.",
         logLevel: "error",
       });
       return;
     }
 
-    // Guardrail: env-service config DB must be infra (state-invariant).
     if (!dbTrim.toLowerCase().endsWith("_infra")) {
       this.failWithError({
         httpStatus: 500,
@@ -139,10 +141,8 @@ export class SeedMongoConfigHandler extends HandlerBase {
       return;
     }
 
-    // Seed the override pair used by downstream DB LEGO(s).
     this.ctx.set("db.mongo.uri", uriTrim);
     this.ctx.set("db.mongo.dbName", dbTrim);
-
     this.ctx.set("handlerStatus", "ok");
   }
 }

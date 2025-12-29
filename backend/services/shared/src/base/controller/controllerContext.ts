@@ -4,27 +4,22 @@
  * - ADR-0041 (Controller & Handler Architecture)
  * - ADR-0042 (HandlerContext Bus)
  * - ADR-0043 (DTO Hydration & Failure Propagation)
- * - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
  * - ADR-0059 (dtoType and dbCollectionName addition to handler ctx)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared helpers for seeding HandlerContext, DTO/operation metadata,
  *   preflight checks, and pipeline execution.
  *
- * Update:
- * - Seeds AsyncLocal request scope from inbound headers so negative-test intent
- *   can propagate across S2S hops without requiring every caller to remember headers.
- *
- * Commit 1:
- * - Delete try-paths: svcEnv/envLabel are always sourced via controller getters.
- * - No "optional env" error injection here; missing deps are hard failures.
+ * Hard contract:
+ * - ctx["rt"] ALWAYS (required)
+ * - ctx["svcEnv"] NEVER (deleted)
  */
 
 import type { Request, Response } from "express";
 import { HandlerContext } from "../../http/handlers/HandlerContext";
 import type { HandlerBase } from "../../http/handlers/HandlerBase";
-import type { EnvServiceDto } from "../../dto/env-service.dto";
 import type { ControllerRuntimeDeps } from "./controllerTypes";
 import { enterRequestScopeFromInbound } from "../../http/requestScope";
 
@@ -48,46 +43,73 @@ export function seedHydratorIntoContext(
     );
 }
 
-/** Seed a basic HandlerContext with request/response + env. */
+/**
+ * Seed a basic HandlerContext with request/response + rails + runtime.
+ *
+ * Seeds:
+ * - req/res
+ * - requestId
+ * - headers/params/query/body
+ * - rt (SvcRuntime)  ✅ ALWAYS
+ * - svc.env (convenience only; sourced from rt)
+ */
 export function makeHandlerContext(
   controller: ControllerRuntimeDeps,
   req: Request,
   res: Response
 ): HandlerContext {
   const ctx = new HandlerContext();
+
+  const headerRid =
+    (req.headers["x-request-id"] as string | undefined) ??
+    (req.headers["X-Request-Id"] as unknown as string | undefined);
+
   const requestId =
-    (req.headers["x-request-id"] as string) ?? createRequestId();
+    typeof headerRid === "string" && headerRid.trim()
+      ? headerRid.trim()
+      : createRequestId();
 
   // ───────────────────────────────────────────
   // Seed request-scope (AsyncLocalStorage)
   // ───────────────────────────────────────────
   const scope = enterRequestScopeFromInbound({ req, requestId });
 
+  ctx.set("req", req);
+  ctx.set("res", res);
+
   ctx.set("requestId", requestId);
   ctx.set("headers", req.headers);
   ctx.set("params", req.params);
   ctx.set("query", req.query);
   ctx.set("body", req.body);
-  ctx.set("res", res);
+
+  // Rails defaults
+  ctx.set("status", 200);
+  ctx.set("handlerStatus", "ok");
 
   // Optional convenience keys for handlers/tests (not a source of truth).
   if (scope.testRunId) ctx.set("test.runId", scope.testRunId);
   if (scope.expectErrors === true) ctx.set("test.expectErrors", true);
 
-  // Commit 1: hard requirement — no optional env DTO seeding paths.
-  const svcEnv: EnvServiceDto = controller.getSvcEnv();
-  ctx.set("svcEnv", svcEnv);
+  // Runtime is authoritative (ADR-0080)
+  const rt = controller.getRuntime();
+  ctx.set("rt", rt);
 
-  // Commit 1: envLabel is also required (ControllerBase enforces non-empty).
-  const envLabel = controller.getEnvLabel();
-  ctx.set("svc.env", envLabel);
+  // Convenience env label (not a truth source; derived from rt)
+  try {
+    const env = (rt as any)?.getEnv?.();
+    if (typeof env === "string" && env.trim()) {
+      ctx.set("svc.env", env.trim());
+    }
+  } catch {
+    // ignore
+  }
 
   controller.getLogger().debug(
     {
       event: "make_context",
       requestId,
-      hasSvcEnv: true,
-      envLabel,
+      hasRt: true,
       testRunId: scope.testRunId,
       expectErrors: scope.expectErrors,
     },
@@ -185,7 +207,7 @@ export function makeDtoOpHandlerContext(
   return ctx;
 }
 
-/** Preflight env + registry checks, setting error response on failure. */
+/** Preflight rails + optional registry checks, setting error response on failure. */
 export function preflightContext(
   controller: ControllerRuntimeDeps,
   ctx: HandlerContext,
@@ -197,15 +219,15 @@ export function preflightContext(
   const requestId = ctx.get<string>("requestId") ?? "unknown";
   const log = controller.getLogger();
 
-  const svcEnv = ctx.get<EnvServiceDto>("svcEnv");
-  if (!svcEnv) {
+  const rt = ctx.get<unknown>("rt");
+  if (!rt) {
     ctx.set("handlerStatus", "error");
     ctx.set("response.status", 500);
     ctx.set("response.body", {
-      code: "ENV_DTO_MISSING",
+      code: "RUNTIME_MISSING",
       title: "Internal Error",
       detail:
-        "EnvServiceDto missing in context. Ops: AppBase must expose the environment DTO; ControllerBase seeds it into HandlerContext.",
+        "SvcRuntime missing in context. Dev/Ops: controller must seed ctx['rt'] for every request (ADR-0080).",
       requestId,
     });
     return;
@@ -226,6 +248,9 @@ export function preflightContext(
       });
       return;
     }
+  } else {
+    // Soft touch so MOS controllers can run without registry.
+    controller.tryGetDtoRegistry();
   }
 
   log.debug(
@@ -255,6 +280,7 @@ export async function runPipelineHandlers(
 
   for (const h of handlers) {
     await h.run();
+    if (ctx.get<string>("handlerStatus") === "error") break;
   }
 }
 

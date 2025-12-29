@@ -1,5 +1,4 @@
 // backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/code.build.userId.test.ts
-
 /**
  * Docs:
  * - Build-a-test-guide (Handler-level test pattern)
@@ -14,22 +13,34 @@
  *   ensure a valid UUIDv4 is written to ctx["signup.userId"] and the handler
  *   remains on the "ok" rail.
  *
- * Scope:
- * - Single happy-path scenario only.
- * - No DtoBag involvement; handler is pure id minting on the bus.
- *
- * Test-runner contract:
- * - This module is discovered via HandlerTestModuleLoader using:
- *     indexRelativePath + handlerName = "code.build.userId"
- * - It MUST:
- *     • export CodeBuildUserIdTest (canonical test class)
- *     • export getScenarios(), which returns an array of scenario definitions.
+ * Identity invariant:
+ * - Scenario MUST execute the pipeline-instantiated handler step (deps.step),
+ *   not a freshly constructed handler ctor, so SvcRuntime identity/caps are correct.
  */
 
 import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { CodeBuildUserIdHandler } from "./code.build.userId";
 
-export class CodeBuildUserIdTest extends HandlerTestBase {
+/**
+ * Minimal “deps” shape passed from ScenarioRunner.
+ * Kept local on purpose: no cross-service imports.
+ */
+type ScenarioDepsLike = {
+  step: { execute: (ctx: any) => Promise<void> };
+  makeScenarioCtx: (seed: {
+    requestId: string;
+    dtoType?: string;
+    op?: string;
+  }) => any;
+};
+
+class CodeBuildUserIdHappyTest extends HandlerTestBase {
+  private readonly deps: ScenarioDepsLike;
+
+  public constructor(deps: ScenarioDepsLike) {
+    super();
+    this.deps = deps;
+  }
+
   public testId(): string {
     return "auth.signup.code.build.userId.happy";
   }
@@ -39,27 +50,23 @@ export class CodeBuildUserIdTest extends HandlerTestBase {
   }
 
   protected expectedError(): boolean {
-    // Happy-path smoke: handlerStatus !== "error".
     return false;
   }
 
+  /**
+   * Required by HandlerTestBase (abstract).
+   * Runs the *existing* pipeline step instance to preserve identity.
+   */
   protected async execute(): Promise<void> {
-    // Fresh context per LDD-40; handler only cares about requestId + bus.
-    const ctx = this.makeCtx({
+    const ctx = this.deps.makeScenarioCtx({
       requestId: "req-auth-signup-build-user-id",
       dtoType: "auth.signup",
       op: "build.userId",
     });
 
-    await this.runHandler({
-      handlerCtor: CodeBuildUserIdHandler,
-      ctx,
-    });
+    await this.deps.step.execute(ctx);
 
-    // Assert final handler rail (HTTP status is derived later by rails, not by the test).
     this.assertEq(ctx.get("handlerStatus"), "ok");
-
-    // Assert payload on the bus: UUIDv4 written to ctx["signup.userId"].
     this.assertCtxUUID(ctx, "signup.userId");
   }
 }
@@ -67,8 +74,7 @@ export class CodeBuildUserIdTest extends HandlerTestBase {
 /**
  * ScenarioRunner entrypoint:
  * - Single happy-path scenario for this handler.
- * - Even with one scenario, we follow the same pattern so all tests
- *   look identical to future you.
+ * - run(deps) uses the pipeline-instantiated step.
  */
 export async function getScenarios() {
   return [
@@ -77,8 +83,8 @@ export async function getScenarios() {
       name: "auth.signup: CodeBuildUserIdHandler mints UUIDv4 on ctx['signup.userId']",
       shortCircuitOnFail: true,
       expectedError: false,
-      async run() {
-        const test = new CodeBuildUserIdTest();
+      async run(deps: ScenarioDepsLike) {
+        const test = new CodeBuildUserIdHappyTest(deps);
         return await test.run();
       },
     },

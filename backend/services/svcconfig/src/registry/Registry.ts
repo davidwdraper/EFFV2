@@ -20,7 +20,8 @@
  * - Instance collection name is seeded from each DTO class's dbCollectionName().
  */
 
-import { DtoBase, UserType } from "@nv/shared/dto/DtoBase";
+import { DtoBase } from "@nv/shared/dto/DtoBase";
+import { UserType } from "@nv/shared/dto/UserType";
 import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";

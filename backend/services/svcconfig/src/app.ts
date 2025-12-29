@@ -8,11 +8,12 @@
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - For svcconfig, DB/index ensure is ON (checkDb=true).
+ * - For svcconfig, DB/index ensure is ON via posture="db" (no checkDb flag).
  */
 
 import type { Express, Router } from "express";
@@ -55,9 +56,14 @@ class SvcconfigApp extends AppBase {
     super({
       service: opts.slug,
       version: opts.version,
+
+      // ADR-0084: posture is the single source of truth for boot rails.
+      // svcconfig is DB-backed -> posture "db" (AppBase derives checkDb internally).
+      posture: "db",
+
       envDto: opts.envDto,
       envReloader: opts.envReloader,
-      checkDb: true,
+
       rt: opts.rt,
     });
 
@@ -65,7 +71,7 @@ class SvcconfigApp extends AppBase {
   }
 
   // adr0082-infra-service-health-boot-check
-  // Endure that infra health checking does not run for svcconfig.
+  // Ensure infra health checking does not run for svcconfig.
   public override isInfraService(): boolean {
     return true;
   }

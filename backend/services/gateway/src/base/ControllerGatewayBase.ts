@@ -25,8 +25,18 @@
 import type { Response } from "express";
 import { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
+import type { IBoundLogger } from "@nv/shared/logger/Logger";
 
 export abstract class ControllerGatewayBase extends ControllerBase {
+  /**
+   * NOTE:
+   * ControllerBase does not guarantee a `log` field.
+   * Gateway controllers must log via the canonical accessor (getLogger()).
+   */
+  protected get log(): IBoundLogger {
+    return this.getLogger();
+  }
+
   /**
    * Gateway does not use DTOs and must not require the registry.
    */

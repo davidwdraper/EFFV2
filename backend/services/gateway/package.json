@@ -2,13 +2,16 @@
   "name": "@nv/gateway",
   "version": "0.1.0",
   "private": true,
-  "_nvHeader": "SOP header: auth service. CJS runtime. Uses @nv/shared via alias.",
+  "_nvHeader": "SOP header: template service. CJS runtime. Dev may use tsconfig-paths; start/prod must be JS-only (node dist).",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "dependencies": {
+    "@nv/shared": "workspace:*"
+  },
   "scripts": {
     "dev": "NODE_OPTIONS='-r tsconfig-paths/register' tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node -r tsconfig-paths/register dist/index.js",
+    "start": "node dist/index.js",
     "clean": "rm -rf dist"
   },
   "devDependencies": {

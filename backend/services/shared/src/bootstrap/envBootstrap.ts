@@ -124,7 +124,7 @@ class BootstrapSvcClientLogger implements ISvcClientLogger {
  * - Resolve ONLY env-service using NV_ENV_SERVICE_URL.
  *
  * Env:
- * - NV_ENV_SERVICE_URL: base URL for env-service
+ * - NV_ENV_SERVICE_URL: ORIGIN for env-service (MUST be host+port only; no path)
  */
 class BootstrapEnvSvcResolver implements ISvcconfigResolver {
   public async resolveTarget(
@@ -141,18 +141,51 @@ class BootstrapEnvSvcResolver implements ISvcconfigResolver {
     }
 
     const raw = process.env.NV_ENV_SERVICE_URL;
-    const baseUrl = typeof raw === "string" ? raw.trim() : "";
+    const rawBaseUrl = typeof raw === "string" ? raw.trim() : "";
 
-    if (!baseUrl) {
+    if (!rawBaseUrl) {
       throw new Error(
         "BOOTSTRAP_ENV_SERVICE_URL_MISSING: NV_ENV_SERVICE_URL is not set or empty. " +
-          "Ops: set NV_ENV_SERVICE_URL to the base URL of env-service " +
-          '(e.g., "http://127.0.0.1:4001") before starting this service.'
+          "Ops: set NV_ENV_SERVICE_URL to the ORIGIN of env-service " +
+          '(e.g., "http://127.0.0.1:4015") before starting this service.'
+      );
+    }
+
+    /**
+     * Critical invariant:
+     * NV_ENV_SERVICE_URL MUST be an ORIGIN only (scheme + host + optional port).
+     *
+     * If a path is included (e.g., ".../api/env-service/v1"), SvcClient will append
+     * its own "/api/<slug>/v<version>/..." path and the resulting URL will be wrong
+     * (typically manifesting as "fetch failed" or 404s during bootstrap).
+     *
+     * We fail-fast here with concrete Ops guidance.
+     */
+    let origin: string;
+    try {
+      const u = new URL(rawBaseUrl);
+
+      const hasBadPath = u.pathname && u.pathname !== "/" && u.pathname !== "";
+      const hasQuery = !!u.search;
+      const hasHash = !!u.hash;
+
+      if (hasBadPath || hasQuery || hasHash) {
+        throw new Error(
+          `NV_ENV_SERVICE_URL must be an ORIGIN only (no path/query/hash). Got "${rawBaseUrl}". ` +
+            `Dev/Ops: set NV_ENV_SERVICE_URL to "${u.origin}" (example: "http://127.0.0.1:4015").`
+        );
+      }
+
+      origin = u.origin;
+    } catch (e: any) {
+      throw new Error(
+        `BOOTSTRAP_ENV_SERVICE_URL_INVALID: NV_ENV_SERVICE_URL is invalid. ` +
+          `Detail: ${(e as Error)?.message ?? String(e)}`
       );
     }
 
     return {
-      baseUrl,
+      baseUrl: origin,
       slug: "env-service",
       version,
       isAuthorized: true,

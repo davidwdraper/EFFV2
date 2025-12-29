@@ -51,7 +51,6 @@ SERVICES=(
   "handler-test|backend/services/handler-test|pnpm dev"
   #"audit|backend/services/audit|pnpm dev"
   #"jwks|backend/services/jwks|pnpm dev"
-
 )
 
 # ======= Helpers =============================================================
@@ -59,6 +58,51 @@ get_env() { local file="$1" key="$2"; [[ -f "$file" ]] || return 1; grep -E "^${
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 trim() { echo "$1" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
 mk_crypto_key() { local proj="$1" loc="$2" ring="$3" key="$4"; echo "projects/${proj}/locations/${loc}/keyRings/${ring}/cryptoKeys/${key}"; }
+
+rm_tsbuildinfo() {
+  # rm_tsbuildinfo <dir>
+  local dir="$1"
+  rm -f "$dir/tsconfig.tsbuildinfo" 2>/dev/null || true
+  rm -f "$dir/dist/tsconfig.tsbuildinfo" 2>/dev/null || true
+}
+
+ensure_dist_exists() {
+  # ensure_dist_exists <name> <dir>
+  # Invariant: if dist/index.js is missing, rebuild (and clear tsbuildinfo so TS can’t “succeed” without emitting).
+  local name="$1"
+  local dir="$2"
+  local dist_entry="$dir/dist/index.js"
+
+  [[ -d "$dir" ]] || { echo "❌ $name: missing dir: $dir"; return 1; }
+
+  if [[ -f "$dist_entry" ]]; then
+    return 0
+  fi
+
+  echo "🛠️  $name: dist/index.js missing → building to restore dist…"
+  rm_tsbuildinfo "$dir"
+
+  if command -v pnpm >/dev/null 2>&1; then
+    pnpm --dir "$dir" run build || { echo "❌ $name build failed"; return 1; }
+  else
+    npm --prefix "$dir" run build || { echo "❌ $name build failed"; return 1; }
+  fi
+
+  # If TS incremental state was still weird, retry once after clearing again.
+  if [[ ! -f "$dist_entry" ]]; then
+    echo "⚠️  $name: build succeeded but dist/index.js still missing → retrying once after clearing tsbuildinfo…"
+    rm_tsbuildinfo "$dir"
+    if command -v pnpm >/dev/null 2>&1; then
+      pnpm --dir "$dir" run build || { echo "❌ $name rebuild failed"; return 1; }
+    else
+      npm --prefix "$dir" run build || { echo "❌ $name rebuild failed"; return 1; }
+    fi
+  fi
+
+  [[ -f "$dist_entry" ]] || { echo "❌ $name did not emit dist/index.js"; return 1; }
+  echo "✅ $name: dist restored."
+  return 0
+}
 
 # ======= Gateway env file path (for optional --test KMS export) =============
 GW_ENV_FILE_DEFAULT="$ROOT/backend/services/gateway/.env.dev"
@@ -211,6 +255,15 @@ echo "🧭 Services list:"
 for i in "${!SERVICE_NAMES[@]}"; do
   echo "  • (enabled)  ${SERVICE_NAMES[$i]} → ${SERVICE_PATHS[$i]} :: ${SERVICE_CMDS[$i]}  [ENV_FILE=$(basename "${SERVICE_ENVFILES[$i]}")]"
 done
+
+# ======= Ensure dist exists for enabled services (only if dist missing) ======
+echo "🧱 Ensuring dist exists for enabled services (only when missing)…"
+for i in "${!SERVICE_NAMES[@]}"; do
+  name="${SERVICE_NAMES[$i]}"
+  svc_dir="$ROOT/${SERVICE_PATHS[$i]}"
+  ensure_dist_exists "$name" "$svc_dir" || exit 1
+done
+
 echo "🚀 Starting services..."
 
 # Prepare log files and optional console tailer up-front
@@ -230,6 +283,8 @@ if [[ "${NV_CONSOLE_LOG:-0}" != "0" ]]; then
     TAIL_PIDS+=("$!")
   done
 fi
+
+LAST_INDEX=$((${#SERVICE_NAMES[@]} - 1))
 
 for i in "${!SERVICE_NAMES[@]}"; do
   name="${SERVICE_NAMES[$i]}"
@@ -259,7 +314,7 @@ for i in "${!SERVICE_NAMES[@]}"; do
     echo \"ENV_FILE=\$ENV_FILE\"
     echo '────────────────────────────────────────────────────────────────────────────────────'
 
-    if node -e \"try{p=require('./package.json').scripts?.dev;process.exit(p?0:1)}catch(e){process.exit(1)}\"; then
+    if node -e \"try{p=require('./package.json').scripts && require('./package.json').scripts.dev;process.exit(p?0:1)}catch(e){process.exit(1)}\"; then
       exec pnpm dev
     elif [ -f \"src/index.ts\" ]; then
       exec pnpm -s exec tsx watch src/index.ts
@@ -281,6 +336,11 @@ for i in "${!SERVICE_NAMES[@]}"; do
   if [[ "$name" = "svcfacilitator" ]]; then
     echo "⏳ svcfacilitator started; waiting 5s to warm up…"
     sleep 5
+  fi
+
+  if [[ $i -lt $LAST_INDEX ]]; then
+    echo "⏳ waiting 3s before starting next service…"
+    sleep 3
   fi
 done
 

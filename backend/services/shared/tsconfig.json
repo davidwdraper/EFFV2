@@ -1,4 +1,4 @@
-// backend/services/shared/tsconfig.json  (new or replace)
+// backend/services/shared/tsconfig.json
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {

@@ -19,7 +19,7 @@ import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 // Update-specific handlers
 import { DbReadExistingHandler } from "./db.readExisting";
-import { CodePatchHandler } from "./code.patch";
+import { CodePatchHandler } from "@nv/shared/http/handlers/code.patch";
 import { DbUpdateHandler } from "./db.update";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {

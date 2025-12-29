@@ -1,23 +1,24 @@
-// tsconfig.base.json  (repo root — replace file)
+// tsconfig.base.json (repo root — replace file)
 {
   "compilerOptions": {
     "target": "ES2020",
     "module": "CommonJS",
     "moduleResolution": "Node",
+
     "strict": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
 
-    "baseUrl": ".",
-    "paths": {
-      "@nv/shared": ["backend/services/shared/src/index"], // <- was dist/index
-      "@nv/shared/*": ["backend/services/shared/src/*"]
-    },
-
     "types": ["node"],
     "resolveJsonModule": true,
-    "noEmitOnError": true
+    "noEmitOnError": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "@nv/shared": ["backend/services/shared/src/index"],
+      "@nv/shared/*": ["backend/services/shared/src/*"]
+    }
   }
 }

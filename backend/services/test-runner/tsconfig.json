@@ -5,13 +5,11 @@
     "baseUrl": "../../../",
     "rootDir": "src",
     "outDir": "dist",
-    "composite": true
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true
   },
-  "include": [
-    "src/**/*",
-    "../shared/src/http/handlers/db.readExisting.ts",
-    "../shared/src/http/handlers/db.update.ts"
-  ],
+  "include": ["src/**/*"],
   "exclude": ["dist", "node_modules"],
   "references": [{ "path": "../shared" }]
 }

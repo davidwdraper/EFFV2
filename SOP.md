@@ -140,3 +140,7 @@ No back-compat. Ever.
 ## 17. Shared meta
 
 - All unions, types, enums, structs, etc., that span multiple files, belong in their own shared file in shared/src/base/app
+
+## 18. Unsolicited Change
+
+- NEVER make change to files other than what has been explicitly agreed to.

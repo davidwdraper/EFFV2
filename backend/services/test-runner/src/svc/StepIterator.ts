@@ -11,17 +11,11 @@
  * Purpose:
  * - StepIterator: iterate resolved handler steps for a single pipeline.
  *
- * Responsibilities (100,000 ft, per LDD-39 + HandlerTestDto + ScenarioRunner):
- * - For each handler step:
- *   1) Mint and seed a fresh HandlerTestDto (no leaks between steps).
- *   2) Immediately persist a "started" HandlerTestRecord via TestRunWriter.
- *   3) Delegate scenario execution to ScenarioRunner (test-module orchestration).
- *   4) Derive final test status from HandlerTestDto.finalizeFromScenarios()
- *      and finalize the HandlerTestRecord via TestRunWriter.
- *
- * SOP (no backwards compat):
- * - ScenarioRunner requires ScenarioDeps.
- * - Sidecars MUST accept deps in getScenarios(deps) and run(deps).
+ * Key invariant:
+ * - Scenario ctx is fresh per scenario.
+ * - Handler execution is production-shaped:
+ *     new Handler(scenarioCtx, controller).run()
+ *   NOT “reuse handler instance” and NOT “call protected execute()”.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -39,7 +33,11 @@ import type {
   TestRunWriter,
 } from "./TestRunWriter";
 
-import { ScenarioRunner, type HandlerTestModuleLoader } from "./ScenarioRunner";
+import {
+  ScenarioRunner,
+  type HandlerTestModuleLoader,
+  type ScenarioStep,
+} from "./ScenarioRunner";
 
 type LoggerLike = {
   info?: (obj: unknown, msg?: string) => void;
@@ -87,7 +85,6 @@ export class StepIterator {
       throw new Error(msg);
     }
 
-    // ScenarioRunner is created per execute() so it can use this ctx's logger.
     const scenarioRunner = new ScenarioRunner({
       loader: this.moduleLoader,
       logger: log
@@ -101,16 +98,15 @@ export class StepIterator {
         : undefined,
     });
 
-    // AppBase is not used by most tests today, but it’s part of deps.
     const app = input.app as AppBase;
 
     for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
+      const stepInstance = steps[i];
 
       const handlerName =
-        typeof (step as any).getHandlerName === "function"
-          ? (step as any).getHandlerName()
-          : step.constructor.name;
+        typeof (stepInstance as any).getHandlerName === "function"
+          ? (stepInstance as any).getHandlerName()
+          : stepInstance.constructor.name;
 
       log?.info?.(
         {
@@ -166,7 +162,25 @@ export class StepIterator {
         continue;
       }
 
-      // Build deps ONCE per handler step. Scenarios get fresh ctx via makeScenarioCtx().
+      // Build a production-shaped step executor.
+      const handlerCtor = (stepInstance as any).constructor as new (
+        c: HandlerContext,
+        controller: ControllerBase
+      ) => HandlerBase;
+
+      const step: ScenarioStep = {
+        handlerName,
+        execute: async (scenarioCtx: HandlerContext) => {
+          if (!scenarioCtx) {
+            throw new Error(
+              `StepIterator: scenarioCtx is required for handler="${handlerName}"`
+            );
+          }
+          const h = new handlerCtor(scenarioCtx, input.controller);
+          await h.run();
+        },
+      };
+
       const deps = {
         step,
         controller: input.controller,
@@ -186,35 +200,25 @@ export class StepIterator {
           if (seed.dtoType) sc.set("dtoType", seed.dtoType);
           if (seed.op) sc.set("op", seed.op);
 
-          // Carry pipeline visibility keys (diagnostics only).
           try {
             sc.set("pipeline", ctx.get("pipeline"));
-          } catch {
-            // ignore
-          }
+          } catch {}
           try {
             sc.set(
               "testRunner.index.absolutePath",
               ctx.get("testRunner.index.absolutePath")
             );
-          } catch {
-            // ignore
-          }
+          } catch {}
           try {
             sc.set(
               "testRunner.index.relativePath",
               ctx.get("testRunner.index.relativePath")
             );
-          } catch {
-            // ignore
-          }
+          } catch {}
 
-          // Reuse the same logger instance if present.
           try {
             sc.set("log", ctx.get("log"));
-          } catch {
-            // ignore
-          }
+          } catch {}
 
           return sc;
         },
@@ -242,8 +246,7 @@ export class StepIterator {
         handlerTestDto.markTestError();
       }
 
-      const finishedAtIso = new Date().toISOString();
-      handlerTestDto.setFinishedAt(finishedAtIso);
+      handlerTestDto.setFinishedAt(new Date().toISOString());
 
       try {
         handlerTestDto.finalizeFromScenarios();

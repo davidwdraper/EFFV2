@@ -5,7 +5,11 @@
  * - ADR-0077 (Test-Runner vNext — Single Orchestrator Handler)
  *
  * Purpose:
- * - TreeWalker V1: return exactly one hard-coded pipeline index.ts path.
+ * - TreeWalker V1: return exactly one hard-coded pipeline index path.
+ *
+ * IMPORTANT (dist-first):
+ * - absolutePath MUST point at the runtime-compiled pipeline index in dist (.js).
+ * - relativePath MUST remain the human/stable src path (.ts) for reporting/DTOs.
  *
  * Invariants:
  * - Deterministic output order.
@@ -19,11 +23,14 @@ export type TreeWalkerResult = {
 
 export class TreeWalker {
   public execute(): TreeWalkerResult {
+    // Runtime (dist) absolute path used for module loading.
     const absolutePath =
-      // for testing purposes, use a hard-coded path
-      "/Users/ddraper005/eff/backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/index.ts";
+      "/Users/ddraper005/eff/backend/services/auth/dist/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/index.js";
 
-    // V1: infer rootDir and relativePath from the hard-coded absolute path.
+    // Stable human path used for reporting and persisted DTO fields.
+    const relativePath =
+      "backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/index.ts";
+
     const marker = "/eff/";
     const markerIdx = absolutePath.indexOf(marker);
 
@@ -31,11 +38,6 @@ export class TreeWalker {
       markerIdx >= 0
         ? absolutePath.slice(0, markerIdx + marker.length - 1) // "/Users/.../eff"
         : "";
-
-    const relativePath =
-      markerIdx >= 0
-        ? absolutePath.slice(markerIdx + marker.length) // "backend/..."
-        : absolutePath;
 
     return {
       rootDir,

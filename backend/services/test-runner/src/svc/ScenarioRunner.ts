@@ -9,28 +9,11 @@
  *
  * Purpose:
  * - Bridge between StepIterator and per-handler test modules.
- * - Given ONE HandlerTestDto (one handler under test), load its test module,
- *   execute scenarios sequentially, and record the results on the DTO using
- *   HandlerTestDto.runScenario(...). Then derive the final test status via
- *   HandlerTestDto.finalizeFromScenarios().
  *
- * Invariants:
- * - ScenarioRunner is the ONLY place that:
- *   - loops test scenarios for a handler,
- *   - applies short-circuit rules (“happy first, abort on fail”),
- *   - maps scenario results into DTO’s scenario shape.
- * - Test modules:
- *   - ONLY declare scenarios and provide run(deps) functions.
- *   - NEVER touch HandlerTestDto directly.
- * - HandlerTestDto:
- *   - Stores header and scenarios.
- *   - Provides runScenario() and finalizeFromScenarios().
- *   - Knows NOTHING about how many scenarios exist or how they’re orchestrated.
- *
- * SOP (no backwards compat):
- * - getScenarios(deps) is REQUIRED.
- * - scenario.run(deps) is REQUIRED.
- * - Old sidecars that export getScenarios() or run() without deps MUST be fixed.
+ * Key invariant:
+ * - A “step” is an executable adapter that runs a handler in production shape:
+ *     new Handler(scenarioCtx, controller).run()
+ *   NOT “call protected execute()” and NOT “reuse a handler instance”.
  */
 
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
@@ -38,86 +21,52 @@ import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/Handler
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
-import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 
+export type ScenarioStep = {
+  /**
+   * Stable handler name for mapping to <handlerName>.test.js.
+   * (Usually handler.getHandlerName()).
+   */
+  handlerName: string;
+
+  /**
+   * Execute the handler in prod shape against the provided scenario ctx.
+   */
+  execute: (scenarioCtx: HandlerContext) => Promise<void>;
+};
+
 export type ScenarioDeps = {
-  /**
-   * The *already-instantiated* handler step from the pipeline index.ts,
-   * created with the target controller/app. This is the identity fix.
-   */
-  step: HandlerBase;
-
-  /**
-   * The controller that built the pipeline steps. Useful for richer tests.
-   */
+  step: ScenarioStep;
   controller: ControllerBase;
-
-  /**
-   * The target service app used to construct the controller/steps.
-   */
   app: AppBase;
-
-  /**
-   * The pipeline-level context created by IndexIterator (includes logging keys).
-   * Note: scenario contexts should still be fresh per scenario; this is for
-   * diagnostics only.
-   */
   pipelineCtx: HandlerContext;
 
-  /**
-   * Helper to mint a fresh HandlerContext for the scenario.
-   * (Tests that use HandlerTestBase may ignore this.)
-   */
   makeScenarioCtx: (seed: {
     requestId: string;
     dtoType?: string;
     op?: string;
   }) => HandlerContext;
 
-  /**
-   * Target metadata (identity).
-   */
   target: { serviceSlug: string; serviceVersion: number };
 };
 
-/**
- * How ScenarioRunner sees a scenario definition from the test module.
- *
- * IMPORTANT:
- * - scenario.run(deps) returns HandlerTestResult from HandlerTestBase.run().
- * - We do NOT re-interpret expectedError/railsVerdict here; that lives in
- *   HandlerTestDto._normalizeScenarioStatus().
- */
 export interface HandlerTestScenarioDef {
   id: string;
   name: string;
   expectedError: boolean;
-  shortCircuitOnFail?: boolean; // default true if undefined
+  shortCircuitOnFail?: boolean;
   run: (deps: ScenarioDeps) => Promise<HandlerTestResult>;
 }
 
-/**
- * Contract for a per-handler test module (e.g. code.passwordHash.test.ts).
- *
- * SOP:
- * - getScenarios(deps) is REQUIRED (no arity sniffing / no compat).
- */
 export interface HandlerTestModule {
   getScenarios: (deps: ScenarioDeps) => Promise<HandlerTestScenarioDef[]>;
 }
 
-/**
- * Loader that knows how to find the right test module for a given HandlerTestDto.
- * (Path and import mechanics live outside ScenarioRunner.)
- */
 export interface HandlerTestModuleLoader {
   loadFor(dto: HandlerTestDto): Promise<HandlerTestModule | undefined>;
 }
 
-/**
- * Minimal logger abstraction so we can plug existing logging without coupling.
- */
 export interface ScenarioRunnerLogger {
   debug(msg: string, meta?: Record<string, unknown>): void;
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -139,18 +88,6 @@ export class ScenarioRunner {
     this.log = deps.logger;
   }
 
-  /**
-   * Run all scenarios for the handler described by `dto`.
-   *
-   * SOP behavior:
-   * - If no test module is found → dto is returned unchanged (Skipped handled later).
-   * - If getScenarios(deps) fails → records a module-error scenario and returns.
-   * - Otherwise:
-   *   - runs each scenario in order,
-   *   - records results via dto.runScenario(...),
-   *   - applies short-circuit based on scenario.shortCircuitOnFail,
-   *   - calls dto.finalizeFromScenarios() to compute final status.
-   */
   public async run(
     dto: HandlerTestDto,
     deps: ScenarioDeps
@@ -159,14 +96,12 @@ export class ScenarioRunner {
       targetServiceSlug: dto.getTargetServiceSlug(),
       targetServiceVersion: dto.getTargetServiceVersion(),
       indexRelativePath: dto.getIndexRelativePath(),
-      pipelineName: dto.getPipelineName(),
       handlerName: dto.getHandlerName(),
     });
 
     const module = await this.loader.loadFor(dto);
 
     if (!module) {
-      // No tests for this handler — nothing to do.
       this.log?.info("ScenarioRunner.noModule", {
         targetServiceSlug: dto.getTargetServiceSlug(),
         targetServiceVersion: dto.getTargetServiceVersion(),
@@ -266,15 +201,6 @@ export class ScenarioRunner {
     );
   }
 
-  /**
-   * Wraps scenario.run(deps) so any thrown error becomes a synthetic HandlerTestResult
-   * instead of killing the whole handler test.
-   *
-   * NOTE:
-   * - Well-behaved tests using HandlerTestBase.run() should never throw here;
-   *   they always return HandlerTestResult with railsVerdict set.
-   * - This is a belt-and-suspenders guard for truly broken test modules.
-   */
   private async safeScenarioRun(
     scenario: HandlerTestScenarioDef,
     deps: ScenarioDeps
@@ -282,7 +208,6 @@ export class ScenarioRunner {
     try {
       const result: HandlerTestResult = await scenario.run(deps);
 
-      // Ensure id/name continuity in case a test forgot to set them.
       const testId =
         (result as any).testId && typeof (result as any).testId === "string"
           ? (result as any).testId
@@ -320,8 +245,7 @@ export class ScenarioRunner {
       const message =
         err instanceof Error ? err.message : String(err ?? "unknown error");
 
-      // Synthetic "test bug" result.
-      const synthetic: HandlerTestResult = {
+      return {
         testId: scenario.id,
         name: scenario.name,
         outcome: "failed",
@@ -335,15 +259,9 @@ export class ScenarioRunner {
         railsHandlerStatus: undefined,
         railsResponseStatus: undefined,
       };
-
-      return synthetic;
     }
   }
 
-  /**
-   * If getScenarios(deps) itself fails, record a synthetic test-bug scenario so
-   * the DTO reflects something went wrong instead of silently succeeding.
-   */
   private async recordModuleErrorScenario(
     dto: HandlerTestDto,
     err: unknown

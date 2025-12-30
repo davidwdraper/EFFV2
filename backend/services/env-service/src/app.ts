@@ -13,25 +13,26 @@
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - For env-service, DB/index ensure is ON (checkDb=true).
+ * - For env-service, DB/index ensure is ON (DB posture).
  *
  * Invariants:
  * - env-service is the first “pure” SvcRuntime service: rt is REQUIRED here.
  * - posture is REQUIRED by AppBaseCtor and must be provided by the entrypoint.
- * - Commit 2: envLabel is authoritative from rt (AppBase.getEnvLabel()).
+ * - AppBaseCtor does NOT accept envDto/envReloader; EnvServiceDto lives inside rt only.
+ * - env-service env reload must be DB-backed (NOT S2S to itself).
  */
 
 import type { Express, Router } from "express";
 import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
 import type { AppBaseCtor } from "@nv/shared/base/app/AppBase";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
-
+import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+
 import { Registry } from "./registry/Registry";
 import { buildEnvServiceRouter } from "./routes/env-service.route";
-import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 // AppBase.ts defines SvcPosture but does not export it.
 // We derive the public posture type from the exported ctor contract instead.
@@ -48,46 +49,38 @@ type CreateAppOptions = {
   posture: SvcPosture;
 
   /**
-   * Environment label for this running instance (e.g., "dev", "staging", "prod").
-   * Retained for diagnostics only; AppBase env label is sourced from rt.
-   */
-  envLabel: string;
-
-  envDto: EnvServiceDto;
-  envReloader: () => Promise<EnvServiceDto>;
-
-  /**
    * ADR-0080: canonical runtime container (mandatory for env-service).
+   * rt owns EnvServiceDto and envLabel.
    */
   rt: SvcRuntime;
+
+  /**
+   * DB-backed env reload (env-service special-case).
+   * Must update rt only; never leak DTO sidecars.
+   */
+  envReloader: () => Promise<EnvServiceDto>;
 };
 
 class EnvServiceApp extends AppBase {
   /** Concrete per-service DTO registry (explicit, no barrels). */
   private readonly registry: Registry;
 
-  constructor(opts: CreateAppOptions) {
-    // Initialize logger first so all subsequent boot logs have proper context.
-    setLoggerEnv(opts.envDto);
+  constructor(private readonly opts: CreateAppOptions) {
+    // Logger is strict and requires SvcEnv; rt already owns the merged EnvServiceDto.
+    setLoggerEnv(opts.rt.getSvcEnvDto());
 
     super({
       service: opts.slug,
       version: opts.version,
       posture: opts.posture,
-      envDto: opts.envDto,
-      envReloader: opts.envReloader,
-
-      // ADR-0080: env-service MUST run with rt.
       rt: opts.rt,
     });
 
     this.registry = new Registry();
 
-    // Optional: log the envLabel explicitly so operators get visibility
     this.log.info(
       {
-        declaredEnvLabel: opts.envLabel,
-        appEnvLabel: this.getEnvLabel(), // now sourced from rt
+        appEnvLabel: this.getEnvLabel(),
         posture: opts.posture,
         rt: opts.rt.describe(),
       },
@@ -106,6 +99,29 @@ class EnvServiceApp extends AppBase {
     return this.registry;
   }
 
+  /**
+   * env-service special-case: env reload is DB-backed, not S2S.
+   * This overrides the default AppBase wiring which uses SvcEnvClient (S2S).
+   */
+  protected override wireEnvReloadCap(): void {
+    const rt = this.getRuntime();
+    rt.setCapFactory("env.reloader", async (rt) => {
+      const fresh = await this.opts.envReloader();
+      rt.setEnvDto(fresh);
+      return fresh;
+    });
+
+    this.log.info(
+      {
+        event: "rt_cap_factory_wired",
+        capKey: "env.reloader",
+        service: this.service,
+        version: this.version,
+      },
+      "wired runtime cap factory"
+    );
+  }
+
   /** Mount service routes as one-liners under the versioned base. */
   protected override mountRoutes(): void {
     const base = this.healthBasePath(); // `/api/<slug>/v<version>`
@@ -116,18 +132,23 @@ class EnvServiceApp extends AppBase {
 
     const r: Router = buildEnvServiceRouter(this);
     this.app.use(base, r);
-    this.log.info(
-      { base, envLabel: this.getEnvLabel() },
-      "env-service routes mounted"
-    );
+
+    this.log.info({ base, envLabel: this.getEnvLabel() }, "routes mounted");
   }
 }
 
-/** Public factory: constructs, boots, and returns the Express instance holder. */
+/**
+ * Dist-first target-app factory (for test-runner).
+ *
+ * Returns the AppBase instance so the runner can pass it into
+ * pipeline createController(app) without booting a second HTTP listener.
+ */
+export async function createAppBase(opts: CreateAppOptions): Promise<AppBase> {
+  return await AppBase.bootAppBase(() => new EnvServiceApp(opts));
+}
+
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new EnvServiceApp(opts);
-  await app.boot(); // AppBase handles registry diagnostics + ensureIndexes (checkDb=true)
-  return { app: app.instance };
+  return await AppBase.bootExpress(() => new EnvServiceApp(opts));
 }

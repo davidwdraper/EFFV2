@@ -62,7 +62,8 @@ export class RunTests {
 
       await new IndexIterator(moduleLoader).execute({
         indices: walk.pipelines,
-        app: this.controller.getApp(),
+        rootDir: walk.rootDir, // <-- REQUIRED: enables target service dist/app.js load
+        app: this.controller.getApp(), // test-runner app (NOT used to construct target controllers)
         pipelineLabel: "run",
         requestIdPrefix: "tr-local",
         writer,
@@ -77,10 +78,6 @@ export class RunTests {
      * - test-runner does not invent its own DTO type.
      * - The success payload is intentionally minimal; we still return a bag so the
      *   controller edge stays bag-only.
-     *
-     * NOTE:
-     * - We can later return a summary DTO if you explicitly decide you want one,
-     *   but right now MOS means “orchestrate, don’t own domain”.
      */
     const bag = new DtoBag([]);
     this.ctx.set("bag", bag);

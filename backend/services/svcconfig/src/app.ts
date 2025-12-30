@@ -95,11 +95,18 @@ class SvcconfigApp extends AppBase {
   }
 }
 
-/** Public factory: constructs, boots, and returns the Express instance holder. */
+/**
+ * Dist-first target-app factory (for test-runner).
+ *
+ * Returns the AppBase instance so the runner can pass it into
+ * pipeline createController(app) without booting a second HTTP listener.
+ */
+export async function createAppBase(opts: CreateAppOptions): Promise<AppBase> {
+  return await AppBase.bootAppBase(() => new SvcconfigApp(opts));
+}
+
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new SvcconfigApp(opts);
-  await app.boot();
-  return { app: app.instance };
+  return await AppBase.bootExpress(() => new SvcconfigApp(opts));
 }

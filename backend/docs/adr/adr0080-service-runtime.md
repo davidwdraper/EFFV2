@@ -44,7 +44,7 @@ Introduce a **SvcRuntime** abstraction that:
 
 In running code, the runtime instance will be referenced as:
 
-- `ssb`
+- `rt`
 
 for brevity and clarity inside handlers.
 
@@ -107,7 +107,7 @@ The following boundary is locked:
 Handlers may access:
 
 - `ctx`
-- `ssb`
+- `rt`
 - DTOs / `DtoBag`s
 
 Handlers must never access:

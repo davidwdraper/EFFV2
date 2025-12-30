@@ -288,7 +288,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
           "Ops: ensure env-service contains this key in the corresponding document."
       );
     }
-    return v;
+    return v.trim();
   }
 
   public tryEnvVar(name: string): string | undefined {
@@ -298,7 +298,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
           `Context: env="${this.env}", slug="${this.slug}", version=${this.version}.`
       );
     }
-    return this._vars[name];
+    return this._vars[name].trim();
   }
 
   public hasEnvVar(name: string): boolean {
@@ -335,7 +335,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
     const value = `${raw}`.trim();
 
     if (name === "NV_MONGO_DB") {
-      return this.decorateDbName(value);
+      return this.decorateDbName(value).trim();
     }
 
     return value;
@@ -350,7 +350,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
           "Ops: ensure NV_MONGO_DB and DB_STATE are configured correctly."
       );
     }
-    return name;
+    return name.trim();
   }
 
   /** @deprecated — use getEnvVar(name) for non-DB keys or getDbVar(name) for DB keys. */
@@ -364,7 +364,7 @@ export class EnvServiceDto extends DtoBase implements IDto {
   }
 
   public getEnvLabel(): string {
-    return this.env;
+    return this.env.trim();
   }
 
   public getType(): string {

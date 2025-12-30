@@ -3,14 +3,20 @@
  * Docs:
  * - ADR-0013 (Versioned Health Envelope; versioned health routes)
  * - ADR-0039 (env-service centralized non-secret env; runtime reload endpoint)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
  * - Shared helpers for health & env reload endpoints for AppBase.
+ *
+ * Invariants:
+ * - EnvServiceDto is owned by SvcRuntime, not AppBase.
+ * - Env reload MUST update rt via rt.setEnvDto().
  */
 
 import type { Express, Request, Response } from "express";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
 import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 export function computeHealthBasePath(
   service: string | undefined,
@@ -66,31 +72,39 @@ type EnvReloadOpts = {
   base: string;
   log: IBoundLogger;
   envLabel: string;
-  getEnvDto: () => EnvServiceDto;
-  setEnvDto: (fresh: EnvServiceDto) => void;
+  rt: SvcRuntime;
+
+  /**
+   * MUST return the fresh EnvServiceDto (primary).
+   * The handler will set it into rt via rt.setEnvDto().
+   */
   envReloader: () => Promise<EnvServiceDto>;
 };
 
 export function mountEnvReloadRoute(opts: EnvReloadOpts): void {
-  const { app, base, log, envLabel, getEnvDto, setEnvDto, envReloader } = opts;
+  const { app, base, log, envLabel, rt, envReloader } = opts;
   const path = `${base}/env/reload`;
 
   app.post(path, async (_req, res) => {
-    const current = getEnvDto();
-    const fromEnv = current.env;
-    const fromSlug = current.slug;
-    const fromVersion = current.version;
+    const current = rt.getSvcEnvDto();
+    const fromEnv = (current as any).env;
+    const fromSlug = (current as any).slug;
+    const fromVersion = (current as any).version;
 
     try {
       const fresh = await envReloader();
-      setEnvDto(fresh);
+      rt.setEnvDto(fresh);
 
       return res.status(200).json({
         ok: true,
         reloadedAt: new Date().toISOString(),
         processEnv: envLabel,
         from: { env: fromEnv, slug: fromSlug, version: fromVersion },
-        to: { env: fresh.env, slug: fresh.slug, version: fresh.version },
+        to: {
+          env: (fresh as any).env,
+          slug: (fresh as any).slug,
+          version: (fresh as any).version,
+        },
       });
     } catch (err) {
       return res.status(500).json({

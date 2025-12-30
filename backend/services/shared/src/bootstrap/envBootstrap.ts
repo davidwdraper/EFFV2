@@ -14,16 +14,15 @@
  * - env-service itself is the only exception; it uses its own local DB-based bootstrap.
  *
  * Responsibilities:
- * - Use SvcClient + SvcEnvClient to:
- *     1) Resolve the current env label for { slug, version }.
- *     2) Fetch the EnvServiceDto config bag for (envLabel, slug, version).
+ * - Read the logical env label from process.env.NV_ENV (bootstrap-only allowed env access).
+ * - Use SvcClient + SvcEnvClient to fetch the EnvServiceDto config bag for (envLabel, slug, version).
  * - Work in terms of DtoBag<EnvServiceDto> (no naked DTOs cross this boundary).
  * - Derive HTTP host/port from the primary DTO in the bag.
  * - Construct SvcRuntime using the REAL bound logger (no shims).
  * - Enforce posture-derived boot rails (DB requirements).
  *
  * Invariants:
- * - No .env file parsing here except NV_ENV (logical environment label) and NV_ENV_SERVICE_URL
+ * - No .env parsing here except NV_ENV (logical environment label) and NV_ENV_SERVICE_URL
  *   for bootstrapping env-service location.
  * - DTO encapsulation is preserved: SvcRuntime must NOT extract and cache vars outside EnvServiceDto.
  * - All failures log concrete Ops guidance and terminate the process with exit code 1.
@@ -72,7 +71,7 @@ export type EnvBootstrapOpts = {
 export type EnvBootstrapResult = {
   /**
    * Logical environment label for this process (e.g., "dev", "stage", "prod").
-   * - Derived once at boot from NV_ENV via SvcEnvClient.getCurrentEnv().
+   * - Derived once at boot from process.env.NV_ENV (bootstrap-only allowed).
    * - Frozen for the lifetime of the process; envReloader reuses the same value.
    */
   envLabel: string;
@@ -95,6 +94,9 @@ export type EnvBootstrapResult = {
    */
   rt: SvcRuntime;
 };
+
+/** env-service API version used during bootstrap (single source of truth). */
+const ENV_SERVICE_VERSION = 1;
 
 /** Minimal console-backed logger for SvcClient during bootstrap. */
 class BootstrapSvcClientLogger implements ISvcClientLogger {
@@ -130,12 +132,12 @@ class BootstrapEnvSvcResolver implements ISvcconfigResolver {
   public async resolveTarget(
     _env: string,
     slug: string,
-    version: number
+    _version: number
   ): Promise<SvcTarget> {
     if (slug !== "env-service") {
       throw new Error(
         `BOOTSTRAP_SVCCONFIG_RESOLVER_UNSUPPORTED_TARGET: This bootstrap resolver only supports slug="env-service". ` +
-          `Got slug="${slug}@v${version}". ` +
+          `Got slug="${slug}@v${_version}". ` +
           "Ops: ensure only env-service is called during envBootstrap, or replace this resolver with a full svcconfig-backed implementation."
       );
     }
@@ -187,7 +189,7 @@ class BootstrapEnvSvcResolver implements ISvcconfigResolver {
     return {
       baseUrl: origin,
       slug: "env-service",
-      version,
+      version: ENV_SERVICE_VERSION,
       isAuthorized: true,
     };
   }
@@ -300,6 +302,23 @@ export async function envBootstrap(
   // eslint-disable-next-line no-console
   console.log("[bootstrap] envBootstrap starting", { slug, version, posture });
 
+  // 0) Resolve current env label from process.env (bootstrap-only allowed).
+  let envLabel: string;
+  try {
+    envLabel = requireNonEmpty(
+      process.env.NV_ENV,
+      "BOOTSTRAP_NV_ENV_MISSING",
+      `NV_ENV is not set or empty for slug="${slug}", version=${version}. ` +
+        'Ops: set NV_ENV (example: "dev") in the service .env file before starting.'
+    );
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_ENV_LABEL_FAILED: Failed to resolve NV_ENV.",
+      err
+    );
+  }
+
   // 1) Construct SvcClient and SvcEnvClient
   let svcClient: SvcClient;
   try {
@@ -321,21 +340,7 @@ export async function envBootstrap(
 
   const envClient = new SvcEnvClient({ svcClient });
 
-  // 2) Resolve current env label (frozen)
-  let envLabel: string;
-  try {
-    envLabel = await envClient.getCurrentEnv({ slug, version });
-  } catch (err) {
-    fatal(
-      logFile,
-      "BOOTSTRAP_CURRENT_ENV_FAILED: Failed to resolve current logical env label for " +
-        `slug="${slug}", version=${version}. ` +
-        "Ops: ensure NV_ENV is set for this service before start.",
-      err
-    );
-  }
-
-  // 3) Fetch EnvServiceDto config bag
+  // 2) Fetch EnvServiceDto config bag
   let envBag: DtoBag<EnvServiceDto>;
   try {
     envBag = await envClient.getConfig({ env: envLabel, slug, version });
@@ -348,7 +353,7 @@ export async function envBootstrap(
     );
   }
 
-  // 4) Primary DTO = first item (no iterator loop drift)
+  // 3) Primary DTO = first item (no iterator loop drift)
   const first = envBag.items().next();
   const primary: EnvServiceDto | undefined = first.done
     ? undefined
@@ -362,7 +367,7 @@ export async function envBootstrap(
     );
   }
 
-  // 5) Configure REAL logger from envDto (no shims) and bind bootstrap context.
+  // 4) Configure REAL logger from envDto (no shims) and bind bootstrap context.
   try {
     setLoggerEnv(primary);
   } catch (err) {
@@ -386,10 +391,10 @@ export async function envBootstrap(
     );
   }
 
-  // 6) Enforce posture-derived rails (DB requirements only; WAL is cap-driven)
+  // 5) Enforce posture-derived rails (DB requirements only; WAL is cap-driven)
   enforcePostureRails(logFile, posture, envLabel, slug, version, primary);
 
-  // 7) Derive HTTP host/port
+  // 6) Derive HTTP host/port
   let host: string;
   let port: number;
   try {
@@ -416,7 +421,7 @@ export async function envBootstrap(
     );
   }
 
-  // 8) Build SvcRuntime (ADR-0080) from identity + EnvServiceDto + REAL logger
+  // 7) Build SvcRuntime (ADR-0080) from identity + EnvServiceDto + REAL logger
   let dbStateRaw: string;
   try {
     dbStateRaw = primary.getEnvVar("DB_STATE");
@@ -447,7 +452,7 @@ export async function envBootstrap(
       },
       primary, // DTO stays the source of truth
       log,
-      {} // caps are wired ONLY by AppBase (ADR-0084 posture rails + ADR-0080 caps model)
+      {} // caps are wired ONLY by AppBase
     );
   } catch (err) {
     fatal(
@@ -458,7 +463,7 @@ export async function envBootstrap(
     );
   }
 
-  // 9) Bag-based reloader: same envLabel, fresh bag each call.
+  // 8) Bag-based reloader: same envLabel, fresh bag each call.
   const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
     return envClient.getConfig({ env: envLabel, slug, version });
   };

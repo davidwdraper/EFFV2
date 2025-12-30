@@ -1,5 +1,4 @@
 // backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/toBag.user.test.ts
-
 /**
  * Docs:
  * - Build-a-test-guide (Handler-level test pattern)
@@ -19,165 +18,163 @@
  *     apply ctx["signup.userId"] via setIdOnce().
  *   • Sad path: missing ctx["signup.userId"] yields a precondition failure.
  *
- * ScenarioRunner contract:
- * - This module is discovered via HandlerTestModuleLoader using:
- *     indexRelativePath + handlerName = "toBag.user"
- * - It MUST:
- *   • export ToBagUserTest (canonical test class)
- *   • export getScenarios(), which returns an array of scenario definitions.
+ * Critical invariant (new world):
+ * - Tests must NOT construct controllers or runtimes.
+ * - Scenario ctx MUST inherit pipeline runtime ("rt") from StepIterator.
+ * - Handler execution MUST be production-shaped via deps.step.execute(ctx).
  */
 
-import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 import type { BagItemWire } from "@nv/shared/registry/RegistryBase";
-
 import { UserDtoRegistry } from "@nv/shared/dto/registry/user.dtoRegistry";
-import { ToBagUserHandler } from "./toBag.user";
 
 const TEST_USER_ID_V4 = "550e8400-e29b-41d4-a716-446655440000";
 
-/**
- * Canonical happy-path test:
- * - Used by handler.runTest() via ToBagUserTest.
- */
-export class ToBagUserTest extends HandlerTestBase {
-  public testId(): string {
-    return "auth.signup.toBag.user.happy";
-  }
+// ─────────────────────────────────────────────────────────────────────
+// ScenarioRunner entrypoint: getScenarios(deps)
+// ─────────────────────────────────────────────────────────────────────
 
-  public testName(): string {
-    return "auth.signup: ToBagUserHandler hydrates singleton UserDto bag and applies signup.userId";
-  }
+export async function getScenarios(deps: {
+  step: { handlerName: string; execute: (scenarioCtx: any) => Promise<void> };
+  makeScenarioCtx: (seed: {
+    requestId: string;
+    dtoType?: string;
+    op?: string;
+  }) => any;
+}) {
+  return [
+    {
+      id: "auth.signup.toBag.user.happy",
+      name: "auth.signup: ToBagUserHandler hydrates singleton UserDto bag and applies signup.userId",
+      shortCircuitOnFail: true,
+      expectedError: false,
+      async run() {
+        const ctx = deps.makeScenarioCtx({
+          requestId: "req-auth-signup-toBagUser-happy",
+          dtoType: "user",
+          op: "toBag.user",
+        });
 
-  protected expectedError(): boolean {
-    // Happy-path smoke: handlerStatus !== "error".
-    return false;
-  }
+        // Old tests used HandlerTestBase.makeCtx({ body: ... }).
+        // New world: seed directly onto scenario ctx.
+        ctx.set("body", {
+          items: [makeUserWireItem("0000001")],
+        });
 
-  protected async execute(): Promise<void> {
-    const ctx = this.makeCtx({
-      requestId: "req-auth-signup-toBagUser-happy",
-      dtoType: "user",
-      op: "toBag.user",
-      body: {
-        items: [makeUserWireItem("0000001")],
+        // Sign-up MOS: id is minted earlier in the pipeline; we seed it explicitly here.
+        ctx.set("signup.userId", TEST_USER_ID_V4);
+
+        await deps.step.execute(ctx);
+
+        // Assertions (tell it like it is)
+        const handlerStatus = ctx.get("handlerStatus");
+        if (String(handlerStatus ?? "") !== "ok") {
+          throw new Error(
+            `Expected handlerStatus="ok" but got "${String(
+              handlerStatus ?? ""
+            )}"`
+          );
+        }
+
+        const bag: any = ctx.get("bag");
+        if (!bag) {
+          throw new Error("Expected ctx['bag'] to be defined");
+        }
+
+        // Prefer items() iterator if present, otherwise fall back to backing array.
+        const iterable: Iterable<any> =
+          bag && typeof bag.items === "function"
+            ? (bag.items() as Iterable<any>)
+            : ((bag?._items ?? []) as Iterable<any>);
+
+        const items: any[] = Array.from(iterable);
+        if (items.length !== 1) {
+          throw new Error(
+            `Expected DtoBag to contain 1 item, got ${items.length}`
+          );
+        }
+
+        const userDto: any = items[0];
+        const dtoId =
+          userDto && typeof userDto.getId === "function"
+            ? userDto.getId()
+            : undefined;
+
+        if (String(dtoId ?? "") !== TEST_USER_ID_V4) {
+          throw new Error(
+            `Expected UserDto id="${TEST_USER_ID_V4}" but got "${String(
+              dtoId ?? ""
+            )}"`
+          );
+        }
+
+        return {
+          testId: "auth.signup.toBag.user.happy",
+          name: "auth.signup: ToBagUserHandler hydrates singleton UserDto bag and applies signup.userId",
+          outcome: "passed",
+          expectedError: false,
+          assertionCount: 4,
+          failedAssertions: [],
+          errorMessage: undefined,
+          durationMs: 0,
+          railsVerdict: undefined,
+          railsStatus: undefined,
+          railsHandlerStatus: undefined,
+          railsResponseStatus: undefined,
+        };
       },
-    });
+    },
+    {
+      id: "auth.signup.toBag.user.missingSignupUserId",
+      name: "auth.signup: ToBagUserHandler fails when signup.userId is missing",
+      shortCircuitOnFail: true,
+      expectedError: true,
+      async run() {
+        const ctx = deps.makeScenarioCtx({
+          requestId: "req-auth-signup-toBagUser-missingUserId",
+          dtoType: "user",
+          op: "toBag.user",
+        });
 
-    // Sign-up MOS: id is minted earlier in the pipeline; we seed it explicitly here.
-    ctx.set("signup.userId", TEST_USER_ID_V4);
+        ctx.set("body", {
+          items: [makeUserWireItem("0000002")],
+        });
 
-    await this.runHandler({
-      handlerCtor: ToBagUserHandler,
-      ctx,
-    });
+        // Intentionally DO NOT set ctx['signup.userId'] here.
 
-    // Handler rail only; HTTP status is interpreted by rails, not by this test.
-    const handlerStatus = ctx.get<string>("handlerStatus");
-    this.assertEq(
-      String(handlerStatus ?? ""),
-      "ok",
-      "handlerStatus should be 'ok' on happy path"
-    );
+        await deps.step.execute(ctx);
 
-    const bag: any = ctx.get("bag");
-    this.assertEq(String(bag != null), "true", "ctx['bag'] should be defined");
+        const handlerStatus = ctx.get("handlerStatus");
+        if (String(handlerStatus ?? "") !== "error") {
+          throw new Error(
+            `Expected handlerStatus="error" but got "${String(
+              handlerStatus ?? ""
+            )}"`
+          );
+        }
 
-    // Prefer items() iterator if present, otherwise fall back to backing array.
-    const iterable: Iterable<any> =
-      bag && typeof bag.items === "function"
-        ? (bag.items() as Iterable<any>)
-        : ((bag?._items ?? []) as Iterable<any>);
-
-    const items: any[] = Array.from(iterable);
-    this.assertEq(
-      String(items.length),
-      "1",
-      "DtoBag should contain exactly one UserDto"
-    );
-
-    const userDto: any = items[0];
-    const dtoId =
-      userDto && typeof userDto.getId === "function"
-        ? userDto.getId()
-        : undefined;
-
-    this.assertEq(
-      String(dtoId ?? ""),
-      TEST_USER_ID_V4,
-      "UserDto id should match ctx['signup.userId']"
-    );
-  }
-}
-
-/**
- * Sad-path scenario: missing signup.userId
- * - Valid wire bag
- * - NO signup.userId set on ctx
- * - Expects:
- *   • handlerStatus = "error"
- *   • Rails will interpret HTTP status; test does not assert numeric code.
- */
-export class ToBagUserMissingUserIdTest extends HandlerTestBase {
-  public testId(): string {
-    return "auth.signup.toBag.user.missingSignupUserId";
-  }
-
-  public testName(): string {
-    return "auth.signup: ToBagUserHandler fails when signup.userId is missing";
-  }
-
-  protected expectedError(): boolean {
-    // This scenario is explicitly an expected failure.
-    return true;
-  }
-
-  protected async execute(): Promise<void> {
-    const ctx = this.makeCtx({
-      requestId: "req-auth-signup-toBagUser-missingUserId",
-      dtoType: "user",
-      op: "toBag.user",
-      body: {
-        items: [makeUserWireItem("0000002")],
+        return {
+          testId: "auth.signup.toBag.user.missingSignupUserId",
+          name: "auth.signup: ToBagUserHandler fails when signup.userId is missing",
+          outcome: "passed",
+          expectedError: true,
+          assertionCount: 1,
+          failedAssertions: [],
+          errorMessage: undefined,
+          durationMs: 0,
+          railsVerdict: undefined,
+          railsStatus: undefined,
+          railsHandlerStatus: undefined,
+          railsResponseStatus: undefined,
+        };
       },
-    });
-
-    // Intentionally DO NOT set ctx['signup.userId'] here.
-
-    await this.runHandler({
-      handlerCtor: ToBagUserHandler,
-      ctx,
-    });
-
-    const handlerStatus = ctx.get<string>("handlerStatus");
-    this.assertEq(
-      String(handlerStatus ?? ""),
-      "error",
-      "handlerStatus should be 'error' when signup.userId is missing"
-    );
-
-    // Numeric HTTP status is interpreted once in the rails and recorded on
-    // HandlerTestDto (railsStatus). We do not assert it here at handler scope.
-  }
+    },
+  ];
 }
 
 // ─────────────────────────────────────────────────────────────────────
 // Shared helper: build User wire item via shared UserDtoRegistry
 // ─────────────────────────────────────────────────────────────────────
 
-/**
- * Builds a canonical User wire item for auth.signup tests:
- * - DTO is instantiated via the shared UserDtoRegistry (never via `new UserDto`).
- * - Fields are populated via DTO setters where available.
- * - JSON is produced via dto.toBody() and wrapped into a BagItemWire.
- *
- * Required per UserDto contract:
- * - givenName (letters/spaces only via normalizeRequiredName)
- * - lastName  (letters/spaces only via normalizeRequiredName)
- * - email     (validated via assertValidEmail)
- *
- * NOTE: Suffix for uniqueness is carried in email/phone, not in name fields,
- * because normalizeRequiredName rejects digits and other characters.
- */
 function makeUserWireItem(suffix: string): BagItemWire {
   const registry = new UserDtoRegistry();
   const dto: any = registry.newUserDto();
@@ -204,46 +201,4 @@ function makeUserWireItem(suffix: string): BagItemWire {
     type: "user",
     ...userJson,
   } as BagItemWire;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// ScenarioRunner entrypoint: getScenarios()
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * ScenarioRunner entrypoint:
- * - Two scenarios for this handler:
- *   • Happy path (no expected rail error).
- *   • Sad path (handler is expected to fail and test asserts that).
- *
- * Shape aligns with Build-a-test-guide:
- *   • id
- *   • name
- *   • shortCircuitOnFail
- *   • expectedError
- *   • async run() → returns HandlerTestResult from HandlerTestBase.run()
- */
-export async function getScenarios() {
-  return [
-    {
-      id: "auth.signup.toBag.user.happy",
-      name: "auth.signup: ToBagUserHandler hydrates singleton UserDto bag and applies signup.userId",
-      shortCircuitOnFail: true,
-      expectedError: false,
-      async run() {
-        const test = new ToBagUserTest();
-        return await test.run();
-      },
-    },
-    {
-      id: "auth.signup.toBag.user.missingSignupUserId",
-      name: "auth.signup: ToBagUserHandler fails when signup.userId is missing",
-      shortCircuitOnFail: true,
-      expectedError: true,
-      async run() {
-        const test = new ToBagUserMissingUserIdTest();
-        return await test.run();
-      },
-    },
-  ];
 }

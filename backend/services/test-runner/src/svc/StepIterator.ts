@@ -16,6 +16,10 @@
  * - Handler execution is production-shaped:
  *     new Handler(scenarioCtx, controller).run()
  *   NOT “reuse handler instance” and NOT “call protected execute()”.
+ *
+ * Virtual-server invariant:
+ * - Scenario ctx MUST inherit pipeline runtime ("rt") automatically.
+ * - Tests must not be SvcRuntime-aware.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -44,6 +48,15 @@ type LoggerLike = {
   warn?: (obj: unknown, msg?: string) => void;
   error?: (obj: unknown, msg?: string) => void;
 };
+
+function normalizeScenarios(dto: HandlerTestDto): any[] {
+  try {
+    const v = (dto as any)?.getScenarios?.();
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
 
 export class StepIterator {
   private readonly handlerTestRegistry = new HandlerTestDtoRegistry();
@@ -77,11 +90,38 @@ export class StepIterator {
         {
           event: "stepIterator_missing_target",
           index: indexRelativePath,
-          stepCount: steps.length,
+          stepCount: Array.isArray(steps) ? steps.length : "(not-array)",
           testRunId,
         },
         msg
       );
+      throw new Error(msg);
+    }
+
+    // Fail-fast: StepIterator contract requires a resolved array of handler steps.
+    // This is a pipeline export/loader problem, not “0 steps”.
+    if (!Array.isArray(steps)) {
+      const msg = [
+        "StepIterator.execute: pipeline steps are not an array.",
+        `Index: ${indexRelativePath}`,
+        `Target: ${target.serviceSlug}@${target.serviceVersion}`,
+        `Typeof(steps): ${typeof steps}`,
+        "Ops: fix IndexLoader / pipeline index export shape so resolved.steps is a HandlerBase[] array.",
+      ].join(" ");
+
+      log?.error?.(
+        {
+          event: "stepIterator_steps_not_array",
+          index: indexRelativePath,
+          targetServiceSlug: target.serviceSlug,
+          targetServiceVersion: target.serviceVersion,
+          stepsType: typeof steps,
+          hasSteps: !!steps,
+          testRunId,
+        },
+        msg
+      );
+
       throw new Error(msg);
     }
 
@@ -200,6 +240,7 @@ export class StepIterator {
           if (seed.dtoType) sc.set("dtoType", seed.dtoType);
           if (seed.op) sc.set("op", seed.op);
 
+          // Inherit pipeline metadata for visibility.
           try {
             sc.set("pipeline", ctx.get("pipeline"));
           } catch {}
@@ -215,9 +256,14 @@ export class StepIterator {
               ctx.get("testRunner.index.relativePath")
             );
           } catch {}
-
           try {
             sc.set("log", ctx.get("log"));
+          } catch {}
+
+          // Virtual-server invariant: inherit runtime ("rt") automatically.
+          // Tests must not seed rt; the rails do it.
+          try {
+            sc.set("rt", ctx.get("rt"));
           } catch {}
 
           return sc;
@@ -289,12 +335,14 @@ export class StepIterator {
           break;
       }
 
-      const scenarios = handlerTestDto.getScenarios();
+      // IMPORTANT: getScenarios() may be undefined in some failure paths.
+      const scenarios = normalizeScenarios(handlerTestDto);
+
       let errMsg: string | undefined;
       let errStack: string | undefined;
 
       if (scenarios.length) {
-        const bad = scenarios.find((s) => s.status === "Failed");
+        const bad = scenarios.find((s) => s?.status === "Failed");
         if (bad) {
           errMsg = bad.errorMessage;
           errStack = bad.errorStack;

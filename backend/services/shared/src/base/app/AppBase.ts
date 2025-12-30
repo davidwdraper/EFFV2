@@ -23,12 +23,13 @@
  * - Service posture is the single source of truth for boot rails.
  * - Baseline capability surface is wired here (lazy factories).
  * - Handlers must access capabilities through rt only.
+ * - EnvServiceDto lives ONLY inside rt (no sidecar copies).
  */
 
 import type { Express } from "express";
 import express = require("express");
 import { ServiceBase } from "@nv/shared/base/ServiceBase";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
 import { SvcClient, type ISvcClientTransport } from "@nv/shared/s2s/SvcClient";
@@ -64,14 +65,13 @@ export type AppBaseCtor = {
 
   posture: SvcPosture;
 
-  envDto: EnvServiceDto;
-  envReloader: () => Promise<EnvServiceDto>;
-  edgeMode?: EdgeMode;
-
   /**
    * SvcRuntime is MANDATORY (ADR-0080).
+   * rt owns EnvServiceDto (no sidecar envDto in AppBase).
    */
   rt: SvcRuntime;
+
+  edgeMode?: EdgeMode;
 
   /**
    * Explicit-only S2S mocking switch (tests only).
@@ -89,9 +89,6 @@ export abstract class AppBase extends ServiceBase {
   private _booted = false;
 
   protected readonly version: number;
-  private _envDto: EnvServiceDto;
-  private readonly envReloader: () => Promise<EnvServiceDto>;
-
   protected readonly posture: SvcPosture;
   protected readonly checkDb: boolean;
 
@@ -106,8 +103,6 @@ export abstract class AppBase extends ServiceBase {
     super({ service: opts.service });
 
     this.version = opts.version;
-    this._envDto = opts.envDto;
-    this.envReloader = opts.envReloader;
 
     this.posture = opts.posture;
     this.checkDb = isDbPosture(this.posture);
@@ -125,9 +120,10 @@ export abstract class AppBase extends ServiceBase {
     }
     this.rt = opts.rt;
 
-    // envLabel is owned by rt. envDto must agree.
+    // envLabel is owned by rt. envDto inside rt must agree (if dto exposes env label).
     try {
-      const dtoEnv = (this._envDto.getEnvLabel() ?? "").trim();
+      const dto = this.rt.getSvcEnvDto();
+      const dtoEnv = (dto.getEnvLabel?.() ?? "").trim();
       const rtEnv = (this.rt.getEnv() ?? "").trim();
       if (!rtEnv) {
         throw new Error(
@@ -155,49 +151,70 @@ export abstract class AppBase extends ServiceBase {
     this.wireRuntimeCaps();
   }
 
+  /**
+   * Canonical boot helpers (reduce per-service drift).
+   *
+   * Invariants:
+   * - Caller provides a factory that constructs the concrete AppBase subclass.
+   * - This helper owns the "new + await boot()" ceremony.
+   * - Typed: returns the concrete subclass type.
+   */
+  public static async bootAppBase<T extends AppBase>(
+    factory: () => T
+  ): Promise<T> {
+    const app = factory();
+    await app.boot();
+    return app;
+  }
+
+  /**
+   * Canonical HTTP app wrapper (ServiceEntrypoint expects { app }).
+   *
+   * Invariants:
+   * - Does NOT call listen(). Entrypoint owns listen().
+   * - Ensures the AppBase is booted before returning Express instance.
+   */
+  public static async bootExpress<T extends AppBase>(
+    factory: () => T
+  ): Promise<{ app: Express }> {
+    const appBase = await AppBase.bootAppBase(factory);
+    return { app: appBase.instance };
+  }
+
   protected initApp(): void {
     this.app.disable("x-powered-by");
   }
 
-  /**
-   * Capability wiring hook (ADR-0080 / ADR-0084).
-   *
-   * Default:
-   * - Wire the baseline S2S capability into rt under the canonical key
-   *   "s2s.svcClient".
-   *
-   * Override:
-   * - Services may opt into additional caps by overriding and calling helpers.
-   *
-   * Rules:
-   * - No fallbacks.
-   * - Factories MUST either return a concrete instance or throw.
-   */
   protected wireRuntimeCaps(): void {
-    // Canonical S2S cap key used by handlers (e.g., "s2s.svcClient").
-    const capKey = "s2s.svcClient";
+    // 1) S2S client (service-scoped)
+    const s2sCapKey = "s2s.svcClient";
 
-    this.rt.setCapFactory(capKey, (_rt) => {
+    this.rt.setCapFactory(s2sCapKey, (_rt) => {
       return createSvcClientForApp({
         service: this.service,
         version: this.version,
         log: this.log,
-        envDto: this._envDto,
+        envDto: this.rt.getSvcEnvDto(),
         s2sMocksEnabled: this.s2sMocksEnabled,
         transport: this.svcClientTransport,
       });
     });
 
-    // Compile-safe, deterministic breadcrumb: proves which AppBase build is running.
     this.log.info(
       {
         event: "rt_cap_factory_wired",
-        capKey,
+        capKey: s2sCapKey,
         service: this.service,
         version: this.version,
       },
       "wired runtime cap factory"
     );
+
+    // 2) Prompts client (depends on S2S client)
+    this.wirePromptsClientCap();
+
+    // 3) Env reloader (depends on S2S client) — updates rt only
+    this.wireEnvReloadCap();
   }
 
   protected wirePromptsClientCap(): void {
@@ -213,6 +230,49 @@ export abstract class AppBase extends ServiceBase {
     });
   }
 
+  protected wireEnvReloadCap(): void {
+    this.rt.setCapFactory("env.reloader", async (rt) => {
+      const svcClient = rt.getCap<SvcClient>("s2s.svcClient");
+      const envClient = new SvcEnvClient({ svcClient });
+
+      // Always reload the SAME logical env label (frozen in rt identity).
+      const bag = await envClient.getConfig({
+        env: rt.getEnv(),
+        slug: this.service,
+        version: this.version,
+      });
+
+      const first = bag.items().next();
+      const primary: EnvServiceDto | undefined = first.done
+        ? undefined
+        : first.value;
+
+      if (!primary) {
+        throw new Error(
+          `ENV_RELOAD_EMPTY_BAG: env-service returned an empty bag for env="${rt.getEnv()}", slug="${
+            this.service
+          }", version=${this.version}. ` +
+            "Ops: ensure the env-service config document exists and contains at least one EnvServiceDto."
+        );
+      }
+
+      // Single source of truth update: ONLY rt holds EnvServiceDto.
+      rt.setEnvDto(primary);
+
+      return primary;
+    });
+
+    this.log.info(
+      {
+        event: "rt_cap_factory_wired",
+        capKey: "env.reloader",
+        service: this.service,
+        version: this.version,
+      },
+      "wired runtime cap factory"
+    );
+  }
+
   public isInfraService(): boolean {
     return false;
   }
@@ -226,7 +286,7 @@ export abstract class AppBase extends ServiceBase {
   }
 
   public getSvcEnv(): EnvServiceDto {
-    return this._envDto;
+    return this.rt.getSvcEnvDto();
   }
 
   public getLogger(): IBoundLogger {
@@ -285,9 +345,11 @@ export abstract class AppBase extends ServiceBase {
   }
 
   private maybeEnableProcessEnvGuard(): void {
+    const dto = this.rt.getSvcEnvDto();
+
     let raw: string | null = null;
     try {
-      raw = this._envDto.getEnvVar("NV_PROCESS_ENV_GUARD");
+      raw = dto.getEnvVar("NV_PROCESS_ENV_GUARD");
     } catch {
       raw = null;
     }
@@ -311,9 +373,9 @@ export abstract class AppBase extends ServiceBase {
     facilitatorBaseUrl: string;
     ttlMs: number;
   } {
-    const facilitatorBaseUrl = this._envDto
-      .getEnvVar("SVCFACILITATOR_BASE_URL")
-      .trim();
+    const dto = this.rt.getSvcEnvDto();
+
+    const facilitatorBaseUrl = dto.getEnvVar("SVCFACILITATOR_BASE_URL").trim();
     if (!facilitatorBaseUrl) {
       throw new Error(
         `ROUTE_POLICY_FACILITATOR_BASE_URL_MISSING: routePolicyGate enabled for service="${this.service}" but SVCFACILITATOR_BASE_URL is missing/empty. ` +
@@ -321,7 +383,7 @@ export abstract class AppBase extends ServiceBase {
       );
     }
 
-    const rawTtl = this._envDto.getEnvVar("ROUTE_POLICY_TTL_MS").trim();
+    const rawTtl = dto.getEnvVar("ROUTE_POLICY_TTL_MS").trim();
     const n = Number(rawTtl);
     if (!Number.isFinite(n) || n <= 0) {
       throw new Error(
@@ -382,12 +444,13 @@ export abstract class AppBase extends ServiceBase {
         app: this.app,
         base,
         log: this.log,
+        rt: this.rt,
         envLabel: this.getEnvLabel(),
-        getEnvDto: () => this._envDto,
-        setEnvDto: (fresh) => {
-          this._envDto = fresh;
+        envReloader: async () => {
+          const fn =
+            this.rt.getCap<() => Promise<EnvServiceDto>>("env.reloader");
+          return await fn();
         },
-        envReloader: this.envReloader,
       });
     }
 
@@ -453,7 +516,7 @@ export abstract class AppBase extends ServiceBase {
       component: this.constructor.name,
       envLabel: this.getEnvLabel(),
       checkDb: this.checkDb,
-      envDto: this._envDto,
+      envDto: this.rt.getSvcEnvDto(),
       log: this.log,
       registry: this.getDtoRegistry(),
     };

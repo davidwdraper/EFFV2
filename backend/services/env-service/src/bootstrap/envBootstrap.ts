@@ -17,13 +17,14 @@
  *     • root slug: "service-root"
  *     • service slug: opts.slug (e.g., "env-service")
  * - Return:
+ *     • rt: constructed from envLabel + DB_STATE + merged EnvServiceDto
  *     • envBag: merged DtoBag<EnvServiceDto>
- *     • envReloader: () => Promise<DtoBag<EnvServiceDto>> (same merge logic)
- *     • host/port: derived from vars in the merged bag.
+ *     • envReloader: () => Promise<DtoBag<EnvServiceDto>> (same merge logic; updates rt in-place)
+ *     • host/port: derived via rt vars
  *
  * Rules:
  * - No naked DTOs cross this boundary: always a DtoBag in/out.
- * - Only console + filesystem logging until shared logger is up.
+ * - Bootstrap may read process.env ONLY here (env-service special-case).
  * - Canonical DB keys for ALL services (including env-service) are:
  *     • NV_MONGO_URI
  *     • NV_MONGO_DB
@@ -39,6 +40,12 @@ import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { EnvConfigReader } from "../svc/EnvConfigReader";
+import {
+  setLoggerEnv,
+  getLogger,
+  type IBoundLogger,
+} from "@nv/shared/logger/Logger";
+import { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 type BootstrapOpts = {
   slug: string;
@@ -47,6 +54,7 @@ type BootstrapOpts = {
 };
 
 export type EnvBootstrapResult = {
+  rt: SvcRuntime;
   envBag: DtoBag<EnvServiceDto>;
   envReloader: () => Promise<DtoBag<EnvServiceDto>>;
   host: string;
@@ -120,11 +128,11 @@ function requireInfraDbName(mongoDb: string, logFile: string): string {
  *     • rootBag: (envLabel, slug="service-root", version)
  *     • svcBag : (envLabel, slug=opts.slug,      version)
  * - Uses EnvConfigReader.mergeEnvBags(rootBag, svcBag) to get a single merged bag.
- * - Derives HTTP host/port from the DTO inside the merged bag.
- * - Returns:
- *     • envBag        (merged root+service config, or single-source config)
- *     • envReloader   (same two-step read + merge, fresh each call)
- *     • host/port
+ * - Constructs SvcRuntime from:
+ *     • envLabel (process.env bootstrap-only)
+ *     • DB_STATE (from merged EnvServiceDto)
+ *     • merged EnvServiceDto (lives inside rt only)
+ * - Derives HTTP host/port via rt vars.
  */
 export async function envBootstrap(
   opts: BootstrapOpts
@@ -203,7 +211,7 @@ export async function envBootstrap(
     );
   }
 
-  // 5) Derive listener host/port from the *first* DTO in the merged bag (internal only).
+  // 5) Select primary DTO (internal only) and construct rt.
   let primary: EnvServiceDto | undefined;
   for (const dto of envBag as unknown as Iterable<EnvServiceDto>) {
     primary = dto;
@@ -218,29 +226,66 @@ export async function envBootstrap(
     );
   }
 
-  let host: string;
-  let port: number;
+  // Logger is strict and requires SvcEnv; once primary exists we can bind it.
+  let log: IBoundLogger;
   try {
-    host = primary.getEnvVar("NV_HTTP_HOST");
-    const rawPort = primary.getEnvVar("NV_HTTP_PORT");
-    const n = Number(rawPort);
-    if (!Number.isFinite(n) || n <= 0) {
-      throw new Error(
-        `NV_HTTP_PORT must be a positive integer, got "${rawPort}". ` +
-          "Ops: fix this value in the env-service config document."
-      );
-    }
-    port = Math.trunc(n);
+    setLoggerEnv(primary);
+    log = getLogger({
+      service: slug,
+      component: "envBootstrap",
+      event: "bootstrap",
+      envLabel,
+      version,
+    }).bind({ bootstrapDb: mongoDb });
   } catch (err) {
     fatal(
       logFile,
-      "BOOTSTRAP_HTTP_CONFIG_INVALID: Failed to derive NV_HTTP_HOST/NV_HTTP_PORT " +
-        "from env-service configuration. Ops: ensure these keys exist and are valid (after root/service merge).",
+      "BOOTSTRAP_LOGGER_INIT_FAILED: Failed to initialize shared logger from merged EnvServiceDto. " +
+        "Ops: ensure LOG_LEVEL exists in env-service config (root/service merge) and is valid.",
       err
     );
   }
 
-  // 6) DtoBag-based reloader: same reader, same logic, fresh bag.
+  let rt: SvcRuntime;
+  try {
+    // DB_STATE comes from EnvServiceDto (ADR-0074). env-service bootstrap DB remains _infra and is NOT decorated.
+    const dbState = primary.getEnvVar("DB_STATE");
+
+    rt = new SvcRuntime(
+      {
+        serviceSlug: slug,
+        serviceVersion: version,
+        env: envLabel,
+        dbState,
+      },
+      primary,
+      log
+    );
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_RT_INIT_FAILED: Failed to construct SvcRuntime for env-service. " +
+        "Ops: ensure DB_STATE exists in env-service config (root/service merge) and is non-empty.",
+      err
+    );
+  }
+
+  // 6) Derive listener host/port via rt vars (single source of truth).
+  let host: string;
+  let port: number;
+  try {
+    host = rt.getVar("NV_HTTP_HOST");
+    port = rt.getPositiveIntVar("NV_HTTP_PORT");
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_HTTP_CONFIG_INVALID: Failed to derive NV_HTTP_HOST/NV_HTTP_PORT via SvcRuntime. " +
+        "Ops: ensure these keys exist and are valid (after root/service merge).",
+      err
+    );
+  }
+
+  // 7) DtoBag-based reloader: same reader, same logic, fresh bag. Updates rt in-place.
   const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
     const nextEnvLabel = requireEnv("NV_ENV", logFile);
 
@@ -256,18 +301,33 @@ export async function envBootstrap(
       version,
     }).catch(() => new DtoBag<EnvServiceDto>([]));
 
-    return EnvConfigReader.mergeEnvBags(nextRootBag, nextSvcBag);
+    const nextBag = EnvConfigReader.mergeEnvBags(nextRootBag, nextSvcBag);
+
+    let nextPrimary: EnvServiceDto | undefined;
+    for (const dto of nextBag as unknown as Iterable<EnvServiceDto>) {
+      nextPrimary = dto;
+      break;
+    }
+
+    if (!nextPrimary) {
+      throw new Error(
+        `ENV_RELOAD_EMPTY_BAG: merged EnvServiceDto bag was empty for env="${nextEnvLabel}", slug="${slug}", version=${version}. ` +
+          "Ops: ensure config docs exist and merge produces at least one EnvServiceDto."
+      );
+    }
+
+    // Single source of truth: update rt only.
+    rt.setEnvDto(nextPrimary);
+    return nextBag;
   };
 
-  // eslint-disable-next-line no-console
-  console.log("[bootstrap] envBootstrap complete", {
-    host,
-    port,
-    envLabel,
-    bootstrapDb: mongoDb,
-  });
+  log.info(
+    { host, port, envLabel, bootstrapDb: mongoDb, rt: rt.describe() },
+    "envBootstrap complete"
+  );
 
   return {
+    rt,
     envBag,
     envReloader,
     host,

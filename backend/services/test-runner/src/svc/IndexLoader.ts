@@ -12,6 +12,10 @@
  *
  * Scope:
  * - Resolution only. No execution.
+ *
+ * Dist-first invariant:
+ * - indexAbsolutePath MUST point to the runtime-compiled dist index (.js).
+ * - This loader MUST be CommonJS-safe in production.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -30,7 +34,9 @@ export class IndexLoader {
   }> {
     const { indexAbsolutePath, ctx, app } = input;
 
-    const mod = await import(indexAbsolutePath);
+    // CommonJS-safe load (dist-first). Do NOT rely on TS or ESM behavior.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod: any = require(indexAbsolutePath);
 
     if (typeof mod.createController !== "function") {
       throw new Error(

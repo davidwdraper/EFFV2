@@ -77,10 +77,18 @@ class UserApp extends AppBase {
   }
 }
 
+/**
+ * Dist-first target-app factory (for test-runner).
+ *
+ * Returns the AppBase instance so the runner can pass it into
+ * pipeline createController(app) without booting a second HTTP listener.
+ */
+export async function createAppBase(opts: CreateAppOptions): Promise<AppBase> {
+  return await AppBase.bootAppBase(() => new UserApp(opts));
+}
+
 export default async function createApp(
   opts: CreateAppOptions
 ): Promise<{ app: Express }> {
-  const app = new UserApp(opts);
-  await app.boot();
-  return { app: app.instance };
+  return await AppBase.bootExpress(() => new UserApp(opts));
 }

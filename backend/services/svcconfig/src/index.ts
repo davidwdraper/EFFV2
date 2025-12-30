@@ -3,36 +3,40 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0014 (ServiceEntrypoint vs ServiceBase)
+ *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
- * Purpose:
- * - Pure orchestration entrypoint for the svcconfig service.
- * - Delegates boot to shared runServiceEntrypoint() rails.
+ * Purpose (template):
+ * - Pure orchestration entrypoint for a CRUD-style svcconfig service.
+ * - Delegates config loading + runtime construction to envBootstrap() via ServiceEntrypoint.
+ * - Declares identity + posture only; avoids per-service bootstrap drift.
+ *
+ * Invariants:
+ * - No process.env reads here (bootstrap owns it).
+ * - Posture is the single source of truth (no checkDb duplication).
+ * - No EnvServiceDto unwrapping logic in service code (shared entrypoint owns it).
  */
 
-import createApp from "./app";
 import { runServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
+import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
+import createApp from "./app";
 
+// ———————————————————————————————————————————————————————————————
+// Service identity
+// ———————————————————————————————————————————————————————————————
 const SERVICE_SLUG = "svcconfig";
 const SERVICE_VERSION = 1;
 
-// eslint-disable-next-line no-console
-console.info("[!!!!!boot check] env snapshot", {
-  service: "svcconfig",
-  NV_ENV: process.env.NV_ENV,
-  NV_ENV_SERVICE_URL: process.env.NV_ENV_SERVICE_URL,
-});
+// Template posture: CRUD entity services are DB owners.
+const POSTURE: SvcPosture = "db";
 
-void runServiceEntrypoint({
-  slug: SERVICE_SLUG,
-  version: SERVICE_VERSION,
-
-  // ADR-0084: posture is the single source of truth for boot rails.
-  // svcconfig is DB-backed -> posture "db". (No checkDb flag.)
-  posture: "db",
-
-  // logFileBasename is optional; will default to "svcconfig-startup-error.log"
-  createApp,
-});
+(async () => {
+  await runServiceEntrypoint({
+    slug: SERVICE_SLUG,
+    version: SERVICE_VERSION,
+    posture: POSTURE,
+    createApp,
+  });
+})();

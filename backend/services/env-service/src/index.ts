@@ -120,10 +120,8 @@ function mergeVarsFromBag(bag: unknown): Record<string, string> {
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
       posture: POSTURE,
-      envLabel,
-      envDto: primary,
-      envReloader: async () => firstDtoFromBag(await envReloader()),
       rt,
+      envReloader: async () => firstDtoFromBag(await envReloader()),
     });
 
     app.listen(port, host, () => {

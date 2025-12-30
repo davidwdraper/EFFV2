@@ -29,13 +29,6 @@ import createApp from "./app";
 const SERVICE_SLUG = "xxx";
 const SERVICE_VERSION = 1;
 
-// eslint-disable-next-line no-console
-console.info("[!!!!!boot check] env snapshot", {
-  service: "xxx",
-  NV_ENV: process.env.NV_ENV,
-  NV_ENV_SERVICE_URL: process.env.NV_ENV_SERVICE_URL,
-});
-
 // Template posture: CRUD entity services are DB owners.
 const POSTURE: SvcPosture = "db";
 

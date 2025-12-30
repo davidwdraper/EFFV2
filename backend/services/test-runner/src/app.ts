@@ -6,23 +6,30 @@
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
+ *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
+ * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
  *
  * Invariants:
  * - Posture is the single source of truth (no checkDb duplication).
  * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
  * - Runtime caps are wired ONLY in AppBase (single source of truth).
+ * - EnvServiceDto lives ONLY inside rt (no sidecar envDto passed to AppBase).
  */
 
 import type { Express, Router } from "express";
 import { AppBase } from "@nv/shared/base/app/AppBase";
 import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
+import { setLoggerEnv } from "@nv/shared/logger/Logger";
+
+import { Registry } from "./registry/Registry";
 import { buildTestRunnerRouter } from "./routes/test-runner.route";
 
 export type CreateAppOptions = {
@@ -30,6 +37,10 @@ export type CreateAppOptions = {
   version: number;
   posture: SvcPosture;
 
+  /**
+   * Legacy (kept for compatibility with shared entrypoint callers).
+   * Do NOT pass these into AppBase; EnvServiceDto is owned by rt.
+   */
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 
@@ -37,15 +48,24 @@ export type CreateAppOptions = {
 };
 
 class TestRunnerApp extends AppBase {
+  private readonly registry: Registry;
+
   constructor(opts: CreateAppOptions) {
+    // Logger is strict and must bind to SvcEnv before any log usage.
+    setLoggerEnv(opts.rt.getSvcEnvDto());
+
     super({
       service: opts.slug,
       version: opts.version,
       posture: opts.posture,
-      envDto: opts.envDto,
-      envReloader: opts.envReloader,
       rt: opts.rt,
     });
+
+    this.registry = new Registry();
+  }
+
+  public override getDtoRegistry(): IDtoRegistry {
+    return this.registry;
   }
 
   protected override mountRoutes(): void {

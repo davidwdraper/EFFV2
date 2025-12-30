@@ -18,10 +18,7 @@
  * - Posture is the single source of truth (no checkDb duplication).
  * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
  * - Runtime caps are wired ONLY in AppBase (single source of truth).
- *
- * Test-runner integration (dist-first):
- * - Export createAppBase(opts) so test-runner can instantiate the target
- *   service AppBase in-process (virtual server per pipeline) without TS.
+ * - EnvServiceDto lives ONLY inside rt (no sidecar envDto passed to AppBase).
  */
 
 import type { Express, Router } from "express";
@@ -30,6 +27,7 @@ import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
+import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
 import { Registry } from "./registry/Registry";
 import { buildXxxRouter } from "./routes/xxx.route";
@@ -39,6 +37,10 @@ export type CreateAppOptions = {
   version: number;
   posture: SvcPosture;
 
+  /**
+   * Legacy (kept for compatibility with shared entrypoint callers).
+   * Do NOT pass these into AppBase; EnvServiceDto is owned by rt.
+   */
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 
@@ -49,12 +51,13 @@ class XxxApp extends AppBase {
   private readonly registry: Registry;
 
   constructor(opts: CreateAppOptions) {
+    // Logger is strict and must bind to SvcEnv before any log usage.
+    setLoggerEnv(opts.rt.getSvcEnvDto());
+
     super({
       service: opts.slug,
       version: opts.version,
       posture: opts.posture,
-      envDto: opts.envDto,
-      envReloader: opts.envReloader,
       rt: opts.rt,
     });
 

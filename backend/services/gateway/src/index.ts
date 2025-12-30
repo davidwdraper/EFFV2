@@ -30,7 +30,7 @@ const SERVICE_SLUG = "gateway";
 const SERVICE_VERSION = 1;
 
 // Template posture: CRUD entity services are DB owners.
-const POSTURE: SvcPosture = "mos";
+const POSTURE: SvcPosture = "gateway";
 
 (async () => {
   await runServiceEntrypoint({

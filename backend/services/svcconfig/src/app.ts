@@ -13,75 +13,61 @@
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
  * - Owns the concrete per-service Registry and exposes it via AppBase.getDtoRegistry().
- * - For svcconfig, DB/index ensure is ON via posture="db" (no checkDb flag).
+ *
+ * Invariants:
+ * - Posture is the single source of truth (no checkDb duplication).
+ * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
+ * - Runtime caps are wired ONLY in AppBase (single source of truth).
+ * - EnvServiceDto lives ONLY inside rt (no sidecar envDto passed to AppBase).
  */
 
 import type { Express, Router } from "express";
-import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
 
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
 import { Registry } from "./registry/Registry";
 import { buildSvcconfigRouter } from "./routes/svcconfig.route";
-import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
-type CreateAppOptions = {
+export type CreateAppOptions = {
   slug: string;
   version: number;
+  posture: SvcPosture;
+
   /**
-   * Logical environment label for this process (e.g., "dev", "stage", "prod").
-   * NOTE: Convenience only; AppBase must source envLabel from rt (ADR-0080 Commit 2).
+   * Legacy (kept for compatibility with shared entrypoint callers).
+   * Do NOT pass these into AppBase; EnvServiceDto is owned by rt.
    */
-  envLabel: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 
-  /**
-   * SvcRuntime is mandatory (ADR-0080).
-   * Constructed by ServiceEntrypoint after envDto is available.
-   */
   rt: SvcRuntime;
 };
 
 class SvcconfigApp extends AppBase {
-  /** Concrete per-service DTO registry (explicit, no barrels). */
   private readonly registry: Registry;
 
   constructor(opts: CreateAppOptions) {
-    // Initialize logger first so all subsequent boot logs have proper context.
-    setLoggerEnv(opts.envDto);
+    // Logger is strict and must bind to SvcEnv before any log usage.
+    setLoggerEnv(opts.rt.getSvcEnvDto());
 
     super({
       service: opts.slug,
       version: opts.version,
-
-      // ADR-0084: posture is the single source of truth for boot rails.
-      // svcconfig is DB-backed -> posture "db" (AppBase derives checkDb internally).
-      posture: "db",
-
-      envDto: opts.envDto,
-      envReloader: opts.envReloader,
-
+      posture: opts.posture,
       rt: opts.rt,
     });
 
     this.registry = new Registry();
   }
 
-  // adr0082-infra-service-health-boot-check
-  // Ensure infra health checking does not run for svcconfig.
-  public override isInfraService(): boolean {
-    return true;
-  }
-
-  /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
   public override getDtoRegistry(): IDtoRegistry {
     return this.registry;
   }
 
-  /** Mount service routes as one-liners under the versioned base. */
   protected override mountRoutes(): void {
     const base = this.healthBasePath(); // `/api/<slug>/v<version>`
     if (!base) {
@@ -91,7 +77,10 @@ class SvcconfigApp extends AppBase {
 
     const r: Router = buildSvcconfigRouter(this);
     this.app.use(base, r);
-    this.log.info({ base, env: this.getEnvLabel() }, "routes mounted");
+    this.log.info(
+      { base, env: this.getEnvLabel(), posture: this.posture },
+      "routes mounted"
+    );
   }
 }
 

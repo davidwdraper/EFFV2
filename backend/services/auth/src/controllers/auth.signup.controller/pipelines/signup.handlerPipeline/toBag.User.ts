@@ -1,5 +1,4 @@
 // backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/toBag.user.ts
-
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -22,6 +21,10 @@
  * - Auth MOS owns id minting. UserDto never invents ids.
  * - ctx["signup.userId"] MUST be set by BuildSignupUserIdHandler.
  * - setIdOnce() enforces UUIDv4, immutability, and consistency across User/UserAuth.
+ *
+ * Test contract:
+ * - This handler does NOT import its sidecar test module.
+ * - The test-runner loads "<handlerName>.test.js" from dist via require().
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -30,10 +33,6 @@ import type { BagItemWire } from "@nv/shared/registry/RegistryBase";
 
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { UserDto, type UserJson } from "@nv/shared/dto/user.dto";
-
-// Test-runner wiring
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { ToBagUserTest } from "./toBag.user.test";
 
 export class ToBagUserHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -47,15 +46,6 @@ export class ToBagUserHandler extends HandlerBase {
    */
   protected override handlerName(): string {
     return "toBag.user";
-  }
-
-  /**
-   * Canonical handler-test entrypoint:
-   * - Bridges this handler to its primary smoke test class.
-   * - ScenarioRunner separately uses getScenarios() from the test module.
-   */
-  public override async runTest(): Promise<HandlerTestResult | undefined> {
-    return this.runSingleTest(ToBagUserTest);
   }
 
   protected handlerPurpose(): string {
@@ -171,7 +161,7 @@ export class ToBagUserHandler extends HandlerBase {
         return;
       }
 
-      // 2) Hydrate DTO + enforce id immutability
+      // 2) Hydrate DTO + enforce id immuts
       try {
         const dto = UserDto.fromBody(item as Partial<UserJson>, {
           validate: true,

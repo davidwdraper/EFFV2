@@ -26,10 +26,9 @@
  *   on the ctx bus so downstream transactional handlers (rollback, audit, etc.)
  *   can reason about whether the user record was created.
  *
- * Testing:
- * - This handler opts into test-runner by overriding runTest().
- * - The sibling *.test.ts file remains an implementation detail imported here.
- * - If runTest() is removed, test-runner will naturally skip this handler.
+ * Testing (dist-first sidecar):
+ * - This handler does NOT import its sibling *.test.ts module.
+ * - The test-runner loads "<handlerName>.test.js" from dist via require().
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -38,10 +37,6 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
-
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-
-import { S2sUserCreateTest } from "./s2s.user.create.test";
 
 type UserBag = DtoBag<UserDto>;
 
@@ -67,10 +62,6 @@ export class S2sUserCreateHandler extends HandlerBase {
 
   protected handlerName(): string {
     return "s2s.user.create";
-  }
-
-  public override async runTest(): Promise<HandlerTestResult | undefined> {
-    return this.runSingleTest(S2sUserCreateTest);
   }
 
   protected override async execute(): Promise<void> {
@@ -151,8 +142,7 @@ export class S2sUserCreateHandler extends HandlerBase {
       let svcClient: SvcClient | undefined;
       try {
         svcClient = this.rt.tryCap<SvcClient>("s2s.svcClient");
-      } catch (err) {
-        // tryCap can throw if the factory throws (build failed).
+      } catch {
         svcClient = undefined;
       }
 

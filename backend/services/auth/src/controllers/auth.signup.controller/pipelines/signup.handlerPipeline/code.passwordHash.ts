@@ -22,14 +22,16 @@
  *   • ctx["signup.hashAlgo"]
  *   • ctx["signup.hashParamsJson"]
  *   • ctx["signup.passwordCreatedAt"]
+ *
+ * Testing (dist-first sidecar):
+ * - This handler does NOT import its sibling *.test.ts module.
+ * - The test-runner loads "<handlerName>.test.js" from dist via require().
  */
 
 import * as crypto from "crypto";
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { CodePasswordHashTest } from "./code.passwordHash.test";
 
 type ScryptFn = (
   password: string,
@@ -50,23 +52,11 @@ export class CodePasswordHashHandler extends HandlerBase {
     return "code.passwordHash";
   }
 
-  /**
-   * Test hook used by the handler-level test harness.
-   * Uses the same scenario entrypoint the test-runner relies on.
-   */
-  public override async runTest(): Promise<HandlerTestResult | undefined> {
-    return this.runSingleTest(CodePasswordHashTest);
-  }
-
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
 
     this.log.debug(
-      {
-        event: "execute_enter",
-        handler: this.constructor.name,
-        requestId,
-      },
+      { event: "execute_enter", handler: this.constructor.name, requestId },
       "auth.signup.generatePasswordHash: enter handler"
     );
 
@@ -83,10 +73,7 @@ export class CodePasswordHashHandler extends HandlerBase {
             "Dev: ensure CodeExtractPasswordHandler ran and stored the password under ctx['signup.passwordClear'].",
           stage: "inputs.passwordClear",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
+          origin: { file: __filename, method: "execute" },
           issues: [{ hasPasswordClear: !!passwordClear }],
           logMessage:
             "auth.signup.generatePasswordHash: ctx['signup.passwordClear'] missing before hashing.",
@@ -95,13 +82,8 @@ export class CodePasswordHashHandler extends HandlerBase {
         return;
       }
 
-      // Do NOT log the password itself.
       this.log.debug(
-        {
-          event: "hash_start",
-          handler: this.constructor.name,
-          requestId,
-        },
+        { event: "hash_start", handler: this.constructor.name, requestId },
         "auth.signup.generatePasswordHash: deriving salt and hash"
       );
 
@@ -168,17 +150,8 @@ export class CodePasswordHashHandler extends HandlerBase {
             "Ops: check Node crypto availability and container entropy sources.",
           stage: "hash.derive",
           requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              algo: "scrypt",
-              keyLen: 64,
-              message,
-            },
-          ],
+          origin: { file: __filename, method: "execute" },
+          issues: [{ algo: "scrypt", keyLen: 64, message }],
           rawError: err,
           logMessage:
             "auth.signup.generatePasswordHash: scrypt-based password hashing failed.",
@@ -186,7 +159,6 @@ export class CodePasswordHashHandler extends HandlerBase {
         });
       }
     } catch (err) {
-      // Catch-all for unexpected bugs inside the handler.
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_hash_handler_failure",
@@ -194,10 +166,7 @@ export class CodePasswordHashHandler extends HandlerBase {
           "Unhandled exception while deriving the password hash. Ops: inspect logs for requestId and stack frame.",
         stage: "execute.unhandled",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         rawError: err,
         logMessage:
           "auth.signup.generatePasswordHash: unhandled exception in handler.",

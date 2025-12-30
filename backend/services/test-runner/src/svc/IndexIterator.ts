@@ -7,6 +7,8 @@
  * - ADR-0042 (HandlerContext Bus — KISS)
  * - ADR-0041 (Per-route controllers; single-purpose handlers)
  * - LDD-38/39 (StepIterator Micro-Contract + VNext Orchestration)
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ * - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
  * - Procedural outer loop that:
@@ -21,10 +23,17 @@
  * - Runtime (SvcRuntime) is per pipeline (“virtual server”), not per handler.
  * - Scenario contexts MUST inherit the pipeline runtime automatically.
  *
- * Reliability invariant (writer):
- * - Mint a HandlerTestDto EARLY for pipeline boot (“code.pipelineBoot”).
- * - Always finalize the record in a finally block so failures are persisted even
- *   when boot dies before StepIterator starts.
+ * Reliability invariant (rails):
+ * - Pipeline boot is NOT a handler test. If boot fails, that is a rails failure
+ *   (virtual server could not boot), not a failed handler test.
+ * - Therefore: DO NOT mint/persist a HandlerTestDto for boot.
+ *
+ * Virtual-server construction (Approach 1):
+ * - Build the target service SvcRuntime using shared envBootstrap (prod-shaped),
+ *   then call the target service’s dist app factory using full CreateAppOptions.
+ * - DO NOT pass “old-world” params into AppBase (envDto/envReloader); those may
+ *   still exist in service CreateAppOptions for compatibility, but AppBase must
+ *   source all config from rt.
  */
 
 import * as path from "path";
@@ -33,26 +42,27 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { HandlerContext as HandlerContextCtor } from "@nv/shared/http/handlers/HandlerContext";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 
-import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
-import type { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+import { envBootstrap } from "@nv/shared/bootstrap/envBootstrap";
+import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { DtoBag } from "@nv/shared/dto/DtoBag";
+import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 
 import { IndexLoader } from "./IndexLoader";
 import { StepIterator } from "./StepIterator";
-import type {
-  HandlerTestRecord,
-  TestHandlerTerminalStatus,
-  TestRunWriter,
-} from "./TestRunWriter";
 import type { HandlerTestModuleLoader } from "./ScenarioRunner";
+import type { TestRunWriter } from "./TestRunWriter";
 
 export type IndexFile = {
   absolutePath: string;
   relativePath: string;
 };
 
-export class IndexIterator {
-  private readonly handlerTestRegistry = new HandlerTestDtoRegistry();
+type Target = {
+  serviceSlug: string;
+  serviceVersion: number;
+};
 
+export class IndexIterator {
   public constructor(
     private readonly moduleLoader: HandlerTestModuleLoader // injected for ScenarioRunner use
   ) {}
@@ -86,155 +96,85 @@ export class IndexIterator {
 
       const log = ctx.get<any>("log");
 
-      // ─────────────────────────────────────────────────────────────
-      // Pipeline-boot record: persisted even if boot explodes early.
-      // ─────────────────────────────────────────────────────────────
-      const bootDto: HandlerTestDto =
-        this.handlerTestRegistry.newHandlerTestDto();
-      bootDto.ensureId();
-
-      bootDto.setIndexRelativePathOnce(index.relativePath);
-      bootDto.setPipelineNameOnce(label);
-
-      bootDto.setHandlerNameOnce("code.pipelineBoot");
-      bootDto.setHandlerPurposeOnce(
-        "Load target AppBase, load pipeline index (controller+steps), and seed SvcRuntime onto pipeline ctx."
-      );
-
-      bootDto.setTargetServiceSlugOnce(target.serviceSlug);
-      bootDto.setTargetServiceVersionOnce(target.serviceVersion);
-
-      bootDto.setRequestId(ctx.get<string>("requestId"));
-      bootDto.markStarted();
-
-      // Freeze write-once header now that it has been seeded.
-      bootDto.freezeWriteOnce();
-
-      const bootRecord: HandlerTestRecord = {
-        dto: bootDto,
-        testRunId: input.testRunId,
-        stepIndex: -1,
-        stepCount: -1,
-        indexRelativePath: index.relativePath,
-        handlerName: "code.pipelineBoot",
-        targetServiceSlug: target.serviceSlug,
-        targetServiceVersion: target.serviceVersion,
-        rawResult: null,
-      };
-
       let targetApp: AppBase | undefined;
       let controller: any;
       let steps: any[] | undefined;
 
       try {
-        await input.writer.startHandlerTest(bootRecord);
+        // 1) Load the TARGET service app (dist-first), building a real virtual server (rt) via envBootstrap.
+        targetApp = await this.loadTargetServiceApp({
+          rootDir: input.rootDir,
+          target,
+          log,
+        });
 
-        // Record an explicit boot scenario so finalizeFromScenarios derives a real status.
-        await bootDto.runScenario(
-          "pipeline boot",
-          async () => {
-            // 1) Load the TARGET service app (dist-first).
-            targetApp = await this.loadTargetServiceApp({
-              rootDir: input.rootDir,
-              serviceSlug: target.serviceSlug,
-              serviceVersion: target.serviceVersion,
-            });
+        // 2) Resolve controller + steps from index.ts using TARGET app (not test-runner app).
+        const resolved = await loader.execute({
+          indexAbsolutePath: index.absolutePath,
+          ctx,
+          app: targetApp,
+        });
 
-            // 2) Resolve controller + steps from index.ts using TARGET app (not test-runner app).
-            const resolved = await loader.execute({
-              indexAbsolutePath: index.absolutePath,
-              ctx,
-              app: targetApp,
-            });
+        controller = resolved.controller;
+        steps = resolved.steps;
 
-            controller = resolved.controller;
-            steps = resolved.steps;
+        // Fail-fast: loader must return an array of handler step instances.
+        if (!Array.isArray(steps)) {
+          const msg = [
+            "IndexIterator: IndexLoader returned a non-array steps value.",
+            `Index: ${index.relativePath}`,
+            `Target: ${target.serviceSlug}@${target.serviceVersion}`,
+            `Typeof(steps): ${typeof steps}`,
+            "Ops: fix IndexLoader / pipeline index export shape so resolved.steps is a HandlerBase[] array.",
+          ].join(" ");
 
-            // Fail-fast: loader must return an array of handler step instances.
-            if (!Array.isArray(steps)) {
-              const msg = [
-                "IndexIterator: IndexLoader returned a non-array steps value.",
-                `Index: ${index.relativePath}`,
-                `Target: ${target.serviceSlug}@${target.serviceVersion}`,
-                `Typeof(steps): ${typeof steps}`,
-                "Ops: fix IndexLoader / pipeline index export shape so resolved.steps is a HandlerBase[] array.",
-              ].join(" ");
+          log?.error?.(
+            {
+              event: "index_loader_steps_not_array",
+              index: index.relativePath,
+              targetServiceSlug: target.serviceSlug,
+              targetServiceVersion: target.serviceVersion,
+              stepsType: typeof steps,
+              hasSteps: !!steps,
+              controller: controller?.constructor?.name,
+            },
+            msg
+          );
 
-              log?.error?.(
-                {
-                  event: "index_loader_steps_not_array",
-                  index: index.relativePath,
-                  targetServiceSlug: target.serviceSlug,
-                  targetServiceVersion: target.serviceVersion,
-                  stepsType: typeof steps,
-                  hasSteps: !!steps,
-                  controller: controller?.constructor?.name,
-                },
-                msg
-              );
+          throw new Error(msg);
+        }
 
-              throw new Error(msg);
-            }
-
-            log?.info?.(
-              {
-                event: "index_loaded",
-                index: index.relativePath,
-                stepCount: steps.length,
-                controller: controller?.constructor?.name,
-                targetServiceSlug: target.serviceSlug,
-                targetServiceVersion: target.serviceVersion,
-                targetApp: (targetApp as any)?.constructor?.name,
-              },
-              "Pipeline index loaded"
-            );
-
-            // 3) Virtual-server runtime: seed onto pipeline ctx so scenario ctx can inherit it.
-            const rt =
-              typeof (controller as any)?.getRuntime === "function"
-                ? (controller as any).getRuntime()
-                : undefined;
-
-            if (!rt) {
-              throw new Error(
-                "SvcRuntime is required: ControllerBase.getRuntime() returned null/undefined. Ops: ensure the service is SvcRuntime'd before wiring handlers."
-              );
-            }
-
-            ctx.set("rt", rt);
-
-            return {
-              status: "Passed" as const,
-              details: {
-                event: "pipeline_boot_ok",
-                indexRelativePath: index.relativePath,
-                targetServiceSlug: target.serviceSlug,
-                targetServiceVersion: target.serviceVersion,
-              },
-            };
+        log?.info?.(
+          {
+            event: "index_loaded",
+            index: index.relativePath,
+            stepCount: steps.length,
+            controller: controller?.constructor?.name,
+            targetServiceSlug: target.serviceSlug,
+            targetServiceVersion: target.serviceVersion,
+            targetApp: (targetApp as any)?.constructor?.name,
           },
-          { rethrowOnRailError: false }
+          "Pipeline index loaded"
         );
+
+        // 3) Virtual-server runtime: seed onto pipeline ctx so scenario ctx can inherit it.
+        const rt =
+          typeof (controller as any)?.getRuntime === "function"
+            ? (controller as any).getRuntime()
+            : undefined;
+
+        if (!rt) {
+          throw new Error(
+            "SvcRuntime is required: ControllerBase.getRuntime() returned null/undefined. Ops: ensure the service is SvcRuntime'd before wiring handlers."
+          );
+        }
+
+        ctx.set("rt", rt);
       } catch (err: any) {
         const msg =
           err instanceof Error ? err.message : String(err ?? "unknown error");
 
-        // Ensure a failure scenario is persisted, but do NOT let it suppress the throw.
-        try {
-          await bootDto.runScenario(
-            "pipeline boot failure",
-            async () => {
-              // Throwing here records the scenario as Failed; we swallow so we can finalize+write.
-              throw err;
-            },
-            { rethrowOnRailError: false }
-          );
-        } catch {
-          // runScenario is configured to swallow; this catch is purely defensive.
-        }
-
-        bootDto.setNotes(msg);
-
+        // Rails failure: pipeline boot did not complete (virtual server could not boot).
         log?.error?.(
           {
             event: "pipeline_boot_failed",
@@ -243,64 +183,12 @@ export class IndexIterator {
             targetServiceVersion: target.serviceVersion,
             errorMessage: msg,
           },
-          "IndexIterator: pipeline boot failed"
+          "IndexIterator: pipeline boot failed (rails failure, not a handler test failure)"
         );
 
-        // Re-throw after we persist the boot record in finally.
         throw err;
-      } finally {
-        // Always finalize and persist the boot DTO, even when boot fails.
-        try {
-          if (!bootDto.getFinishedAt()) {
-            bootDto.setFinishedAt(new Date().toISOString());
-          }
-
-          // Derive status from scenarios (single truth).
-          bootDto.finalizeFromScenarios();
-
-          bootRecord.terminalStatus = this.mapTerminalStatus(
-            bootDto.getStatus()
-          );
-
-          // Include errorMessage/errorStack if the first failed scenario captured it.
-          const scenarios = bootDto.getScenarios();
-          const bad = Array.isArray(scenarios)
-            ? scenarios.find((s: any) => s && s.status === "Failed")
-            : undefined;
-
-          if (bad) {
-            bootRecord.errorMessage =
-              typeof bad.errorMessage === "string"
-                ? bad.errorMessage
-                : undefined;
-            bootRecord.errorStack =
-              typeof bad.errorStack === "string" ? bad.errorStack : undefined;
-          }
-
-          await input.writer.finalizeHandlerTest(bootRecord);
-        } catch (finalizeErr: any) {
-          const msg =
-            finalizeErr instanceof Error
-              ? finalizeErr.message
-              : String(finalizeErr ?? "unknown error");
-
-          log?.error?.(
-            {
-              event: "pipeline_boot_record_finalize_failed",
-              index: index.relativePath,
-              targetServiceSlug: target.serviceSlug,
-              targetServiceVersion: target.serviceVersion,
-              errorMessage: msg,
-            },
-            "IndexIterator: failed to finalize pipeline-boot test record"
-          );
-
-          // At this point we cannot safely recover; surface the error.
-          throw finalizeErr;
-        }
       }
 
-      // If boot failed, we threw above (after persisting boot record).
       // From here on, targetApp/controller/steps/rt are guaranteed.
       await stepIterator.execute({
         ctx,
@@ -312,21 +200,6 @@ export class IndexIterator {
         target,
         app: targetApp as AppBase,
       });
-    }
-  }
-
-  private mapTerminalStatus(status: string): TestHandlerTerminalStatus {
-    switch (status) {
-      case "Passed":
-        return "Passed";
-      case "Failed":
-        return "Failed";
-      case "Skipped":
-        return "Skipped";
-      case "Started":
-      case "TestError":
-      default:
-        return "TestError";
     }
   }
 
@@ -349,10 +222,7 @@ export class IndexIterator {
     return ctx;
   }
 
-  private deriveTargetFromIndex(indexRelativePath: string): {
-    serviceSlug: string;
-    serviceVersion: number;
-  } {
+  private deriveTargetFromIndex(indexRelativePath: string): Target {
     const match = indexRelativePath.match(/backend\/services\/([^/]+)\//);
     const slug = match?.[1] ?? "unknown";
 
@@ -362,20 +232,63 @@ export class IndexIterator {
     };
   }
 
+  private extractPrimaryEnvDto(envBag: DtoBag<EnvServiceDto>): EnvServiceDto {
+    const it = envBag.items();
+    const first = it.next();
+    const primary: EnvServiceDto | undefined = first.done
+      ? undefined
+      : first.value;
+
+    if (!primary) {
+      throw new Error(
+        "BOOTSTRAP_ENV_BAG_EMPTY_AT_TEST_RUNNER: No EnvServiceDto in envBag after envBootstrap. " +
+          "Ops: verify env-service has a config record for this service (env@slug@version)."
+      );
+    }
+
+    return primary;
+  }
+
+  private adaptEnvReloader(
+    envReloader: () => Promise<DtoBag<EnvServiceDto>>
+  ): () => Promise<EnvServiceDto> {
+    return async (): Promise<EnvServiceDto> => {
+      const bag = await envReloader();
+      const it = bag.items();
+      const first = it.next();
+      const primary: EnvServiceDto | undefined = first.done
+        ? undefined
+        : first.value;
+
+      if (!primary) {
+        throw new Error(
+          "ENV_RELOADER_EMPTY_BAG_AT_TEST_RUNNER: envReloader returned an empty bag. " +
+            "Ops: ensure the service’s EnvServiceDto config record still exists in env-service."
+        );
+      }
+
+      return primary;
+    };
+  }
+
   /**
-   * Dist-first target App loader.
+   * Approach 1:
+   * - Build the target service SvcRuntime using envBootstrap (prod-shaped)
+   * - Call the target service dist app factory with full CreateAppOptions
    *
-   * Key addition:
-   * - When calling app factories, ALWAYS pass minimal identity:
-   *     { slug, version }
-   *   because many service apps require it during construction.
+   * Contract requirements for dist/app.js (template-driven):
+   * - MUST export createAppBase(opts) for runner use (no HTTP listen).
+   * - MUST export posture (or POSTURE) so runner can apply posture rails in envBootstrap.
+   *
+   * If either is missing, we fail-fast with concrete Ops guidance.
    */
   private async loadTargetServiceApp(input: {
     rootDir: string;
-    serviceSlug: string;
-    serviceVersion: number;
+    target: Target;
+    log?: any;
   }): Promise<AppBase> {
-    const { rootDir, serviceSlug, serviceVersion } = input;
+    const { rootDir, target, log } = input;
+    const { serviceSlug, serviceVersion } = target;
 
     if (!rootDir || !serviceSlug || serviceSlug === "unknown") {
       throw new Error(
@@ -395,58 +308,83 @@ export class IndexIterator {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mod: any = require(appJs);
 
-    const identity = { slug: serviceSlug, version: serviceVersion };
+    const posture: SvcPosture | undefined =
+      (mod?.POSTURE as SvcPosture | undefined) ??
+      (mod?.posture as SvcPosture | undefined);
 
-    let candidate: any;
-
-    // 1) createAppBase(opts) + createApp(appBase)
-    if (
-      typeof mod?.createAppBase === "function" &&
-      typeof mod?.createApp === "function"
-    ) {
-      const base = await Promise.resolve(mod.createAppBase(identity));
-      candidate = mod.createApp(base);
-      candidate = await Promise.resolve(candidate);
-    }
-
-    // 2) createApp(opts)
-    if (!candidate && typeof mod?.createApp === "function") {
-      candidate = await Promise.resolve(mod.createApp(identity));
-    }
-
-    // 3) default factory: default(opts)
-    if (!candidate && typeof mod?.default === "function") {
-      candidate = await Promise.resolve(mod.default(identity));
-    }
-
-    // 4) default instance
-    if (!candidate && mod?.default && typeof mod.default === "object") {
-      candidate = mod.default;
-    }
-
-    // 5) named instance
-    if (!candidate && mod?.app) {
-      candidate = mod.app;
-    }
-
-    if (!candidate) {
+    if (!posture) {
+      const exportedKeys = mod ? Object.keys(mod).sort().join(",") : "";
       throw new Error(
-        `IndexIterator.loadTargetServiceApp: "${appJs}" did not export a supported app factory/instance`
+        [
+          "TEST_RUNNER_TARGET_POSTURE_MISSING: target dist/app.js did not export POSTURE (or posture).",
+          `Target: ${serviceSlug}@${serviceVersion}`,
+          `Module: ${appJs}`,
+          `Exports: [${exportedKeys}]`,
+          "Ops/Dev: patch the template so every service dist/app.js exports POSTURE, then re-clone services.",
+          "Rationale: envBootstrap must enforce posture-derived boot rails to construct the virtual server (rt) correctly.",
+        ].join(" ")
       );
     }
 
-    if (typeof candidate.getLogger !== "function") {
+    if (typeof mod?.createAppBase !== "function") {
       const exportedKeys = mod ? Object.keys(mod).sort().join(",") : "";
-      const ctorName = candidate?.constructor?.name ?? typeof candidate;
-
       throw new Error(
         [
-          "IndexIterator.loadTargetServiceApp: loaded target app does not implement getLogger().",
-          `Target: ${serviceSlug}`,
+          "TEST_RUNNER_TARGET_CREATE_APP_BASE_MISSING: target dist/app.js did not export createAppBase(opts).",
+          `Target: ${serviceSlug}@${serviceVersion}`,
+          `Module: ${appJs}`,
+          `Exports: [${exportedKeys}]`,
+          "Ops/Dev: patch the template so every service exports createAppBase(opts) for runner use (no HTTP listener), then re-clone services.",
+        ].join(" ")
+      );
+    }
+
+    // Build a prod-shaped virtual server (rt) for the target service.
+    const { envLabel, envBag, envReloader, rt } = await envBootstrap({
+      slug: serviceSlug,
+      version: serviceVersion,
+      posture,
+      // Optional: let envBootstrap pick its default log file; runner just surfaces errors.
+    });
+
+    const envDto = this.extractPrimaryEnvDto(envBag);
+    const envReloaderForApp = this.adaptEnvReloader(envReloader);
+
+    // Full CreateAppOptions for the target service.
+    // NOTE: envDto/envReloader are legacy fields that may still exist in service options;
+    // they MUST NOT be passed into AppBase ctor by the service (rt owns env).
+    const opts = {
+      slug: serviceSlug,
+      version: serviceVersion,
+      posture,
+      envLabel, // convenience only (legacy); rt is the source of truth
+      envDto,
+      envReloader: envReloaderForApp,
+      rt,
+    };
+
+    log?.info?.(
+      {
+        event: "virtual_server_built",
+        targetServiceSlug: serviceSlug,
+        targetServiceVersion: serviceVersion,
+        posture,
+        envLabel,
+      },
+      "Test-runner: constructed virtual server runtime (rt) via envBootstrap"
+    );
+
+    const candidate = await Promise.resolve(mod.createAppBase(opts));
+
+    if (!candidate || typeof candidate.getLogger !== "function") {
+      const ctorName = candidate?.constructor?.name ?? typeof candidate;
+      throw new Error(
+        [
+          "IndexIterator.loadTargetServiceApp: createAppBase(opts) did not return a real AppBase.",
+          `Target: ${serviceSlug}@${serviceVersion}`,
           `Module: ${appJs}`,
           `Candidate: ${ctorName}`,
-          `Exports: [${exportedKeys}]`,
-          "Ops: ensure dist/app.js returns a real AppBase from createAppBase(opts)+createApp(base), createApp(opts), or default(opts).",
+          "Ops/Dev: ensure createAppBase returns an AppBase instance (booted via AppBase.bootAppBase).",
         ].join(" ")
       );
     }

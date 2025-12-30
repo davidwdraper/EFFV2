@@ -21,14 +21,16 @@
  * Outputs (ctx on success):
  * - "signup.passwordClear": string   (NOT logged anywhere)
  * - "handlerStatus": "ok"
+ *
+ * Test contract:
+ * - This handler does NOT import its sidecar test module.
+ * - The test-runner loads "<handlerName>.test.js" from dist via require().
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
 import { ValidatePassword } from "@nv/shared/security/PasswordValidator";
-import { CodeExtractPasswordTest } from "./code.extractPassword.test";
 
 export class CodeExtractPasswordHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -41,15 +43,6 @@ export class CodeExtractPasswordHandler extends HandlerBase {
 
   protected override handlerName(): string {
     return "code.extractPassword";
-  }
-
-  /**
-   * Canonical handler-test entrypoint:
-   * - Bridges this handler to its primary smoke test class.
-   * - ScenarioRunner separately uses getScenarios() from the test module.
-   */
-  public override async runTest(): Promise<HandlerTestResult | undefined> {
-    return this.runSingleTest(CodeExtractPasswordTest);
   }
 
   protected override async execute(): Promise<void> {

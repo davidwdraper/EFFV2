@@ -50,6 +50,10 @@
  *   DB transaction concern.
  * - Only runs meaningfully when both userCreateStatus.ok === true and
  *   userAuthCreateStatus.ok === true; otherwise it no-ops.
+ *
+ * Testing (dist-first sidecar):
+ * - This handler does NOT import its sibling *.test.ts module.
+ * - The test-runner loads "<handlerName>.test.js" from dist via require().
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -65,10 +69,6 @@ import {
   type TokenResult,
 } from "@nv/shared/security/MintProvider";
 import { KmsJwtSigner } from "@nv/shared/security/KmsJwtSigner";
-
-// Test harness wiring
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { MintUserAuthTokenHappyScenario } from "./code.mintUserAuthToken.test";
 
 // Status summaries from upstream handlers
 type UserCreateStatus =
@@ -95,14 +95,6 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
     return "code.mintUserAuthToken";
   }
 
-  /**
-   * Test hook used by the handler-level test harness:
-   * - Uses the same scenario entrypoint as the test-runner (CodeMintUserAuthTokenTest).
-   */
-  public override async runTest(): Promise<HandlerTestResult | undefined> {
-    return this.runSingleTest(MintUserAuthTokenHappyScenario);
-  }
-
   protected handlerPurpose(): string {
     return "Mint a client-facing auth JWT for a successfully created user and user-auth pair in the signup MOS pipeline.";
   }
@@ -121,10 +113,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
     // If the upstream operations did not succeed, this handler is a no-op.
     if (!userCreateStatus || userCreateStatus.ok !== true) {
       this.log.debug(
-        {
-          event: "mint_skip_user_not_ok",
-          requestId,
-        },
+        { event: "mint_skip_user_not_ok", requestId },
         "auth.signup.mintUserAuthToken: userCreateStatus not ok — skipping mint"
       );
       return;
@@ -132,10 +121,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
 
     if (!userAuthCreateStatus || userAuthCreateStatus.ok !== true) {
       this.log.debug(
-        {
-          event: "mint_skip_user_auth_not_ok",
-          requestId,
-        },
+        { event: "mint_skip_user_auth_not_ok", requestId },
         "auth.signup.mintUserAuthToken: userAuthCreateStatus not ok — skipping mint"
       );
       return;
@@ -151,10 +137,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
           "Dev: ensure BuildSignupUserIdHandler runs and persists signup.userId on the ctx bus.",
         stage: "preconditions.userId",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         issues: [{ hasUserId: !!userId }],
         logMessage:
           "auth.signup.mintUserAuthToken: missing signup.userId; cannot mint token",
@@ -186,7 +169,6 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
       if (!tokenProvider) {
         const algRaw = this.getVar("KMS_JWT_ALG", true);
 
-        // Runtime guard to satisfy both TS and Ops
         if (
           algRaw !== "RS256" &&
           algRaw !== "RS384" &&
@@ -295,10 +277,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
           "Ops: inspect KMS_* vars, NV_ISSUER, NV_AUTH_TOKEN_* vars in env-service for this service.",
         stage: "mint.env_config",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         issues: [{ env: envLabel ?? null }],
         rawError: err,
         logMessage:
@@ -361,9 +340,6 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
         },
         "auth.signup.mintUserAuthToken: mint ok"
       );
-
-      // On success we intentionally do NOT touch handlerStatus.
-      // Persistence has already succeeded; minting is an edge concern.
     } catch (err) {
       this.failWithError({
         httpStatus: 500,
@@ -374,10 +350,7 @@ export class CodeMintUserAuthTokenHandler extends HandlerBase {
           "and network/IAM access to the KMS key. Existing records are valid, but the client did not receive a token.",
         stage: "mint.provider_getToken",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
+        origin: { file: __filename, method: "execute" },
         issues: [{ sub: userId, aud, env: envLabel ?? null }],
         rawError: err,
         logMessage:

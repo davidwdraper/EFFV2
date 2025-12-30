@@ -26,6 +26,9 @@
  *   (e.g., "http://127.0.0.1:4020").
  * - warmEnv() remains available for explicit boot-time preloads, but is never
  *   invoked from resolveTarget().
+ *
+ * Invariants:
+ * - No process.env reads: baseUrl is injected by the caller (AppBase wiring).
  */
 
 import { DtoBag } from "../dto/DtoBag";
@@ -44,6 +47,13 @@ type WireBagJson = {
 
 type SvcconfigResolverOptions = {
   logger: ISvcClientLogger;
+
+  /**
+   * Base URL for the *svcconfig* service (REQUIRED; absolute URL).
+   * Example: "http://127.0.0.1:4020"
+   */
+  svcconfigBaseUrl: string;
+
   /**
    * TTL in milliseconds for each entry.
    * Typical dev value: 5000–30000 ms.
@@ -61,28 +71,24 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     this.log = opts.logger;
     this.ttlMs = opts.ttlMs;
 
-    const raw = process.env.NV_SVCCONFIG_URL;
-    const baseUrl = typeof raw === "string" ? raw.trim() : "";
+    const baseUrl = (opts.svcconfigBaseUrl ?? "").trim();
 
     if (!baseUrl) {
       throw new Error(
-        "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is not set or empty. " +
-          'Ops: set NV_SVCCONFIG_URL to the base URL of svcconfig (e.g., "http://svcconfig.internal:4020") ' +
-          "before enabling S2S calls."
+        "SvcconfigResolverWithCache: svcconfigBaseUrl is required and empty. " +
+          'Ops: set NV_SVCCONFIG_URL in env-service (e.g., "http://127.0.0.1:4020").'
       );
     }
 
     // Fail-fast if the URL is malformed; no localhost fallbacks.
     try {
-      // Just to validate; we still store the trimmed string.
-      // Any malformed value should abort boot.
       // eslint-disable-next-line no-new
       new URL(baseUrl);
     } catch (err) {
       const msg =
-        "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is not a valid absolute URL. " +
+        "SvcconfigResolverWithCache: svcconfigBaseUrl is not a valid absolute URL. " +
         'Ops: set NV_SVCCONFIG_URL to a full base URL for svcconfig (e.g., "http://svcconfig.internal:4020").';
-      this.log.error("svcconfigResolver.invalidNvSvcconfigUrl", {
+      this.log.error("svcconfigResolver.invalidBaseUrl", {
         baseUrl,
         error: err instanceof Error ? err.message : String(err),
         hint: msg,
@@ -98,10 +104,6 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     });
   }
 
-  // ────────────────────────────────────────────────────────────
-  // ISvcconfigResolver
-  // ────────────────────────────────────────────────────────────
-
   public async resolveTarget(
     env: string,
     slug: string,
@@ -109,10 +111,8 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
   ): Promise<SvcTarget> {
     const key = this.makeKey(env, slug, version);
 
-    // 1) First attempt: read from cache
     let bag = this.readFromCache(key);
 
-    // 2) On miss: load just this key from svcconfig, then re-read cache
     if (!bag) {
       this.log.debug("svcconfigResolver.cacheMiss", { env, slug, version });
 
@@ -134,13 +134,9 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
         };
       }
 
-      // Re-read from cache to follow the explicit flow:
-      //   readFromCache → loadCacheItem → readFromCache
       bag = this.readFromCache(key);
 
       if (!bag) {
-        // Extremely defensive: we *just* put it; if we still can't see it,
-        // fall back to dto → SvcTarget without cache.
         this.log.error("svcconfigResolver.cachePutOrReadFailed", {
           env,
           slug,
@@ -168,23 +164,11 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       };
     }
 
-    // 3) Touch entry to reset TTL
     this.cache.putBag(key, bag);
 
     return this.toSvcTarget(dto, env);
   }
 
-  // ────────────────────────────────────────────────────────────
-  // Cache warm / HTTP against svcconfig
-  // ────────────────────────────────────────────────────────────
-
-  /**
-   * Warm the cache for a given environment by calling:
-   *   GET /api/svcconfig/v1/svcconfig/listAll?env=<env>
-   *
-   * Intended for boot-time / ops-triggered warmups on the gateway.
-   * NOT used from resolveTarget().
-   */
   public async warmEnv(env: string): Promise<void> {
     const url = `${
       this.baseUrl
@@ -196,7 +180,6 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       method: "GET",
       headers: {
         accept: "application/json",
-        // Identify the caller so svcconfig listAll can apply gateway-specific filters.
         "x-service-name": "gateway",
       },
     });
@@ -254,29 +237,15 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     });
   }
 
-  // ────────────────────────────────────────────────────────────
-  // Internal helpers
-  // ────────────────────────────────────────────────────────────
-
   private makeKey(env: string, slug: string, version: number): DtoCacheKey {
     return `${env}:${slug}:${version}`;
   }
 
   private readFromCache(key: DtoCacheKey): DtoBag<SvcconfigDto> | undefined {
     const bag = this.cache.getBag(key);
-    return bag ?? undefined; // normalize null → undefined
+    return bag ?? undefined;
   }
 
-  /**
-   * Single-key load from svcconfig:
-   *   GET /api/svcconfig/v1/svcconfig/s2s-route?env=&slug=&majorVersion=
-   *
-   * On success:
-   * - Puts the resulting SvcconfigDto into the cache under its (env, slug, majorVersion) key.
-   * - Returns the DTO.
-   *
-   * On "no rows" it returns undefined; callers treat that as NOT_FOUND.
-   */
   private async loadCacheItemFromSvcconfig(
     env: string,
     slug: string,
@@ -395,9 +364,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     slug: string,
     version: number
   ): SvcconfigDto | undefined {
-    for (const dto of bag as unknown as Iterable<SvcconfigDto>) {
-      return dto;
-    }
+    for (const dto of bag as unknown as Iterable<SvcconfigDto>) return dto;
 
     this.log.error("svcconfigResolver.emptyCachedBag", {
       env,
@@ -408,14 +375,6 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     return undefined;
   }
 
-  /**
-   * Convert SvcconfigDto into a SvcTarget with:
-   * - baseUrl: protocol/host derived strictly from NV_SVCCONFIG_URL; port from targetPort.
-   * - isAuthorized: based on isEnabled + isS2STarget.
-   *
-   * Any malformed NV_SVCCONFIG_URL will have already caused a hard failure
-   * in the constructor or here via parseBaseUrlHost().
-   */
   private toSvcTarget(dto: SvcconfigDto, env: string): SvcTarget {
     const slug = dto.slug;
     const version = dto.majorVersion;
@@ -482,13 +441,6 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     };
   }
 
-  /**
-   * Strictly parse NV_SVCCONFIG_URL to derive protocol/hostname.
-   *
-   * Invariants:
-   * - No fallbacks to 127.0.0.1 or "http:".
-   * - Any malformed value is treated as a fatal configuration error.
-   */
   private parseBaseUrlHost(): { protocol: string; hostname: string } {
     try {
       const u = new URL(this.baseUrl);
@@ -497,7 +449,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
 
       if (!protocol || !hostname) {
         const msg =
-          "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is malformed; missing protocol or hostname. " +
+          "SvcconfigResolverWithCache: svcconfigBaseUrl is malformed; missing protocol or hostname. " +
           'Ops: set NV_SVCCONFIG_URL to a full base URL for svcconfig (e.g., "http://svcconfig.internal:4020").';
         this.log.error("svcconfigResolver.invalidBaseUrl_components", {
           baseUrl: this.baseUrl,
@@ -511,7 +463,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       return { protocol, hostname };
     } catch (err) {
       const msg =
-        "SvcconfigResolverWithCache: NV_SVCCONFIG_URL is not a valid absolute URL. " +
+        "SvcconfigResolverWithCache: svcconfigBaseUrl is not a valid absolute URL. " +
         'Ops: set NV_SVCCONFIG_URL to a full base URL for svcconfig (e.g., "http://svcconfig.internal:4020").';
       this.log.error("svcconfigResolver.invalidBaseUrl", {
         baseUrl: this.baseUrl,
@@ -521,10 +473,4 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       throw new Error(msg);
     }
   }
-}
-
-/** First element helper for generic Iterables. */
-function first<T>(it: Iterable<T>): T | undefined {
-  for (const v of it) return v;
-  return undefined;
 }

@@ -16,6 +16,10 @@
  * - No resolver fallback: if svcconfig resolver cannot be constructed, boot must fail fast.
  * - No implicit S2S mocking: when S2S_MOCKS is enabled, outbound S2S calls are blocked
  *   unless a deterministic test transport is explicitly injected.
+ *
+ * Boot invariant (critical):
+ * - env-service resolution must NOT depend on svcconfig during boot.
+ *   Otherwise all services deadlock trying to reach env-service through svcconfig.
  */
 
 import {
@@ -23,6 +27,7 @@ import {
   type ISvcconfigResolver,
   type ISvcClientLogger,
   type ISvcClientTransport,
+  type SvcTarget,
 } from "@nv/shared/s2s/SvcClient";
 import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
 import type { IBoundLogger } from "@nv/shared/logger/Logger";
@@ -45,22 +50,133 @@ function requirePositiveIntVarFromDto(
   }
 
   const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new Error(
-      `${name}_MISSING: ${name} is required and must be a positive integer string. ` +
-        `Ops: set ${name} explicitly (e.g., "5000") in env-service for env="${dto.getEnvLabel()}".`
-    );
-  }
-
   const n = Number(trimmed);
-  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+
+  if (!trimmed || !Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
     throw new Error(
       `${name}_INVALID: ${name} must be a positive integer string; got "${raw}". ` +
         `Ops: correct ${name} in env-service for env="${dto.getEnvLabel()}".`
     );
   }
 
-  return n;
+  return Math.trunc(n);
+}
+
+function requireAbsoluteUrlFromDto(dto: EnvServiceDto, name: string): string {
+  let raw: string;
+  try {
+    raw = dto.getEnvVar(name);
+  } catch (err) {
+    throw new Error(
+      `${name}_MISSING: ${name} is required and must be an absolute URL. ` +
+        `Ops: set ${name} in env-service for env="${dto.getEnvLabel()}". ` +
+        `Detail: ${(err as Error)?.message ?? String(err)}`
+    );
+  }
+
+  const v = raw.trim();
+  if (!v) {
+    throw new Error(
+      `${name}_MISSING: ${name} is required and must be an absolute URL. ` +
+        `Ops: set ${name} in env-service for env="${dto.getEnvLabel()}".`
+    );
+  }
+
+  try {
+    // eslint-disable-next-line no-new
+    new URL(v);
+  } catch (err) {
+    throw new Error(
+      `${name}_INVALID: ${name} must be a valid absolute URL; got "${raw}". ` +
+        `Ops: fix ${name} in env-service for env="${dto.getEnvLabel()}".`
+    );
+  }
+
+  return v.replace(/\/+$/, "");
+}
+
+/**
+ * Bootstrap resolver for env-service only.
+ *
+ * Reason:
+ * - All services must be able to reach env-service *before* svcconfig is reachable.
+ * - Therefore env-service resolution is anchored by NV_ENV_SERVICE_URL (origin) at boot.
+ *
+ * Env:
+ * - NV_ENV_SERVICE_URL must be an ORIGIN (scheme + host + optional port), no path/query/hash.
+ */
+class BootstrapEnvServiceResolver implements ISvcconfigResolver {
+  public async resolveTarget(
+    _env: string,
+    slug: string,
+    version: number
+  ): Promise<SvcTarget> {
+    if (slug !== "env-service") {
+      throw new Error(
+        `BOOTSTRAP_ENV_RESOLVER_UNSUPPORTED: only supports slug="env-service". Got "${slug}@v${version}".`
+      );
+    }
+
+    const raw = process.env.NV_ENV_SERVICE_URL;
+    const rawBaseUrl = typeof raw === "string" ? raw.trim() : "";
+
+    if (!rawBaseUrl) {
+      throw new Error(
+        "BOOTSTRAP_ENV_SERVICE_URL_MISSING: NV_ENV_SERVICE_URL is not set or empty. " +
+          'Ops: set NV_ENV_SERVICE_URL to an ORIGIN like "http://127.0.0.1:4015".'
+      );
+    }
+
+    let origin: string;
+    try {
+      const u = new URL(rawBaseUrl);
+
+      const hasBadPath = u.pathname && u.pathname !== "/" && u.pathname !== "";
+      const hasQuery = !!u.search;
+      const hasHash = !!u.hash;
+
+      if (hasBadPath || hasQuery || hasHash) {
+        throw new Error(
+          `NV_ENV_SERVICE_URL must be an ORIGIN only (no path/query/hash). Got "${rawBaseUrl}". ` +
+            `Ops: set NV_ENV_SERVICE_URL to "${u.origin}".`
+        );
+      }
+
+      origin = u.origin;
+    } catch (e: any) {
+      throw new Error(
+        `BOOTSTRAP_ENV_SERVICE_URL_INVALID: NV_ENV_SERVICE_URL is invalid. Detail: ${
+          (e as Error)?.message ?? String(e)
+        }`
+      );
+    }
+
+    return {
+      baseUrl: origin,
+      slug: "env-service",
+      version,
+      isAuthorized: true,
+    };
+  }
+}
+
+/** Composite resolver: env-service via bootstrap, everything else via svcconfig. */
+class CompositeResolver implements ISvcconfigResolver {
+  public constructor(
+    private readonly envResolver: ISvcconfigResolver,
+    private readonly svcconfigResolver: ISvcconfigResolver
+  ) {}
+
+  public async resolveTarget(
+    env: string,
+    slug: string,
+    version: number
+  ): Promise<SvcTarget> {
+    if (slug === "env-service") {
+      return await this.envResolver.resolveTarget(env, slug, version);
+    }
+    return await this.svcconfigResolver.resolveTarget(env, slug, version);
+  }
 }
 
 function requireSvcconfigResolver(opts: {
@@ -72,12 +188,16 @@ function requireSvcconfigResolver(opts: {
 }): ISvcconfigResolver {
   const { service, log, loggerAdapter, envDto, ttlMs } = opts;
 
-  // Fail-fast, but with useful Ops guidance.
-  // If SvcconfigResolverWithCache throws, something fundamental is missing (usually NV_SVCCONFIG_URL).
   try {
+    const svcconfigBaseUrl = requireAbsoluteUrlFromDto(
+      envDto,
+      "NV_SVCCONFIG_URL"
+    );
+
     const resolver = new SvcconfigResolverWithCache({
       logger: loggerAdapter,
       ttlMs,
+      svcconfigBaseUrl,
     });
 
     log.info(
@@ -85,14 +205,13 @@ function requireSvcconfigResolver(opts: {
       `[${service}] SvcClient: using svcconfig-backed resolver with TTL cache`
     );
 
-    return resolver;
+    // Critical: env-service must not depend on svcconfig for resolution at boot.
+    return new CompositeResolver(new BootstrapEnvServiceResolver(), resolver);
   } catch (err) {
-    // IMPORTANT: no fallback resolver. If we can't build the resolver, the service must not boot.
-    // This avoids a “service looks up but can’t resolve targets” drift state.
     throw new Error(
       `SVCCONFIG_RESOLVER_INIT_FAILED: Failed to construct svcconfig resolver for service="${service}". ` +
         `Likely missing/invalid NV_SVCCONFIG_URL in env-service for env="${envDto.getEnvLabel()}". ` +
-        'Ops: set NV_SVCCONFIG_URL (absolute URL, e.g., "http://localhost:4020") and ensure svcconfig is reachable. ' +
+        'Ops: set NV_SVCCONFIG_URL (absolute URL, e.g., "http://127.0.0.1:4020") and ensure svcconfig is reachable. ' +
         `Detail: ${(err as Error)?.message ?? String(err)}`
     );
   }
@@ -103,16 +222,7 @@ export function createSvcClientForApp(opts: {
   version: number;
   log: IBoundLogger;
   envDto: EnvServiceDto;
-  /**
-   * Rails-provided flag (frozen at boot in AppBase).
-   * When true, S2S calls are blocked UNLESS a deterministic transport is injected.
-   */
   s2sMocksEnabled: boolean;
-
-  /**
-   * Optional deterministic transport (tests only).
-   * When provided, this transport ALWAYS wins.
-   */
   transport?: ISvcClientTransport;
 }): SvcClient {
   const { service, version, log, envDto, s2sMocksEnabled, transport } = opts;
@@ -124,13 +234,11 @@ export function createSvcClientForApp(opts: {
     error: (msg, meta) => log.error(meta ?? {}, msg),
   };
 
-  // Required TTL. No fallbacks. Ever.
   const ttlMs = requirePositiveIntVarFromDto(
     envDto,
     "NV_SVCCONFIG_CACHE_TTL_MS"
   );
 
-  // Required resolver. No fallbacks. Ever.
   const resolver = requireSvcconfigResolver({
     service,
     log,
@@ -146,10 +254,6 @@ export function createSvcClientForApp(opts: {
     svcconfigResolver: resolver,
     requestIdProvider: () => `svcclient-${Date.now().toString(36)}`,
 
-    // Resolution order (do not change):
-    // 1) explicit transport (tests)
-    // 2) blocked transport when S2S_MOCKS=true
-    // 3) default fetch transport
     transport,
     blockS2SReason:
       !transport && s2sMocksEnabled

@@ -411,13 +411,7 @@ export abstract class AppBase extends ServiceBase {
     const svcClient = this.getSvcClient();
     const envClient = new SvcEnvClient({ svcClient });
 
-    const checker = new InfraHealthCheck({
-      svcClient,
-      envClient,
-      log: this.log,
-      currentServiceSlug: this.service,
-      envLabel: this.getEnvLabel(),
-    });
+    const checker = new InfraHealthCheck(this.rt);
 
     await checker.run();
   }

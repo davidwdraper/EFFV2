@@ -10,50 +10,22 @@
  * - Boot-time infra dependency verification for services that opt in (usually DOMAIN services).
  * - Hard-fail if required infra services are unreachable/unhealthy.
  *
- * Flow:
- *  1) Check env-service health first (hard fail if down).
- *  2) Fetch service-root EnvServiceDto from env-service.
- *  3) Read INFRA_BOOT_SVCS from service-root vars (CSV list of slugs).
- *  4) Check health for each listed slug (hard fail on first failure).
- *
- * Invariants:
- * - Transport-agnostic (no Express req/res, no controllers/handlers).
- * - Uses canonical SvcClient transport path (callRaw) for health checks.
- * - Bounded retries only; never waits forever.
- * - No new environment variables; infra list is config-driven via service-root.
- *
- * Notes:
- * - Whether a service runs this check is controlled by AppBase.shouldSkipInfraBootHealthCheck().
+ * Rails invariant (now enforced):
+ * - InfraHealthCheck MUST read INFRA_BOOT_SVCS from SvcRuntime (rt),
+ *   which already represents the merged root+service config view.
+ * - InfraHealthCheck MUST NOT read service-root directly from env-service.
  */
 
 import type { IBoundLogger } from "../logger/Logger";
-import { SvcEnvClient } from "../env/svcenvClient";
 import type { SvcClient } from "../s2s/SvcClient";
-import type { EnvServiceDto } from "../dto/env-service.dto";
-import type { DtoBag } from "../dto/DtoBag";
+import type { SvcRuntime } from "../runtime/SvcRuntime";
 
-export type InfraHealthCheckOpts = {
-  svcClient: SvcClient;
-  envClient: SvcEnvClient;
-  log: IBoundLogger;
-
-  /** Current service identity (the one booting). */
-  currentServiceSlug: string;
-
-  /** Logical env label (e.g., "dev"). */
-  envLabel: string;
-
+export type InfraHealthCheckCtorOpts = {
   /**
-   * Health check assumes infra services are v1 unless/until we teach service-root
+   * Health check assumes infra services are v1 unless/until we teach config
    * to carry version pins. Keep it simple and explicit.
    */
   infraServiceVersion?: number;
-
-  /**
-   * service-root lives as a config target in env-service.
-   * Version is locked as 1 unless/until NV introduces a versioned root record.
-   */
-  serviceRootVersion?: number;
 
   /** Retry policy (bounded). */
   attempts?: number;
@@ -67,30 +39,61 @@ export type InfraHealthCheckOpts = {
 };
 
 export class InfraHealthCheck {
+  private readonly rt: SvcRuntime;
+  private readonly svcClient: SvcClient;
+  private readonly log: IBoundLogger;
+
+  private readonly currentServiceSlug: string;
+  private readonly envLabel: string;
+
   private readonly infraVersion: number;
-  private readonly serviceRootVersion: number;
   private readonly attempts: number;
   private readonly sleepMs: number;
   private readonly healthSuffix: string;
 
-  public constructor(private readonly opts: InfraHealthCheckOpts) {
+  public constructor(rt: SvcRuntime, opts: InfraHealthCheckCtorOpts = {}) {
+    if (!rt) {
+      throw new Error(
+        "INFRA_HEALTHCHECK_INVALID: rt is required. Dev: pass SvcRuntime so INFRA_BOOT_SVCS is read from merged config."
+      );
+    }
+
+    this.rt = rt;
+
+    // Populate existing “locals” from rt (single source of truth).
+    this.log = rt.getLogger();
+    this.currentServiceSlug = (rt.getServiceSlug?.() ?? "").trim();
+    this.envLabel = (rt.getEnv?.() ?? "").trim();
+
+    if (!this.currentServiceSlug) {
+      throw new Error(
+        "INFRA_HEALTHCHECK_INVALID: currentServiceSlug is empty from rt. Ops/Dev: ensure rt identity is constructed correctly."
+      );
+    }
+    if (!this.envLabel) {
+      throw new Error(
+        "INFRA_HEALTHCHECK_INVALID: envLabel is empty from rt. Ops/Dev: ensure rt identity is constructed correctly."
+      );
+    }
+
+    const svcClient = rt.tryCap<SvcClient>("s2s.svcClient");
+    if (!svcClient) {
+      throw new Error(
+        `INFRA_HEALTHCHECK_SVC_CLIENT_MISSING: rt is missing capability "s2s.svcClient" for ` +
+          `service="${
+            this.currentServiceSlug
+          }" v${rt.getServiceVersion?.()} env="${this.envLabel}". ` +
+          `Dev: wire "s2s.svcClient" in AppBase before infra boot check runs.`
+      );
+    }
+    this.svcClient = svcClient;
+
     this.infraVersion = opts.infraServiceVersion ?? 1;
-    this.serviceRootVersion = opts.serviceRootVersion ?? 1;
     this.attempts = opts.attempts ?? 3;
     this.sleepMs = opts.sleepMs ?? 500;
     this.healthSuffix =
       (opts.healthPathSuffix ?? "/health").trim() || "/health";
 
-    if (!opts.currentServiceSlug?.trim()) {
-      throw new Error(
-        "INFRA_HEALTHCHECK_INVALID: currentServiceSlug is required. Dev: pass the booting service slug."
-      );
-    }
-    if (!opts.envLabel?.trim()) {
-      throw new Error(
-        "INFRA_HEALTHCHECK_INVALID: envLabel is required. Dev: pass the logical env label."
-      );
-    }
     if (this.attempts <= 0) {
       throw new Error(
         `INFRA_HEALTHCHECK_INVALID: attempts must be > 0, got ${this.attempts}.`
@@ -109,13 +112,13 @@ export class InfraHealthCheck {
   }
 
   public async run(): Promise<void> {
-    const { log } = this.opts;
+    const log = this.log;
 
     log.info(
       {
         event: "infra_boot_check_begin",
-        currentServiceSlug: this.opts.currentServiceSlug,
-        envLabel: this.opts.envLabel,
+        currentServiceSlug: this.currentServiceSlug,
+        envLabel: this.envLabel,
         infraVersion: this.infraVersion,
         attempts: this.attempts,
         sleepMs: this.sleepMs,
@@ -124,13 +127,14 @@ export class InfraHealthCheck {
       "Infra boot health check starting"
     );
 
-    // 1) env-service must be healthy first.
+    // 1) env-service must be healthy first (hard fail if down).
     await this.checkHealth("env-service");
 
-    // 2) Read service-root, parse INFRA_BOOT_SVCS
-    const slugs = await this.loadInfraBootSlugs();
+    // 2) Load infra slugs from merged config (rt), NOT service-root direct.
+    const slugs = this.loadInfraBootSlugsFromRuntime();
 
-    // 3) Check each infra dependency (skip env-service; already checked).
+    // 3) Check each infra dependency.
+    // We already checked env-service first to make logs deterministic.
     for (const slug of slugs) {
       if (slug === "env-service") continue;
       await this.checkHealth(slug);
@@ -139,8 +143,8 @@ export class InfraHealthCheck {
     log.info(
       {
         event: "infra_boot_check_complete",
-        currentServiceSlug: this.opts.currentServiceSlug,
-        envLabel: this.opts.envLabel,
+        currentServiceSlug: this.currentServiceSlug,
+        envLabel: this.envLabel,
         checkedSlugs: [
           "env-service",
           ...slugs.filter((s) => s !== "env-service"),
@@ -150,8 +154,41 @@ export class InfraHealthCheck {
     );
   }
 
+  private loadInfraBootSlugsFromRuntime(): string[] {
+    let raw: string;
+    try {
+      raw = this.rt.getVar("INFRA_BOOT_SVCS");
+    } catch (e) {
+      throw new Error(
+        `INFRA_BOOT_SVCS_MISSING: INFRA_BOOT_SVCS is required in merged config for env="${this.envLabel}", service="${this.currentServiceSlug}". ` +
+          "Ops: set INFRA_BOOT_SVCS in env-service (root default or per-service override). " +
+          `Detail: ${(e as Error)?.message ?? String(e)}`
+      );
+    }
+
+    const slugs = this.parseSlugList(raw);
+
+    if (slugs.length === 0) {
+      throw new Error(
+        `INFRA_BOOT_SVCS_EMPTY: INFRA_BOOT_SVCS was empty after parsing for env="${this.envLabel}", service="${this.currentServiceSlug}". ` +
+          'Ops: set INFRA_BOOT_SVCS to a comma-separated list of infra slugs (e.g., "env-service,svcconfig,prompt,gateway").'
+      );
+    }
+
+    this.log.info(
+      {
+        event: "infra_boot_list_loaded",
+        envLabel: this.envLabel,
+        currentServiceSlug: this.currentServiceSlug,
+        infraBootSlugs: slugs,
+      },
+      "Loaded infra boot slug list from rt (merged config)"
+    );
+
+    return slugs;
+  }
+
   private async checkHealth(slug: string): Promise<void> {
-    const { svcClient, envLabel, log, currentServiceSlug } = this.opts;
     const clean = (slug ?? "").trim();
 
     if (!clean) {
@@ -161,12 +198,12 @@ export class InfraHealthCheck {
     }
 
     // Safety: ignore accidental self-checks.
-    if (clean === currentServiceSlug) {
-      log.warn(
+    if (clean === this.currentServiceSlug) {
+      this.log.warn(
         {
           event: "infra_boot_check_skip_self",
           slug: clean,
-          currentServiceSlug,
+          currentServiceSlug: this.currentServiceSlug,
         },
         "Ignoring self-check in infra boot list"
       );
@@ -181,8 +218,8 @@ export class InfraHealthCheck {
 
     for (let attempt = 1; attempt <= this.attempts; attempt++) {
       try {
-        const res = await svcClient.callRaw({
-          env: envLabel,
+        const res = await this.svcClient.callRaw({
+          env: this.envLabel,
           slug: clean,
           version: this.infraVersion,
           method: "GET",
@@ -191,7 +228,7 @@ export class InfraHealthCheck {
         });
 
         if (res.status >= 200 && res.status < 300) {
-          log.info(
+          this.log.info(
             {
               event: "infra_health_ok",
               slug: clean,
@@ -207,7 +244,7 @@ export class InfraHealthCheck {
           `Non-2xx from "${clean}" health endpoint: status=${res.status}`
         );
 
-        log.warn(
+        this.log.warn(
           {
             event: "infra_health_non2xx",
             slug: clean,
@@ -219,7 +256,7 @@ export class InfraHealthCheck {
         );
       } catch (e) {
         lastErr = e;
-        log.warn(
+        this.log.warn(
           {
             event: "infra_health_error",
             slug: clean,
@@ -236,75 +273,11 @@ export class InfraHealthCheck {
     }
 
     throw new Error(
-      `INFRA_BOOT_HEALTHCHECK_FAILED: Required infra service "${clean}" is not healthy/reachable in env="${envLabel}". ` +
+      `INFRA_BOOT_HEALTHCHECK_FAILED: Required infra service "${clean}" is not healthy/reachable in env="${this.envLabel}". ` +
         `Tried ${this.attempts} attempt(s). ` +
-        `Ops: start/fix "${clean}" (and its deps) before booting "${currentServiceSlug}". ` +
+        `Ops: start/fix "${clean}" (and its deps) before booting "${this.currentServiceSlug}". ` +
         `Detail: ${(lastErr as Error)?.message ?? String(lastErr)}`
     );
-  }
-
-  private async loadInfraBootSlugs(): Promise<string[]> {
-    const { envClient, envLabel, log } = this.opts;
-
-    let bag: DtoBag<EnvServiceDto>;
-    try {
-      bag = await envClient.getConfig({
-        env: envLabel,
-        slug: "service-root",
-        version: this.serviceRootVersion,
-      });
-    } catch (e) {
-      throw new Error(
-        `INFRA_BOOT_SERVICE_ROOT_FETCH_FAILED: Failed to read service-root from env-service for env="${envLabel}". ` +
-          `Ops: ensure env-service has a config document for slug="service-root" version=${this.serviceRootVersion} in env="${envLabel}". ` +
-          `Detail: ${(e as Error)?.message ?? String(e)}`
-      );
-    }
-
-    let primary: EnvServiceDto | undefined;
-    for (const dto of bag as unknown as Iterable<EnvServiceDto>) {
-      primary = dto;
-      break;
-    }
-
-    if (!primary) {
-      throw new Error(
-        `INFRA_BOOT_SERVICE_ROOT_EMPTY: env-service returned an empty bag for service-root in env="${envLabel}". ` +
-          "Ops: create the service-root record and set INFRA_BOOT_SVCS."
-      );
-    }
-
-    let raw: string;
-    try {
-      raw = primary.getEnvVar("INFRA_BOOT_SVCS");
-    } catch (e) {
-      throw new Error(
-        `INFRA_BOOT_SVCS_MISSING: INFRA_BOOT_SVCS is required in service-root for env="${envLabel}". ` +
-          "Ops: set INFRA_BOOT_SVCS (CSV list of infra slugs) in env-service service-root config. " +
-          `Detail: ${(e as Error)?.message ?? String(e)}`
-      );
-    }
-
-    const slugs = this.parseSlugList(raw);
-
-    if (slugs.length === 0) {
-      throw new Error(
-        `INFRA_BOOT_SVCS_EMPTY: INFRA_BOOT_SVCS was empty after parsing for env="${envLabel}". ` +
-          'Ops: set INFRA_BOOT_SVCS to a comma-separated list of infra slugs (e.g., "svcconfig,log-service,prompts").'
-      );
-    }
-
-    log.info(
-      {
-        event: "infra_boot_list_loaded",
-        envLabel,
-        serviceRootVersion: this.serviceRootVersion,
-        infraBootSlugs: slugs,
-      },
-      "Loaded infra boot slug list from service-root"
-    );
-
-    return slugs;
   }
 
   private parseSlugList(raw: string): string[] {

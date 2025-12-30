@@ -10,10 +10,11 @@
  *
  * Purpose:
  * - /config pipeline:
- *   0) seed mongo override for this pipeline (env-service config DB is infra)
- *   1) read service-root config
- *   2) read service-local config
- *   3) merge vars (service-local overlays root)
+ *   0) guard: forbid direct reads of the reserved "service-root" record
+ *   1) seed mongo override for this pipeline (env-service config DB is infra)
+ *   2) read service-root config
+ *   3) read service-local config
+ *   4) merge vars (service-local overlays root)
  * - Output is ALWAYS an effective singleton bag at ctx["bag"].
  */
 
@@ -22,6 +23,7 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import { DbReadOneByFilterHandler } from "@nv/shared/http/handlers/db.readOne.byFilter";
 
+import { CodeGuardServiceRootHandler } from "./code.guard.serviceRoot";
 import { SeedMongoConfigHandler } from "./seed.mongoConfig";
 import { SeedFilter1Handler } from "./seed.filter1";
 import { SeedFilter2Handler } from "./seed.filter2";
@@ -32,6 +34,9 @@ export function getSteps(
   controller: ControllerJsonBase
 ): HandlerBase[] {
   return [
+    // Guard: service-root is reserved and must not be requested directly.
+    new CodeGuardServiceRootHandler(ctx, controller),
+
     // Seed Mongo config override (so db.readOne.byFilter can read env-service’s config DB
     // before SvcRuntime vars are fully available for env-service itself).
     new SeedMongoConfigHandler(ctx, controller),

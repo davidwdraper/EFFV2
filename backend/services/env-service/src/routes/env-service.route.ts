@@ -61,12 +61,9 @@ export function buildEnvServiceRouter(app: AppBase): ReturnType<typeof Router> {
   // NOTE: must be registered before the generic :op route so "list" is not captured as :op.
   r.get("/:dtoType/list", (req, res) => listCtl.get(req, res));
 
-  // READ / CONFIG / future ops:
-  // - Read by id:  GET /:dtoType/read/:id
+  // READ CONFIG (GET /:dtoType/config)
   // - Config by key: GET /:dtoType/config  (query: slug, version, env?, level?)
-  //
-  // Controller will inspect req.params.op and pick the correct handler pipeline.
-  r.get("/:dtoType/:op/:id?", (req, res) => readCtl.get(req, res));
+  r.get("/:dtoType/config", (req, res) => readCtl.get(req, res));
 
   return r;
 }

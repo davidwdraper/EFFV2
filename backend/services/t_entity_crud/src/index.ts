@@ -17,20 +17,20 @@
  * - No process.env reads here (bootstrap owns it).
  * - Posture is the single source of truth (no checkDb duplication).
  * - No EnvServiceDto unwrapping logic in service code (shared entrypoint owns it).
+ *
+ * Template/test-runner invariant:
+ * - POSTURE must be exported from src/app.ts so dist/app.js exposes it for the runner.
+ * - This file must import POSTURE from app.ts to avoid posture drift.
  */
 
 import { runServiceEntrypoint } from "@nv/shared/bootstrap/ServiceEntrypoint";
-import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
-import createApp from "./app";
+import createApp, { POSTURE } from "./app";
 
 // ———————————————————————————————————————————————————————————————
 // Service identity
 // ———————————————————————————————————————————————————————————————
 const SERVICE_SLUG = "xxx";
 const SERVICE_VERSION = 1;
-
-// Template posture: CRUD entity services are DB owners.
-const POSTURE: SvcPosture = "db";
 
 (async () => {
   await runServiceEntrypoint({

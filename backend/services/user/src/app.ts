@@ -19,6 +19,14 @@
  * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
  * - Runtime caps are wired ONLY in AppBase (single source of truth).
  * - EnvServiceDto lives ONLY inside rt (no sidecar envDto passed to AppBase).
+ *
+ * Test-runner invariant (virtual server):
+ * - dist/app.js MUST export:
+ *     - createAppBase(opts)
+ *     - POSTURE
+ *   so the test-runner can:
+ *     1) read POSTURE to enforce posture rails in envBootstrap
+ *     2) construct rt (virtual server) and call createAppBase(opts)
  */
 
 import type { Express, Router } from "express";
@@ -32,6 +40,16 @@ import { setLoggerEnv } from "@nv/shared/logger/Logger";
 import { Registry } from "./registry/Registry";
 import { buildUserRouter } from "./routes/user.route";
 
+/**
+ * Template posture for this service.
+ *
+ * IMPORTANT:
+ * - This constant is exported so the test-runner can enforce posture-derived
+ *   boot rails during envBootstrap *before* it can construct rt.
+ * - Keep this in sync with src/index.ts (which should import POSTURE from here).
+ */
+export const POSTURE: SvcPosture = "db";
+
 export type CreateAppOptions = {
   slug: string;
   version: number;
@@ -41,9 +59,14 @@ export type CreateAppOptions = {
    * Legacy (kept for compatibility with shared entrypoint callers).
    * Do NOT pass these into AppBase; EnvServiceDto is owned by rt.
    */
+  envLabel?: string;
   envDto: EnvServiceDto;
   envReloader: () => Promise<EnvServiceDto>;
 
+  /**
+   * ADR-0080: REQUIRED.
+   * Virtual server runtime for this service.
+   */
   rt: SvcRuntime;
 };
 

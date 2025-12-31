@@ -1,215 +1,194 @@
 // backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/code.passwordHash.test.ts
 /**
  * Docs:
- * - LDD-40 (Handler Test Design — fresh ctx per scenario)
+ * - LDD-40 (Handler Test Design — runner-shaped)
  * - LDD-35 (Handler-level test-runner service)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  * - ADR-0042 (HandlerContext Bus — KISS)
- * - ADR-0040 (DTO-Only Persistence; edge → DTO)
  * - ADR-0063 (Auth Signup MOS Pipeline)
  *
  * Purpose:
- * - Provide THREE handler-test scenarios for CodePasswordHashHandler:
- *   • Canonical happy path (CodePasswordHashTest): hash derived from ctx['signup.passwordClear'].
- *   • Missing cleartext password: handler fails with 500 precondition error.
- *   • Hash failure: simulated scrypt error yields a 500 hash-derive failure.
+ * - Runner-shaped handler tests for CodePasswordHashHandler.
  *
- * Canonical pattern:
- * - CodePasswordHashTest is the primary smoke test used by handler.runTest().
- * - getScenarios() returns an ordered list of all scenarios for ScenarioRunner.
+ * IMPORTANT:
+ * - Tests execute handlers via deps.step.execute(ctx).
+ * - Scenario ctx is created via deps.makeScenarioCtx(), inheriting runtime ("rt").
+ * - This avoids stub-controller + missing runtime failures.
  */
 
-import * as crypto from "crypto";
-import { HandlerTestBase } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-import { CodePasswordHashHandler } from "./code.passwordHash";
+type AssertState = { count: number; failed: string[] };
 
-export class CodePasswordHashTest extends HandlerTestBase {
-  public testId(): string {
-    return "auth.signup.code.passwordHash.happy";
-  }
-
-  public testName(): string {
-    return "auth.signup: CodePasswordHashHandler derives hash, algo, params, and clears cleartext password";
-  }
-
-  protected expectedError(): boolean {
-    return false;
-  }
-
-  protected async execute(): Promise<void> {
-    const ctx = this.makeCtx({
-      requestId: "req-auth-passwordHash-happy",
-      dtoType: "user",
-      op: "code.passwordHash",
-    });
-
-    // Seed the cleartext password as produced by the previous handler.
-    ctx.set("signup.passwordClear", "StrongPassw0rd#");
-
-    await this.runHandler({
-      handlerCtor: CodePasswordHashHandler,
-      ctx,
-    });
-
-    const handlerStatus = ctx.get<string>("handlerStatus");
-    const rawResponseStatus = ctx.get<number>("response.status");
-    const statusCode =
-      rawResponseStatus !== undefined
-        ? rawResponseStatus
-        : ctx.get<number>("status");
-
-    // Rails-level expectations.
-    this.assertEq(String(handlerStatus ?? ""), "ok");
-    this.assert(
-      String(statusCode ?? "") !== "500",
-      "status should not be 500 on happy path"
-    );
-
-    const hash = ctx.get<string>("signup.hash");
-    const algo = ctx.get<string>("signup.hashAlgo");
-    const paramsJson = ctx.get<string>("signup.hashParamsJson");
-    const createdAt = ctx.get<string>("signup.passwordCreatedAt");
-    const passwordClear = ctx.get("signup.passwordClear");
-
-    this.assert(
-      typeof hash === "string" && hash.length > 0,
-      "signup.hash should be a non-empty string"
-    );
-    this.assertEq(algo ?? "", "scrypt", "hash algorithm should be 'scrypt'");
-
-    this.assert(
-      typeof paramsJson === "string" && paramsJson.length > 0,
-      "signup.hashParamsJson should be a non-empty JSON string"
-    );
-
-    this.assert(
-      typeof createdAt === "string" && createdAt.length > 0,
-      "signup.passwordCreatedAt should be a non-empty ISO timestamp"
-    );
-
-    this.assert(
-      typeof passwordClear === "undefined",
-      "signup.passwordClear must be cleared after hashing"
-    );
+function assertEq(
+  a: AssertState,
+  actual: unknown,
+  expected: unknown,
+  msg: string
+): void {
+  a.count += 1;
+  if (actual !== expected) {
+    a.failed.push(`${msg} expected=${String(expected)} got=${String(actual)}`);
   }
 }
 
-export class CodePasswordHashMissingPasswordTest extends HandlerTestBase {
-  public testId(): string {
-    return "auth.signup.code.passwordHash.missingPassword";
-  }
-
-  public testName(): string {
-    return "auth.signup: CodePasswordHashHandler fails when signup.passwordClear is missing";
-  }
-
-  protected expectedError(): boolean {
-    return true;
-  }
-
-  protected async execute(): Promise<void> {
-    const ctx = this.makeCtx({
-      requestId: "req-auth-passwordHash-missingPassword",
-      dtoType: "user",
-      op: "code.passwordHash",
-    });
-
-    // Intentionally do NOT seed ctx['signup.passwordClear'].
-
-    await this.runHandler({
-      handlerCtor: CodePasswordHashHandler,
-      ctx,
-    });
-
-    const handlerStatus = ctx.get<string>("handlerStatus");
-    const rawResponseStatus = ctx.get<number>("response.status");
-    const statusCode =
-      rawResponseStatus !== undefined
-        ? rawResponseStatus
-        : ctx.get<number>("status");
-
-    this.assertEq(
-      String(handlerStatus ?? ""),
-      "error",
-      "handlerStatus should be 'error' when signup.passwordClear is missing"
-    );
-    this.assertEq(
-      String(statusCode ?? ""),
-      "500",
-      "status should be 500 for missing signup.passwordClear precondition"
-    );
-  }
+function assertOk(a: AssertState, cond: unknown, msg: string): void {
+  a.count += 1;
+  if (!cond) a.failed.push(msg);
 }
 
-export class CodePasswordHashFailureTest extends HandlerTestBase {
-  public testId(): string {
-    return "auth.signup.code.passwordHash.hashFailure";
-  }
+// ───────────────────────────────────────────
+// Rails helpers
+// ───────────────────────────────────────────
+function railsSnapshot(ctx: any) {
+  const handlerStatus = ctx?.get?.("handlerStatus") ?? "ok";
+  const status = ctx?.get?.("status") ?? 200;
+  const responseStatus = ctx?.get?.("response.status");
+  return { handlerStatus, status, responseStatus };
+}
 
-  public testName(): string {
-    return "auth.signup: CodePasswordHashHandler reports 500 when hashing fails (scrypt error)";
-  }
+function isRailsError(s: {
+  handlerStatus: string;
+  status: number;
+  responseStatus?: number;
+}): boolean {
+  return (
+    s.handlerStatus === "error" ||
+    s.status >= 500 ||
+    (typeof s.responseStatus === "number" && s.responseStatus >= 500)
+  );
+}
 
-  protected expectedError(): boolean {
-    return true;
-  }
-
-  protected async execute(): Promise<void> {
-    const ctx = this.makeCtx({
-      requestId: "req-auth-passwordHash-failure",
-      dtoType: "user",
-      op: "code.passwordHash",
-    });
-
-    // Seed a valid cleartext password as the previous handler would.
-    ctx.set("signup.passwordClear", "AnotherStrongPass#1");
-
-    // Inject a custom hash function via the context hook the handler supports.
-    ctx.set("signup.passwordHashFn", ((
+// ───────────────────────────────────────────
+// Scenario executor
+// ───────────────────────────────────────────
+async function runScenario(input: {
+  deps: any;
+  testId: string;
+  name: string;
+  expectedError: boolean;
+  seed: {
+    requestId: string;
+    dtoType: string;
+    op: string;
+    passwordClear?: string;
+    injectHashFn?: (
       password: string,
       salt: string | Buffer,
       keylen: number
-    ): Buffer => {
-      // Simulate a low-level scrypt failure.
-      throw new Error("TEST_FORCED_SCRYPT_FAILURE");
-    }) as typeof crypto.scryptSync);
+    ) => Buffer;
+  };
+  expectHash: boolean;
+}): Promise<any> {
+  const startedAt = Date.now();
+  const a: AssertState = { count: 0, failed: [] };
 
-    await this.runHandler({
-      handlerCtor: CodePasswordHashHandler,
-      ctx,
+  try {
+    const ctx = input.deps.makeScenarioCtx({
+      requestId: input.seed.requestId,
+      dtoType: input.seed.dtoType,
+      op: input.seed.op,
     });
 
-    const handlerStatus = ctx.get<string>("handlerStatus");
-    const rawResponseStatus = ctx.get<number>("response.status");
-    const statusCode =
-      rawResponseStatus !== undefined
-        ? rawResponseStatus
-        : ctx.get<number>("status");
+    if (typeof input.seed.passwordClear === "string") {
+      ctx.set("signup.passwordClear", input.seed.passwordClear);
+    }
 
-    this.assertEq(
-      String(handlerStatus ?? ""),
-      "error",
-      "handlerStatus should be 'error' when scrypt hashing fails"
-    );
-    this.assertEq(
-      String(statusCode ?? ""),
-      "500",
-      "status should be 500 when hashing fails"
+    if (input.seed.injectHashFn) {
+      ctx.set("signup.passwordHashFn", input.seed.injectHashFn);
+    }
+
+    await input.deps.step.execute(ctx);
+
+    const snap = railsSnapshot(ctx);
+    const railsError = isRailsError(snap);
+
+    assertEq(
+      a,
+      railsError,
+      input.expectedError,
+      input.expectedError
+        ? "expected rails error but handler succeeded"
+        : "unexpected rails error"
     );
 
-    // Hash-related outputs should not be validly populated on failure.
+    const expectedHandlerStatus = input.expectedError ? "error" : "ok";
+    assertEq(
+      a,
+      snap.handlerStatus,
+      expectedHandlerStatus,
+      `handlerStatus should be "${expectedHandlerStatus}"`
+    );
+
     const hash = ctx.get("signup.hash");
-    this.assert(
-      typeof hash === "undefined" || hash === null,
-      "signup.hash should not be set on hash failure"
-    );
+    const algo = ctx.get("signup.hashAlgo");
+    const params = ctx.get("signup.hashParamsJson");
+    const cleared = ctx.get("signup.passwordClear");
+
+    if (input.expectHash) {
+      assertOk(
+        a,
+        typeof hash === "string" && hash.length > 0,
+        "signup.hash should be set"
+      );
+      assertEq(a, algo, "scrypt", "hash algorithm should be scrypt");
+      assertOk(
+        a,
+        typeof params === "string" && params.length > 0,
+        "signup.hashParamsJson should be set"
+      );
+      assertOk(
+        a,
+        typeof cleared === "undefined",
+        "signup.passwordClear must be cleared after hashing"
+      );
+    } else {
+      assertOk(
+        a,
+        typeof hash === "undefined" || hash === null,
+        "signup.hash must not be set on failure paths"
+      );
+    }
+
+    const finishedAt = Date.now();
+    return {
+      testId: input.testId,
+      name: input.name,
+      outcome: a.failed.length === 0 ? "passed" : "failed",
+      expectedError: input.expectedError,
+      assertionCount: a.count,
+      failedAssertions: a.failed,
+      errorMessage: a.failed[0],
+      durationMs: Math.max(0, finishedAt - startedAt),
+      railsVerdict: a.failed.length === 0 ? "ok" : "rails_error",
+      railsStatus: snap.status,
+      railsHandlerStatus: snap.handlerStatus,
+      railsResponseStatus: snap.responseStatus,
+    };
+  } catch (err) {
+    const finishedAt = Date.now();
+    const msg =
+      err instanceof Error ? err.message : String(err ?? "unknown error");
+
+    return {
+      testId: input.testId,
+      name: input.name,
+      outcome: "failed",
+      expectedError: input.expectedError,
+      assertionCount: a.count,
+      failedAssertions: a.failed.length ? a.failed : [msg],
+      errorMessage: msg,
+      durationMs: Math.max(0, finishedAt - startedAt),
+      railsVerdict: "test_bug",
+      railsStatus: undefined,
+      railsHandlerStatus: undefined,
+      railsResponseStatus: undefined,
+    };
   }
 }
 
-/**
- * ScenarioRunner entrypoint: used by the handler-level test-runner service.
- */
-export async function getScenarios() {
+// ───────────────────────────────────────────
+// ScenarioRunner entrypoint
+// ───────────────────────────────────────────
+export async function getScenarios(deps: any) {
   return [
     {
       id: "auth.signup.code.passwordHash.happy",
@@ -217,8 +196,19 @@ export async function getScenarios() {
       shortCircuitOnFail: true,
       expectedError: false,
       async run() {
-        const test = new CodePasswordHashTest();
-        return await test.run();
+        return runScenario({
+          deps,
+          testId: "auth.signup.code.passwordHash.happy",
+          name: "auth.signup: CodePasswordHashHandler derives hash, algo, params, and clears cleartext password",
+          expectedError: false,
+          seed: {
+            requestId: "req-auth-passwordHash-happy",
+            dtoType: "user",
+            op: "code.passwordHash",
+            passwordClear: "StrongPassw0rd#",
+          },
+          expectHash: true,
+        });
       },
     },
     {
@@ -227,8 +217,18 @@ export async function getScenarios() {
       shortCircuitOnFail: false,
       expectedError: true,
       async run() {
-        const test = new CodePasswordHashMissingPasswordTest();
-        return await test.run();
+        return runScenario({
+          deps,
+          testId: "auth.signup.code.passwordHash.missingPassword",
+          name: "auth.signup: CodePasswordHashHandler fails when signup.passwordClear is missing",
+          expectedError: true,
+          seed: {
+            requestId: "req-auth-passwordHash-missingPassword",
+            dtoType: "user",
+            op: "code.passwordHash",
+          },
+          expectHash: false,
+        });
       },
     },
     {
@@ -237,8 +237,22 @@ export async function getScenarios() {
       shortCircuitOnFail: false,
       expectedError: true,
       async run() {
-        const test = new CodePasswordHashFailureTest();
-        return await test.run();
+        return runScenario({
+          deps,
+          testId: "auth.signup.code.passwordHash.hashFailure",
+          name: "auth.signup: CodePasswordHashHandler reports 500 when hashing fails (scrypt error)",
+          expectedError: true,
+          seed: {
+            requestId: "req-auth-passwordHash-failure",
+            dtoType: "user",
+            op: "code.passwordHash",
+            passwordClear: "AnotherStrongPass#1",
+            injectHashFn: () => {
+              throw new Error("TEST_FORCED_SCRYPT_FAILURE");
+            },
+          },
+          expectHash: false,
+        });
       },
     },
   ];

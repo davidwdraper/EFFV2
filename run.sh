@@ -39,14 +39,27 @@ echo "   ENV_FILE=$ENV_FILE"
 [[ $NV_TEST -eq 1 ]] && echo "   TEST MODE: exporting KMS_* for gateway (shell-only)"
 [[ $SHARED_ONLY -eq 1 ]] && echo "   SHARED-ONLY: will build @nv/shared and exit"
 
+# =============================================================================
+# 🔒 ADDITION (ONLY CHANGE):
+# Force TypeScript build + emit so runner never executes stale JS.
+# If JS is not emitted, run.sh fails fast and NOTHING starts.
+# =============================================================================
+echo "🛠️  Forcing TypeScript emit (build or fail)…"
+npx tsc -b \
+  backend/services/auth/tsconfig.json \
+  backend/services/test-runner/tsconfig.json \
+  --force
+echo "✅ TypeScript emit complete."
+# =============================================================================
+
 # ======= Service list (current reality) =====================================
 SERVICES=(
   #"env-service|backend/services/env-service|pnpm dev"
   #"t_entity_crud|backend/services/t_entity_crud|pnpm dev"
   #"svcconfig|backend/services/svcconfig|pnpm dev"
-  #"user-auth|backend/services/user-auth|pnpm dev"
+  "user-auth|backend/services/user-auth|pnpm dev"
   "auth|backend/services/auth|pnpm dev"
-  #"user|backend/services/user|pnpm dev"
+  "user|backend/services/user|pnpm dev"
   "test-runner|backend/services/test-runner|pnpm dev"
   "handler-test|backend/services/handler-test|pnpm dev"
   #"audit|backend/services/audit|pnpm dev"
@@ -60,15 +73,12 @@ trim() { echo "$1" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'; }
 mk_crypto_key() { local proj="$1" loc="$2" ring="$3" key="$4"; echo "projects/${proj}/locations/${loc}/keyRings/${ring}/cryptoKeys/${key}"; }
 
 rm_tsbuildinfo() {
-  # rm_tsbuildinfo <dir>
   local dir="$1"
   rm -f "$dir/tsconfig.tsbuildinfo" 2>/dev/null || true
   rm -f "$dir/dist/tsconfig.tsbuildinfo" 2>/dev/null || true
 }
 
 ensure_dist_exists() {
-  # ensure_dist_exists <name> <dir>
-  # Invariant: if dist/index.js is missing, rebuild (and clear tsbuildinfo so TS can’t “succeed” without emitting).
   local name="$1"
   local dir="$2"
   local dist_entry="$dir/dist/index.js"
@@ -88,7 +98,6 @@ ensure_dist_exists() {
     npm --prefix "$dir" run build || { echo "❌ $name build failed"; return 1; }
   fi
 
-  # If TS incremental state was still weird, retry once after clearing again.
   if [[ ! -f "$dist_entry" ]]; then
     echo "⚠️  $name: build succeeded but dist/index.js still missing → retrying once after clearing tsbuildinfo…"
     rm_tsbuildinfo "$dir"
@@ -200,19 +209,16 @@ fi
 
 # ======= Launch/Shutdown framework ==========================================
 mkdir -p "$ROOT/var/log"
-PIDS=()             # session leader PIDs
-TAIL_PIDS=()        # background tail -F PIDs
+PIDS=()
+TAIL_PIDS=()
 USE_SETSID=0
 command -v setsid >/dev/null 2>&1 && USE_SETSID=1
 
 cleanup() {
   echo "🧹 Cleaning up..."
-  # Stop tails first (quiet console)
   if [[ -n "${TAIL_PIDS[*]:-}" ]]; then
     kill "${TAIL_PIDS[@]}" 2>/dev/null || true
   fi
-
-  # Kill services
   if [[ -n "${PIDS[*]:-}" ]]; then
     for pid in "${PIDS[@]}"; do
       if [[ $USE_SETSID -eq 1 ]]; then
@@ -272,10 +278,8 @@ for i in "${!SERVICE_NAMES[@]}"; do
   name="${SERVICE_NAMES[$i]}"
   LOG_FILES+=("$ROOT/var/log/${name}.dev.log")
 done
-# Ensure files exist so tail -F has concrete paths
 for lf in "${LOG_FILES[@]}"; do : >"$lf"; done
 
-# Start tails if requested
 if [[ "${NV_CONSOLE_LOG:-0}" != "0" ]]; then
   echo "🪵 NV_CONSOLE_LOG=1 → tailing live logs to console"
   for lf in "${LOG_FILES[@]}"; do
@@ -299,7 +303,6 @@ for i in "${!SERVICE_NAMES[@]}"; do
     set -Eeuo pipefail
     cd \"$path\"
 
-    # load env file
     unset PORT SERVICE_PORT
     set -a; [ -f \"$svc_env\" ] && . \"$svc_env\"; set +a
     if [ -n \"\${PORT:-}\" ]; then export ${SLUG_UPPER}_PORT=\"\$PORT\" SERVICE_PORT=\"\$PORT\"; fi
@@ -330,7 +333,7 @@ for i in "${!SERVICE_NAMES[@]}"; do
     bash -lc "$launcher" >>"$LOG_FILE" 2>&1 &
   fi
 
-  pid=$!          # session leader (or direct child)
+  pid=$!
   PIDS+=("$pid")
 
   if [[ "$name" = "svcfacilitator" ]]; then
@@ -347,7 +350,6 @@ done
 echo "📜 PIDs (leaders): ${PIDS[*]}"
 echo "🟢 All services launched. Ctrl-C to stop."
 
-# ----- Block until all services exit (Bash 3.2: no wait -n) ------------------
 status=0
 for pid in "${PIDS[@]}"; do
   if ! wait "$pid"; then

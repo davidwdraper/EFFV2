@@ -1,4 +1,4 @@
-// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/s2s.user.create.test.ts
+// backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/s2s.userAuth.create.test.ts
 /**
  * Docs:
  * - LDD-35 (Handler-level test-runner service)
@@ -11,7 +11,7 @@
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  *
  * Purpose:
- * - Define handler-level tests for S2sUserCreateHandler.
+ * - Define handler-level tests for S2sUserAuthCreateHandler.
  *
  * IMPORTANT:
  * - Runner-shaped module: scenarios execute via deps.step.execute(ctx)
@@ -20,11 +20,6 @@
  * Note:
  * - UserDto.givenName / lastName validation forbids digits.
  *   Keep names strictly alphabetic; use email for uniqueness.
- *
- * Shared test handoff:
- * - On happy-path success, stash created userId for follow-on rollback tests:
- *   • ctx["test.shared.userId"]
- *   • globalThis.__nv_handler_test_shared["auth.signup.createdUserId"]
  */
 
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
@@ -35,8 +30,8 @@ import { newUuid } from "@nv/shared/utils/uuid";
 
 type UserBag = DtoBag<UserDto>;
 
-type UserCreateStatus =
-  | { ok: true; userId?: string }
+type UserAuthCreateStatus =
+  | { ok: true }
   | { ok: false; code: string; message: string };
 
 type Assert = { count: number; failed: string[] };
@@ -51,34 +46,6 @@ function assertEq(a: Assert, actual: any, expected: any, msg: string): void {
 function assertOk(a: Assert, cond: any, msg: string): void {
   a.count += 1;
   if (!cond) a.failed.push(msg);
-}
-
-// ───────────────────────────────────────────
-// Shared test handoff (process-local)
-// ───────────────────────────────────────────
-const SHARED_SLOT_KEY = "auth.signup.createdUserId";
-
-function getSharedStore(): Record<string, any> {
-  const g = globalThis as any;
-  if (!g.__nv_handler_test_shared) g.__nv_handler_test_shared = {};
-  return g.__nv_handler_test_shared as Record<string, any>;
-}
-
-function stashCreatedUserId(ctx: any, userId: string): void {
-  if (typeof userId !== "string" || userId.trim().length === 0) return;
-
-  // Best-effort: ctx (only helps if runner reuses ctx across modules)
-  try {
-    if (ctx && typeof ctx.set === "function") {
-      ctx.set("test.shared.userId", userId);
-    }
-  } catch {
-    // ignore
-  }
-
-  // Reliable: same Node process shared store
-  const store = getSharedStore();
-  store[SHARED_SLOT_KEY] = userId;
 }
 
 // ───────────────────────────────────────────
@@ -123,7 +90,7 @@ type HandlerTestResult = {
 };
 
 // ───────────────────────────────────────────
-// DTO/bag helper
+// DTO/bag helper (edge bag stays UserDto bag; handler never overwrites ctx["bag"])
 // ───────────────────────────────────────────
 function buildUserBag(
   signupUserId: string,
@@ -160,7 +127,15 @@ async function runScenario(input: {
     requestId: string;
     dtoType: string;
     op: string;
+
+    // ctx seeds
     signupUserId: string;
+    signupHash: string;
+    signupHashAlgo: string;
+    signupHashParamsJson: string;
+    signupPasswordCreatedAt: string;
+
+    // pipeline edge bag
     bag: any;
   };
   expectOkStatus: boolean;
@@ -175,7 +150,14 @@ async function runScenario(input: {
       op: input.seed.op,
     });
 
+    // Required handler inputs
     ctx.set("signup.userId", input.seed.signupUserId);
+    ctx.set("signup.hash", input.seed.signupHash);
+    ctx.set("signup.hashAlgo", input.seed.signupHashAlgo);
+    ctx.set("signup.hashParamsJson", input.seed.signupHashParamsJson);
+    ctx.set("signup.passwordCreatedAt", input.seed.signupPasswordCreatedAt);
+
+    // Pipeline invariant: the edge response bag remains the UserDto bag.
     ctx.set("bag", input.seed.bag);
 
     // Execute handler in production shape (runner step).
@@ -201,43 +183,32 @@ async function runScenario(input: {
       `handlerStatus should be "${expectedHandlerStatus}"`
     );
 
-    const status = ctx.get("signup.userCreateStatus") as
-      | UserCreateStatus
+    const status = ctx.get("signup.userAuthCreateStatus") as
+      | UserAuthCreateStatus
       | undefined;
 
     if (input.expectOkStatus) {
       assertOk(
         a,
         !!status && status.ok === true,
-        "signup.userCreateStatus.ok should be true on happy path"
+        "signup.userAuthCreateStatus.ok should be true on happy path"
       );
-      if (status && status.ok === true) {
-        assertEq(
-          a,
-          String(status.userId ?? ""),
-          input.seed.signupUserId,
-          "signup.userCreateStatus.userId should mirror ctx['signup.userId']"
-        );
-
-        // ✅ Handoff for rollback tests (best-effort ctx + reliable process-local)
-        stashCreatedUserId(ctx, input.seed.signupUserId);
-      }
     } else {
       assertOk(
         a,
         !!status && status.ok === false,
-        "signup.userCreateStatus.ok should be false on error paths"
+        "signup.userAuthCreateStatus.ok should be false on error paths"
       );
       if (status && status.ok === false) {
         assertOk(
           a,
           typeof status.code === "string" && status.code.length > 0,
-          "signup.userCreateStatus.code should be populated on error paths"
+          "signup.userAuthCreateStatus.code should be populated on error paths"
         );
         assertOk(
           a,
           typeof status.message === "string" && status.message.length > 0,
-          "signup.userCreateStatus.message should be populated on error paths"
+          "signup.userAuthCreateStatus.message should be populated on error paths"
         );
       }
     }
@@ -284,31 +255,38 @@ async function runScenario(input: {
 export async function getScenarios(deps: any): Promise<any[]> {
   return [
     {
-      id: "auth.signup.s2s.user.create.happy",
-      name: "auth.signup: S2sUserCreateHandler happy path — user.create succeeds",
+      id: "auth.signup.s2s.userAuth.create.happy",
+      name: "auth.signup: S2sUserAuthCreateHandler happy path — user-auth.create succeeds",
       shortCircuitOnFail: true,
       expectedError: false,
       async run(): Promise<HandlerTestResult> {
-        const requestId = "req-auth-s2s-user-create-happy";
+        const requestId = "req-auth-s2s-userauth-create-happy";
         const signupUserId = newUuid();
 
-        // Keep names strictly alphabetic; uniqueness goes in email.
         const bag = buildUserBag(signupUserId, requestId, (dto) => {
           dto.setGivenName?.("Auth S S");
-          dto.setLastName?.("UserCreate");
-          dto.setEmail?.(`auth.s2s.user.create+${signupUserId}@example.com`);
+          dto.setLastName?.("UserAuthCreate");
+          dto.setEmail?.(
+            `auth.s2s.userauth.create+${signupUserId}@example.com`
+          );
         });
 
         return runScenario({
           deps,
-          testId: "auth.signup.s2s.user.create.happy",
-          name: "auth.signup: S2sUserCreateHandler happy path — user.create succeeds",
+          testId: "auth.signup.s2s.userAuth.create.happy",
+          name: "auth.signup: S2sUserAuthCreateHandler happy path — user-auth.create succeeds",
           expectedError: false,
           seed: {
             requestId,
             dtoType: "user",
-            op: "s2s.user.create",
+            op: "s2s.userAuth.create",
+
             signupUserId,
+            signupHash: "hashplaceholder",
+            signupHashAlgo: "algo",
+            signupHashParamsJson: "{}",
+            signupPasswordCreatedAt: new Date().toISOString(),
+
             bag,
           },
           expectOkStatus: true,
@@ -316,87 +294,39 @@ export async function getScenarios(deps: any): Promise<any[]> {
       },
     },
     {
-      id: "auth.signup.s2s.user.create.badEnvelope",
-      name: "auth.signup: S2sUserCreateHandler rails on malformed user.create envelope",
+      id: "auth.signup.s2s.userAuth.create.missingFields",
+      name: "auth.signup: S2sUserAuthCreateHandler rails when required signup auth fields are missing",
       shortCircuitOnFail: false,
       expectedError: true,
       async run(): Promise<HandlerTestResult> {
-        const requestId = "req-auth-s2s-user-create-bad-envelope";
-        const signupUserId = newUuid();
-
-        const goodBag = buildUserBag(signupUserId, requestId, (dto) => {
-          dto.setGivenName?.("Auth S S");
-          dto.setLastName?.("BadEnvelope");
-          dto.setEmail?.(
-            `auth.s2s.user.create.badenv+${signupUserId}@example.com`
-          );
-        });
-
-        // Corrupt the envelope shape: wrong item structure.
-        const itemsArray =
-          typeof (goodBag as any).items === "function"
-            ? Array.from((goodBag as any).items())
-            : [];
-        const firstItem = itemsArray[0] ?? {};
-
-        const badEnvelope = {
-          meta: (goodBag as any).meta,
-          items: [
-            {
-              payload: (firstItem as any).data ?? firstItem,
-            },
-          ],
-        };
-
-        return runScenario({
-          deps,
-          testId: "auth.signup.s2s.user.create.badEnvelope",
-          name: "auth.signup: S2sUserCreateHandler sad path — malformed envelope",
-          expectedError: true,
-          seed: {
-            requestId,
-            dtoType: "user",
-            op: "s2s.user.create",
-            signupUserId,
-            bag: badEnvelope as unknown as UserBag,
-          },
-          expectOkStatus: false,
-        });
-      },
-    },
-    {
-      id: "auth.signup.s2s.user.create.missingFields",
-      name: "auth.signup: S2sUserCreateHandler rails when givenName/lastName/email are missing",
-      shortCircuitOnFail: false,
-      expectedError: true,
-      async run(): Promise<HandlerTestResult> {
-        const requestId = "req-auth-s2s-user-create-missing-fields";
+        const requestId = "req-auth-s2s-userauth-create-missing-fields";
         const signupUserId = newUuid();
 
         const bag = buildUserBag(signupUserId, requestId, (dto) => {
-          // Seed valid values first...
           dto.setGivenName?.("Auth S S");
-          dto.setLastName?.("MissingFields");
+          dto.setLastName?.("MissingAuthFields");
           dto.setEmail?.(
-            `auth.s2s.user.create.missing+${signupUserId}@example.com`
+            `auth.s2s.userauth.create.missing+${signupUserId}@example.com`
           );
-
-          // ...then clear them to force validation failure.
-          dto.setGivenName?.("");
-          dto.setLastName?.("");
-          dto.setEmail?.("");
         });
 
+        // Force the handler's hard-fail path: missing required ctx keys.
         return runScenario({
           deps,
-          testId: "auth.signup.s2s.user.create.missingFields",
-          name: "auth.signup: S2sUserCreateHandler sad path — missing givenName/lastName/email",
+          testId: "auth.signup.s2s.userAuth.create.missingFields",
+          name: "auth.signup: S2sUserAuthCreateHandler sad path — missing auth fields",
           expectedError: true,
           seed: {
             requestId,
             dtoType: "user",
-            op: "s2s.user.create",
+            op: "s2s.userAuth.create",
+
             signupUserId,
+            signupHash: "",
+            signupHashAlgo: "",
+            signupHashParamsJson: "",
+            signupPasswordCreatedAt: "",
+
             bag,
           },
           expectOkStatus: false,

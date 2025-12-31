@@ -8,6 +8,8 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical wire id is `_id`)
  *   - ADR-0053 (Instantiation discipline via BaseDto secret)
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
+ *   - ADR-0089 (DTO Field DSL with Meta Envelope)
+ *   - ADR-0090 (DTO Field DSL Design + Non-Breaking Integration)
  *
  * Purpose:
  * - Concrete DTO for the "user" entity service.
@@ -28,6 +30,7 @@
 import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
 import { assertValidEmail } from "../utils/emailCheck";
+import { field, unwrapMetaEnvelope } from "./dsl";
 
 export type UserJson = {
   _id?: string;
@@ -56,6 +59,71 @@ export type UserJson = {
 export interface UserFieldOptions {
   validate?: boolean;
 }
+
+/**
+ * DTO Field DSL (v1).
+ * - Purely metadata/tooling hints; does not affect toBody()/persistence/S2S.
+ * - UI metadata is canonical prompt identity ONLY (Option B).
+ *   Consumers may prepend scope or override prompt keys externally.
+ */
+export const UserFields = {
+  type: field.literal("user", { required: false, presentByDefault: true }),
+
+  givenName: field.string({
+    required: true,
+    minLen: 1,
+    maxLen: 80,
+    alpha: true,
+    case: "capitalized",
+    ui: {
+      input: "text",
+      promptKey: "user.givenName",
+    },
+  }),
+
+  lastName: field.string({
+    required: true,
+    minLen: 1,
+    maxLen: 80,
+    alpha: true,
+    case: "capitalized",
+    ui: {
+      input: "text",
+      promptKey: "user.lastName",
+    },
+  }),
+
+  email: field.string({
+    required: true,
+    unique: true,
+    minLen: 5,
+    maxLen: 200,
+    ui: {
+      input: "email",
+      promptKey: "user.email",
+    },
+  }),
+
+  phone: field.string({
+    required: false,
+    unique: true,
+    presentByDefault: false,
+    ui: {
+      input: "tel",
+      promptKey: "user.phone",
+    },
+  }),
+
+  homeLat: field.number({ required: false, presentByDefault: false }),
+  homeLng: field.number({ required: false, presentByDefault: false }),
+
+  address1: field.string({ required: false, presentByDefault: false }),
+  address2: field.string({ required: false, presentByDefault: false }),
+  city: field.string({ required: false, presentByDefault: false }),
+  state: field.string({ required: false, presentByDefault: false }),
+  pcode: field.string({ required: false, presentByDefault: false }),
+  notes: field.string({ required: false, presentByDefault: false }),
+} as const;
 
 export class UserDto extends DtoBase {
   public static dbCollectionName(): string {
@@ -111,7 +179,10 @@ export class UserDto extends DtoBase {
     opts?: { validate?: boolean }
   ): UserDto {
     const dto = new UserDto(DtoBase.getSecret());
-    const j = (json ?? {}) as Partial<UserJson>;
+
+    // ADR-0089/0090: tolerate inbound { data, meta } without breaking.
+    const unwrapped = unwrapMetaEnvelope(json);
+    const j = (unwrapped ?? {}) as Partial<UserJson>;
 
     if (typeof j._id === "string" && j._id.trim()) {
       dto.setIdOnce(j._id.trim());

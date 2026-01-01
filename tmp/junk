@@ -1,0 +1,5 @@
+We completed the DSL for DTO metadata field decorating. Tested 2 DTOs in the auth service pipeline.
+
+Now its time to build the tool that creates a DTO test data sidecar.
+
+The ADRs specific to this are below:

@@ -7,6 +7,7 @@
  *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
+ *   - ADR-0093 (Shared Exports & Dist-Only Runtime)
  *
  * Purpose (template):
  * - Pure orchestration entrypoint for a CRUD-style auth service.

@@ -2,22 +2,20 @@
   "name": "@nv/test-runner",
   "version": "0.1.0",
   "private": true,
-  "_nvHeader": "SOP header: template service. CJS runtime. Dev may use tsconfig-paths; start/prod must be JS-only (node dist).",
+  "_nvHeader": "SOP header: template service. CJS runtime. start/prod must be JS-only (node dist).",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "dependencies": {
     "@nv/shared": "workspace:*"
   },
   "scripts": {
-    "dev": "NODE_OPTIONS='-r tsconfig-paths/register' tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && rm -f tsconfig.tsbuildinfo && tsc -p tsconfig.json",
+    "watch": "rm -rf dist && rm -f tsconfig.tsbuildinfo && tsc -p tsconfig.json -w",
     "start": "node dist/index.js",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist && rm -f tsconfig.tsbuildinfo"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
-    "@types/node": "^20.12.12",
-    "tsx": "^4.19.2",
-    "tsconfig-paths": "^4.2.0"
+    "@types/node": "^20.12.12"
   }
 }

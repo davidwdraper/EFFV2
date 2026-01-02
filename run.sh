@@ -39,19 +39,6 @@ echo "   ENV_FILE=$ENV_FILE"
 [[ $NV_TEST -eq 1 ]] && echo "   TEST MODE: exporting KMS_* for gateway (shell-only)"
 [[ $SHARED_ONLY -eq 1 ]] && echo "   SHARED-ONLY: will build @nv/shared and exit"
 
-# =============================================================================
-# 🔒 ADDITION (ONLY CHANGE):
-# Force TypeScript build + emit so runner never executes stale JS.
-# If JS is not emitted, run.sh fails fast and NOTHING starts.
-# =============================================================================
-echo "🛠️  Forcing TypeScript emit (build or fail)…"
-npx tsc -b \
-  backend/services/auth/tsconfig.json \
-  backend/services/test-runner/tsconfig.json \
-  --force
-echo "✅ TypeScript emit complete."
-# =============================================================================
-
 # ======= Service list (current reality) =====================================
 SERVICES=(
   #"env-service|backend/services/env-service|pnpm dev"
@@ -112,6 +99,35 @@ ensure_dist_exists() {
   echo "✅ $name: dist restored."
   return 0
 }
+
+# ======= Resolve service env files ==========================================
+SERVICE_NAMES=(); SERVICE_PATHS=(); SERVICE_CMDS=(); SERVICE_ENVFILES=()
+for line in "${SERVICES[@]}"; do
+  [[ -z "${line// }" ]] && continue
+  case "$line" in \#*) continue ;; esac
+  name="${line%%|*}"; rest="${line#*|}"
+  path="${rest%%|*}"; cmd="${rest#*|}"
+  name="$(trim "$name")"; path="$(trim "$path")"; cmd="$(trim "$cmd")"
+  [[ -z "$cmd" ]] && cmd="pnpm dev"
+  [[ -d "$path" ]] || { echo "  • (missing)  $name → $path"; continue; }
+  svc_env="$ROOT/$path/.env.dev"; [[ -f "$svc_env" ]] || svc_env="$ENV_FILE"
+  SERVICE_NAMES+=("$name"); SERVICE_PATHS+=("$path"); SERVICE_CMDS+=("$cmd"); SERVICE_ENVFILES+=("$svc_env")
+done
+
+# =============================================================================
+# 🔒 Dist-only build (build what we will run, or fail)
+# - Build shared + enabled services only.
+# - No TS runtime execution (no tsx, no tsconfig-paths).
+# =============================================================================
+echo "🛠️  Forcing TypeScript emit for shared + enabled services (build or fail)…"
+TSC_BUILD_ARGS=( "backend/services/shared/tsconfig.json" )
+for i in "${!SERVICE_NAMES[@]}"; do
+  svc_path="${SERVICE_PATHS[$i]}"
+  TSC_BUILD_ARGS+=( "$svc_path/tsconfig.json" )
+done
+npx tsc -b "${TSC_BUILD_ARGS[@]}" --force
+echo "✅ TypeScript emit complete."
+# =============================================================================
 
 # ======= Gateway env file path (for optional --test KMS export) =============
 GW_ENV_FILE_DEFAULT="$ROOT/backend/services/gateway/.env.dev"
@@ -177,24 +193,9 @@ else
 fi
 echo "🔧 NODE_ENV=${NODE_ENV}  LOG_LEVEL=${LOG_LEVEL}"
 
-# ======= Build @nv/shared ====================================================
-SHARED_DIR="$ROOT/backend/services/shared"
-echo "🛠️  Building @nv/shared (package build)…"
-if [[ -d "$SHARED_DIR" ]]; then
-  if command -v pnpm >/dev/null 2>&1; then
-    pnpm --dir "$SHARED_DIR" run build || { echo "❌ @nv/shared build failed"; exit 1; }
-  else
-    npm --prefix "$SHARED_DIR" run build || { echo "❌ @nv/shared build failed"; exit 1; }
-  fi
-  [[ -f "$SHARED_DIR/dist/index.js" ]] || { echo "❌ @nv/shared did not emit dist/index.js"; exit 1; }
-  echo "✅ @nv/shared built."
-else
-  echo "❌ Shared package not found at $SHARED_DIR"; exit 1
-fi
-
 # ======= Optional: exit early when --shared ==================================
 if [[ $SHARED_ONLY -eq 1 ]]; then
-  echo "🏁 --shared specified: exiting after @nv/shared build."
+  echo "🏁 --shared specified: exiting after TS emit check."
   exit 0
 fi
 
@@ -243,31 +244,9 @@ trap 'echo "🛑 Caught signal"; cleanup; exit 0' INT TERM
 trap 'echo "💥 Error on line $LINENO"; cleanup; exit 1' ERR
 trap 'cleanup' EXIT
 
-# ======= Resolve service env files ==========================================
-SERVICE_NAMES=(); SERVICE_PATHS=(); SERVICE_CMDS=(); SERVICE_ENVFILES=()
-for line in "${SERVICES[@]}"; do
-  [[ -z "${line// }" ]] && continue
-  case "$line" in \#*) continue ;; esac
-  name="${line%%|*}"; rest="${line#*|}"
-  path="${rest%%|*}"; cmd="${rest#*|}"
-  name="$(trim "$name")"; path="$(trim "$path")"; cmd="$(trim "$cmd")"
-  [[ -z "$cmd" ]] && cmd="pnpm dev"
-  [[ -d "$path" ]] || { echo "  • (missing)  $name → $path"; continue; }
-  svc_env="$ROOT/$path/.env.dev"; [[ -f "$svc_env" ]] || svc_env="$ENV_FILE"
-  SERVICE_NAMES+=("$name"); SERVICE_PATHS+=("$path"); SERVICE_CMDS+=("$cmd"); SERVICE_ENVFILES+=("$svc_env")
-done
-
 echo "🧭 Services list:"
 for i in "${!SERVICE_NAMES[@]}"; do
   echo "  • (enabled)  ${SERVICE_NAMES[$i]} → ${SERVICE_PATHS[$i]} :: ${SERVICE_CMDS[$i]}  [ENV_FILE=$(basename "${SERVICE_ENVFILES[$i]}")]"
-done
-
-# ======= Ensure dist exists for enabled services (only if dist missing) ======
-echo "🧱 Ensuring dist exists for enabled services (only when missing)…"
-for i in "${!SERVICE_NAMES[@]}"; do
-  name="${SERVICE_NAMES[$i]}"
-  svc_dir="$ROOT/${SERVICE_PATHS[$i]}"
-  ensure_dist_exists "$name" "$svc_dir" || exit 1
 done
 
 echo "🚀 Starting services..."
@@ -293,7 +272,6 @@ LAST_INDEX=$((${#SERVICE_NAMES[@]} - 1))
 for i in "${!SERVICE_NAMES[@]}"; do
   name="${SERVICE_NAMES[$i]}"
   path="${SERVICE_PATHS[$i]}"
-  cmd="${SERVICE_CMDS[$i]}"
   svc_env="${SERVICE_ENVFILES[$i]}"
   SLUG_UPPER="$(echo "$name" | tr '[:lower:]' '[:upper:]')"
 
@@ -317,12 +295,10 @@ for i in "${!SERVICE_NAMES[@]}"; do
     echo \"ENV_FILE=\$ENV_FILE\"
     echo '────────────────────────────────────────────────────────────────────────────────────'
 
-    if node -e \"try{p=require('./package.json').scripts && require('./package.json').scripts.dev;process.exit(p?0:1)}catch(e){process.exit(1)}\"; then
-      exec pnpm dev
-    elif [ -f \"src/index.ts\" ]; then
-      exec pnpm -s exec tsx watch src/index.ts
+    if node -e \"try{p=require('./package.json').scripts && require('./package.json').scripts.start;process.exit(p?0:1)}catch(e){process.exit(1)}\"; then
+      exec pnpm start
     else
-      echo '❌ $name: no dev script and no src/index.ts' >&2
+      echo '❌ $name: no start script (dist-only runtime required)' >&2
       exit 1
     fi
   "

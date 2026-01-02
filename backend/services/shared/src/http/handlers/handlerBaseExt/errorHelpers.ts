@@ -108,7 +108,7 @@ function extractFirstStackFrame(rawError: unknown): FirstFrame | undefined {
 
 function isExpectedErrorFromCtx(ctx: HandlerContext): boolean {
   try {
-    return ctx.get<boolean | undefined>("expectErrors") === true;
+    return ctx.get<boolean | undefined>("test.expectErrors") === true;
   } catch {
     return false;
   }

@@ -16,7 +16,7 @@
  *   NOT “call protected execute()” and NOT “reuse a handler instance”.
  *
  * Rails:
- * - Scenario.expectedError MUST be reflected on scenario ctx as ctx["expectErrors"]
+ * - Scenario.expectedError MUST be reflected on scenario ctx as ctx["test.expectErrors"]
  *   so shared error helpers can downgrade expected-negative logs.
  */
 
@@ -190,14 +190,14 @@ export class ScenarioRunner {
     scenario: HandlerTestScenarioDef,
     deps: ScenarioDeps
   ): Promise<void> {
-    // Rails: automatically seed ctx["expectErrors"] for this scenario.
+    // Rails: automatically seed ctx["test.expectErrors"] for this scenario.
     // This avoids forcing every test module to remember to set it.
     const depsForScenario: ScenarioDeps = {
       ...deps,
       makeScenarioCtx: (seed) => {
         const sc = deps.makeScenarioCtx(seed);
         try {
-          sc.set("expectErrors", scenario.expectedError === true);
+          sc.set("test.expectErrors", scenario.expectedError === true);
         } catch {}
         return sc;
       },

@@ -121,7 +121,7 @@ export abstract class ControllerExpressBase extends ControllerBase {
 
     // Secondary: ctx flag (some tests may seed ctx but not ALS in weird cases)
     try {
-      return ctx.get<boolean | undefined>("expectErrors") === true;
+      return ctx.get<boolean | undefined>("test.expectErrors") === true;
     } catch {
       return false;
     }

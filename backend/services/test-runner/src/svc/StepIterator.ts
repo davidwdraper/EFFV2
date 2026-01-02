@@ -228,7 +228,7 @@ export class StepIterator {
             scenarioCtx.get<string>("requestId") ?? `scenario-${Date.now()}`;
 
           const expectErrors =
-            scenarioCtx.get<boolean | undefined>("expectErrors") === true;
+            scenarioCtx.get<boolean | undefined>("test.expectErrors") === true;
 
           // Rails: run handler execution inside ALS requestScope so shared error helpers
           // can downgrade expected-negative logs and SvcClient can propagate x-nv-test-*.

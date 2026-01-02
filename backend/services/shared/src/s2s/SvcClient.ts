@@ -490,6 +490,59 @@ export class SvcClient {
   }
 
   /**
+   * Bag body reader.
+   *
+   * Purpose:
+   * - Accept a real DtoBag (preferred) OR an already-materialized wire-ish body.
+   *
+   * Why:
+   * - We saw a production-shaped failure: `params.bag.toBody is not a function`.
+   *   That means callers *sometimes* pass a plain object instead of a DtoBag.
+   * - This helper makes the failure mode deterministic and the error message
+   *   actionable, while still allowing already-materialized wire bodies.
+   */
+  private readBagBody(bag: unknown): unknown {
+    if (!bag) return undefined;
+
+    // Preferred: true DtoBag instance (has toBody()).
+    const anyBag = bag as any;
+    if (typeof anyBag.toBody === "function") {
+      return anyBag.toBody() as unknown;
+    }
+
+    // Allow already-materialized bodies:
+    // - { items: [...] }  (wire envelope)
+    // - [...]            (items array)
+    // - { ...dto }       (singleton dto object)
+    if (typeof bag === "object") return bag;
+
+    return undefined;
+  }
+
+  private describeBagForError(bag: unknown): string {
+    if (bag === null) return "null";
+    if (bag === undefined) return "undefined";
+    const t = typeof bag;
+    if (t !== "object") return t;
+
+    const anyBag = bag as any;
+    const ctorName =
+      anyBag &&
+      anyBag.constructor &&
+      typeof anyBag.constructor.name === "string"
+        ? anyBag.constructor.name
+        : "<unknown>";
+    const keys =
+      anyBag && typeof anyBag === "object"
+        ? Object.keys(anyBag).slice(0, 12)
+        : [];
+    const hasToBody = typeof anyBag?.toBody === "function";
+    return `object(${ctorName}) keys=[${keys.join(
+      ","
+    )}] hasToBody=${hasToBody}`;
+  }
+
+  /**
    * Derive the CRUD path id.
    *
    * Invariant:
@@ -504,15 +557,10 @@ export class SvcClient {
     const explicit = (params.id ?? "").trim();
     if (explicit) return explicit;
 
-    const bag = params.bag;
+    const bag = params.bag as unknown;
     if (!bag) return undefined;
 
-    let raw: unknown;
-    try {
-      raw = bag.toBody() as unknown;
-    } catch {
-      return undefined;
-    }
+    const raw = this.readBagBody(bag);
 
     // Supported shapes from buildDtoBody():
     // - { items: [...] }
@@ -636,11 +684,20 @@ export class SvcClient {
 
     if (!params.bag) {
       throw new Error(
-        `SvcClient.call: DTO-based call with method="${method}" and op="${params.op}" requires a DtoBag; none was provided.`
+        `SvcClient.call: DTO-based call with method="${method}" and op="${params.op}" requires a bag; none was provided.`
       );
     }
 
-    const raw = params.bag.toBody() as unknown;
+    const bagUnknown = params.bag as unknown;
+    const raw = this.readBagBody(bagUnknown);
+
+    if (!raw) {
+      throw new Error(
+        `SvcClient.call: bag could not be serialized. ` +
+          `Expected a DtoBag with toBody(), or a materialized wire body. ` +
+          `Got: ${this.describeBagForError(bagUnknown)}`
+      );
+    }
 
     let envelope: WireBagJson;
 
@@ -657,7 +714,8 @@ export class SvcClient {
       envelope = { items: [raw] } as WireBagJson;
     } else {
       throw new Error(
-        "SvcClient.call: DtoBag.toBody() returned an unsupported shape for DTO-based S2S call."
+        `SvcClient.call: bag body returned an unsupported shape. ` +
+          `Got: ${this.describeBagForError(raw)}`
       );
     }
 

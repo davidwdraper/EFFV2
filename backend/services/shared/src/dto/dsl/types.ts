@@ -37,7 +37,14 @@ export type FieldKind =
  * - Non-regex. No schema engine.
  * - Only the few formats we explicitly support.
  */
-export type StringFieldFormat = "email" | "phoneDigits" | "state2" | "zip5";
+export type StringFieldFormat =
+  | "email"
+  | "phoneDigits"
+  | "state2"
+  | "zip5"
+  | "isoTime"
+  | "json";
+
 export type NumberFieldFormat = "lat" | "lng";
 
 export type FieldUiMeta = {

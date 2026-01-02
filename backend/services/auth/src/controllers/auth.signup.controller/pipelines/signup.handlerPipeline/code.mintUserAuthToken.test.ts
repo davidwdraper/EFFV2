@@ -123,7 +123,7 @@ async function runScenario(input: {
     // Critical: mark expected-error scenarios so HandlerBase.failWithError()
     // downgrades ERROR logs during deliberate negative tests.
     if (input.expectedError === true) {
-      ctx.set("expectErrors", true);
+      ctx.set("test.expectErrors", true);
     }
 
     if (typeof input.seed.userId === "string") {

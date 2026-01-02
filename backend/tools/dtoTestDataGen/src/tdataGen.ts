@@ -34,7 +34,14 @@ export type FieldKind =
  * Mirror the DSL’s small, closed format surface.
  * (Tool-local on purpose; generator consumes runtime plain objects.)
  */
-export type StringFieldFormat = "email" | "phoneDigits" | "state2" | "zip5";
+export type StringFieldFormat =
+  | "email"
+  | "phoneDigits"
+  | "state2"
+  | "zip5"
+  | "isoTime"
+  | "json";
+
 export type NumberFieldFormat = "lat" | "lng";
 
 export type FieldDescriptor = {
@@ -222,6 +229,18 @@ function makeFormattedString(
       return clampLen("12345", fd.minLen ?? 5, fd.maxLen ?? 5);
     }
 
+    case "isoTime": {
+      // Deterministic and parseable ISO-8601 timestamp.
+      // Avoid "now" to keep fixtures stable across machines and sessions.
+      return clampLen("2020-01-02T03:04:05.678Z", fd.minLen, fd.maxLen);
+    }
+
+    case "json": {
+      // Smallest useful valid JSON object.
+      // (If a DTO setter requires JSON.parse sanity, this always passes.)
+      return clampLen("{}", fd.minLen, fd.maxLen);
+    }
+
     default:
       return clampLen(`t_${fieldName}`, fd.minLen, fd.maxLen);
   }
@@ -238,7 +257,9 @@ function makeHappyString(fieldName: string, fd: FieldDescriptor): string {
     fmt === "email" ||
     fmt === "phoneDigits" ||
     fmt === "state2" ||
-    fmt === "zip5"
+    fmt === "zip5" ||
+    fmt === "isoTime" ||
+    fmt === "json"
   ) {
     return makeFormattedString(fieldName, fd, fmt);
   }

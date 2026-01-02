@@ -5,6 +5,7 @@
  * - ADRs:
  *   - ADR-0089 (DTO Field DSL with Meta Envelope)
  *   - ADR-0090 (DTO Field DSL Design + Non-Breaking Integration)
+ *   - ADR-0092 (DTO Fields DSL + Testdata Generation)
  *
  * Purpose:
  * - Shared types for the DTO Field DSL.
@@ -14,6 +15,11 @@
  * - DTOs do NOT encode UX scopes (auth.signup, venue.claim, etc.).
  * - DTOs MAY provide a canonical promptKey (e.g., "user.phone").
  * - Consumers may prepend scope or override prompt keys outside the DTO.
+ *
+ * Generator contract:
+ * - format is a *non-regex* declarative hint so test-data generators can mint
+ *   happy-path values that pass setter validation.
+ * - Setters remain canonical truth; tooling may verify drift (nv-dto-gen --verify).
  */
 
 export type FieldKind =
@@ -25,6 +31,14 @@ export type FieldKind =
   | "array"
   | "object"
   | "union";
+
+/**
+ * Small, closed format surface.
+ * - Non-regex. No schema engine.
+ * - Only the few formats we explicitly support.
+ */
+export type StringFieldFormat = "email" | "phoneDigits" | "state2" | "zip5";
+export type NumberFieldFormat = "lat" | "lng";
 
 export type FieldUiMeta = {
   /**
@@ -65,6 +79,9 @@ export type StringFieldOpts = FieldOptsBase & {
   minLen?: number;
   maxLen?: number;
 
+  /** Non-regex format hint used by test-data generators. */
+  format?: StringFieldFormat;
+
   /** Letters-only for v1 means A–Z and a–z only (no ASCII A-z shortcuts). */
   alpha?: boolean;
 
@@ -75,6 +92,9 @@ export type StringFieldOpts = FieldOptsBase & {
 export type NumberFieldOpts = FieldOptsBase & {
   min?: number;
   max?: number;
+
+  /** Non-regex format hint used by test-data generators. */
+  format?: NumberFieldFormat;
 };
 
 export type BooleanFieldOpts = FieldOptsBase;

@@ -20,11 +20,17 @@
  * Notes:
  * - makeContext/runPipeline live in ControllerBase (platform rails).
  * - This class must remain an adapter; do not move orchestration here again.
+ *
+ * Logging policy (rails):
+ * - Expected-negative test errors MUST NOT log at ERROR.
+ * - Non-test 5xx finalize errors log at ERROR.
+ * - Non-test 4xx finalize errors log at WARN (client/validation noise).
  */
 
 import type { HandlerContext } from "../../http/handlers/HandlerContext";
 import type { NvHandlerError } from "../../http/handlers/handlerBaseExt/errorHelpers";
 import { ControllerBase } from "./ControllerBase";
+import { isExpectedErrorContext } from "../../http/requestScope";
 
 export abstract class ControllerExpressBase extends ControllerBase {
   /**
@@ -59,30 +65,65 @@ export abstract class ControllerExpressBase extends ControllerBase {
         ? body.detail.trim()
         : "Controller finalized error response.";
 
-    this.log.error(
-      {
-        service: (this.getRuntime() as any)?.getServiceSlug?.() ?? "unknown",
-        component:
-          (this.getApp() as any)?.constructor?.name ?? this.constructor.name,
-        event: input.event,
-        requestId: input.requestId,
-        status: input.status,
-        title,
-        detail,
-      },
-      "Controller finalize error"
-    );
+    const expected = this.isExpectedError(input.ctx);
+
+    // Rails logging levels:
+    // - expected negative-test: INFO (never ERROR)
+    // - non-test: 5xx => ERROR, 4xx => WARN
+    const level: "info" | "warn" | "error" = expected
+      ? "info"
+      : input.status >= 500
+      ? "error"
+      : "warn";
+
+    const payload = {
+      service: (this.getRuntime() as any)?.getServiceSlug?.() ?? "unknown",
+      component:
+        (this.getApp() as any)?.constructor?.name ?? this.constructor.name,
+      event: input.event,
+      requestId: input.requestId,
+      status: input.status,
+      title,
+      detail,
+      expectedError: expected,
+    };
+
+    if (level === "info") {
+      this.log.info(payload, "Controller finalize error");
+    } else if (level === "warn") {
+      this.log.warn(payload, "Controller finalize error");
+    } else {
+      this.log.error(payload, "Controller finalize error");
+    }
 
     const err = this.safeExtractNvHandlerError(input.body);
     if (err?.origin) {
-      this.log.error(
-        {
-          event: "finalize_error_origin",
-          requestId: input.requestId,
-          origin: err.origin,
-        },
-        "Finalize error origin"
-      );
+      const originPayload = {
+        event: "finalize_error_origin",
+        requestId: input.requestId,
+        origin: err.origin,
+        expectedError: expected,
+      };
+
+      if (level === "info") {
+        this.log.info(originPayload, "Finalize error origin");
+      } else if (level === "warn") {
+        this.log.warn(originPayload, "Finalize error origin");
+      } else {
+        this.log.error(originPayload, "Finalize error origin");
+      }
+    }
+  }
+
+  private isExpectedError(ctx: HandlerContext): boolean {
+    // Primary: ALS requestScope (works for S2S propagation + handler logs)
+    if (isExpectedErrorContext()) return true;
+
+    // Secondary: ctx flag (some tests may seed ctx but not ALS in weird cases)
+    try {
+      return ctx.get<boolean | undefined>("expectErrors") === true;
+    } catch {
+      return false;
     }
   }
 

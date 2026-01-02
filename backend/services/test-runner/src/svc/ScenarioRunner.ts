@@ -14,6 +14,10 @@
  * - A “step” is an executable adapter that runs a handler in production shape:
  *     new Handler(scenarioCtx, controller).run()
  *   NOT “call protected execute()” and NOT “reuse a handler instance”.
+ *
+ * Rails:
+ * - Scenario.expectedError MUST be reflected on scenario ctx as ctx["expectErrors"]
+ *   so shared error helpers can downgrade expected-negative logs.
  */
 
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
@@ -186,10 +190,23 @@ export class ScenarioRunner {
     scenario: HandlerTestScenarioDef,
     deps: ScenarioDeps
   ): Promise<void> {
+    // Rails: automatically seed ctx["expectErrors"] for this scenario.
+    // This avoids forcing every test module to remember to set it.
+    const depsForScenario: ScenarioDeps = {
+      ...deps,
+      makeScenarioCtx: (seed) => {
+        const sc = deps.makeScenarioCtx(seed);
+        try {
+          sc.set("expectErrors", scenario.expectedError === true);
+        } catch {}
+        return sc;
+      },
+    };
+
     await dto.runScenario(
       scenario.name,
       async () => {
-        const result = await this.safeScenarioRun(scenario, deps);
+        const result = await this.safeScenarioRun(scenario, depsForScenario);
         const isPassed = result.outcome === "passed";
 
         return {

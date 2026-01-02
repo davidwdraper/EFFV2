@@ -169,6 +169,12 @@ async function runScenario(input: {
       op: input.seed.op,
     });
 
+    // Critical: mark this scenario as an expected-error test so failWithError()
+    // downgrades ERROR logs (ops noise) during deliberate rail tests.
+    if (input.expectedError === true) {
+      ctx.set("expectErrors", true);
+    }
+
     // Simulate "pipeline in error state" so compensator runs.
     ctx.set("handlerStatus", "error");
     ctx.set("status", 502);

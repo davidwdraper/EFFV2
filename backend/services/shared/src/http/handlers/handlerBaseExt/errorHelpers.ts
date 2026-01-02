@@ -13,7 +13,7 @@
  *
  * Test behavior:
  * - When requestScope OR ctx indicates expected negative-test errors, downgrade
- *   ERROR logging to WARN (still visible, but no pager-noise).
+ *   ERROR logging to INFO (no pager-noise; still visible in trace logs).
  */
 
 import type { HandlerContext } from "../HandlerContext";
@@ -76,9 +76,6 @@ function extractFirstStackFrame(rawError: unknown): FirstFrame | undefined {
   const frameLine = lines.find((l) => l.startsWith("at "));
   if (!frameLine) return undefined;
 
-  // Patterns:
-  // 1) at FunctionName (path:line:column)
-  // 2) at path:line:column
   const withFunc =
     /^at\s+(?<fn>.+?)\s+\((?<file>.+):(?<line>\d+):(?<col>\d+)\)$/;
   const noFunc = /^at\s+(?<file>.+):(?<line>\d+):(?<col>\d+)$/;
@@ -106,15 +103,10 @@ function extractFirstStackFrame(rawError: unknown): FirstFrame | undefined {
     };
   }
 
-  // Fallback: at least return the raw frame text.
-  return {
-    frame: frameLine,
-  };
+  return { frame: frameLine };
 }
 
 function isExpectedErrorFromCtx(ctx: HandlerContext): boolean {
-  // Test-runner / handler tests can set this directly on HandlerContext.
-  // KISS: only treat literal boolean true as opt-in.
   try {
     return ctx.get<boolean | undefined>("expectErrors") === true;
   } catch {
@@ -177,13 +169,6 @@ export function buildHandlerError(opts: {
   };
 }
 
-/**
- * Centralized implementation of HandlerBase.failWithError().
- *
- * - Builds NvHandlerError with enriched origin.
- * - Logs at the specified level.
- * - Writes ctx["error"], ctx["handlerStatus"], ctx["status"].
- */
 export function logAndAttachHandlerError(opts: {
   ctx: HandlerContext;
   log: IBoundLogger;
@@ -215,9 +200,6 @@ export function logAndAttachHandlerError(opts: {
     firstFrame,
   });
 
-  // Expected negative tests can be marked either:
-  // - via requestScope ALS (real HTTP flows), OR
-  // - via HandlerContext (unit/handler tests).
   const expected = isExpectedErrorContext() || isExpectedErrorFromCtx(ctx);
 
   const logPayload: Record<string, unknown> = {
@@ -229,9 +211,7 @@ export function logAndAttachHandlerError(opts: {
     expectedError: expected,
   };
 
-  if (firstFrame) {
-    logPayload.firstFrame = firstFrame;
-  }
+  if (firstFrame) logPayload.firstFrame = firstFrame;
 
   if (input.rawError) {
     if (input.rawError instanceof Error) {
@@ -249,9 +229,10 @@ export function logAndAttachHandlerError(opts: {
     `Handler failure in ${error.origin?.handler ?? "unknown handler"}`;
 
   // Downgrade: expected negative-test errors must not be logged as ERROR.
+  // Per your preference: ERROR → INFO (not WARN).
   let level = input.logLevel ?? "error";
   if (expected && level === "error") {
-    level = "warn";
+    level = "info";
   }
 
   if (level === "debug") {

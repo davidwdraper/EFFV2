@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/handlers/bag.populate.get.handler.ts
+// backend/services/shared/src/http/handlers/toBag.ts
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
@@ -123,7 +123,32 @@ export class ToBagHandler extends HandlerBase {
         (json as any).id = String((json as any)[aliasKey]).trim();
       }
 
-      const dto = ctor.fromBody(json, { mode: "wire", validate });
+      // IMPORTANT:
+      // - ctor.fromBody(...validate:true) may throw on DTO validation failures.
+      // - Those are NOT "internal_handler_error" — they are client input errors.
+      // - Convert to a structured failWithError() so we don't log as unhandled exceptions.
+      let dto: any;
+      try {
+        dto = ctor.fromBody(json, { mode: "wire", validate });
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : String(err ?? "unknown");
+
+        this.failWithError({
+          httpStatus: 400,
+          title: "dto_validation_error",
+          detail: msg,
+          stage: "toBag:hydrate.validate",
+          requestId,
+          rawError: err,
+          origin: { file: __filename, method: "execute" },
+          issues: [{ dtoType: routeDtoType }],
+          logMessage: "toBag: DTO validation failed during wire→dto hydration.",
+          // Intentionally "error" so prod sees it — but expected-negative tests will downgrade to INFO via shared rails.
+          logLevel: "error",
+        });
+        return;
+      }
 
       if (typeof (dto as any).setCollectionName === "function") {
         (dto as any).setCollectionName(coll);

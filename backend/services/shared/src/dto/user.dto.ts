@@ -10,6 +10,7 @@
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
  *   - ADR-0089 (DTO Field DSL with Meta Envelope)
  *   - ADR-0090 (DTO Field DSL Design + Non-Breaking Integration)
+ *   - ADR-0092 (DTO Fields DSL + Testdata Generation)
  *
  * Purpose:
  * - Concrete DTO for the "user" entity service.
@@ -98,6 +99,7 @@ export const UserFields = {
     unique: true,
     minLen: 5,
     maxLen: 200,
+    format: "email",
     ui: {
       input: "email",
       promptKey: "user.email",
@@ -108,20 +110,37 @@ export const UserFields = {
     required: false,
     unique: true,
     presentByDefault: false,
+    format: "phoneDigits",
     ui: {
       input: "tel",
       promptKey: "user.phone",
     },
   }),
 
-  homeLat: field.number({ required: false, presentByDefault: false }),
-  homeLng: field.number({ required: false, presentByDefault: false }),
+  homeLat: field.number({
+    required: false,
+    presentByDefault: false,
+    format: "lat",
+  }),
+  homeLng: field.number({
+    required: false,
+    presentByDefault: false,
+    format: "lng",
+  }),
 
   address1: field.string({ required: false, presentByDefault: false }),
   address2: field.string({ required: false, presentByDefault: false }),
   city: field.string({ required: false, presentByDefault: false }),
-  state: field.string({ required: false, presentByDefault: false }),
-  pcode: field.string({ required: false, presentByDefault: false }),
+  state: field.string({
+    required: false,
+    presentByDefault: false,
+    format: "state2",
+  }),
+  pcode: field.string({
+    required: false,
+    presentByDefault: false,
+    format: "zip5",
+  }),
   notes: field.string({ required: false, presentByDefault: false }),
 } as const;
 

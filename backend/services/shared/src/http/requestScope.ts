@@ -110,14 +110,25 @@ export function getS2SPropagationHeaders(): Record<string, string> {
     "x-request-id": scope.requestId,
   };
 
+  // testRunId is optional: keep it when present (useful for log correlation).
   if (scope.testRunId) h["x-nv-test-run-id"] = scope.testRunId;
+
+  // IMPORTANT (drift fix):
+  // - expected-negative behavior must propagate even when testRunId is absent.
+  // - Many handler/pipeline tests mark expectErrors but do not assign a run id.
   if (scope.expectErrors === true) h["x-nv-test-expect-errors"] = "true";
 
   return h;
 }
 
-/** Convenience: are we in an "expected error" test context right now? */
+/**
+ * Convenience: are we in an "expected error" context right now?
+ *
+ * IMPORTANT (drift fix):
+ * - expected-negative downgrade is driven by expectErrors=true.
+ * - testRunId is optional and should not gate downgrade behavior.
+ */
 export function isExpectedErrorContext(): boolean {
   const scope = ALS.getStore();
-  return !!scope?.testRunId && scope?.expectErrors === true;
+  return scope?.expectErrors === true;
 }

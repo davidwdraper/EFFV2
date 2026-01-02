@@ -9,6 +9,11 @@
  *
  * Purpose:
  * - Core deterministic happy-json + hints generation from a runtime Fields object.
+ *
+ * Generator policy (ADR-0092):
+ * - Sidecar getJson() is "all-fields happy" by default.
+ * - Only exclusion in v1: optional + unique fields are omitted (explicitly skipped).
+ * - Setters remain canonical; nv-dto-gen --verify detects drift.
  */
 
 import path from "node:path";
@@ -25,6 +30,13 @@ export type FieldKind =
   | "object"
   | "union";
 
+/**
+ * Mirror the DSL’s small, closed format surface.
+ * (Tool-local on purpose; generator consumes runtime plain objects.)
+ */
+export type StringFieldFormat = "email" | "phoneDigits" | "state2" | "zip5";
+export type NumberFieldFormat = "lat" | "lng";
+
 export type FieldDescriptor = {
   kind: FieldKind;
 
@@ -40,6 +52,9 @@ export type FieldDescriptor = {
 
   min?: number;
   max?: number;
+
+  /** Non-regex format hint used to mint happy-path exemplars. */
+  format?: StringFieldFormat | NumberFieldFormat;
 
   value?: string | number | boolean | null;
   values?: ReadonlyArray<string>;
@@ -72,9 +87,25 @@ function presentByDefaultDefaultsTrue(fd: FieldDescriptor): boolean {
   return fd.presentByDefault !== undefined ? !!fd.presentByDefault : true;
 }
 
+/**
+ * Sidecar JSON inclusion policy (v1):
+ * - Include required fields always.
+ * - Include optional fields too (all-fields tests must be meaningful),
+ *   EXCEPT optional+unique fields which are explicitly skipped.
+ *
+ * Rationale:
+ * - Optional+unique requires a uniqueness strategy that does not apply when
+ *   the field is absent; we skip it until the test runner supports that explicitly.
+ */
 function shouldIncludeInHappy(fd: FieldDescriptor): boolean {
-  if (requiredDefaultsTrue(fd)) return true;
-  return presentByDefaultDefaultsTrue(fd);
+  const required = requiredDefaultsTrue(fd);
+  if (required) return true;
+
+  // Optional field. Skip ONLY if unique:true (explicit non-goal).
+  if (fd.unique === true) return false;
+
+  // Otherwise include (all-fields happy).
+  return true;
 }
 
 function alphaLetters(len: number): string {
@@ -110,6 +141,13 @@ function digitChars(len: number): string {
   return out;
 }
 
+function clampNumber(n: number, min?: number, max?: number): number {
+  let out = n;
+  if (typeof min === "number" && Number.isFinite(min) && out < min) out = min;
+  if (typeof max === "number" && Number.isFinite(max) && out > max) out = max;
+  return out;
+}
+
 /**
  * Unique-field exemplars:
  * - For unique:true fields, getJson() emits a "shape exemplar" string.
@@ -124,28 +162,25 @@ function digitChars(len: number): string {
  * - Strings only (email/phone special-cased; everything else is a generic string exemplar).
  */
 function makeUniqueExemplar(fieldName: string, fd: FieldDescriptor): string {
-  const nameLower = fieldName.toLowerCase();
+  const fmt = fd.format;
 
   // Email unique exemplar: visually a shape, still a valid-looking email.
-  // Using only letters (x) ensures shapeFromHappyString() yields the same "xxxx+xxxx@xxx.xxx" pattern.
-  if (nameLower.includes("email")) {
+  if (fmt === "email" || fieldName.toLowerCase().includes("email")) {
     const exemplar = "xxxx+xxxx@xxx.xxx";
     return clampLen(exemplar, fd.minLen, fd.maxLen);
   }
 
-  // Phone unique exemplar: must use digits so shapeFromHappyString() yields '#'.
-  // Keep it string-only and validator-agnostic for now (digits-only is usually safest).
-  if (nameLower.includes("phone")) {
-    const minLen = typeof fd.minLen === "number" ? fd.minLen : 11;
+  // Phone unique exemplar: digits so shapeFromHappyString() yields '#'.
+  if (fmt === "phoneDigits" || fieldName.toLowerCase().includes("phone")) {
+    const minLen = typeof fd.minLen === "number" ? fd.minLen : 10;
     const maxLen = typeof fd.maxLen === "number" ? fd.maxLen : minLen;
 
-    // Prefer a stable 11-digit shape unless constrained otherwise.
-    const targetLen = Math.max(1, Math.min(Math.max(minLen, 11), maxLen));
+    // Prefer a stable 10-digit shape unless constrained otherwise.
+    const targetLen = Math.max(1, Math.min(Math.max(minLen, 10), maxLen));
     return clampLen(digitChars(targetLen), fd.minLen, fd.maxLen);
   }
 
   // Generic unique strings:
-  // - If alpha-only (names can be unique), keep letters-only and respect case.
   if (fd.alpha) {
     const baseLen = Math.max(fd.minLen ?? 6, 6);
     return clampLen(
@@ -155,16 +190,57 @@ function makeUniqueExemplar(fieldName: string, fd: FieldDescriptor): string {
     );
   }
 
-  // Otherwise, emit a readable shape exemplar using letters + hyphens.
-  // Hyphen is preserved as a literal in shapeFromHappyString() and uniqueValueBuilder().
   const exemplar = "xxxx-xxxx-xxxx";
   return clampLen(exemplar, fd.minLen, fd.maxLen);
+}
+
+function makeFormattedString(
+  fieldName: string,
+  fd: FieldDescriptor,
+  format: StringFieldFormat
+): string {
+  switch (format) {
+    case "email": {
+      const local =
+        `test+${fieldName.replace(/[^a-zA-Z0-9]+/g, "")}`.slice(0, 40) ||
+        "test";
+      return clampLen(`${local}@nv.test`, fd.minLen, fd.maxLen);
+    }
+
+    case "phoneDigits": {
+      const minLen = typeof fd.minLen === "number" ? fd.minLen : 10;
+      const maxLen = typeof fd.maxLen === "number" ? fd.maxLen : minLen;
+      const targetLen = Math.max(1, Math.min(Math.max(minLen, 10), maxLen));
+      return clampLen(digitChars(targetLen), fd.minLen, fd.maxLen);
+    }
+
+    case "state2": {
+      return clampLen("CA", fd.minLen ?? 2, fd.maxLen ?? 2);
+    }
+
+    case "zip5": {
+      return clampLen("12345", fd.minLen ?? 5, fd.maxLen ?? 5);
+    }
+
+    default:
+      return clampLen(`t_${fieldName}`, fd.minLen, fd.maxLen);
+  }
 }
 
 function makeHappyString(fieldName: string, fd: FieldDescriptor): string {
   // If the field is unique, emit a shape exemplar (not a meaningful literal).
   if (fd.unique) {
     return makeUniqueExemplar(fieldName, fd);
+  }
+
+  const fmt = fd.format;
+  if (
+    fmt === "email" ||
+    fmt === "phoneDigits" ||
+    fmt === "state2" ||
+    fmt === "zip5"
+  ) {
+    return makeFormattedString(fieldName, fd, fmt);
   }
 
   const nameLower = fieldName.toLowerCase();
@@ -187,6 +263,16 @@ function makeHappyString(fieldName: string, fd: FieldDescriptor): string {
 }
 
 function makeHappyNumber(fd: FieldDescriptor): number {
+  const fmt = fd.format;
+
+  if (fmt === "lat") {
+    return clampNumber(37.7749, fd.min ?? -90, fd.max ?? 90);
+  }
+
+  if (fmt === "lng") {
+    return clampNumber(-122.4194, fd.min ?? -180, fd.max ?? 180);
+  }
+
   if (typeof fd.min === "number" && Number.isFinite(fd.min)) return fd.min;
   if (typeof fd.max === "number" && Number.isFinite(fd.max)) return fd.max;
   return 1;
@@ -251,6 +337,7 @@ export function buildHints(
     };
 
     if (fd.unique) hint.unique = true;
+    if (fd.format) hint.format = fd.format;
 
     if (fd.kind === "string") {
       if (typeof fd.minLen === "number") hint.minLen = fd.minLen;

@@ -20,6 +20,11 @@
  * Virtual-server invariant:
  * - Scenario ctx MUST inherit pipeline runtime ("rt") automatically.
  * - Tests must not be SvcRuntime-aware.
+ *
+ * Rails:
+ * - Handler execution MUST run inside requestScope ALS so:
+ *   - expected-negative errors can be downgraded (no pager-noise)
+ *   - SvcClient can propagate x-nv-test-* headers across S2S hops
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -27,6 +32,8 @@ import { HandlerContext as HandlerContextCtor } from "@nv/shared/http/handlers/H
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
+
+import { withRequestScope } from "@nv/shared/http/requestScope";
 
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
@@ -216,8 +223,26 @@ export class StepIterator {
               `StepIterator: scenarioCtx is required for handler="${handlerName}"`
             );
           }
-          const h = new handlerCtor(scenarioCtx, input.controller);
-          await h.run();
+
+          const requestId =
+            scenarioCtx.get<string>("requestId") ?? `scenario-${Date.now()}`;
+
+          const expectErrors =
+            scenarioCtx.get<boolean | undefined>("expectErrors") === true;
+
+          // Rails: run handler execution inside ALS requestScope so shared error helpers
+          // can downgrade expected-negative logs and SvcClient can propagate x-nv-test-*.
+          await withRequestScope(
+            {
+              requestId,
+              testRunId,
+              expectErrors,
+            },
+            async () => {
+              const h = new handlerCtor(scenarioCtx, input.controller);
+              await h.run();
+            }
+          );
         },
       };
 

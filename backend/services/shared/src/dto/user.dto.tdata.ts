@@ -22,7 +22,15 @@ export class UserDtoTdata {
   "type": "user",
   "givenName": "Abcdef",
   "lastName": "Abcdef",
-  "email": "xxxx+xxxx@xxx.xxx"
+  "email": "xxxx+xxxx@xxx.xxx",
+  "homeLat": 37.7749,
+  "homeLng": -122.4194,
+  "address1": "t_address1",
+  "address2": "t_address2",
+  "city": "t_city",
+  "state": "CA",
+  "pcode": "12345",
+  "notes": "t_notes"
 };
   }
 
@@ -57,6 +65,7 @@ export class UserDtoTdata {
       "required": true,
       "presentByDefault": true,
       "unique": true,
+      "format": "email",
       "minLen": 5,
       "maxLen": 200
     },
@@ -64,17 +73,20 @@ export class UserDtoTdata {
       "kind": "string",
       "required": false,
       "presentByDefault": false,
-      "unique": true
+      "unique": true,
+      "format": "phoneDigits"
     },
     "homeLat": {
       "kind": "number",
       "required": false,
-      "presentByDefault": false
+      "presentByDefault": false,
+      "format": "lat"
     },
     "homeLng": {
       "kind": "number",
       "required": false,
-      "presentByDefault": false
+      "presentByDefault": false,
+      "format": "lng"
     },
     "address1": {
       "kind": "string",
@@ -94,12 +106,14 @@ export class UserDtoTdata {
     "state": {
       "kind": "string",
       "required": false,
-      "presentByDefault": false
+      "presentByDefault": false,
+      "format": "state2"
     },
     "pcode": {
       "kind": "string",
       "required": false,
-      "presentByDefault": false
+      "presentByDefault": false,
+      "format": "zip5"
     },
     "notes": {
       "kind": "string",

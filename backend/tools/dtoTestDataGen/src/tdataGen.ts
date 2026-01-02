@@ -5,6 +5,7 @@
  * - ADRs:
  *   - ADR-0088
  *   - ADR-0091
+ *   - ADR-0092
  *
  * Purpose:
  * - Core deterministic happy-json + hints generation from a runtime Fields object.
@@ -102,7 +103,70 @@ function clampLen(s: string, minLen?: number, maxLen?: number): string {
   return out;
 }
 
+function digitChars(len: number): string {
+  const digits = "1234567890";
+  let out = "";
+  for (let i = 0; i < len; i++) out += digits[i % digits.length];
+  return out;
+}
+
+/**
+ * Unique-field exemplars:
+ * - For unique:true fields, getJson() emits a "shape exemplar" string.
+ * - Registry derives the shape via shapeFromHappyString(happyValue),
+ *   then passes that shape into uniqueValueBuilder(shape).
+ *
+ * IMPORTANT:
+ * - Use letters/digits in the exemplar (NOT literal '#') so shapeFromHappyString()
+ *   can derive '#'-wildcards from real digits.
+ *
+ * v1 scope:
+ * - Strings only (email/phone special-cased; everything else is a generic string exemplar).
+ */
+function makeUniqueExemplar(fieldName: string, fd: FieldDescriptor): string {
+  const nameLower = fieldName.toLowerCase();
+
+  // Email unique exemplar: visually a shape, still a valid-looking email.
+  // Using only letters (x) ensures shapeFromHappyString() yields the same "xxxx+xxxx@xxx.xxx" pattern.
+  if (nameLower.includes("email")) {
+    const exemplar = "xxxx+xxxx@xxx.xxx";
+    return clampLen(exemplar, fd.minLen, fd.maxLen);
+  }
+
+  // Phone unique exemplar: must use digits so shapeFromHappyString() yields '#'.
+  // Keep it string-only and validator-agnostic for now (digits-only is usually safest).
+  if (nameLower.includes("phone")) {
+    const minLen = typeof fd.minLen === "number" ? fd.minLen : 11;
+    const maxLen = typeof fd.maxLen === "number" ? fd.maxLen : minLen;
+
+    // Prefer a stable 11-digit shape unless constrained otherwise.
+    const targetLen = Math.max(1, Math.min(Math.max(minLen, 11), maxLen));
+    return clampLen(digitChars(targetLen), fd.minLen, fd.maxLen);
+  }
+
+  // Generic unique strings:
+  // - If alpha-only (names can be unique), keep letters-only and respect case.
+  if (fd.alpha) {
+    const baseLen = Math.max(fd.minLen ?? 6, 6);
+    return clampLen(
+      applyCaseAlpha(alphaLetters(baseLen), fd.case),
+      fd.minLen,
+      fd.maxLen
+    );
+  }
+
+  // Otherwise, emit a readable shape exemplar using letters + hyphens.
+  // Hyphen is preserved as a literal in shapeFromHappyString() and uniqueValueBuilder().
+  const exemplar = "xxxx-xxxx-xxxx";
+  return clampLen(exemplar, fd.minLen, fd.maxLen);
+}
+
 function makeHappyString(fieldName: string, fd: FieldDescriptor): string {
+  // If the field is unique, emit a shape exemplar (not a meaningful literal).
+  if (fd.unique) {
+    return makeUniqueExemplar(fieldName, fd);
+  }
+
   const nameLower = fieldName.toLowerCase();
   if (nameLower.includes("email")) {
     const local =
@@ -278,6 +342,7 @@ export function renderSidecarTs(opts: {
  * - ADRs:
  *   - ADR-0088 (DTO Test Data Sidecars)
  *   - ADR-0091 (DTO Sidecar Tooling + Testdata Output)
+ *   - ADR-0092 (DTO Fields DSL + Testdata Generation)
  *
  * Source DTO:
  * - ${opts.dtoRelFromCwd}

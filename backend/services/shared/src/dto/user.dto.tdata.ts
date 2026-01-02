@@ -5,6 +5,7 @@
  * - ADRs:
  *   - ADR-0088 (DTO Test Data Sidecars)
  *   - ADR-0091 (DTO Sidecar Tooling + Testdata Output)
+ *   - ADR-0092 (DTO Fields DSL + Testdata Generation)
  *
  * Source DTO:
  * - backend/services/shared/src/dto/user.dto.ts
@@ -21,7 +22,7 @@ export class UserDtoTdata {
   "type": "user",
   "givenName": "Abcdef",
   "lastName": "Abcdef",
-  "email": "test+email@nv.test"
+  "email": "xxxx+xxxx@xxx.xxx"
 };
   }
 

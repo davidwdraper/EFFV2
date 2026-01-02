@@ -114,8 +114,9 @@ export class BagBuilder {
 
     const items: IDto[] = [];
     for (let i = 0; i < body.items.length; i++) {
-      const item = body.items[i] as Record<string, unknown>;
-      const t = String(item?.type ?? "");
+      const wireItem = body.items[i] as Record<string, unknown>;
+
+      const t = String(wireItem?.type ?? "");
       if (!t) {
         throw new Error(
           `BadRequest: items[${i}] missing required "type" discriminator (ADR-0049)${
@@ -123,9 +124,26 @@ export class BagBuilder {
           }`
         );
       }
-      // NEW
+
+      // ADR-0050 wire envelope: each entry is { type, item } where "item" is the DTO JSON payload.
+      const payloadItem = (wireItem as any).item as unknown;
+      if (
+        !payloadItem ||
+        typeof payloadItem !== "object" ||
+        Array.isArray(payloadItem)
+      ) {
+        throw new Error(
+          `BadRequest: items[${i}].item must be an object payload (ADR-0050)${
+            requestId ? ` (requestId=${requestId})` : ""
+          }`
+        );
+      }
+
       const Ctor = registry.resolveCtorByType(t); // throws if unknown
-      const dto = Ctor.fromBody(item, { mode: "wire", validate: true });
+      const dto = Ctor.fromBody(payloadItem as Record<string, unknown>, {
+        mode: "wire",
+        validate: true,
+      });
 
       items.push(dto);
     }

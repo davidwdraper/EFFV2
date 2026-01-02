@@ -6,11 +6,14 @@
  *   - ADR-0049 (DTO Registry & canonical id)
  *   - ADR-0053 (Instantiation Discipline via Registry Secret)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
+ *   - ADR-0088 (DTO Test Data Sidecars)
+ *   - ADR-0091 (DTO Sidecar Tooling + Testdata Output)
  *
  * Purpose:
  * - Shared minting/instantiation registry for UserDto.
  * - Lives in `shared` so services (auth, test-runner, etc.) can mint UserDto
  *   instances without depending on the user service's Registry.
+ * - Exposes happy-only test minting via RegistryBase.getTestDto().
  *
  * Invariants:
  * - Instantiation discipline is enforced via DtoBase secret.
@@ -20,8 +23,13 @@
 
 import { DtoBase } from "../DtoBase";
 import { UserDto } from "../user.dto";
+import { UserDtoTdata } from "../user.dto.tdata";
 import type { IDto } from "../IDto";
-import { RegistryBase, type DtoCtor } from "../../registry/RegistryBase";
+import {
+  RegistryBase,
+  type DtoCtor,
+  type DtoTdataProvider,
+} from "../../registry/RegistryBase";
 
 export class UserDtoRegistry extends RegistryBase {
   /** Shared secret used by DTO constructors that enforce instantiation discipline. */
@@ -34,6 +42,16 @@ export class UserDtoRegistry extends RegistryBase {
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
       ["user"]: UserDto as unknown as DtoCtor<IDto>,
+    };
+  }
+
+  /**
+   * Happy-only DTO test-data providers (generated sidecars).
+   * Sidecars are happy-only; RegistryBase mints variants downstream.
+   */
+  protected tdataByType(): Record<string, DtoTdataProvider> {
+    return {
+      ["user"]: UserDtoTdata,
     };
   }
 

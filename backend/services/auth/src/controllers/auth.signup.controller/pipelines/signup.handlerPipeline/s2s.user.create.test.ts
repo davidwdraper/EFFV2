@@ -128,12 +128,15 @@ type HandlerTestResult = {
 function buildUserBag(
   signupUserId: string,
   requestId: string,
-  seed: (dto: UserDto) => void
+  mutate?: (dto: UserDto) => void
 ): UserBag {
   const registry = new UserDtoRegistryCtor();
-  const dto = registry.newUserDto();
 
-  seed(dto);
+  // ✅ Registry-minted happy DTO (sidecar JSON hydrated + validated + collection seeded)
+  const dto = registry.getTestDto("happy") as unknown as UserDto;
+
+  // Optional per-scenario tweaks (uniqueness, forcing missing, etc.)
+  if (mutate) mutate(dto);
 
   // Match pipeline behavior: canonical UUIDv4 id applied once.
   dto.setIdOnce?.(signupUserId);
@@ -374,14 +377,8 @@ export async function getScenarios(deps: any): Promise<any[]> {
         const signupUserId = newUuid();
 
         const bag = buildUserBag(signupUserId, requestId, (dto) => {
-          // Seed valid values first...
-          dto.setGivenName?.("Auth S S");
-          dto.setLastName?.("MissingFields");
-          dto.setEmail?.(
-            `auth.s2s.user.create.missing+${signupUserId}@example.com`
-          );
-
-          // ...then clear them to force validation failure.
+          // Start with valid happy data, then force missing/empty fields.
+          // (Setter validation is not requested here; the handler/rails should reject.)
           dto.setGivenName?.("");
           dto.setLastName?.("");
           dto.setEmail?.("");

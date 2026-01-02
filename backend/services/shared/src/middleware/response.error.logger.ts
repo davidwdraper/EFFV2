@@ -18,8 +18,8 @@
  */
 
 import type { Request, Response, NextFunction } from "express";
-import type { IBoundLogger } from "@nv/shared/logger/Logger";
-import { getLogger } from "@nv/shared/logger/Logger";
+import type { IBoundLogger } from "../logger/Logger";
+import { getLogger } from "../logger/Logger";
 
 export function responseErrorLogger(arg: IBoundLogger | string) {
   const isString = typeof arg === "string";

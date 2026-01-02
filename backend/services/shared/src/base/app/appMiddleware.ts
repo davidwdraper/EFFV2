@@ -17,11 +17,11 @@
 
 import type { Express } from "express";
 import express = require("express");
-import { responseErrorLogger } from "@nv/shared/middleware/response.error.logger";
-import { routePolicyGate } from "@nv/shared/middleware/policy/routePolicyGate";
-import type { IBoundLogger } from "@nv/shared/logger/Logger";
-import { createProblemMiddleware } from "@nv/shared/problem/createProblemMiddleware";
-import type { ISvcconfigResolver } from "@nv/shared/s2s/SvcClient";
+import { responseErrorLogger } from "../../middleware/response.error.logger";
+import { routePolicyGate } from "../../middleware/policy/routePolicyGate";
+import type { IBoundLogger } from "../../logger/Logger";
+import { createProblemMiddleware } from "../../problem/createProblemMiddleware";
+import type { ISvcconfigResolver } from "../../s2s/SvcClient";
 
 export function mountPreRoutingLayer(opts: {
   app: Express;

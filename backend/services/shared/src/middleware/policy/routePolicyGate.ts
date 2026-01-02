@@ -27,7 +27,7 @@
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import type { IBoundLogger } from "@nv/shared/logger/Logger";
+import type { IBoundLogger } from "../../logger/Logger";
 import type { ISvcconfigResolver } from "../../s2s/SvcClient";
 
 type HttpMethod = "PUT" | "POST" | "PATCH" | "GET" | "DELETE";

@@ -14,15 +14,18 @@
  * - DbReader<TDto> delegates to this worker by default.
  */
 
-import type { OrderSpec } from "@nv/shared/db/orderSpec";
-import { ORDER_STABLE_ID_ASC, toMongoSort } from "@nv/shared/db/orderSpec";
+import {
+  OrderSpec,
+  ORDER_STABLE_ID_ASC,
+  toMongoSort,
+} from "../../../db/orderSpec";
 import {
   encodeCursor,
   decodeCursor,
   keysetFromDoc,
   toMongoSeekFilter,
-} from "@nv/shared/db/cursor";
-import { DtoBag } from "@nv/shared/dto/DtoBag";
+} from "../../../db/cursor";
+import { DtoBag } from "../../../dto/DtoBag";
 import { coerceForMongoQuery } from "../adapters/mongo/queryHelper";
 import { MongoClient, Collection, Db, Document } from "mongodb";
 import type {

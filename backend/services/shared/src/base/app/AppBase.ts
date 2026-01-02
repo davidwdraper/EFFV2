@@ -28,14 +28,17 @@
 
 import type { Express } from "express";
 import express = require("express");
-import { ServiceBase } from "@nv/shared/base/ServiceBase";
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
-import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
-import { SvcClient, type ISvcClientTransport } from "@nv/shared/s2s/SvcClient";
-import type { IBoundLogger } from "@nv/shared/logger/Logger";
+import { ServiceBase } from "../ServiceBase";
+import type { EnvServiceDto } from "../../dto/env-service.dto";
+import type { IDtoRegistry } from "../../registry/RegistryBase";
+import { PromptsClient } from "../../prompts/PromptsClient";
+import {
+  SvcClient,
+  ISvcconfigResolver,
+  type ISvcClientTransport,
+} from "../../s2s/SvcClient";
+import type { IBoundLogger } from "../../logger/Logger";
 import { performDbBoot, type DbBootContext } from "./appBoot";
-import type { ISvcconfigResolver } from "@nv/shared/s2s/SvcClient";
 import {
   mountPreRoutingLayer,
   mountRoutePolicyGateLayer,

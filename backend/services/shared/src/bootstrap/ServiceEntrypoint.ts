@@ -26,11 +26,11 @@
 
 import fs from "fs";
 import path from "path";
-import { envBootstrap } from "@nv/shared/bootstrap/envBootstrap";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
-import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
+import { envBootstrap } from "./envBootstrap";
+import { EnvServiceDto } from "../dto/env-service.dto";
+import type { DtoBag } from "../dto/DtoBag";
+import type { SvcRuntime } from "../runtime/SvcRuntime";
+import type { SvcPosture } from "../runtime/SvcPosture";
 
 export interface ServiceEntrypointOptions {
   slug: string;

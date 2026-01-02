@@ -21,9 +21,9 @@
  * - No implicit fallbacks; Dev == Prod. Missing config → fail fast.
  */
 
-import type { OrderSpec } from "@nv/shared/db/orderSpec";
-import { ORDER_STABLE_ID_ASC } from "@nv/shared/db/orderSpec";
-import { DtoBag } from "@nv/shared/dto/DtoBag";
+import type { OrderSpec } from "../../../db/orderSpec";
+import { ORDER_STABLE_ID_ASC } from "../../../db/orderSpec";
+import { DtoBag } from "../../../dto/DtoBag";
 import { MongoDbReaderWorker } from "./DbReader.mongoWorker";
 
 type DtoCtorWithCollection<T> = {

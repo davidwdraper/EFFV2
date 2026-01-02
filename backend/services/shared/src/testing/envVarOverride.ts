@@ -8,7 +8,7 @@
  * - Keeps EnvServiceDto clean; all test-only override mechanics live here.
  */
 
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { EnvServiceDto } from "../dto/env-service.dto";
 import { overrideWithTTL } from "./overrideWithTTL";
 
 /**

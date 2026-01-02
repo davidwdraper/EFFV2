@@ -28,11 +28,11 @@ import {
   type ISvcClientLogger,
   type ISvcClientTransport,
   type SvcTarget,
-} from "@nv/shared/s2s/SvcClient";
-import { PromptsClient } from "@nv/shared/prompts/PromptsClient";
-import type { IBoundLogger } from "@nv/shared/logger/Logger";
-import { SvcconfigResolverWithCache } from "@nv/shared/s2s/SvcconfigResolverWithCache";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+} from "../../s2s/SvcClient";
+import { PromptsClient } from "../../prompts/PromptsClient";
+import type { IBoundLogger } from "../../logger/Logger";
+import { SvcconfigResolverWithCache } from "../../s2s/SvcconfigResolverWithCache";
+import { EnvServiceDto } from "../../dto/env-service.dto";
 
 function requirePositiveIntVarFromDto(
   dto: EnvServiceDto,

@@ -13,9 +13,9 @@
  *   • Ensure indexes via registry.ensureIndexes().
  */
 
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
-import type { IBoundLogger } from "@nv/shared/logger/Logger";
+import type { EnvServiceDto } from "../../dto/env-service.dto";
+import type { IDtoRegistry } from "../../registry/RegistryBase";
+import type { IBoundLogger } from "../../logger/Logger";
 
 export type DbBootContext = {
   service: string;

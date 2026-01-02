@@ -41,14 +41,14 @@
  * - No ctx["response.body"] on success.
  */
 
-import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { DtoBase } from "@nv/shared/dto/DtoBase";
+import { HandlerBase } from "./HandlerBase";
+import type { HandlerContext } from "./HandlerContext";
+import type { DtoBag } from "../../dto/DtoBag";
+import type { DtoBase } from "../../dto/DtoBase";
 import {
   DbWriter,
   DuplicateKeyError,
-} from "@nv/shared/dto/persistence/dbWriter/DbWriter";
+} from "../../dto/persistence/dbWriter/DbWriter";
 
 export class DbCreateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {

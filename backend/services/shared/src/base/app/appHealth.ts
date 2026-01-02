@@ -14,9 +14,9 @@
  */
 
 import type { Express, Request, Response } from "express";
-import type { IBoundLogger } from "@nv/shared/logger/Logger";
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+import type { IBoundLogger } from "../../logger/Logger";
+import type { EnvServiceDto } from "../../dto/env-service.dto";
+import type { SvcRuntime } from "../../runtime/SvcRuntime";
 
 export function computeHealthBasePath(
   service: string | undefined,

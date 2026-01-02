@@ -1,0 +1,4 @@
+cat ../shared/package.json
+ls -la ../shared/dist | sed -n '1,200p'
+ls -la ../shared/dist/http | sed -n '1,200p' || true
+ls -la ../shared/dist/dto | sed -n '1,200p' || true

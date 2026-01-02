@@ -15,10 +15,6 @@
     "resolveJsonModule": true,
     "noEmitOnError": true,
 
-    "baseUrl": ".",
-    "paths": {
-      "@nv/shared": ["backend/services/shared/src/index"],
-      "@nv/shared/*": ["backend/services/shared/src/*"]
-    }
+    "baseUrl": "."
   }
 }

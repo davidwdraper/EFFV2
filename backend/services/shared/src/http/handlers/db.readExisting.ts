@@ -21,12 +21,12 @@
  *   - ctx["error"]: NvHandlerError (mapped to ProblemDetails by finalize)
  */
 
-import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
-import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { IDto } from "@nv/shared/dto/IDto";
-import type { DtoBase } from "@nv/shared/dto/DtoBase";
+import { HandlerBase } from "./HandlerBase";
+import type { HandlerContext } from "./HandlerContext";
+import { DbReader } from "../../dto/persistence/dbReader/DbReader";
+import type { DtoBag } from "../../dto/DtoBag";
+import type { IDto } from "../../dto/IDto";
+import type { DtoBase } from "../../dto/DtoBase";
 
 export class DbReadExistingHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {

@@ -35,11 +35,11 @@
  * - DtoRegistry implements dbCollectionNameByType(dtoType: string): string.
  */
 
-import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { DbDeleter } from "@nv/shared/dto/persistence/dbDeleter/DbDeleter";
-import { isValidUuidV4 } from "@nv/shared/utils/uuid";
-import { DtoBag } from "@nv/shared/dto/DtoBag";
+import { HandlerBase } from "./HandlerBase";
+import type { HandlerContext } from "./HandlerContext";
+import { DbDeleter } from "../../dto/persistence/dbDeleter/DbDeleter";
+import { isValidUuidV4 } from "../../utils/uuid";
+import { DtoBag } from "../../dto/DtoBag";
 
 export class DbDeleteByIdHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {

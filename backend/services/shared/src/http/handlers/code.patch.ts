@@ -24,13 +24,13 @@
  *   - ctx["error"]: NvHandlerError (mapped to ProblemDetails by finalize)
  */
 
-import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
-import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { DtoBase } from "@nv/shared/dto/DtoBase";
-import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
-import type { IDto } from "@nv/shared/dto/IDto";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import { HandlerBase } from "./HandlerBase";
+import type { HandlerContext } from "./HandlerContext";
+import type { DtoBag } from "../../dto/DtoBag";
+import type { DtoBase } from "../../dto/DtoBase";
+import { BagBuilder } from "../../dto/wire/BagBuilder";
+import type { IDto } from "../../dto/IDto";
+import type { IDtoRegistry } from "../../registry/RegistryBase";
 
 export class CodePatchHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {

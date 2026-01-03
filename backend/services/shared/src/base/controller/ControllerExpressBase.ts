@@ -119,7 +119,7 @@ export abstract class ControllerExpressBase extends ControllerBase {
     // Primary: ALS requestScope (works for S2S propagation + handler logs)
     if (isExpectedErrorContext()) return true;
 
-    // Secondary: ctx flag (some tests may seed ctx but not ALS in weird cases)
+    // Secondary: ctx flag (tests only)
     try {
       return ctx.get<boolean | undefined>("test.expectErrors") === true;
     } catch {

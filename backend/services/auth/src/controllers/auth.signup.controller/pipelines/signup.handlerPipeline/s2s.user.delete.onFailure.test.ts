@@ -9,9 +9,10 @@
  * - ADR-0057 (Shared SvcClient for S2S Calls)
  * - ADR-0063 (Auth Signup MOS Pipeline)
  * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ * - ADR-0094 (Test Scenario Error Handling and Logging)
  *
  * Purpose:
- * - Define handler-level tests for S2sUserDeleteOnFailureHandler.
+ * - Handler-level tests for S2sUserDeleteOnFailureHandler.
  *
  * Contract for this test module:
  * - If a prior test stored a created userId, we attempt rollback delete.
@@ -20,10 +21,24 @@
  * IMPORTANT:
  * - Runner-shaped module: scenarios execute via deps.step.execute(ctx)
  *   so the scenario ctx inherits pipeline runtime ("rt") automatically.
+ *
+ * ADR-0094 alignment:
+ * - No semantics via ctx flags.
+ * - Inner/outer try/catch/finally.
+ * - Deterministic outcome via TestScenarioStatus + TestScenarioFinalizer.
+ * - Assertions are recorded (do not throw) to avoid misclassifying as infra failure.
  */
 
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { UserDto } from "@nv/shared/dto/user.dto";
+import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
+import { UserDtoRegistry as UserDtoRegistryCtor } from "@nv/shared/dto/registry/user.dtoRegistry";
+
+import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
+
+import type { TestScenarioStatus } from "@nv/shared/testing/TestScenarioStatus";
+import { TestScenarioFinalizer } from "@nv/shared/testing/TestScenarioFinalizer";
+import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
 
 type UserBag = DtoBag<UserDto>;
 
@@ -34,20 +49,6 @@ type UserCreateStatus =
 type UserAuthCreateStatus =
   | { ok: true }
   | { ok: false; code: string; message: string };
-
-type Assert = { count: number; failed: string[] };
-
-function assertEq(a: Assert, actual: any, expected: any, msg: string): void {
-  a.count += 1;
-  if (actual !== expected) {
-    a.failed.push(`${msg} expected=${String(expected)} got=${String(actual)}`);
-  }
-}
-
-function assertOk(a: Assert, cond: any, msg: string): void {
-  a.count += 1;
-  if (!cond) a.failed.push(msg);
-}
 
 // ───────────────────────────────────────────
 // Shared handoff (process-local)
@@ -60,216 +61,223 @@ function getSharedStore(): Record<string, any> {
   return g.__nv_handler_test_shared as Record<string, any>;
 }
 
-function tryGetCreatedUserIdFromCtxOrShared(ctx: any): string | undefined {
-  const fromCtx =
-    typeof ctx?.get === "function"
-      ? (ctx.get("test.shared.userId") as any)
-      : undefined;
-
-  if (typeof fromCtx === "string" && fromCtx.trim().length > 0) {
-    return fromCtx.trim();
-  }
-
+function tryGetCreatedUserIdFromShared(): string | undefined {
   const store = getSharedStore();
-  const fromShared = store[SHARED_SLOT_KEY];
+  const v = store[SHARED_SLOT_KEY];
 
-  if (typeof fromShared === "string" && fromShared.trim().length > 0) {
-    return fromShared.trim();
-  }
-
+  if (typeof v === "string" && v.trim().length > 0) return v.trim();
   return undefined;
 }
 
 // ───────────────────────────────────────────
-// Rails helpers
+// DTO/bag helper
 // ───────────────────────────────────────────
-function railsSnapshot(ctx: any): {
-  handlerStatus: any;
-  status: any;
-  responseStatus: any;
-} {
-  const handlerStatus = ctx?.get?.("handlerStatus") ?? "ok";
-  const status = ctx?.get?.("status") ?? 200;
-  const responseStatus = ctx?.get?.("response.status");
-  return { handlerStatus, status, responseStatus };
+function buildUserBagForRollback(
+  signupUserId: string,
+  requestId: string
+): UserBag {
+  const registry = new UserDtoRegistryCtor();
+
+  // Registry-minted happy DTO keeps this stable and avoids ad-hoc DTO shaping.
+  const dto = registry.getTestDto("happy") as unknown as UserDto;
+
+  // This compensator expects the edge bag to contain the same user with the same id.
+  dto.setIdOnce?.(signupUserId);
+
+  const { bag } = BagBuilder.fromDtos([dto], {
+    requestId,
+    limit: 1,
+    total: 1,
+    cursor: null,
+  });
+
+  return bag as UserBag;
 }
 
-function isRailsError(s: {
-  handlerStatus: any;
-  status: any;
-  responseStatus: any;
-}): boolean {
-  return (
-    s.handlerStatus === "error" ||
-    (typeof s.status === "number" && s.status >= 400) ||
-    (typeof s.responseStatus === "number" && s.responseStatus >= 400)
-  );
+// ───────────────────────────────────────────
+// Small readers (avoid importing rails helpers)
+// ───────────────────────────────────────────
+function readHttpStatus(ctx: any): number {
+  const v = ctx.get("response.status") ?? ctx.get("status") ?? 200;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 200;
 }
 
-type HandlerTestResult = {
-  testId: string;
-  name: string;
-  outcome: "passed" | "failed";
-  expectedError: boolean;
-  assertionCount: number;
-  failedAssertions: string[];
-  errorMessage?: string;
-  durationMs: number;
-  railsVerdict: "ok" | "rails_error" | "test_bug";
-  railsStatus?: number;
-  railsHandlerStatus?: string;
-  railsResponseStatus?: number;
-};
+function readHandlerStatus(ctx: any): string {
+  const v = ctx.get("handlerStatus");
+  return typeof v === "string" ? v : "ok";
+}
 
 // ───────────────────────────────────────────
-// Scenario runner helper
+// Legacy mapping (status → HandlerTestResult)
 // ───────────────────────────────────────────
-async function runScenario(input: {
-  deps: any;
+function makeResultFromStatus(input: {
+  status: TestScenarioStatus;
   testId: string;
   name: string;
   expectedError: boolean;
-  seed: {
-    requestId: string;
-    dtoType: string;
-    op: string;
-    bag: any;
-  };
-  createdUserId?: string;
-}): Promise<HandlerTestResult> {
-  const startedAt = Date.now();
-  const a: Assert = { count: 0, failed: [] };
+  ctx?: any;
+}): HandlerTestResult {
+  const out = input.status.outcome();
+  const rails = input.status.rails();
 
-  try {
-    // If we don't have a created userId, that's a PASS (per your rule).
-    if (!input.createdUserId) {
-      assertOk(
-        a,
-        true,
-        "no created userId was available; skipping rollback delete (not a failure)"
-      );
+  const handlerStatus =
+    rails?.handlerStatus ?? (input.ctx ? readHandlerStatus(input.ctx) : "ok");
+  const httpStatus =
+    rails?.httpStatus ?? (input.ctx ? readHttpStatus(input.ctx) : 200);
 
-      const finishedAt = Date.now();
-      return {
-        testId: input.testId,
-        name: input.name,
-        outcome: "passed",
-        expectedError: false,
-        assertionCount: a.count,
-        failedAssertions: [],
-        errorMessage: undefined,
-        durationMs: Math.max(0, finishedAt - startedAt),
-        railsVerdict: "ok",
-      };
-    }
-
-    const ctx = input.deps.makeScenarioCtx({
-      requestId: input.seed.requestId,
-      dtoType: input.seed.dtoType,
-      op: input.seed.op,
-    });
-
-    // Critical: mark this scenario as an expected-error test so failWithError()
-    // downgrades ERROR logs (ops noise) during deliberate rail tests.
-    if (input.expectedError === true) {
-      ctx.set("test.expectErrors", true);
-    }
-
-    // Simulate "pipeline in error state" so compensator runs.
-    ctx.set("handlerStatus", "error");
-    ctx.set("status", 502);
-
-    // Upstream status seeds
-    ctx.set("signup.userCreateStatus", {
-      ok: true,
-      userId: input.createdUserId,
-    } satisfies UserCreateStatus);
-
-    ctx.set("signup.userAuthCreateStatus", {
-      ok: false,
-      code: "AUTH_SIGNUP_USER_AUTH_CREATE_FAILED",
-      message: "forced failure for rollback test",
-    } satisfies UserAuthCreateStatus);
-
-    ctx.set("signup.userId", input.createdUserId);
-
-    // Pipeline invariant: edge bag remains the UserDto bag (handler requires it to call delete).
-    ctx.set("bag", input.seed.bag as UserBag);
-
-    await input.deps.step.execute(ctx);
-
-    const snap = railsSnapshot(ctx);
-    const railsError = isRailsError(snap);
-
-    // This handler *intentionally* ends with failWithError (502 on rollback ok, 500 on rollback fail).
-    assertEq(
-      a,
-      railsError,
-      true,
-      "rollback handler must keep pipeline in error state"
-    );
-
-    const handlerStatus = String(snap.handlerStatus ?? "");
-    assertEq(
-      a,
-      handlerStatus,
-      "error",
-      'handlerStatus should be "error" after rollback attempt'
-    );
-
-    // On rollback success: handler stamps ctx["signup.userRolledBack"] === true and sets 502.
-    const rolledBack = ctx.get("signup.userRolledBack");
-    assertEq(
-      a,
-      rolledBack,
-      true,
-      "signup.userRolledBack should be true on rollback success"
-    );
-
-    const httpStatus = (ctx.get("response.status") ??
-      ctx.get("status") ??
-      null) as unknown;
-
-    if (httpStatus !== null) {
-      assertEq(
-        a,
-        Number(httpStatus),
-        502,
-        "HTTP status should be 502 for 'auth failed but user rolled back' outcome"
-      );
-    }
-
-    const finishedAt = Date.now();
-    return {
-      testId: input.testId,
-      name: input.name,
-      outcome: a.failed.length === 0 ? "passed" : "failed",
-      expectedError: true,
-      assertionCount: a.count,
-      failedAssertions: a.failed,
-      errorMessage: a.failed[0],
-      durationMs: Math.max(0, finishedAt - startedAt),
-      railsVerdict: a.failed.length === 0 ? "ok" : "rails_error",
-      railsStatus: snap.status,
-      railsHandlerStatus: snap.handlerStatus,
-      railsResponseStatus: snap.responseStatus,
-    };
-  } catch (err) {
-    const finishedAt = Date.now();
-    const msg =
-      err instanceof Error ? err.message : String(err ?? "unknown error");
+  // If status didn’t finalize (should never happen), treat as infrastructure bug.
+  if (!out) {
     return {
       testId: input.testId,
       name: input.name,
       outcome: "failed",
       expectedError: input.expectedError,
-      assertionCount: a.count,
-      failedAssertions: a.failed.length ? a.failed : [msg],
-      errorMessage: msg,
-      durationMs: Math.max(0, finishedAt - startedAt),
+      assertionCount: 0,
+      failedAssertions: [
+        "TestScenarioStatus did not finalize an outcome (infrastructure bug).",
+      ],
+      errorMessage:
+        "TestScenarioStatus did not finalize an outcome (infrastructure bug).",
+      durationMs: 0,
       railsVerdict: "test_bug",
+      railsStatus: httpStatus,
+      railsHandlerStatus: handlerStatus,
+      railsResponseStatus: httpStatus,
     };
   }
+
+  const failedAssertions = input.status.assertionFailures?.() ?? [];
+
+  return {
+    testId: input.testId,
+    name: input.name,
+    outcome: out.color === "green" ? "passed" : "failed",
+    expectedError: input.expectedError,
+    assertionCount: failedAssertions.length,
+    failedAssertions,
+    errorMessage: failedAssertions.length ? failedAssertions[0] : undefined,
+    durationMs: 0,
+    railsVerdict: out.color === "green" ? "ok" : "rails_error",
+    railsStatus: httpStatus,
+    railsHandlerStatus: handlerStatus,
+    railsResponseStatus: httpStatus,
+  };
+}
+
+// ───────────────────────────────────────────
+// ADR-0094 scenario runner helper
+// ───────────────────────────────────────────
+async function runScenario(input: {
+  deps: any;
+  testId: string;
+  name: string;
+
+  expectedMode: "success" | "failure";
+  expectedHttpStatus?: number;
+
+  createdUserId?: string;
+}): Promise<HandlerTestResult> {
+  const status = createTestScenarioStatus({
+    scenarioId: input.testId,
+    scenarioName: input.name,
+    expected: input.expectedMode,
+  });
+
+  const expectedErrorMeta = input.expectedMode === "failure";
+
+  // If no created userId is available: PASS and no-op (your contract).
+  if (!input.createdUserId) {
+    status.addNote(
+      "no created userId was available; skipping rollback delete (not a failure)"
+    );
+    TestScenarioFinalizer.finalize({ status, ctx: undefined });
+    return makeResultFromStatus({
+      status,
+      testId: input.testId,
+      name: input.name,
+      expectedError: false,
+      ctx: undefined,
+    });
+  }
+
+  let ctx: any | undefined;
+
+  try {
+    try {
+      const requestId = `req-${input.testId}`;
+
+      ctx = input.deps.makeScenarioCtx({
+        requestId,
+        dtoType: "user",
+        op: "s2s.user.delete.onFailure",
+      });
+
+      // Put pipeline into a failure posture so compensator runs.
+      ctx.set("handlerStatus", "error");
+      ctx.set("status", 502);
+
+      // Upstream status seeds: user created, user-auth failed.
+      ctx.set("signup.userCreateStatus", {
+        ok: true,
+        userId: input.createdUserId,
+      } satisfies UserCreateStatus);
+
+      ctx.set("signup.userAuthCreateStatus", {
+        ok: false,
+        code: "AUTH_SIGNUP_USER_AUTH_CREATE_FAILED",
+        message: "forced failure for rollback test",
+      } satisfies UserAuthCreateStatus);
+
+      ctx.set("signup.userId", input.createdUserId);
+
+      // Handler requires ctx["bag"] for the delete call; provide a real bag.
+      ctx.set("bag", buildUserBagForRollback(input.createdUserId, requestId));
+
+      await input.deps.step.execute(ctx);
+
+      // Assertions: record failures; do not throw.
+      const hs = readHandlerStatus(ctx);
+      if (hs !== "error") {
+        status.recordAssertionFailure(
+          `Expected handlerStatus="error" after rollback attempt, got "${hs}".`
+        );
+      }
+
+      // On rollback success: handler stamps signup.userRolledBack === true and keeps 502.
+      const rolledBack = ctx.get("signup.userRolledBack");
+      if (rolledBack !== true) {
+        status.recordAssertionFailure(
+          "signup.userRolledBack should be true on rollback success."
+        );
+      }
+
+      if (typeof input.expectedHttpStatus === "number") {
+        const httpStatus = readHttpStatus(ctx);
+        if (httpStatus !== input.expectedHttpStatus) {
+          status.recordAssertionFailure(
+            `Expected httpStatus=${input.expectedHttpStatus} but got httpStatus=${httpStatus}.`
+          );
+        }
+      }
+    } catch (err: any) {
+      status.recordInnerCatch(err);
+    } finally {
+      TestScenarioFinalizer.finalize({ status, ctx });
+    }
+  } catch (err: any) {
+    status.recordOuterCatch(err);
+  } finally {
+    TestScenarioFinalizer.finalize({ status, ctx });
+  }
+
+  return makeResultFromStatus({
+    status,
+    testId: input.testId,
+    name: input.name,
+    expectedError: expectedErrorMeta,
+    ctx,
+  });
 }
 
 // ───────────────────────────────────────────
@@ -282,29 +290,18 @@ export async function getScenarios(deps: any): Promise<any[]> {
       name: "auth.signup: S2sUserDeleteOnFailureHandler rolls back user when auth creation fails (or skips if no userId)",
       shortCircuitOnFail: false,
       expectedError: true,
+
       async run(): Promise<HandlerTestResult> {
-        const requestId = "req-auth-s2s-user-delete-onfailure";
+        const createdUserId = tryGetCreatedUserIdFromShared();
 
-        // Pull from ctx if runner reuses it; otherwise from process-local shared slot.
-        // (If neither exists, we PASS and no-op as requested.)
-        const createdUserId = tryGetCreatedUserIdFromCtxOrShared(undefined);
-
-        // This handler requires a UserDto bag to call delete (it uses ctx["bag"]).
-        // We do not rebuild the user here; we only need an edge bag shape.
-        // If you want, we can keep a shared bag too later — for now we pass a minimal placeholder.
-        const bag = {} as unknown as UserBag;
-
+        // This scenario is “failure expected” because the compensator preserves
+        // the pipeline error state by design (502 on rollback-ok, 500 on rollback-fail).
         return runScenario({
           deps,
           testId: "auth.signup.s2s.user.delete.onFailure.rollback",
           name: "auth.signup: S2sUserDeleteOnFailureHandler rolls back user when auth creation fails (or skips if no userId)",
-          expectedError: true,
-          seed: {
-            requestId,
-            dtoType: "user",
-            op: "s2s.user.delete.onFailure",
-            bag,
-          },
+          expectedMode: createdUserId ? "failure" : "success",
+          expectedHttpStatus: createdUserId ? 502 : undefined,
           createdUserId,
         });
       },

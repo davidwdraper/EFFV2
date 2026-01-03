@@ -3,6 +3,7 @@
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ * - ADR-0094 (Test Scenario Error Handling and Logging)
  * - LDD-35 (Handler-level test-runner service)
  * - LDD-38 (Test Runner vNext Design)
  * - LDD-39 (StepIterator Micro-Contract — Revised, KISS)
@@ -15,17 +16,23 @@
  *     new Handler(scenarioCtx, controller).run()
  *   NOT “call protected execute()” and NOT “reuse a handler instance”.
  *
- * Rails:
- * - Scenario.expectedError MUST be reflected on scenario ctx as ctx["test.expectErrors"]
- *   so shared error helpers can downgrade expected-negative logs.
+ * ADR-0094 rails:
+ * - No expectErrors anywhere.
+ * - No ALS fallbacks for test semantics.
+ * - No log-level gymnastics in helpers.
+ * - ERROR logs mean runner/test infrastructure failure only (outcomeCode=5).
  */
 
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
+
+import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
+import type { TestScenarioOutcome } from "@nv/shared/testing/TestScenarioStatus";
+import type { TestScenarioStatus } from "@nv/shared/testing/TestScenarioStatus";
+import { TestScenarioFinalizer } from "@nv/shared/testing/TestScenarioFinalizer";
 
 export type ScenarioStep = {
   /**
@@ -58,9 +65,19 @@ export type ScenarioDeps = {
 export interface HandlerTestScenarioDef {
   id: string;
   name: string;
-  expectedError: boolean;
+
+  /**
+   * If omitted, defaults to true.
+   * Runner will ALSO hard-abort on outcomeCode=5 (infra failure) regardless of this flag.
+   */
   shortCircuitOnFail?: boolean;
-  run: (deps: ScenarioDeps) => Promise<HandlerTestResult>;
+
+  /**
+   * ADR-0094 contract:
+   * - Scenario.run returns a TestScenarioStatus (already seeded and finalized via shared finalizer).
+   * - Runner consumes status only; runner does not infer semantics.
+   */
+  run: (deps: ScenarioDeps) => Promise<TestScenarioStatus>;
 }
 
 export interface HandlerTestModule {
@@ -146,31 +163,42 @@ export class ScenarioRunner {
 
       const beforeCount = dto.getScenarios().length;
 
-      await this.runOneScenario(dto, scenario, deps);
+      const outcome = await this.runOneScenario(dto, scenario, deps);
+
+      const isInfraAbort = outcome.code === 5;
+      const isScenarioFail = outcome.color === "red";
+
+      if (isInfraAbort) {
+        // ADR-0094: outcome 5 => ERROR + abort immediately.
+        this.log?.error("ScenarioRunner.abortOnInfraFailure", {
+          scenarioId: scenario.id,
+          scenarioName: scenario.name,
+          handlerName: dto.getHandlerName(),
+          outcomeCode: outcome.code,
+        });
+        break;
+      }
+
+      if (isScenarioFail && shortCircuitOnFail) {
+        // ADR-0094: non-infra failures are INFO (never WARN/ERROR).
+        this.log?.info("ScenarioRunner.shortCircuit", {
+          scenarioId: scenario.id,
+          scenarioName: scenario.name,
+          handlerName: dto.getHandlerName(),
+          outcomeCode: outcome.code,
+        });
+        break;
+      }
 
       const scenariosAfter = dto.getScenarios();
-      const last =
-        scenariosAfter.length > 0
-          ? scenariosAfter[scenariosAfter.length - 1]
-          : undefined;
-
-      const failed = last?.status === "Failed";
-
-      if (failed && shortCircuitOnFail) {
-        this.log?.info("ScenarioRunner.shortCircuit", {
+      if (scenariosAfter.length === beforeCount) {
+        // This indicates a runner recording bug, but do NOT throw; record is the source of truth.
+        this.log?.error("ScenarioRunner.noScenarioRecorded", {
           scenarioId: scenario.id,
           scenarioName: scenario.name,
           handlerName: dto.getHandlerName(),
         });
         break;
-      }
-
-      if (scenariosAfter.length === beforeCount) {
-        this.log?.warn("ScenarioRunner.noScenarioRecorded", {
-          scenarioId: scenario.id,
-          scenarioName: scenario.name,
-          handlerName: dto.getHandlerName(),
-        });
       }
     }
 
@@ -189,93 +217,123 @@ export class ScenarioRunner {
     dto: HandlerTestDto,
     scenario: HandlerTestScenarioDef,
     deps: ScenarioDeps
-  ): Promise<void> {
-    // Rails: automatically seed ctx["test.expectErrors"] for this scenario.
-    // This avoids forcing every test module to remember to set it.
-    const depsForScenario: ScenarioDeps = {
-      ...deps,
-      makeScenarioCtx: (seed) => {
-        const sc = deps.makeScenarioCtx(seed);
-        try {
-          sc.set("test.expectErrors", scenario.expectedError === true);
-        } catch {}
-        return sc;
-      },
-    };
-
+  ): Promise<TestScenarioOutcome> {
     await dto.runScenario(
       scenario.name,
       async () => {
-        const result = await this.safeScenarioRun(scenario, depsForScenario);
-        const isPassed = result.outcome === "passed";
+        const status = await this.safeScenarioRunStatus(scenario, deps);
+
+        const outcome = status.outcome() ?? {
+          code: 5,
+          color: "red",
+          logLevel: "error",
+          abortPipeline: true,
+        };
+
+        // Record a stable DTO scenario entry.
+        // NOTE: dto.finalizeFromScenarios() currently expects “Passed/Failed”.
+        const passed = outcome.color === "green";
 
         return {
-          status: isPassed ? "Passed" : "Failed",
-          details: result,
+          status: passed ? "Passed" : "Failed",
+          details: {
+            scenarioId: status.scenarioId(),
+            scenarioName: status.scenarioName(),
+            expected: status.expected(),
+            outcome,
+            rails: status.rails(),
+            caught: status.caught(),
+            notes: status.notes(),
+          },
         };
       },
       { rethrowOnRailError: false }
     );
+
+    // Return the recorded outcome for runner control flow.
+    const last = dto.getScenarios().length
+      ? dto.getScenarios()[dto.getScenarios().length - 1]
+      : undefined;
+
+    const recordedOutcome = (last as any)?.details?.outcome as
+      | TestScenarioOutcome
+      | undefined;
+    return (
+      recordedOutcome ?? {
+        code: 5,
+        color: "red",
+        logLevel: "error",
+        abortPipeline: true,
+      }
+    );
   }
 
-  private async safeScenarioRun(
+  private async safeScenarioRunStatus(
     scenario: HandlerTestScenarioDef,
     deps: ScenarioDeps
-  ): Promise<HandlerTestResult> {
+  ): Promise<TestScenarioStatus> {
     try {
-      const result: HandlerTestResult = await scenario.run(deps);
+      const status = await scenario.run(deps);
 
-      const testId =
-        (result as any).testId && typeof (result as any).testId === "string"
-          ? (result as any).testId
-          : scenario.id;
+      // Ensure it was finalized; if not, finalize with best-effort rails snapshot from pipelineCtx.
+      // (Scenarios SHOULD finalize using their own scenario ctx; this is a guardrail.)
+      if (!status.isFinalized()) {
+        TestScenarioFinalizer.finalize({
+          status,
+          ctx: deps.pipelineCtx as any,
+        });
+      }
 
-      const name =
-        typeof result.name === "string" && result.name.trim()
-          ? result.name
-          : scenario.name;
+      // ADR-0094: runner logs only infra failures as ERROR.
+      // Non-infra failures are INFO. Success is DEBUG.
+      const outcome = status.outcome();
+      if (outcome) {
+        if (outcome.code === 5) {
+          this.log?.error("ScenarioRunner.infraFailure", {
+            scenarioId: scenario.id,
+            scenarioName: scenario.name,
+            handlerName: deps.step.handlerName,
+            outcomeCode: outcome.code,
+            caught: status.caught(),
+          });
+        } else if (outcome.color === "red") {
+          this.log?.info("ScenarioRunner.scenarioFailed", {
+            scenarioId: scenario.id,
+            scenarioName: scenario.name,
+            handlerName: deps.step.handlerName,
+            outcomeCode: outcome.code,
+          });
+        } else {
+          this.log?.debug("ScenarioRunner.scenarioPassed", {
+            scenarioId: scenario.id,
+            scenarioName: scenario.name,
+            handlerName: deps.step.handlerName,
+            outcomeCode: outcome.code,
+          });
+        }
+      }
 
-      return {
-        testId,
-        name,
-        outcome: result.outcome,
-        expectedError: result.expectedError,
-        assertionCount: result.assertionCount ?? 0,
-        failedAssertions: Array.isArray(result.failedAssertions)
-          ? result.failedAssertions
-          : [],
-        errorMessage: result.errorMessage,
-        durationMs: result.durationMs ?? 0,
-        railsVerdict: result.railsVerdict,
-        railsStatus: result.railsStatus,
-        railsHandlerStatus: result.railsHandlerStatus,
-        railsResponseStatus: result.railsResponseStatus,
-      };
+      return status;
     } catch (err: any) {
-      this.log?.error("ScenarioRunner.scenarioException", {
+      // Any thrown exception escaping scenario.run is infrastructure failure (ADR-0094 outcome 5).
+      const status = createTestScenarioStatus({
         scenarioId: scenario.id,
         scenarioName: scenario.name,
+        expected: "success",
+      });
+
+      status.recordOuterCatch(err);
+      TestScenarioFinalizer.finalize({ status, ctx: deps.pipelineCtx as any });
+
+      this.log?.error("ScenarioRunner.scenarioRunThrew", {
+        scenarioId: scenario.id,
+        scenarioName: scenario.name,
+        handlerName: deps.step.handlerName,
         errorName: err?.name,
         errorMessage: err?.message,
       });
 
-      const message =
-        err instanceof Error ? err.message : String(err ?? "unknown error");
-
-      return {
-        testId: scenario.id,
-        name: scenario.name,
-        outcome: "failed",
-        expectedError: false,
-        assertionCount: 0,
-        failedAssertions: [],
-        errorMessage: message,
-        durationMs: 0,
-        railsVerdict: "test_bug",
-        railsStatus: undefined,
-        railsHandlerStatus: undefined,
-        railsResponseStatus: undefined,
-      };
+      return status;
     }
   }
 
@@ -292,28 +350,37 @@ export class ScenarioRunner {
       errorMessage: (err as any)?.message,
     });
 
-    const message =
-      err instanceof Error ? err.message : String(err ?? "unknown error");
+    const status = createTestScenarioStatus({
+      scenarioId: "module-error",
+      scenarioName: "test-module: getScenarios(deps) failure",
+      expected: "success",
+    });
+
+    status.recordOuterCatch(err);
+    TestScenarioFinalizer.finalize({ status });
 
     await dto.runScenario(
       "test-module: getScenarios(deps) failure",
       async () => {
-        const synthetic: HandlerTestResult = {
-          testId: "module-error",
-          name: "test-module: getScenarios(deps) failure",
-          outcome: "failed",
-          expectedError: false,
-          assertionCount: 0,
-          failedAssertions: [],
-          errorMessage: message,
-          durationMs: 0,
-          railsVerdict: "test_bug",
-          railsStatus: undefined,
-          railsHandlerStatus: undefined,
-          railsResponseStatus: undefined,
+        const outcome = status.outcome() ?? {
+          code: 5,
+          color: "red",
+          logLevel: "error",
+          abortPipeline: true,
         };
 
-        return { status: "Failed", details: synthetic };
+        return {
+          status: outcome.color === "green" ? "Passed" : "Failed",
+          details: {
+            scenarioId: status.scenarioId(),
+            scenarioName: status.scenarioName(),
+            expected: status.expected(),
+            outcome,
+            rails: status.rails(),
+            caught: status.caught(),
+            notes: status.notes(),
+          },
+        };
       },
       { rethrowOnRailError: false }
     );

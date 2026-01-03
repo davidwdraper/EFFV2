@@ -6,6 +6,7 @@
  * - LDD-39 (StepIterator Micro-Contract — Revised, KISS)
  * - ADR-0077 (Test-Runner vNext — Single Orchestrator Handler)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ * - ADR-0094 (Test Scenario Error Handling and Logging)
  * - ADR-0042 (HandlerContext Bus — KISS)
  *
  * Purpose:
@@ -21,10 +22,29 @@
  * - Scenario ctx MUST inherit pipeline runtime ("rt") automatically.
  * - Tests must not be SvcRuntime-aware.
  *
- * Rails:
- * - Handler execution MUST run inside requestScope ALS so:
- *   - expected-negative errors can be downgraded (no pager-noise)
- *   - SvcClient can propagate x-nv-test-* headers across S2S hops
+ * Execution + persistence model:
+ * - The test-runner is NOT a production controller pipeline.
+ * - Each handler step is executed independently (a “step === handler”).
+ * - StepIterator owns persistence:
+ *     - Exactly ONE record write per handler step (HandlerTestDto).
+ *     - ScenarioRunner never persists; it only populates the DTO in-memory.
+ *
+ * Stop policy (ADR-0094 aligned, no ALS semantics):
+ * - We DO NOT stop iteration for normal test failures (4xx, assertions, expected-negative, etc).
+ * - We STOP immediately for infrastructure failures only:
+ *     - “OutcomeCode=5” from ScenarioRunner/TestScenarioStatus means runner/harness/system failure.
+ *     - These are the ONLY situations that produce ERROR logs from the runner.
+ *
+ * Meltdown guard (your rule):
+ * - If we observe REAL HTTP 500+ rails failures for 10 handlers in a row,
+ *   abort the run early to avoid wasting time and flooding logs.
+ * - This is NOT an infrastructure error (so it logs at INFO), but it indicates
+ *   the system is effectively unusable (bad env/config/bootstrap/DB/etc).
+ *
+ * Notes:
+ * - No expectErrors anywhere.
+ * - No ALS fallbacks for test semantics.
+ * - No log-level gymnastics in helpers.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -65,6 +85,18 @@ function normalizeScenarios(dto: HandlerTestDto): any[] {
   }
 }
 
+function readScenarioOutcomeCode(s: any): number | undefined {
+  // New ADR-0094 shape (preferred): scenario.details.outcome.code
+  const code = s?.details?.outcome?.code;
+  return typeof code === "number" && Number.isFinite(code) ? code : undefined;
+}
+
+function readScenarioHttpStatus(s: any): number | undefined {
+  // New ADR-0094 shape (preferred): scenario.details.rails.httpStatus
+  const hs = s?.details?.rails?.httpStatus;
+  return typeof hs === "number" && Number.isFinite(hs) ? hs : undefined;
+}
+
 export class StepIterator {
   private readonly handlerTestRegistry = new HandlerTestDtoRegistry();
   private readonly moduleLoader: HandlerTestModuleLoader;
@@ -80,10 +112,7 @@ export class StepIterator {
     indexRelativePath: string;
     testRunId: string;
     writer: TestRunWriter;
-    target?: {
-      serviceSlug: string;
-      serviceVersion: number;
-    };
+    target?: { serviceSlug: string; serviceVersion: number };
     app?: AppBase;
   }): Promise<void> {
     const { ctx, steps, indexRelativePath, testRunId, writer, target } = input;
@@ -146,6 +175,10 @@ export class StepIterator {
     });
 
     const app = input.app as AppBase;
+
+    // Meltdown guard: count consecutive handlers that end with REAL 500+ rails errors.
+    // If we hit 10 in a row, abort (INFO) to prevent log spam + wasted time.
+    let consecutiveReal500Handlers = 0;
 
     for (let i = 0; i < steps.length; i++) {
       const stepInstance = steps[i];
@@ -227,16 +260,13 @@ export class StepIterator {
           const requestId =
             scenarioCtx.get<string>("requestId") ?? `scenario-${Date.now()}`;
 
-          const expectErrors =
-            scenarioCtx.get<boolean | undefined>("test.expectErrors") === true;
-
-          // Rails: run handler execution inside ALS requestScope so shared error helpers
-          // can downgrade expected-negative logs and SvcClient can propagate x-nv-test-*.
+          // ADR-0094: test semantics are NOT expressed via ALS flags.
+          // requestScope here is only for correlation (requestId/testRunId) and to keep
+          // production-shaped execution boundaries consistent.
           await withRequestScope(
             {
               requestId,
               testRunId,
-              expectErrors,
             },
             async () => {
               const h = new handlerCtor(scenarioCtx, input.controller);
@@ -296,6 +326,9 @@ export class StepIterator {
         target,
       };
 
+      let infraAbort = false;
+      let handlerEndedWithReal500 = false;
+
       try {
         await scenarioRunner.run(handlerTestDto, deps);
       } catch (err) {
@@ -314,7 +347,9 @@ export class StepIterator {
           "ScenarioRunner.run threw unexpectedly"
         );
 
+        // Runner threw => infrastructure bug.
         handlerTestDto.markTestError();
+        infraAbort = true;
       }
 
       handlerTestDto.setFinishedAt(new Date().toISOString());
@@ -338,6 +373,7 @@ export class StepIterator {
         );
 
         handlerTestDto.markTestError();
+        infraAbort = true;
       }
 
       const dtoStatus = handlerTestDto.getStatus();
@@ -362,6 +398,21 @@ export class StepIterator {
 
       // IMPORTANT: getScenarios() may be undefined in some failure paths.
       const scenarios = normalizeScenarios(handlerTestDto);
+
+      // ADR-0094 infra abort detection:
+      // - If ANY scenario reports outcomeCode=5, this is infrastructure failure and we stop.
+      // Real 500 detection:
+      // - If ANY scenario rails.httpStatus >= 500, count it as a “real 500” for meltdown tracking.
+      if (scenarios.length) {
+        for (const s of scenarios) {
+          const code = readScenarioOutcomeCode(s);
+          if (code === 5) infraAbort = true;
+
+          const hs = readScenarioHttpStatus(s);
+          if (typeof hs === "number" && hs >= 500)
+            handlerEndedWithReal500 = true;
+        }
+      }
 
       let errMsg: string | undefined;
       let errStack: string | undefined;
@@ -395,7 +446,47 @@ export class StepIterator {
           },
           "Failed to finalize handler-test record"
         );
-        continue;
+        // This is persistence failure; stop. Continuing would drop records and lie about coverage.
+        break;
+      }
+
+      // Apply meltdown guard AFTER persistence (one write per handler).
+      if (handlerEndedWithReal500) {
+        consecutiveReal500Handlers++;
+      } else {
+        consecutiveReal500Handlers = 0;
+      }
+
+      if (infraAbort) {
+        // ADR-0094: infrastructure failure (outcomeCode=5) is the only immediate abort.
+        log?.error?.(
+          {
+            event: "stepIterator_abort_infra_failure",
+            index: indexRelativePath,
+            stepIndex: i,
+            stepCount: steps.length,
+            handler: handlerName,
+          },
+          "Aborting: infrastructure failure detected (outcomeCode=5)."
+        );
+        break;
+      }
+
+      if (consecutiveReal500Handlers >= 10) {
+        // Your rule: “real 500s” repeated indicates system meltdown; abort to avoid spam.
+        // INFO (not ERROR) because this is not harness failure; it’s a system unusable state.
+        log?.info?.(
+          {
+            event: "stepIterator_abort_meltdown_500s",
+            index: indexRelativePath,
+            stepIndex: i,
+            stepCount: steps.length,
+            handler: handlerName,
+            consecutiveReal500Handlers,
+          },
+          "Aborting: 10 consecutive handlers ended with real HTTP 500+ rails failures."
+        );
+        break;
       }
     }
   }

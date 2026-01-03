@@ -9,21 +9,19 @@
  * - ADR-0057 (Shared SvcClient for S2S Calls)
  * - ADR-0063 (Auth Signup MOS Pipeline)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
+ * - ADR-0094 (Test Scenario Error Handling and Logging)
  *
  * Purpose:
- * - Define handler-level tests for S2sUserAuthCreateHandler.
+ * - Define handler-level tests for S2sUserAuthCreateHandler (ADR-0094 shape).
  *
  * IMPORTANT:
  * - Runner-shaped module: scenarios execute via deps.step.execute(ctx)
  *   so the scenario ctx inherits pipeline runtime ("rt") automatically.
+ * - No expectErrors, no ALS semantics, no log downgrades.
  *
- * Note:
- * - UserDto.givenName / lastName validation forbids digits.
- *   Keep names strictly alphabetic; use email for uniqueness.
- *
- * Change (ADR-0092 alignment):
+ * Change (ADR-0092 alignment, preserved):
  * - Use registry-minted test DTOs (sidecar JSON hydrated) instead of ad-hoc DTO construction.
- * - Use deterministic isoTime strings (no Date.now / new Date()) to keep fixtures stable.
+ * - Do not use Date.now / new Date() for fixtures; rely on sidecar values for stability.
  */
 
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
@@ -34,66 +32,15 @@ import { UserDtoRegistry as UserDtoRegistryCtor } from "@nv/shared/dto/registry/
 import { UserAuthDtoRegistry as UserAuthDtoRegistryCtor } from "@nv/shared/dto/registry/user-auth.dtoRegistry";
 import { newUuid } from "@nv/shared/utils/uuid";
 
+import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
+import type { TestScenarioStatus } from "@nv/shared/testing/TestScenarioStatus";
+import { TestScenarioFinalizer } from "@nv/shared/testing/TestScenarioFinalizer";
+
 type UserBag = DtoBag<UserDto>;
 
 type UserAuthCreateStatus =
   | { ok: true }
   | { ok: false; code: string; message: string };
-
-type Assert = { count: number; failed: string[] };
-
-function assertEq(a: Assert, actual: any, expected: any, msg: string): void {
-  a.count += 1;
-  if (actual !== expected) {
-    a.failed.push(`${msg} expected=${String(expected)} got=${String(actual)}`);
-  }
-}
-
-function assertOk(a: Assert, cond: any, msg: string): void {
-  a.count += 1;
-  if (!cond) a.failed.push(msg);
-}
-
-// ───────────────────────────────────────────
-// Rails helpers
-// ───────────────────────────────────────────
-function railsSnapshot(ctx: any): {
-  handlerStatus: any;
-  status: any;
-  responseStatus: any;
-} {
-  const handlerStatus = ctx?.get?.("handlerStatus") ?? "ok";
-  const status = ctx?.get?.("status") ?? 200;
-  const responseStatus = ctx?.get?.("response.status");
-  return { handlerStatus, status, responseStatus };
-}
-
-function isRailsError(s: {
-  handlerStatus: any;
-  status: any;
-  responseStatus: any;
-}): boolean {
-  return (
-    s.handlerStatus === "error" ||
-    (typeof s.status === "number" && s.status >= 500) ||
-    (typeof s.responseStatus === "number" && s.responseStatus >= 500)
-  );
-}
-
-type HandlerTestResult = {
-  testId: string;
-  name: string;
-  outcome: "passed" | "failed";
-  expectedError: boolean;
-  assertionCount: number;
-  failedAssertions: string[];
-  errorMessage?: string;
-  durationMs: number;
-  railsVerdict: "ok" | "rails_error" | "test_bug";
-  railsStatus?: number;
-  railsHandlerStatus?: string;
-  railsResponseStatus?: number;
-};
 
 // ───────────────────────────────────────────
 // DTO/bag helpers
@@ -130,8 +77,7 @@ function buildUserBag(
 
 /**
  * Mint a UserAuthDto for test-data seeding.
- * - We do NOT override its fields in the happy-path; the whole point is to use
- *   sidecar-hydrated values to prevent drift.
+ * - Use sidecar-hydrated values to avoid drift.
  */
 function mintUserAuthDto(
   signupUserId: string,
@@ -149,204 +95,195 @@ function mintUserAuthDto(
   return dto;
 }
 
+function readHttpStatus(ctx: any): number {
+  const v = ctx.get("response.status") ?? ctx.get("status") ?? 200;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 200;
+}
+
+function readHandlerStatus(ctx: any): string {
+  const v = ctx.get("handlerStatus");
+  return typeof v === "string" ? v : "ok";
+}
+
 // ───────────────────────────────────────────
-// Scenario runner helper
+// ADR-0094 scenario runner helper
 // ───────────────────────────────────────────
+
 async function runScenario(input: {
-  deps: any; // ScenarioDeps does not exist in this repo; keep loose.
+  deps: any;
   testId: string;
   name: string;
-  expectedError: boolean;
-  seed: {
-    requestId: string;
-    dtoType: string;
-    op: string;
 
-    signupUserId: string;
+  expectedMode: "success" | "failure";
+  expectedHttpStatus?: number;
 
-    // pipeline edge bag
-    bag: any;
+  seedCtx: (ctx: any, status: TestScenarioStatus) => void;
+  assertAfter?: (ctx: any, status: TestScenarioStatus) => void;
+}): Promise<TestScenarioStatus> {
+  const status = createTestScenarioStatus({
+    scenarioId: input.testId,
+    scenarioName: input.name,
+    expected: input.expectedMode,
+  });
 
-    // minted auth dto values (used to seed ctx keys)
-    authDto: UserAuthDto;
-
-    // whether to intentionally omit required keys
-    omitAuthKeys?: boolean;
-  };
-  expectOkStatus: boolean;
-}): Promise<HandlerTestResult> {
-  const startedAt = Date.now();
-  const a: Assert = { count: 0, failed: [] };
+  let ctx: any | undefined;
 
   try {
-    const ctx = input.deps.makeScenarioCtx({
-      requestId: input.seed.requestId,
-      dtoType: input.seed.dtoType,
-      op: input.seed.op,
-    });
+    try {
+      ctx = input.deps.makeScenarioCtx({
+        requestId: `req-${input.testId}`,
+        dtoType: "user",
+        op: "s2s.userAuth.create",
+      });
 
-    // Required handler inputs
-    ctx.set("signup.userId", input.seed.signupUserId);
+      input.seedCtx(ctx, status);
 
-    if (!input.seed.omitAuthKeys) {
-      // Guardrails: if the minted DTO is empty or invalid, fail the test (drift detector).
-      const hash = (input.seed.authDto as any).hash;
-      const hashAlgo = (input.seed.authDto as any).hashAlgo;
-      const hashParamsJson = (input.seed.authDto as any).hashParamsJson;
-      const passwordCreatedAt = (input.seed.authDto as any).passwordCreatedAt;
+      await input.deps.step.execute(ctx);
 
-      assertOk(
-        a,
-        typeof hash === "string" && hash.trim().length > 0,
-        "minted UserAuthDto.hash must be non-empty"
-      );
-      assertOk(
-        a,
-        typeof hashAlgo === "string" && hashAlgo.trim().length > 0,
-        "minted UserAuthDto.hashAlgo must be non-empty"
-      );
-      if (hashParamsJson !== undefined) {
-        assertOk(
-          a,
-          typeof hashParamsJson === "string",
-          "minted UserAuthDto.hashParamsJson must be a string when present"
-        );
-        try {
-          JSON.parse(hashParamsJson);
-        } catch {
-          a.failed.push(
-            "minted UserAuthDto.hashParamsJson must be valid JSON when present"
+      if (typeof input.expectedHttpStatus === "number") {
+        const httpStatus = readHttpStatus(ctx);
+        if (httpStatus !== input.expectedHttpStatus) {
+          status.recordAssertionFailure(
+            `Expected httpStatus=${
+              input.expectedHttpStatus
+            } but got httpStatus=${httpStatus} (handlerStatus=${readHandlerStatus(
+              ctx
+            )}).`
           );
         }
       }
-      assertOk(
-        a,
-        typeof passwordCreatedAt === "string" &&
-          passwordCreatedAt.trim().length > 0,
-        "minted UserAuthDto.passwordCreatedAt must be non-empty"
-      );
 
-      // Seed from minted DTO so values satisfy DTO validation (no drift, no placeholders).
-      ctx.set("signup.hash", hash);
-      ctx.set("signup.hashAlgo", hashAlgo);
-      ctx.set("signup.hashParamsJson", hashParamsJson);
-      ctx.set("signup.passwordCreatedAt", passwordCreatedAt);
-    } else {
-      // Force the handler's hard-fail path: missing required ctx keys.
-      ctx.set("signup.hash", "");
-      ctx.set("signup.hashAlgo", "");
-      ctx.set("signup.hashParamsJson", "");
-      ctx.set("signup.passwordCreatedAt", "");
+      if (input.assertAfter) {
+        input.assertAfter(ctx, status);
+      }
+    } catch (err: any) {
+      status.recordInnerCatch(err);
+    } finally {
+      TestScenarioFinalizer.finalize({ status, ctx });
     }
+  } catch (err: any) {
+    status.recordOuterCatch(err);
+  } finally {
+    TestScenarioFinalizer.finalize({ status, ctx });
+  }
 
-    // Pipeline invariant: the edge response bag remains the UserDto bag.
-    ctx.set("bag", input.seed.bag);
+  return status;
+}
 
-    // Execute handler in production shape (runner step).
-    await input.deps.step.execute(ctx);
+// ───────────────────────────────────────────
+// Assertions (record failures; do not throw)
+// ───────────────────────────────────────────
 
-    const snap = railsSnapshot(ctx);
-    const railsError = isRailsError(snap);
+function assertOkStatus(ctx: any, status: TestScenarioStatus): void {
+  const s = ctx.get("signup.userAuthCreateStatus") as
+    | UserAuthCreateStatus
+    | undefined;
 
-    assertEq(
-      a,
-      railsError,
-      input.expectedError,
-      input.expectedError
-        ? "expected rails error but handler succeeded"
-        : "unexpected rails error"
+  if (!s || s.ok !== true) {
+    status.recordAssertionFailure(
+      "signup.userAuthCreateStatus.ok should be true on happy path."
     );
+  }
+}
 
-    const expectedHandlerStatus = input.expectedError ? "error" : "ok";
-    assertEq(
-      a,
-      String(snap.handlerStatus ?? ""),
-      expectedHandlerStatus,
-      `handlerStatus should be "${expectedHandlerStatus}"`
+function assertErrorStatus(ctx: any, status: TestScenarioStatus): void {
+  const s = ctx.get("signup.userAuthCreateStatus") as
+    | UserAuthCreateStatus
+    | undefined;
+
+  if (!s || s.ok !== false) {
+    status.recordAssertionFailure(
+      "signup.userAuthCreateStatus.ok should be false on error paths."
     );
+    return;
+  }
 
-    const status = ctx.get("signup.userAuthCreateStatus") as
-      | UserAuthCreateStatus
-      | undefined;
+  if (typeof s.code !== "string" || s.code.length === 0) {
+    status.recordAssertionFailure(
+      "signup.userAuthCreateStatus.code should be populated on error paths."
+    );
+  }
 
-    if (input.expectOkStatus) {
-      assertOk(
-        a,
-        !!status && status.ok === true,
-        "signup.userAuthCreateStatus.ok should be true on happy path"
+  if (typeof s.message !== "string" || s.message.length === 0) {
+    status.recordAssertionFailure(
+      "signup.userAuthCreateStatus.message should be populated on error paths."
+    );
+  }
+}
+
+function extractAuthSeed(
+  authDto: UserAuthDto,
+  status: TestScenarioStatus
+): {
+  hash?: string;
+  hashAlgo?: string;
+  hashParamsJson?: string;
+  passwordCreatedAt?: string;
+} {
+  // Prefer toBody() as the stable DTO surface for tests.
+  const body: any =
+    authDto && typeof (authDto as any).toBody === "function"
+      ? (authDto as any).toBody()
+      : {};
+
+  const hash = body?.hash;
+  const hashAlgo = body?.hashAlgo;
+  const hashParamsJson = body?.hashParamsJson;
+  const passwordCreatedAt = body?.passwordCreatedAt;
+
+  if (typeof hash !== "string" || hash.trim().length === 0) {
+    status.recordAssertionFailure("minted UserAuthDto.hash must be non-empty.");
+  }
+  if (typeof hashAlgo !== "string" || hashAlgo.trim().length === 0) {
+    status.recordAssertionFailure(
+      "minted UserAuthDto.hashAlgo must be non-empty."
+    );
+  }
+  if (hashParamsJson !== undefined) {
+    if (typeof hashParamsJson !== "string") {
+      status.recordAssertionFailure(
+        "minted UserAuthDto.hashParamsJson must be a string when present."
       );
     } else {
-      assertOk(
-        a,
-        !!status && status.ok === false,
-        "signup.userAuthCreateStatus.ok should be false on error paths"
-      );
-      if (status && status.ok === false) {
-        assertOk(
-          a,
-          typeof status.code === "string" && status.code.length > 0,
-          "signup.userAuthCreateStatus.code should be populated on error paths"
-        );
-        assertOk(
-          a,
-          typeof status.message === "string" && status.message.length > 0,
-          "signup.userAuthCreateStatus.message should be populated on error paths"
+      try {
+        JSON.parse(hashParamsJson);
+      } catch {
+        status.recordAssertionFailure(
+          "minted UserAuthDto.hashParamsJson must be valid JSON when present."
         );
       }
     }
-
-    const finishedAt = Date.now();
-    return {
-      testId: input.testId,
-      name: input.name,
-      outcome: a.failed.length === 0 ? "passed" : "failed",
-      expectedError: input.expectedError,
-      assertionCount: a.count,
-      failedAssertions: a.failed,
-      errorMessage: a.failed[0],
-      durationMs: Math.max(0, finishedAt - startedAt),
-      railsVerdict: a.failed.length === 0 ? "ok" : "rails_error",
-      railsStatus: snap.status,
-      railsHandlerStatus: snap.handlerStatus,
-      railsResponseStatus: snap.responseStatus,
-    };
-  } catch (err) {
-    const finishedAt = Date.now();
-    const msg =
-      err instanceof Error ? err.message : String(err ?? "unknown error");
-    return {
-      testId: input.testId,
-      name: input.name,
-      outcome: "failed",
-      expectedError: input.expectedError,
-      assertionCount: a.count,
-      failedAssertions: a.failed.length ? a.failed : [msg],
-      errorMessage: msg,
-      durationMs: Math.max(0, finishedAt - startedAt),
-      railsVerdict: "test_bug",
-      railsStatus: undefined,
-      railsHandlerStatus: undefined,
-      railsResponseStatus: undefined,
-    };
   }
+  if (
+    typeof passwordCreatedAt !== "string" ||
+    passwordCreatedAt.trim().length === 0
+  ) {
+    status.recordAssertionFailure(
+      "minted UserAuthDto.passwordCreatedAt must be non-empty."
+    );
+  }
+
+  return { hash, hashAlgo, hashParamsJson, passwordCreatedAt };
 }
 
 // ───────────────────────────────────────────
 // ScenarioRunner entrypoint
 // ───────────────────────────────────────────
+
 export async function getScenarios(deps: any): Promise<any[]> {
   return [
     {
       id: "auth.signup.s2s.userAuth.create.happy",
       name: "auth.signup: S2sUserAuthCreateHandler happy path — user-auth.create succeeds",
       shortCircuitOnFail: true,
-      expectedError: false,
-      async run(): Promise<HandlerTestResult> {
+
+      async run(): Promise<TestScenarioStatus> {
         const requestId = "req-auth-s2s-userauth-create-happy";
         const signupUserId = newUuid();
 
         const bag = buildUserBag(signupUserId, requestId, (dto) => {
-          dto.setGivenName?.("Auth S S");
+          dto.setGivenName?.("Auth");
           dto.setLastName?.("UserAuthCreate");
           dto.setEmail?.(
             `auth.s2s.userauth.create+${signupUserId}@example.com`
@@ -360,53 +297,93 @@ export async function getScenarios(deps: any): Promise<any[]> {
           deps,
           testId: "auth.signup.s2s.userAuth.create.happy",
           name: "auth.signup: S2sUserAuthCreateHandler happy path — user-auth.create succeeds",
-          expectedError: false,
-          seed: {
-            requestId,
-            dtoType: "user",
-            op: "s2s.userAuth.create",
-            signupUserId,
-            bag,
-            authDto,
+          expectedMode: "success",
+          expectedHttpStatus: 200,
+
+          seedCtx: (ctx, status) => {
+            ctx.set("requestId", requestId);
+
+            // Required handler inputs
+            ctx.set("signup.userId", signupUserId);
+            ctx.set("bag", bag);
+
+            // Seed ctx keys from minted DTO (drift detector + prod-shaped inputs).
+            const seed = extractAuthSeed(authDto, status);
+            if (seed.hash !== undefined) ctx.set("signup.hash", seed.hash);
+            if (seed.hashAlgo !== undefined)
+              ctx.set("signup.hashAlgo", seed.hashAlgo);
+            if (seed.hashParamsJson !== undefined)
+              ctx.set("signup.hashParamsJson", seed.hashParamsJson);
+            if (seed.passwordCreatedAt !== undefined)
+              ctx.set("signup.passwordCreatedAt", seed.passwordCreatedAt);
           },
-          expectOkStatus: true,
+
+          assertAfter: (ctx, status) => {
+            const handlerStatus = readHandlerStatus(ctx);
+            if (handlerStatus !== "ok") {
+              status.recordAssertionFailure(
+                `Expected handlerStatus="ok" but got "${handlerStatus}".`
+              );
+            }
+            assertOkStatus(ctx, status);
+          },
         });
       },
     },
+
     {
       id: "auth.signup.s2s.userAuth.create.missingFields",
       name: "auth.signup: S2sUserAuthCreateHandler rails when required signup auth fields are missing",
       shortCircuitOnFail: false,
-      expectedError: true,
-      async run(): Promise<HandlerTestResult> {
+
+      async run(): Promise<TestScenarioStatus> {
         const requestId = "req-auth-s2s-userauth-create-missing-fields";
         const signupUserId = newUuid();
 
         const bag = buildUserBag(signupUserId, requestId, (dto) => {
-          dto.setGivenName?.("Auth S S");
+          dto.setGivenName?.("Auth");
           dto.setLastName?.("MissingAuthFields");
           dto.setEmail?.(
             `auth.s2s.userauth.create.missing+${signupUserId}@example.com`
           );
         });
 
+        // Still mint it so we can detect sidecar drift, but we will NOT seed ctx keys.
         const authDto = mintUserAuthDto(signupUserId);
 
         return runScenario({
           deps,
           testId: "auth.signup.s2s.userAuth.create.missingFields",
           name: "auth.signup: S2sUserAuthCreateHandler sad path — missing auth fields",
-          expectedError: true,
-          seed: {
-            requestId,
-            dtoType: "user",
-            op: "s2s.userAuth.create",
-            signupUserId,
-            bag,
-            authDto,
-            omitAuthKeys: true,
+          expectedMode: "failure",
+          expectedHttpStatus: 400,
+
+          seedCtx: (ctx, status) => {
+            ctx.set("requestId", requestId);
+
+            ctx.set("signup.userId", signupUserId);
+            ctx.set("bag", bag);
+
+            // Drift detector only (do not seed required ctx keys).
+            // If the minted DTO is broken, we still want to know *now*.
+            extractAuthSeed(authDto, status);
+
+            // Intentionally omit:
+            // - signup.hash
+            // - signup.hashAlgo
+            // - signup.hashParamsJson
+            // - signup.passwordCreatedAt
           },
-          expectOkStatus: false,
+
+          assertAfter: (ctx, status) => {
+            const handlerStatus = readHandlerStatus(ctx);
+            if (handlerStatus !== "error") {
+              status.recordAssertionFailure(
+                `Expected handlerStatus="error" but got "${handlerStatus}".`
+              );
+            }
+            assertErrorStatus(ctx, status);
+          },
         });
       },
     },

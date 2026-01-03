@@ -11,9 +11,10 @@
  * - ADR-0063 (Auth Signup MOS Pipeline)
  * - ADR-0071 (Auth Signup JWT Placement — ctx["jwt.userAuth"])
  * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ * - ADR-0094 (Test Scenario Error Handling and Logging)
  *
  * Purpose:
- * - Runner-shaped handler tests for CodeMintUserAuthTokenHandler.
+ * - Runner-shaped handler tests for CodeMintUserAuthTokenHandler (ADR-0094 shape).
  * - Scenarios execute via deps.step.execute(ctx) so scenario ctx inherits
  *   pipeline runtime ("rt") automatically.
  *
@@ -21,7 +22,16 @@
  * - This handler caches a module-level MintProvider singleton.
  *   That makes "corrupt env var after success" non-deterministic within the
  *   same process, so we do NOT include an env-corruption scenario here.
+ *
+ * Hard rules:
+ * - No ALS / adaptive logging patterns.
+ * - No semantics via ctx flags; expectations live in TestScenarioStatus only.
+ * - Never log raw JWT values.
  */
+
+import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
+import type { TestScenarioStatus } from "@nv/shared/testing/TestScenarioStatus";
+import { TestScenarioFinalizer } from "@nv/shared/testing/TestScenarioFinalizer";
 
 type UserCreateStatus =
   | { ok: true; userId?: string }
@@ -31,253 +41,163 @@ type UserAuthCreateStatus =
   | { ok: true }
   | { ok: false; code: string; message: string };
 
-type Assert = { count: number; failed: string[] };
-
-function assertEq(a: Assert, actual: any, expected: any, msg: string): void {
-  a.count += 1;
-  if (actual !== expected) {
-    a.failed.push(`${msg} expected=${String(expected)} got=${String(actual)}`);
-  }
+function readHttpStatus(ctx: any): number {
+  const v = ctx.get("response.status") ?? ctx.get("status") ?? 200;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 200;
 }
 
-function assertOk(a: Assert, cond: any, msg: string): void {
-  a.count += 1;
-  if (!cond) a.failed.push(msg);
-}
-
-function assertFalse(a: Assert, cond: any, msg: string): void {
-  a.count += 1;
-  if (!!cond) a.failed.push(msg);
+function readHandlerStatus(ctx: any): string {
+  const v = ctx.get("handlerStatus");
+  return typeof v === "string" ? v : "ok";
 }
 
 // ───────────────────────────────────────────
-// Rails helpers (consistent with other handler tests)
-// ───────────────────────────────────────────
-function railsSnapshot(ctx: any): {
-  handlerStatus: any;
-  status: any;
-  responseStatus: any;
-} {
-  const handlerStatus = ctx?.get?.("handlerStatus") ?? "ok";
-  const status = ctx?.get?.("status") ?? 200;
-  const responseStatus = ctx?.get?.("response.status");
-  return { handlerStatus, status, responseStatus };
-}
-
-function isRailsError(s: {
-  handlerStatus: any;
-  status: any;
-  responseStatus: any;
-}): boolean {
-  return (
-    s.handlerStatus === "error" ||
-    (typeof s.status === "number" && s.status >= 500) ||
-    (typeof s.responseStatus === "number" && s.responseStatus >= 500)
-  );
-}
-
-type HandlerTestResult = {
-  testId: string;
-  name: string;
-  outcome: "passed" | "failed";
-  expectedError: boolean;
-  assertionCount: number;
-  failedAssertions: string[];
-  errorMessage?: string;
-  durationMs: number;
-  railsVerdict: "ok" | "rails_error" | "test_bug";
-  railsStatus?: number;
-  railsHandlerStatus?: string;
-  railsResponseStatus?: number;
-};
-
-// ───────────────────────────────────────────
-// Scenario runner helper
+// ADR-0094 scenario runner helper
 // ───────────────────────────────────────────
 async function runScenario(input: {
   deps: any;
+
   testId: string;
   name: string;
-  expectedError: boolean;
-  seed: {
-    requestId: string;
-    dtoType: string;
-    op: string;
 
-    userId?: string;
-    userCreateStatus: UserCreateStatus;
-    userAuthCreateStatus: UserAuthCreateStatus;
-  };
-  expectMint: boolean;
-}): Promise<HandlerTestResult> {
-  const startedAt = Date.now();
-  const a: Assert = { count: 0, failed: [] };
+  expectedMode: "success" | "failure";
+  expectedHttpStatus?: number;
+
+  seedCtx: (ctx: any, status: TestScenarioStatus) => void;
+  assertAfter: (ctx: any, status: TestScenarioStatus) => void;
+}): Promise<TestScenarioStatus> {
+  const status = createTestScenarioStatus({
+    scenarioId: input.testId,
+    scenarioName: input.name,
+    expected: input.expectedMode,
+  });
+
+  let ctx: any | undefined;
 
   try {
-    const ctx = input.deps.makeScenarioCtx({
-      requestId: input.seed.requestId,
-      dtoType: input.seed.dtoType,
-      op: input.seed.op,
-    });
+    try {
+      ctx = input.deps.makeScenarioCtx({
+        requestId: `req-${input.testId}`,
+        dtoType: "user",
+        op: "code.mintUserAuthToken",
+      });
 
-    // Critical: mark expected-error scenarios so HandlerBase.failWithError()
-    // downgrades ERROR logs during deliberate negative tests.
-    if (input.expectedError === true) {
-      ctx.set("test.expectErrors", true);
-    }
+      input.seedCtx(ctx, status);
 
-    if (typeof input.seed.userId === "string") {
-      ctx.set("signup.userId", input.seed.userId);
-    }
-    ctx.set("signup.userCreateStatus", input.seed.userCreateStatus);
-    ctx.set("signup.userAuthCreateStatus", input.seed.userAuthCreateStatus);
+      await input.deps.step.execute(ctx);
 
-    await input.deps.step.execute(ctx);
-
-    const snap = railsSnapshot(ctx);
-    const railsError = isRailsError(snap);
-
-    assertEq(
-      a,
-      railsError,
-      input.expectedError,
-      input.expectedError
-        ? "expected rails error but handler succeeded"
-        : "unexpected rails error"
-    );
-
-    const expectedHandlerStatus = input.expectedError ? "error" : "ok";
-    assertEq(
-      a,
-      String(snap.handlerStatus ?? ""),
-      expectedHandlerStatus,
-      `handlerStatus should be "${expectedHandlerStatus}"`
-    );
-
-    const httpStatus = (ctx.get("response.status") ??
-      ctx.get("status") ??
-      null) as unknown;
-
-    if (input.expectedError) {
-      if (httpStatus !== null) {
-        assertEq(
-          a,
-          Number(httpStatus),
-          500,
-          "HTTP status must be 500 on mint error paths"
-        );
+      // Legitimacy lock: if the scenario pins a status code, enforce it here.
+      if (typeof input.expectedHttpStatus === "number") {
+        const httpStatus = readHttpStatus(ctx);
+        if (httpStatus !== input.expectedHttpStatus) {
+          status.recordAssertionFailure(
+            `Expected httpStatus=${
+              input.expectedHttpStatus
+            } but got httpStatus=${httpStatus} (handlerStatus=${readHandlerStatus(
+              ctx
+            )}).`
+          );
+        }
       }
-    } else {
-      if (httpStatus !== null) {
-        assertEq(
-          a,
-          Number(httpStatus),
-          200,
-          "HTTP status should be 200 on mint success"
-        );
-      }
+
+      input.assertAfter(ctx, status);
+    } catch (err: any) {
+      status.recordInnerCatch(err);
+    } finally {
+      TestScenarioFinalizer.finalize({ status, ctx });
     }
+  } catch (err: any) {
+    status.recordOuterCatch(err);
+  } finally {
+    TestScenarioFinalizer.finalize({ status, ctx });
+  }
 
-    const jwt = ctx.get("jwt.userAuth");
-    const signupJwt = ctx.get("signup.jwt");
+  return status;
+}
 
-    if (input.expectMint) {
-      assertOk(
-        a,
-        typeof jwt === "string" && (jwt as string).length > 0,
-        "ctx['jwt.userAuth'] must be a non-empty string on success"
-      );
-      assertEq(
-        a,
-        signupJwt,
-        jwt,
-        "ctx['signup.jwt'] must match ctx['jwt.userAuth']"
-      );
+// ───────────────────────────────────────────
+// Assertions (record failures; do not throw)
+// ───────────────────────────────────────────
 
-      const headerUnknown = ctx.get("signup.jwtHeader") as unknown;
-      assertOk(
-        a,
-        headerUnknown && typeof headerUnknown === "object",
-        "ctx['signup.jwtHeader'] must be an object on success"
-      );
-      const header = (headerUnknown ?? {}) as { alg?: unknown; kid?: unknown };
+function assertJwtMinted(ctx: any, status: TestScenarioStatus): void {
+  const jwt = ctx.get("jwt.userAuth");
+  const signupJwt = ctx.get("signup.jwt");
 
-      assertOk(
-        a,
-        typeof header.alg === "string" && (header.alg as string).length > 0,
-        "jwtHeader.alg must be a non-empty string"
-      );
-      assertOk(
-        a,
-        typeof header.kid === "string" && (header.kid as string).length > 0,
-        "jwtHeader.kid must be a non-empty string"
-      );
+  if (!(typeof jwt === "string" && jwt.length > 0)) {
+    status.recordAssertionFailure(
+      "ctx['jwt.userAuth'] must be a non-empty string on success."
+    );
+    return;
+  }
 
-      const issuedAtUnknown = ctx.get("signup.jwtIssuedAt") as unknown;
-      const expiresAtUnknown = ctx.get("signup.jwtExpiresAt") as unknown;
+  if (signupJwt !== jwt) {
+    status.recordAssertionFailure(
+      "ctx['signup.jwt'] must match ctx['jwt.userAuth']."
+    );
+  }
 
-      assertOk(
-        a,
-        typeof issuedAtUnknown === "number" && Number.isFinite(issuedAtUnknown),
-        "ctx['signup.jwtIssuedAt'] must be a finite number"
-      );
-      assertOk(
-        a,
-        typeof expiresAtUnknown === "number" &&
-          Number.isFinite(expiresAtUnknown),
-        "ctx['signup.jwtExpiresAt'] must be a finite number"
-      );
+  const headerUnknown = ctx.get("signup.jwtHeader") as unknown;
+  if (!(headerUnknown && typeof headerUnknown === "object")) {
+    status.recordAssertionFailure(
+      "ctx['signup.jwtHeader'] must be an object on success."
+    );
+    return;
+  }
 
-      const issuedAt = issuedAtUnknown as number;
-      const expiresAt = expiresAtUnknown as number;
+  const header = headerUnknown as { alg?: unknown; kid?: unknown };
 
-      assertOk(a, expiresAt > issuedAt, "jwtExpiresAt must be > jwtIssuedAt");
-    } else {
-      assertFalse(
-        a,
-        !!jwt,
-        "ctx['jwt.userAuth'] must not be set when mint does not run or fails"
-      );
-      assertFalse(
-        a,
-        !!signupJwt,
-        "ctx['signup.jwt'] must not be set when mint does not run or fails"
-      );
-    }
+  if (!(typeof header.alg === "string" && header.alg.length > 0)) {
+    status.recordAssertionFailure("jwtHeader.alg must be a non-empty string.");
+  }
 
-    const finishedAt = Date.now();
-    return {
-      testId: input.testId,
-      name: input.name,
-      outcome: a.failed.length === 0 ? "passed" : "failed",
-      expectedError: input.expectedError,
-      assertionCount: a.count,
-      failedAssertions: a.failed,
-      errorMessage: a.failed[0],
-      durationMs: Math.max(0, finishedAt - startedAt),
-      railsVerdict: a.failed.length === 0 ? "ok" : "rails_error",
-      railsStatus: snap.status,
-      railsHandlerStatus: snap.handlerStatus,
-      railsResponseStatus: snap.responseStatus,
-    };
-  } catch (err) {
-    const finishedAt = Date.now();
-    const msg =
-      err instanceof Error ? err.message : String(err ?? "unknown error");
-    return {
-      testId: input.testId,
-      name: input.name,
-      outcome: "failed",
-      expectedError: input.expectedError,
-      assertionCount: a.count,
-      failedAssertions: [msg],
-      errorMessage: msg,
-      durationMs: Math.max(0, finishedAt - startedAt),
-      railsVerdict: "test_bug",
-      railsStatus: undefined,
-      railsHandlerStatus: undefined,
-      railsResponseStatus: undefined,
-    };
+  if (!(typeof header.kid === "string" && header.kid.length > 0)) {
+    status.recordAssertionFailure("jwtHeader.kid must be a non-empty string.");
+  }
+
+  const issuedAtUnknown = ctx.get("signup.jwtIssuedAt") as unknown;
+  const expiresAtUnknown = ctx.get("signup.jwtExpiresAt") as unknown;
+
+  if (
+    !(typeof issuedAtUnknown === "number" && Number.isFinite(issuedAtUnknown))
+  ) {
+    status.recordAssertionFailure(
+      "ctx['signup.jwtIssuedAt'] must be a finite number."
+    );
+    return;
+  }
+
+  if (
+    !(typeof expiresAtUnknown === "number" && Number.isFinite(expiresAtUnknown))
+  ) {
+    status.recordAssertionFailure(
+      "ctx['signup.jwtExpiresAt'] must be a finite number."
+    );
+    return;
+  }
+
+  const issuedAt = issuedAtUnknown as number;
+  const expiresAt = expiresAtUnknown as number;
+
+  if (!(expiresAt > issuedAt)) {
+    status.recordAssertionFailure("jwtExpiresAt must be > jwtIssuedAt.");
+  }
+}
+
+function assertJwtNotMinted(ctx: any, status: TestScenarioStatus): void {
+  const jwt = ctx.get("jwt.userAuth");
+  const signupJwt = ctx.get("signup.jwt");
+
+  if (!!jwt) {
+    status.recordAssertionFailure(
+      "ctx['jwt.userAuth'] must not be set when mint does not run or fails."
+    );
+  }
+
+  if (!!signupJwt) {
+    status.recordAssertionFailure(
+      "ctx['signup.jwt'] must not be set when mint does not run or fails."
+    );
   }
 }
 
@@ -290,8 +210,8 @@ export async function getScenarios(deps: any): Promise<any[]> {
       id: "auth.signup.mintUserAuthToken.happy",
       name: "auth.signup: mintUserAuthToken mints a JWT (real env-service config)",
       shortCircuitOnFail: true,
-      expectedError: false,
-      async run(): Promise<HandlerTestResult> {
+
+      async run(): Promise<TestScenarioStatus> {
         const requestId = "req-auth-mint-user-auth-token-happy";
         const userId = "mint-user-happy";
 
@@ -299,41 +219,74 @@ export async function getScenarios(deps: any): Promise<any[]> {
           deps,
           testId: "auth.signup.mintUserAuthToken.happy",
           name: "auth.signup: mintUserAuthToken mints a JWT (real env-service config)",
-          expectedError: false,
-          seed: {
-            requestId,
-            dtoType: "user",
-            op: "code.mintUserAuthToken",
-            userId,
-            userCreateStatus: { ok: true, userId },
-            userAuthCreateStatus: { ok: true },
+          expectedMode: "success",
+          expectedHttpStatus: 200,
+
+          seedCtx: (ctx) => {
+            ctx.set("requestId", requestId);
+
+            ctx.set("signup.userId", userId);
+            ctx.set("signup.userCreateStatus", {
+              ok: true,
+              userId,
+            } as UserCreateStatus);
+            ctx.set("signup.userAuthCreateStatus", {
+              ok: true,
+            } as UserAuthCreateStatus);
           },
-          expectMint: true,
+
+          assertAfter: (ctx, status) => {
+            const hs = readHandlerStatus(ctx);
+            if (hs !== "ok") {
+              status.recordAssertionFailure(
+                `Expected handlerStatus="ok" but got "${hs}".`
+              );
+            }
+
+            // No raw JWT logging — just validate structure/presence.
+            assertJwtMinted(ctx, status);
+          },
         });
       },
     },
+
     {
       id: "auth.signup.mintUserAuthToken.missing-input",
       name: "auth.signup: mintUserAuthToken fails when signup.userId missing",
       shortCircuitOnFail: true,
-      expectedError: true,
-      async run(): Promise<HandlerTestResult> {
+
+      async run(): Promise<TestScenarioStatus> {
         const requestId = "req-auth-mint-user-auth-token-missing-input";
 
         return runScenario({
           deps,
           testId: "auth.signup.mintUserAuthToken.missing-input",
           name: "auth.signup: mintUserAuthToken fails when signup.userId missing",
-          expectedError: true,
-          seed: {
-            requestId,
-            dtoType: "user",
-            op: "code.mintUserAuthToken",
-            // Intentionally omit userId
-            userCreateStatus: { ok: true },
-            userAuthCreateStatus: { ok: true },
+          expectedMode: "failure",
+          expectedHttpStatus: 500,
+
+          seedCtx: (ctx) => {
+            ctx.set("requestId", requestId);
+
+            // Intentionally omit signup.userId
+            ctx.set("signup.userCreateStatus", {
+              ok: true,
+            } as UserCreateStatus);
+            ctx.set("signup.userAuthCreateStatus", {
+              ok: true,
+            } as UserAuthCreateStatus);
           },
-          expectMint: false,
+
+          assertAfter: (ctx, status) => {
+            const hs = readHandlerStatus(ctx);
+            if (hs !== "error") {
+              status.recordAssertionFailure(
+                `Expected handlerStatus="error" but got "${hs}".`
+              );
+            }
+
+            assertJwtNotMinted(ctx, status);
+          },
         });
       },
     },

@@ -1,4 +1,4 @@
-// backend/services/shared/src/http/handlerBaseExt/errorHelpers.ts
+// backend/services/shared/src/http/handlers/handlerBaseExt/errorHelpers.ts
 /**
  * Docs:
  * - ADR-0041 (Per-route controllers; single-purpose handlers)
@@ -229,7 +229,7 @@ export function logAndAttachHandlerError(opts: {
     `Handler failure in ${error.origin?.handler ?? "unknown handler"}`;
 
   // Downgrade: expected negative-test errors must not be logged as ERROR.
-  // Per your preference: ERROR → INFO (not WARN).
+  // Per rails: ERROR → INFO (not WARN).
   let level = input.logLevel ?? "error";
   if (expected && level === "error") {
     level = "info";

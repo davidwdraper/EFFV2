@@ -221,9 +221,9 @@ export class ScenarioRunner {
     await dto.runScenario(
       scenario.name,
       async () => {
-        const status = await this.safeScenarioRunStatus(scenario, deps);
+        const scenarioStatus = await this.safeScenarioRunStatus(scenario, deps);
 
-        const outcome = status.outcome() ?? {
+        const outcome = scenarioStatus.outcome() ?? {
           code: 5,
           color: "red",
           logLevel: "error",
@@ -237,13 +237,13 @@ export class ScenarioRunner {
         return {
           status: passed ? "Passed" : "Failed",
           details: {
-            scenarioId: status.scenarioId(),
-            scenarioName: status.scenarioName(),
-            expected: status.expected(),
+            scenarioId: scenarioStatus.scenarioId(),
+            scenarioName: scenarioStatus.scenarioName(),
+            expected: scenarioStatus.expected(),
             outcome,
-            rails: status.rails(),
-            caught: status.caught(),
-            notes: status.notes(),
+            rails: scenarioStatus.rails(),
+            caught: scenarioStatus.caught(),
+            notes: scenarioStatus.notes(),
           },
         };
       },
@@ -268,25 +268,72 @@ export class ScenarioRunner {
     );
   }
 
+  private isScenarioStatusLike(v: unknown): v is TestScenarioStatus {
+    const anyV = v as any;
+    return (
+      !!anyV &&
+      typeof anyV.isFinalized === "function" &&
+      typeof anyV.outcome === "function" &&
+      typeof anyV.scenarioId === "function" &&
+      typeof anyV.scenarioName === "function" &&
+      typeof anyV.expected === "function"
+    );
+  }
+
   private async safeScenarioRunStatus(
     scenario: HandlerTestScenarioDef,
     deps: ScenarioDeps
   ): Promise<TestScenarioStatus> {
     try {
-      const status = await scenario.run(deps);
+      const raw = await scenario.run(deps);
+
+      // ADR-0094: Scenario.run MUST return a real TestScenarioStatus instance.
+      // If it returns a POJO (or anything else), treat as infrastructure failure (outcomeCode=5).
+      if (!this.isScenarioStatusLike(raw)) {
+        const scenarioStatus = createTestScenarioStatus({
+          scenarioId: scenario.id,
+          scenarioName: scenario.name,
+          expected: "success",
+        });
+
+        const err = new TypeError(
+          "Scenario.run returned a non-TestScenarioStatus value (missing methods)."
+        );
+        (err as any).returnedType = typeof raw;
+        (err as any).returnedKeys =
+          raw && typeof raw === "object" ? Object.keys(raw as any) : undefined;
+
+        scenarioStatus.recordOuterCatch(err);
+        TestScenarioFinalizer.finalize({
+          status: scenarioStatus,
+          ctx: deps.pipelineCtx as any,
+        });
+
+        this.log?.error("ScenarioRunner.scenarioReturnedNonStatus", {
+          scenarioId: scenario.id,
+          scenarioName: scenario.name,
+          handlerName: deps.step.handlerName,
+          returnedType: (err as any).returnedType,
+          returnedKeys: (err as any).returnedKeys,
+        });
+
+        return scenarioStatus;
+      }
+
+      const scenarioStatus = raw;
 
       // Ensure it was finalized; if not, finalize with best-effort rails snapshot from pipelineCtx.
       // (Scenarios SHOULD finalize using their own scenario ctx; this is a guardrail.)
-      if (!status.isFinalized()) {
+      if (!scenarioStatus.isFinalized()) {
         TestScenarioFinalizer.finalize({
-          status,
+          status: scenarioStatus,
           ctx: deps.pipelineCtx as any,
         });
       }
 
       // ADR-0094: runner logs only infra failures as ERROR.
       // Non-infra failures are INFO. Success is DEBUG.
-      const outcome = status.outcome();
+      const outcome = scenarioStatus.outcome();
       if (outcome) {
         if (outcome.code === 5) {
           this.log?.error("ScenarioRunner.infraFailure", {
@@ -294,7 +341,7 @@ export class ScenarioRunner {
             scenarioName: scenario.name,
             handlerName: deps.step.handlerName,
             outcomeCode: outcome.code,
-            caught: status.caught(),
+            caught: scenarioStatus.caught(),
           });
         } else if (outcome.color === "red") {
           this.log?.info("ScenarioRunner.scenarioFailed", {
@@ -313,17 +360,20 @@ export class ScenarioRunner {
         }
       }
 
-      return status;
+      return scenarioStatus;
     } catch (err: any) {
       // Any thrown exception escaping scenario.run is infrastructure failure (ADR-0094 outcome 5).
-      const status = createTestScenarioStatus({
+      const scenarioStatus = createTestScenarioStatus({
         scenarioId: scenario.id,
         scenarioName: scenario.name,
         expected: "success",
       });
 
-      status.recordOuterCatch(err);
-      TestScenarioFinalizer.finalize({ status, ctx: deps.pipelineCtx as any });
+      scenarioStatus.recordOuterCatch(err);
+      TestScenarioFinalizer.finalize({
+        status: scenarioStatus,
+        ctx: deps.pipelineCtx as any,
+      });
 
       this.log?.error("ScenarioRunner.scenarioRunThrew", {
         scenarioId: scenario.id,
@@ -333,7 +383,7 @@ export class ScenarioRunner {
         errorMessage: err?.message,
       });
 
-      return status;
+      return scenarioStatus;
     }
   }
 
@@ -350,19 +400,19 @@ export class ScenarioRunner {
       errorMessage: (err as any)?.message,
     });
 
-    const status = createTestScenarioStatus({
+    const scenarioStatus = createTestScenarioStatus({
       scenarioId: "module-error",
       scenarioName: "test-module: getScenarios(deps) failure",
       expected: "success",
     });
 
-    status.recordOuterCatch(err);
-    TestScenarioFinalizer.finalize({ status });
+    scenarioStatus.recordOuterCatch(err);
+    TestScenarioFinalizer.finalize({ status: scenarioStatus });
 
     await dto.runScenario(
       "test-module: getScenarios(deps) failure",
       async () => {
-        const outcome = status.outcome() ?? {
+        const outcome = scenarioStatus.outcome() ?? {
           code: 5,
           color: "red",
           logLevel: "error",
@@ -372,13 +422,13 @@ export class ScenarioRunner {
         return {
           status: outcome.color === "green" ? "Passed" : "Failed",
           details: {
-            scenarioId: status.scenarioId(),
-            scenarioName: status.scenarioName(),
-            expected: status.expected(),
+            scenarioId: scenarioStatus.scenarioId(),
+            scenarioName: scenarioStatus.scenarioName(),
+            expected: scenarioStatus.expected(),
             outcome,
-            rails: status.rails(),
-            caught: status.caught(),
-            notes: status.notes(),
+            rails: scenarioStatus.rails(),
+            caught: scenarioStatus.caught(),
+            notes: scenarioStatus.notes(),
           },
         };
       },

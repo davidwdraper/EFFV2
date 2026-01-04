@@ -12,26 +12,44 @@
  * - ADR-0071 (Auth Signup JWT Placement — ctx["jwt.userAuth"])
  * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  * - ADR-0094 (Test Scenario Error Handling and Logging)
+ * - ADR-0095 (Happy-Path-Only testing)
  *
  * Purpose:
- * - Runner-shaped handler tests for CodeMintUserAuthTokenHandler (ADR-0094 shape).
- * - Scenarios execute via deps.step.execute(ctx) so scenario ctx inherits
+ * - Happy-path handler test for CodeMintUserAuthTokenHandler (ADR-0094 shape).
+ * - Scenario executes via deps.step.execute(ctx) so scenario ctx inherits
  *   pipeline runtime ("rt") automatically.
  *
  * Notes:
  * - This handler caches a module-level MintProvider singleton.
  *   That makes "corrupt env var after success" non-deterministic within the
- *   same process, so we do NOT include an env-corruption scenario here.
+ *   same process, so we do NOT include any env-corruption scenario here.
  *
  * Hard rules:
  * - No ALS / adaptive logging patterns.
  * - No semantics via ctx flags; expectations live in TestScenarioStatus only.
  * - Never log raw JWT values.
+ *
+ * ADR-0095:
+ * - Exactly one scenario: HappyPath
+ *
+ * ADR-0094:
+ * - Inner try/catch wraps ONLY handler execution.
+ * - Outer try/catch protects runner integrity.
+ * - Finalization is deterministic via TestScenarioFinalizer (run exactly once).
  */
 
 import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
 import type { TestScenarioStatus } from "@nv/shared/testing/TestScenarioStatus";
 import { TestScenarioFinalizer } from "@nv/shared/testing/TestScenarioFinalizer";
+
+type ScenarioDepsLike = {
+  step: { execute: (scenarioCtx: any) => Promise<void> };
+  makeScenarioCtx: (seed: {
+    requestId: string;
+    dtoType?: string;
+    op?: string;
+  }) => any;
+};
 
 type UserCreateStatus =
   | { ok: true; userId?: string }
@@ -51,74 +69,6 @@ function readHandlerStatus(ctx: any): string {
   const v = ctx.get("handlerStatus");
   return typeof v === "string" ? v : "ok";
 }
-
-// ───────────────────────────────────────────
-// ADR-0094 scenario runner helper
-// ───────────────────────────────────────────
-async function runScenario(input: {
-  deps: any;
-
-  testId: string;
-  name: string;
-
-  expectedMode: "success" | "failure";
-  expectedHttpStatus?: number;
-
-  seedCtx: (ctx: any, status: TestScenarioStatus) => void;
-  assertAfter: (ctx: any, status: TestScenarioStatus) => void;
-}): Promise<TestScenarioStatus> {
-  const status = createTestScenarioStatus({
-    scenarioId: input.testId,
-    scenarioName: input.name,
-    expected: input.expectedMode,
-  });
-
-  let ctx: any | undefined;
-
-  try {
-    try {
-      ctx = input.deps.makeScenarioCtx({
-        requestId: `req-${input.testId}`,
-        dtoType: "user",
-        op: "code.mintUserAuthToken",
-      });
-
-      input.seedCtx(ctx, status);
-
-      await input.deps.step.execute(ctx);
-
-      // Legitimacy lock: if the scenario pins a status code, enforce it here.
-      if (typeof input.expectedHttpStatus === "number") {
-        const httpStatus = readHttpStatus(ctx);
-        if (httpStatus !== input.expectedHttpStatus) {
-          status.recordAssertionFailure(
-            `Expected httpStatus=${
-              input.expectedHttpStatus
-            } but got httpStatus=${httpStatus} (handlerStatus=${readHandlerStatus(
-              ctx
-            )}).`
-          );
-        }
-      }
-
-      input.assertAfter(ctx, status);
-    } catch (err: any) {
-      status.recordInnerCatch(err);
-    } finally {
-      TestScenarioFinalizer.finalize({ status, ctx });
-    }
-  } catch (err: any) {
-    status.recordOuterCatch(err);
-  } finally {
-    TestScenarioFinalizer.finalize({ status, ctx });
-  }
-
-  return status;
-}
-
-// ───────────────────────────────────────────
-// Assertions (record failures; do not throw)
-// ───────────────────────────────────────────
 
 function assertJwtMinted(ctx: any, status: TestScenarioStatus): void {
   const jwt = ctx.get("jwt.userAuth");
@@ -184,58 +134,50 @@ function assertJwtMinted(ctx: any, status: TestScenarioStatus): void {
   }
 }
 
-function assertJwtNotMinted(ctx: any, status: TestScenarioStatus): void {
-  const jwt = ctx.get("jwt.userAuth");
-  const signupJwt = ctx.get("signup.jwt");
-
-  if (!!jwt) {
-    status.recordAssertionFailure(
-      "ctx['jwt.userAuth'] must not be set when mint does not run or fails."
-    );
-  }
-
-  if (!!signupJwt) {
-    status.recordAssertionFailure(
-      "ctx['signup.jwt'] must not be set when mint does not run or fails."
-    );
-  }
-}
-
-// ───────────────────────────────────────────
-// ScenarioRunner entrypoint
-// ───────────────────────────────────────────
-export async function getScenarios(deps: any): Promise<any[]> {
+export async function getScenarios(deps: ScenarioDepsLike): Promise<any[]> {
   return [
     {
-      id: "auth.signup.mintUserAuthToken.happy",
+      id: "HappyPath",
       name: "auth.signup: mintUserAuthToken mints a JWT (real env-service config)",
       shortCircuitOnFail: true,
 
-      async run(): Promise<TestScenarioStatus> {
+      async run(localDeps: ScenarioDepsLike): Promise<TestScenarioStatus> {
         const requestId = "req-auth-mint-user-auth-token-happy";
         const userId = "mint-user-happy";
 
-        return runScenario({
-          deps,
-          testId: "auth.signup.mintUserAuthToken.happy",
-          name: "auth.signup: mintUserAuthToken mints a JWT (real env-service config)",
-          expectedMode: "success",
-          expectedHttpStatus: 200,
+        const status = createTestScenarioStatus({
+          scenarioId: "HappyPath",
+          scenarioName:
+            "auth.signup: mintUserAuthToken mints a JWT (real env-service config)",
+          expected: "success",
+        });
 
-          seedCtx: (ctx) => {
-            ctx.set("requestId", requestId);
+        let ctx: any | undefined;
 
-            ctx.set("signup.userId", userId);
-            ctx.set("signup.userCreateStatus", {
-              ok: true,
-              userId,
-            } as UserCreateStatus);
-            ctx.set("signup.userAuthCreateStatus", {
-              ok: true,
-            } as UserAuthCreateStatus);
-          },
+        // Outer try/catch protects runner integrity (ADR-0094).
+        try {
+          ctx = localDeps.makeScenarioCtx({
+            requestId,
+            dtoType: "user",
+            op: "code.mintUserAuthToken",
+          });
 
-          assertAfter: (ctx, status) => {
+          ctx.set("requestId", requestId);
+
+          ctx.set("signup.userId", userId);
+          ctx.set("signup.userCreateStatus", {
+            ok: true,
+            userId,
+          } as UserCreateStatus);
+          ctx.set("signup.userAuthCreateStatus", {
+            ok: true,
+          } as UserAuthCreateStatus);
+
+          // Inner try/catch wraps ONLY handler execution (ADR-0094).
+          try {
+            await localDeps.step.execute(ctx);
+
+            // Assertions MUST NOT throw (ADR-0094).
             const hs = readHandlerStatus(ctx);
             if (hs !== "ok") {
               status.recordAssertionFailure(
@@ -243,51 +185,26 @@ export async function getScenarios(deps: any): Promise<any[]> {
               );
             }
 
-            // No raw JWT logging — just validate structure/presence.
-            assertJwtMinted(ctx, status);
-          },
-        });
-      },
-    },
-
-    {
-      id: "auth.signup.mintUserAuthToken.missing-input",
-      name: "auth.signup: mintUserAuthToken fails when signup.userId missing",
-      shortCircuitOnFail: true,
-
-      async run(): Promise<TestScenarioStatus> {
-        const requestId = "req-auth-mint-user-auth-token-missing-input";
-
-        return runScenario({
-          deps,
-          testId: "auth.signup.mintUserAuthToken.missing-input",
-          name: "auth.signup: mintUserAuthToken fails when signup.userId missing",
-          expectedMode: "failure",
-          expectedHttpStatus: 500,
-
-          seedCtx: (ctx) => {
-            ctx.set("requestId", requestId);
-
-            // Intentionally omit signup.userId
-            ctx.set("signup.userCreateStatus", {
-              ok: true,
-            } as UserCreateStatus);
-            ctx.set("signup.userAuthCreateStatus", {
-              ok: true,
-            } as UserAuthCreateStatus);
-          },
-
-          assertAfter: (ctx, status) => {
-            const hs = readHandlerStatus(ctx);
-            if (hs !== "error") {
+            const httpStatus = readHttpStatus(ctx);
+            if (httpStatus !== 200) {
               status.recordAssertionFailure(
-                `Expected handlerStatus="error" but got "${hs}".`
+                `Expected httpStatus=200 but got httpStatus=${httpStatus}.`
               );
             }
 
-            assertJwtNotMinted(ctx, status);
-          },
-        });
+            // No raw JWT logging — just validate structure/presence.
+            assertJwtMinted(ctx, status);
+          } catch (err: any) {
+            status.recordInnerCatch(err);
+          }
+        } catch (err: any) {
+          status.recordOuterCatch(err);
+        } finally {
+          // Deterministic finalization exactly once (no double-finalize noise).
+          TestScenarioFinalizer.finalize({ status, ctx });
+        }
+
+        return status;
       },
     },
   ];

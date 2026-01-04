@@ -27,7 +27,7 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 
 import { AuthSignupController } from "../../auth.signup.controller";
 
-import { CodeBuildUserIdHandler } from "./code.build.userId";
+import { CodeMintUuidHandler } from "@nv/shared/http/handlers/code.mint.uuid";
 import { ToBagUserHandler } from "./toBag.user";
 import { CodeExtractPasswordHandler } from "./code.extractPassword";
 import { CodePasswordHashHandler } from "./code.passwordHash";
@@ -53,7 +53,7 @@ export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   ctx.set("s2s.version.userAuth", 1);
 
   return [
-    new CodeBuildUserIdHandler(ctx, controller),
+    new CodeMintUuidHandler(ctx, controller),
     new ToBagUserHandler(ctx, controller),
     new CodeExtractPasswordHandler(ctx, controller),
     new CodePasswordHashHandler(ctx, controller),

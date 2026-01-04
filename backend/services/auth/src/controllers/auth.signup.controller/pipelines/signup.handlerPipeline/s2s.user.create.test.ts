@@ -10,9 +10,12 @@
  * - ADR-0063 (Auth Signup MOS Pipeline)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  * - ADR-0094 (Test Scenario Error Handling and Logging)
+ * - ADR-0095 (Happy-Path-Only testing)
  *
  * Purpose:
- * - Define handler-level tests for S2sUserCreateHandler.
+ * - Happy-path smoke test for S2sUserCreateHandler:
+ *   - calls user.create using ctx["bag"] (singleton UserDto)
+ *   - writes ctx["signup.userCreateStatus"] with ok=true + userId
  *
  * IMPORTANT:
  * - Runner-shaped module: scenarios execute via deps.step.execute(ctx)
@@ -27,12 +30,15 @@
  *   • ctx["test.shared.userId"]
  *   • globalThis.__nv_handler_test_shared["auth.signup.createdUserId"]
  *
+ * ADR-0095:
+ * - Exactly one scenario: HappyPath
+ *
  * ADR-0094 contract:
  * - No expectErrors anywhere.
  * - Scenario.run returns TestScenarioStatus.
  * - Inner try/catch wraps ONLY handler execution.
  * - Outer try/catch protects runner integrity.
- * - Finalization is deterministic via TestScenarioFinalizer.
+ * - Finalization is deterministic via TestScenarioFinalizer (run exactly once).
  */
 
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
@@ -92,7 +98,7 @@ function buildUserBag(
   // ✅ Registry-minted happy DTO (sidecar JSON hydrated + validated + collection seeded)
   const dto = registry.getTestDto("happy") as unknown as UserDto;
 
-  // Optional per-scenario tweaks (uniqueness, forcing missing, etc.)
+  // Optional per-scenario tweaks (uniqueness, etc.)
   if (mutate) mutate(dto);
 
   // Match pipeline behavior: canonical UUIDv4 id applied once.
@@ -108,10 +114,6 @@ function buildUserBag(
   return bag as UserBag;
 }
 
-// ───────────────────────────────────────────
-// Scenario runner helper (ADR-0094)
-// ───────────────────────────────────────────
-
 function readHttpStatus(ctx: any): number {
   const v = ctx.get("response.status") ?? ctx.get("status") ?? 200;
   const n = typeof v === "number" ? v : Number(v);
@@ -121,67 +123,6 @@ function readHttpStatus(ctx: any): number {
 function readHandlerStatus(ctx: any): string {
   const v = ctx.get("handlerStatus");
   return typeof v === "string" ? v : "ok";
-}
-
-async function runScenario(input: {
-  deps: any; // ScenarioDeps does not exist in this repo; keep loose.
-  testId: string;
-  name: string;
-
-  expectedMode: "success" | "failure";
-  expectedHttpStatus?: number;
-
-  seedCtx: (ctx: any) => void;
-  assertAfter?: (ctx: any, status: TestScenarioStatus) => void;
-}): Promise<TestScenarioStatus> {
-  const status = createTestScenarioStatus({
-    scenarioId: input.testId,
-    scenarioName: input.name,
-    expected: input.expectedMode,
-  });
-
-  let ctx: any | undefined;
-
-  try {
-    try {
-      ctx = input.deps.makeScenarioCtx({
-        requestId: `req-${input.testId}`,
-        dtoType: "user",
-        op: "s2s.user.create",
-      });
-
-      input.seedCtx(ctx);
-
-      await input.deps.step.execute(ctx);
-
-      if (typeof input.expectedHttpStatus === "number") {
-        const httpStatus = readHttpStatus(ctx);
-        if (httpStatus !== input.expectedHttpStatus) {
-          status.recordAssertionFailure(
-            `Expected httpStatus=${
-              input.expectedHttpStatus
-            } but got httpStatus=${httpStatus} (handlerStatus=${readHandlerStatus(
-              ctx
-            )}).`
-          );
-        }
-      }
-
-      if (input.assertAfter) {
-        input.assertAfter(ctx, status);
-      }
-    } catch (err: any) {
-      status.recordInnerCatch(err);
-    } finally {
-      TestScenarioFinalizer.finalize({ status, ctx });
-    }
-  } catch (err: any) {
-    status.recordOuterCatch(err);
-  } finally {
-    TestScenarioFinalizer.finalize({ status, ctx });
-  }
-
-  return status;
 }
 
 // ───────────────────────────────────────────
@@ -211,29 +152,6 @@ function assertOkStatus(
   }
 }
 
-function assertErrorStatus(ctx: any, status: TestScenarioStatus): void {
-  const s = ctx.get("signup.userCreateStatus") as UserCreateStatus | undefined;
-
-  if (!s || s.ok !== false) {
-    status.recordAssertionFailure(
-      "signup.userCreateStatus.ok should be false on error paths."
-    );
-    return;
-  }
-
-  if (typeof s.code !== "string" || s.code.length === 0) {
-    status.recordAssertionFailure(
-      "signup.userCreateStatus.code should be populated on error paths."
-    );
-  }
-
-  if (typeof s.message !== "string" || s.message.length === 0) {
-    status.recordAssertionFailure(
-      "signup.userCreateStatus.message should be populated on error paths."
-    );
-  }
-}
-
 // ───────────────────────────────────────────
 // ScenarioRunner entrypoint
 // ───────────────────────────────────────────
@@ -241,7 +159,7 @@ function assertErrorStatus(ctx: any, status: TestScenarioStatus): void {
 export async function getScenarios(deps: any): Promise<any[]> {
   return [
     {
-      id: "auth.signup.s2s.user.create.happy",
+      id: "HappyPath",
       name: "auth.signup: S2sUserCreateHandler happy path — user.create succeeds",
       shortCircuitOnFail: true,
 
@@ -256,20 +174,32 @@ export async function getScenarios(deps: any): Promise<any[]> {
           dto.setEmail?.(`auth.s2s.user.create+${signupUserId}@example.com`);
         });
 
-        return runScenario({
-          deps,
-          testId: "auth.signup.s2s.user.create.happy",
-          name: "auth.signup: S2sUserCreateHandler happy path — user.create succeeds",
-          expectedMode: "success",
-          expectedHttpStatus: 200,
+        const status = createTestScenarioStatus({
+          scenarioId: "HappyPath",
+          scenarioName:
+            "auth.signup: S2sUserCreateHandler happy path — user.create succeeds",
+          expected: "success",
+        });
 
-          seedCtx: (ctx) => {
-            ctx.set("requestId", requestId);
-            ctx.set("signup.userId", signupUserId);
-            ctx.set("bag", bag);
-          },
+        let ctx: any | undefined;
 
-          assertAfter: (ctx, status) => {
+        // Outer try/catch protects runner integrity (ADR-0094).
+        try {
+          ctx = deps.makeScenarioCtx({
+            requestId,
+            dtoType: "user",
+            op: "s2s.user.create",
+          });
+
+          ctx.set("requestId", requestId);
+          ctx.set("signup.userId", signupUserId);
+          ctx.set("bag", bag);
+
+          // Inner try/catch wraps ONLY handler execution (ADR-0094).
+          try {
+            await deps.step.execute(ctx);
+
+            // Assertions MUST NOT throw (ADR-0094).
             const handlerStatus = readHandlerStatus(ctx);
             if (handlerStatus !== "ok") {
               status.recordAssertionFailure(
@@ -277,113 +207,28 @@ export async function getScenarios(deps: any): Promise<any[]> {
               );
             }
 
+            const httpStatus = readHttpStatus(ctx);
+            if (httpStatus !== 200) {
+              status.recordAssertionFailure(
+                `Expected httpStatus=200 but got httpStatus=${httpStatus}.`
+              );
+            }
+
             assertOkStatus(ctx, status, signupUserId);
 
             // ✅ Handoff for rollback tests (best-effort ctx + reliable process-local)
             stashCreatedUserId(ctx, signupUserId);
-          },
-        });
-      },
-    },
+          } catch (err: any) {
+            status.recordInnerCatch(err);
+          }
+        } catch (err: any) {
+          status.recordOuterCatch(err);
+        } finally {
+          // Deterministic finalization exactly once (no double-finalize noise).
+          TestScenarioFinalizer.finalize({ status, ctx });
+        }
 
-    {
-      id: "auth.signup.s2s.user.create.badEnvelope",
-      name: "auth.signup: S2sUserCreateHandler rails on malformed user.create envelope",
-      shortCircuitOnFail: false,
-
-      async run(): Promise<TestScenarioStatus> {
-        const requestId = "req-auth-s2s-user-create-bad-envelope";
-        const signupUserId = newUuid();
-
-        const goodBag = buildUserBag(signupUserId, requestId, (dto) => {
-          dto.setGivenName?.("Auth");
-          dto.setLastName?.("BadEnvelope");
-          dto.setEmail?.(
-            `auth.s2s.user.create.badenv+${signupUserId}@example.com`
-          );
-        });
-
-        // Corrupt the envelope shape: wrong item structure.
-        const itemsArray =
-          typeof (goodBag as any).items === "function"
-            ? Array.from((goodBag as any).items())
-            : [];
-        const firstItem = itemsArray[0] ?? {};
-
-        const badEnvelope = {
-          meta: (goodBag as any).meta,
-          items: [
-            {
-              payload: (firstItem as any).data ?? firstItem,
-            },
-          ],
-        };
-
-        return runScenario({
-          deps,
-          testId: "auth.signup.s2s.user.create.badEnvelope",
-          name: "auth.signup: S2sUserCreateHandler sad path — malformed envelope",
-          expectedMode: "failure",
-          expectedHttpStatus: 400,
-
-          seedCtx: (ctx) => {
-            ctx.set("requestId", requestId);
-            ctx.set("signup.userId", signupUserId);
-            ctx.set("bag", badEnvelope as unknown as UserBag);
-          },
-
-          assertAfter: (ctx, status) => {
-            const handlerStatus = readHandlerStatus(ctx);
-            if (handlerStatus !== "error") {
-              status.recordAssertionFailure(
-                `Expected handlerStatus="error" but got "${handlerStatus}".`
-              );
-            }
-            assertErrorStatus(ctx, status);
-          },
-        });
-      },
-    },
-
-    {
-      id: "auth.signup.s2s.user.create.missingFields",
-      name: "auth.signup: S2sUserCreateHandler rails when givenName/lastName/email are missing",
-      shortCircuitOnFail: false,
-
-      async run(): Promise<TestScenarioStatus> {
-        const requestId = "req-auth-s2s-user-create-missing-fields";
-        const signupUserId = newUuid();
-
-        const bag = buildUserBag(signupUserId, requestId, (dto) => {
-          // Start with valid happy data, then force missing/empty fields.
-          dto.setGivenName?.("");
-          dto.setLastName?.("");
-          dto.setEmail?.("");
-        });
-
-        return runScenario({
-          deps,
-          testId: "auth.signup.s2s.user.create.missingFields",
-          name: "auth.signup: S2sUserCreateHandler sad path — missing givenName/lastName/email",
-          expectedMode: "failure",
-          expectedHttpStatus: 400,
-
-          seedCtx: (ctx) => {
-            ctx.set("requestId", requestId);
-            ctx.set("signup.userId", signupUserId);
-            ctx.set("bag", bag);
-          },
-
-          assertAfter: (ctx, status) => {
-            const handlerStatus = readHandlerStatus(ctx);
-            if (handlerStatus !== "error") {
-              status.recordAssertionFailure(
-                `Expected handlerStatus="error" but got "${handlerStatus}".`
-              );
-            }
-            assertErrorStatus(ctx, status);
-          },
-        });
+        return status;
       },
     },
   ];

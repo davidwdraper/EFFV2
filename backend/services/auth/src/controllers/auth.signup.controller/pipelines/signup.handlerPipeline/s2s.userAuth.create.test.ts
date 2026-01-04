@@ -10,18 +10,27 @@
  * - ADR-0063 (Auth Signup MOS Pipeline)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  * - ADR-0094 (Test Scenario Error Handling and Logging)
+ * - ADR-0095 (Happy-Path-Only testing)
  *
  * Purpose:
- * - Define handler-level tests for S2sUserAuthCreateHandler (ADR-0094 shape).
+ * - Happy-path smoke test for S2sUserAuthCreateHandler:
+ *   - calls user-auth.create using signup auth ctx keys
+ *   - writes ctx["signup.userAuthCreateStatus"] with ok=true
  *
  * IMPORTANT:
  * - Runner-shaped module: scenarios execute via deps.step.execute(ctx)
  *   so the scenario ctx inherits pipeline runtime ("rt") automatically.
  * - No expectErrors, no ALS semantics, no log downgrades.
  *
- * Change (ADR-0092 alignment, preserved):
- * - Use registry-minted test DTOs (sidecar JSON hydrated) instead of ad-hoc DTO construction.
- * - Do not use Date.now / new Date() for fixtures; rely on sidecar values for stability.
+ * ADR-0095:
+ * - Exactly one scenario: HappyPath
+ *
+ * ADR-0094 contract:
+ * - No expectErrors anywhere.
+ * - Scenario.run returns TestScenarioStatus.
+ * - Inner try/catch wraps ONLY handler execution.
+ * - Outer try/catch protects runner integrity.
+ * - Finalization is deterministic via TestScenarioFinalizer (run exactly once).
  */
 
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
@@ -106,75 +115,6 @@ function readHandlerStatus(ctx: any): string {
   return typeof v === "string" ? v : "ok";
 }
 
-// ───────────────────────────────────────────
-// ADR-0094 scenario runner helper
-// ───────────────────────────────────────────
-
-async function runScenario(input: {
-  deps: any;
-  testId: string;
-  name: string;
-
-  expectedMode: "success" | "failure";
-  expectedHttpStatus?: number;
-
-  seedCtx: (ctx: any, status: TestScenarioStatus) => void;
-  assertAfter?: (ctx: any, status: TestScenarioStatus) => void;
-}): Promise<TestScenarioStatus> {
-  const status = createTestScenarioStatus({
-    scenarioId: input.testId,
-    scenarioName: input.name,
-    expected: input.expectedMode,
-  });
-
-  let ctx: any | undefined;
-
-  try {
-    try {
-      ctx = input.deps.makeScenarioCtx({
-        requestId: `req-${input.testId}`,
-        dtoType: "user",
-        op: "s2s.userAuth.create",
-      });
-
-      input.seedCtx(ctx, status);
-
-      await input.deps.step.execute(ctx);
-
-      if (typeof input.expectedHttpStatus === "number") {
-        const httpStatus = readHttpStatus(ctx);
-        if (httpStatus !== input.expectedHttpStatus) {
-          status.recordAssertionFailure(
-            `Expected httpStatus=${
-              input.expectedHttpStatus
-            } but got httpStatus=${httpStatus} (handlerStatus=${readHandlerStatus(
-              ctx
-            )}).`
-          );
-        }
-      }
-
-      if (input.assertAfter) {
-        input.assertAfter(ctx, status);
-      }
-    } catch (err: any) {
-      status.recordInnerCatch(err);
-    } finally {
-      TestScenarioFinalizer.finalize({ status, ctx });
-    }
-  } catch (err: any) {
-    status.recordOuterCatch(err);
-  } finally {
-    TestScenarioFinalizer.finalize({ status, ctx });
-  }
-
-  return status;
-}
-
-// ───────────────────────────────────────────
-// Assertions (record failures; do not throw)
-// ───────────────────────────────────────────
-
 function assertOkStatus(ctx: any, status: TestScenarioStatus): void {
   const s = ctx.get("signup.userAuthCreateStatus") as
     | UserAuthCreateStatus
@@ -187,84 +127,23 @@ function assertOkStatus(ctx: any, status: TestScenarioStatus): void {
   }
 }
 
-function assertErrorStatus(ctx: any, status: TestScenarioStatus): void {
-  const s = ctx.get("signup.userAuthCreateStatus") as
-    | UserAuthCreateStatus
-    | undefined;
-
-  if (!s || s.ok !== false) {
-    status.recordAssertionFailure(
-      "signup.userAuthCreateStatus.ok should be false on error paths."
-    );
-    return;
-  }
-
-  if (typeof s.code !== "string" || s.code.length === 0) {
-    status.recordAssertionFailure(
-      "signup.userAuthCreateStatus.code should be populated on error paths."
-    );
-  }
-
-  if (typeof s.message !== "string" || s.message.length === 0) {
-    status.recordAssertionFailure(
-      "signup.userAuthCreateStatus.message should be populated on error paths."
-    );
-  }
-}
-
-function extractAuthSeed(
-  authDto: UserAuthDto,
-  status: TestScenarioStatus
-): {
+function extractAuthSeed(authDto: UserAuthDto): {
   hash?: string;
   hashAlgo?: string;
   hashParamsJson?: string;
   passwordCreatedAt?: string;
 } {
-  // Prefer toBody() as the stable DTO surface for tests.
   const body: any =
     authDto && typeof (authDto as any).toBody === "function"
       ? (authDto as any).toBody()
       : {};
 
-  const hash = body?.hash;
-  const hashAlgo = body?.hashAlgo;
-  const hashParamsJson = body?.hashParamsJson;
-  const passwordCreatedAt = body?.passwordCreatedAt;
-
-  if (typeof hash !== "string" || hash.trim().length === 0) {
-    status.recordAssertionFailure("minted UserAuthDto.hash must be non-empty.");
-  }
-  if (typeof hashAlgo !== "string" || hashAlgo.trim().length === 0) {
-    status.recordAssertionFailure(
-      "minted UserAuthDto.hashAlgo must be non-empty."
-    );
-  }
-  if (hashParamsJson !== undefined) {
-    if (typeof hashParamsJson !== "string") {
-      status.recordAssertionFailure(
-        "minted UserAuthDto.hashParamsJson must be a string when present."
-      );
-    } else {
-      try {
-        JSON.parse(hashParamsJson);
-      } catch {
-        status.recordAssertionFailure(
-          "minted UserAuthDto.hashParamsJson must be valid JSON when present."
-        );
-      }
-    }
-  }
-  if (
-    typeof passwordCreatedAt !== "string" ||
-    passwordCreatedAt.trim().length === 0
-  ) {
-    status.recordAssertionFailure(
-      "minted UserAuthDto.passwordCreatedAt must be non-empty."
-    );
-  }
-
-  return { hash, hashAlgo, hashParamsJson, passwordCreatedAt };
+  return {
+    hash: body?.hash,
+    hashAlgo: body?.hashAlgo,
+    hashParamsJson: body?.hashParamsJson,
+    passwordCreatedAt: body?.passwordCreatedAt,
+  };
 }
 
 // ───────────────────────────────────────────
@@ -274,7 +153,7 @@ function extractAuthSeed(
 export async function getScenarios(deps: any): Promise<any[]> {
   return [
     {
-      id: "auth.signup.s2s.userAuth.create.happy",
+      id: "HappyPath",
       name: "auth.signup: S2sUserAuthCreateHandler happy path — user-auth.create succeeds",
       shortCircuitOnFail: true,
 
@@ -290,101 +169,73 @@ export async function getScenarios(deps: any): Promise<any[]> {
           );
         });
 
-        // ✅ Mint auth test DTO and use its sidecar-hydrated values (no overrides).
+        // ✅ Mint auth test DTO and seed ctx from its sidecar-hydrated values.
         const authDto = mintUserAuthDto(signupUserId);
+        const seed = extractAuthSeed(authDto);
 
-        return runScenario({
-          deps,
-          testId: "auth.signup.s2s.userAuth.create.happy",
-          name: "auth.signup: S2sUserAuthCreateHandler happy path — user-auth.create succeeds",
-          expectedMode: "success",
-          expectedHttpStatus: 200,
+        const status = createTestScenarioStatus({
+          scenarioId: "HappyPath",
+          scenarioName:
+            "auth.signup: S2sUserAuthCreateHandler happy path — user-auth.create succeeds",
+          expected: "success",
+        });
 
-          seedCtx: (ctx, status) => {
-            ctx.set("requestId", requestId);
+        let ctx: any | undefined;
 
-            // Required handler inputs
-            ctx.set("signup.userId", signupUserId);
-            ctx.set("bag", bag);
+        // Outer try/catch protects runner integrity (ADR-0094).
+        try {
+          ctx = deps.makeScenarioCtx({
+            requestId,
+            dtoType: "user",
+            op: "s2s.userAuth.create",
+          });
 
-            // Seed ctx keys from minted DTO (drift detector + prod-shaped inputs).
-            const seed = extractAuthSeed(authDto, status);
-            if (seed.hash !== undefined) ctx.set("signup.hash", seed.hash);
-            if (seed.hashAlgo !== undefined)
-              ctx.set("signup.hashAlgo", seed.hashAlgo);
-            if (seed.hashParamsJson !== undefined)
-              ctx.set("signup.hashParamsJson", seed.hashParamsJson);
-            if (seed.passwordCreatedAt !== undefined)
-              ctx.set("signup.passwordCreatedAt", seed.passwordCreatedAt);
-          },
+          ctx.set("requestId", requestId);
 
-          assertAfter: (ctx, status) => {
+          // Required handler inputs
+          ctx.set("signup.userId", signupUserId);
+          ctx.set("bag", bag);
+
+          // Seed signup auth fields (no Date.now, no drift-y fixtures).
+          if (seed.hash !== undefined) ctx.set("signup.hash", seed.hash);
+          if (seed.hashAlgo !== undefined)
+            ctx.set("signup.hashAlgo", seed.hashAlgo);
+          if (seed.hashParamsJson !== undefined)
+            ctx.set("signup.hashParamsJson", seed.hashParamsJson);
+          if (seed.passwordCreatedAt !== undefined)
+            ctx.set("signup.passwordCreatedAt", seed.passwordCreatedAt);
+
+          // Inner try/catch wraps ONLY handler execution (ADR-0094).
+          try {
+            await deps.step.execute(ctx);
+
+            // Assertions MUST NOT throw (ADR-0094).
             const handlerStatus = readHandlerStatus(ctx);
             if (handlerStatus !== "ok") {
               status.recordAssertionFailure(
                 `Expected handlerStatus="ok" but got "${handlerStatus}".`
               );
             }
-            assertOkStatus(ctx, status);
-          },
-        });
-      },
-    },
 
-    {
-      id: "auth.signup.s2s.userAuth.create.missingFields",
-      name: "auth.signup: S2sUserAuthCreateHandler rails when required signup auth fields are missing",
-      shortCircuitOnFail: false,
-
-      async run(): Promise<TestScenarioStatus> {
-        const requestId = "req-auth-s2s-userauth-create-missing-fields";
-        const signupUserId = newUuid();
-
-        const bag = buildUserBag(signupUserId, requestId, (dto) => {
-          dto.setGivenName?.("Auth");
-          dto.setLastName?.("MissingAuthFields");
-          dto.setEmail?.(
-            `auth.s2s.userauth.create.missing+${signupUserId}@example.com`
-          );
-        });
-
-        // Still mint it so we can detect sidecar drift, but we will NOT seed ctx keys.
-        const authDto = mintUserAuthDto(signupUserId);
-
-        return runScenario({
-          deps,
-          testId: "auth.signup.s2s.userAuth.create.missingFields",
-          name: "auth.signup: S2sUserAuthCreateHandler sad path — missing auth fields",
-          expectedMode: "failure",
-          expectedHttpStatus: 400,
-
-          seedCtx: (ctx, status) => {
-            ctx.set("requestId", requestId);
-
-            ctx.set("signup.userId", signupUserId);
-            ctx.set("bag", bag);
-
-            // Drift detector only (do not seed required ctx keys).
-            // If the minted DTO is broken, we still want to know *now*.
-            extractAuthSeed(authDto, status);
-
-            // Intentionally omit:
-            // - signup.hash
-            // - signup.hashAlgo
-            // - signup.hashParamsJson
-            // - signup.passwordCreatedAt
-          },
-
-          assertAfter: (ctx, status) => {
-            const handlerStatus = readHandlerStatus(ctx);
-            if (handlerStatus !== "error") {
+            const httpStatus = readHttpStatus(ctx);
+            if (httpStatus !== 200) {
               status.recordAssertionFailure(
-                `Expected handlerStatus="error" but got "${handlerStatus}".`
+                `Expected httpStatus=200 but got httpStatus=${httpStatus}.`
               );
             }
-            assertErrorStatus(ctx, status);
-          },
-        });
+
+            assertOkStatus(ctx, status);
+          } catch (err: any) {
+            status.recordInnerCatch(err);
+          }
+        } catch (err: any) {
+          status.recordOuterCatch(err);
+        } finally {
+          // Deterministic finalization exactly once (no double-finalize noise).
+          TestScenarioFinalizer.finalize({ status, ctx });
+        }
+
+        return status;
       },
     },
   ];

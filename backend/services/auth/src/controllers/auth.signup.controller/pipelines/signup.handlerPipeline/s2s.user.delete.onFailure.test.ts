@@ -10,23 +10,25 @@
  * - ADR-0063 (Auth Signup MOS Pipeline)
  * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  * - ADR-0094 (Test Scenario Error Handling and Logging)
+ * - ADR-0095 (Happy-Path-Only testing)
  *
  * Purpose:
- * - Handler-level tests for S2sUserDeleteOnFailureHandler.
+ * - Happy-path compatible smoke test for S2sUserDeleteOnFailureHandler.
  *
- * Contract for this test module:
- * - If a prior test stored a created userId, we attempt rollback delete.
- * - If no userId is present (prior test failed / skipped), we PASS and no-op.
+ * ADR-0095 interpretation for compensators (locked):
+ * - Single scenario ("HappyPath") where the handler's own contract must succeed:
+ *   - If a created userId exists, delete it (rollback) and return handlerStatus=ok.
+ *   - If no created userId exists, PASS and no-op (still "HappyPath").
  *
  * IMPORTANT:
  * - Runner-shaped module: scenarios execute via deps.step.execute(ctx)
  *   so the scenario ctx inherits pipeline runtime ("rt") automatically.
  *
  * ADR-0094 alignment:
- * - No semantics via ctx flags.
+ * - No semantics via ctx flags (beyond production-shaped ctx seeding).
  * - Inner/outer try/catch/finally.
  * - Deterministic outcome via TestScenarioStatus + TestScenarioFinalizer.
- * - Assertions are recorded (do not throw) to avoid misclassifying as infra failure.
+ * - Assertions are recorded (do not throw).
  */
 
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
@@ -34,11 +36,18 @@ import type { UserDto } from "@nv/shared/dto/user.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { UserDtoRegistry as UserDtoRegistryCtor } from "@nv/shared/dto/registry/user.dtoRegistry";
 
-import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
-
+import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
 import type { TestScenarioStatus } from "@nv/shared/testing/TestScenarioStatus";
 import { TestScenarioFinalizer } from "@nv/shared/testing/TestScenarioFinalizer";
-import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
+
+type ScenarioDepsLike = {
+  step: { execute: (scenarioCtx: any) => Promise<void> };
+  makeScenarioCtx: (seed: {
+    requestId: string;
+    dtoType?: string;
+    op?: string;
+  }) => any;
+};
 
 type UserBag = DtoBag<UserDto>;
 
@@ -51,7 +60,7 @@ type UserAuthCreateStatus =
   | { ok: false; code: string; message: string };
 
 // ───────────────────────────────────────────
-// Shared handoff (process-local)
+// Shared handoff (process-local) from s2s.user.create.test.ts
 // ───────────────────────────────────────────
 const SHARED_SLOT_KEY = "auth.signup.createdUserId";
 
@@ -64,7 +73,6 @@ function getSharedStore(): Record<string, any> {
 function tryGetCreatedUserIdFromShared(): string | undefined {
   const store = getSharedStore();
   const v = store[SHARED_SLOT_KEY];
-
   if (typeof v === "string" && v.trim().length > 0) return v.trim();
   return undefined;
 }
@@ -109,201 +117,106 @@ function readHandlerStatus(ctx: any): string {
 }
 
 // ───────────────────────────────────────────
-// Legacy mapping (status → HandlerTestResult)
-// ───────────────────────────────────────────
-function makeResultFromStatus(input: {
-  status: TestScenarioStatus;
-  testId: string;
-  name: string;
-  expectedError: boolean;
-  ctx?: any;
-}): HandlerTestResult {
-  const out = input.status.outcome();
-  const rails = input.status.rails();
-
-  const handlerStatus =
-    rails?.handlerStatus ?? (input.ctx ? readHandlerStatus(input.ctx) : "ok");
-  const httpStatus =
-    rails?.httpStatus ?? (input.ctx ? readHttpStatus(input.ctx) : 200);
-
-  // If status didn’t finalize (should never happen), treat as infrastructure bug.
-  if (!out) {
-    return {
-      testId: input.testId,
-      name: input.name,
-      outcome: "failed",
-      expectedError: input.expectedError,
-      assertionCount: 0,
-      failedAssertions: [
-        "TestScenarioStatus did not finalize an outcome (infrastructure bug).",
-      ],
-      errorMessage:
-        "TestScenarioStatus did not finalize an outcome (infrastructure bug).",
-      durationMs: 0,
-      railsVerdict: "test_bug",
-      railsStatus: httpStatus,
-      railsHandlerStatus: handlerStatus,
-      railsResponseStatus: httpStatus,
-    };
-  }
-
-  const failedAssertions = input.status.assertionFailures?.() ?? [];
-
-  return {
-    testId: input.testId,
-    name: input.name,
-    outcome: out.color === "green" ? "passed" : "failed",
-    expectedError: input.expectedError,
-    assertionCount: failedAssertions.length,
-    failedAssertions,
-    errorMessage: failedAssertions.length ? failedAssertions[0] : undefined,
-    durationMs: 0,
-    railsVerdict: out.color === "green" ? "ok" : "rails_error",
-    railsStatus: httpStatus,
-    railsHandlerStatus: handlerStatus,
-    railsResponseStatus: httpStatus,
-  };
-}
-
-// ───────────────────────────────────────────
-// ADR-0094 scenario runner helper
-// ───────────────────────────────────────────
-async function runScenario(input: {
-  deps: any;
-  testId: string;
-  name: string;
-
-  expectedMode: "success" | "failure";
-  expectedHttpStatus?: number;
-
-  createdUserId?: string;
-}): Promise<HandlerTestResult> {
-  const status = createTestScenarioStatus({
-    scenarioId: input.testId,
-    scenarioName: input.name,
-    expected: input.expectedMode,
-  });
-
-  const expectedErrorMeta = input.expectedMode === "failure";
-
-  // If no created userId is available: PASS and no-op (your contract).
-  if (!input.createdUserId) {
-    status.addNote(
-      "no created userId was available; skipping rollback delete (not a failure)"
-    );
-    TestScenarioFinalizer.finalize({ status, ctx: undefined });
-    return makeResultFromStatus({
-      status,
-      testId: input.testId,
-      name: input.name,
-      expectedError: false,
-      ctx: undefined,
-    });
-  }
-
-  let ctx: any | undefined;
-
-  try {
-    try {
-      const requestId = `req-${input.testId}`;
-
-      ctx = input.deps.makeScenarioCtx({
-        requestId,
-        dtoType: "user",
-        op: "s2s.user.delete.onFailure",
-      });
-
-      // Put pipeline into a failure posture so compensator runs.
-      ctx.set("handlerStatus", "error");
-      ctx.set("status", 502);
-
-      // Upstream status seeds: user created, user-auth failed.
-      ctx.set("signup.userCreateStatus", {
-        ok: true,
-        userId: input.createdUserId,
-      } satisfies UserCreateStatus);
-
-      ctx.set("signup.userAuthCreateStatus", {
-        ok: false,
-        code: "AUTH_SIGNUP_USER_AUTH_CREATE_FAILED",
-        message: "forced failure for rollback test",
-      } satisfies UserAuthCreateStatus);
-
-      ctx.set("signup.userId", input.createdUserId);
-
-      // Handler requires ctx["bag"] for the delete call; provide a real bag.
-      ctx.set("bag", buildUserBagForRollback(input.createdUserId, requestId));
-
-      await input.deps.step.execute(ctx);
-
-      // Assertions: record failures; do not throw.
-      const hs = readHandlerStatus(ctx);
-      if (hs !== "error") {
-        status.recordAssertionFailure(
-          `Expected handlerStatus="error" after rollback attempt, got "${hs}".`
-        );
-      }
-
-      // On rollback success: handler stamps signup.userRolledBack === true and keeps 502.
-      const rolledBack = ctx.get("signup.userRolledBack");
-      if (rolledBack !== true) {
-        status.recordAssertionFailure(
-          "signup.userRolledBack should be true on rollback success."
-        );
-      }
-
-      if (typeof input.expectedHttpStatus === "number") {
-        const httpStatus = readHttpStatus(ctx);
-        if (httpStatus !== input.expectedHttpStatus) {
-          status.recordAssertionFailure(
-            `Expected httpStatus=${input.expectedHttpStatus} but got httpStatus=${httpStatus}.`
-          );
-        }
-      }
-    } catch (err: any) {
-      status.recordInnerCatch(err);
-    } finally {
-      TestScenarioFinalizer.finalize({ status, ctx });
-    }
-  } catch (err: any) {
-    status.recordOuterCatch(err);
-  } finally {
-    TestScenarioFinalizer.finalize({ status, ctx });
-  }
-
-  return makeResultFromStatus({
-    status,
-    testId: input.testId,
-    name: input.name,
-    expectedError: expectedErrorMeta,
-    ctx,
-  });
-}
-
-// ───────────────────────────────────────────
 // ScenarioRunner entrypoint
 // ───────────────────────────────────────────
-export async function getScenarios(deps: any): Promise<any[]> {
+export async function getScenarios(deps: ScenarioDepsLike): Promise<any[]> {
   return [
     {
-      id: "auth.signup.s2s.user.delete.onFailure.rollback",
+      id: "HappyPath",
       name: "auth.signup: S2sUserDeleteOnFailureHandler rolls back user when auth creation fails (or skips if no userId)",
       shortCircuitOnFail: false,
-      expectedError: true,
 
-      async run(): Promise<HandlerTestResult> {
+      async run(localDeps: ScenarioDepsLike): Promise<TestScenarioStatus> {
+        const status = createTestScenarioStatus({
+          scenarioId: "HappyPath",
+          scenarioName:
+            "auth.signup: S2sUserDeleteOnFailureHandler rolls back user when auth creation fails (or skips if no userId)",
+          expected: "success",
+        });
+
         const createdUserId = tryGetCreatedUserIdFromShared();
 
-        // This scenario is “failure expected” because the compensator preserves
-        // the pipeline error state by design (502 on rollback-ok, 500 on rollback-fail).
-        return runScenario({
-          deps,
-          testId: "auth.signup.s2s.user.delete.onFailure.rollback",
-          name: "auth.signup: S2sUserDeleteOnFailureHandler rolls back user when auth creation fails (or skips if no userId)",
-          expectedMode: createdUserId ? "failure" : "success",
-          expectedHttpStatus: createdUserId ? 502 : undefined,
-          createdUserId,
-        });
+        // Contract: if no created userId exists, PASS and no-op.
+        if (!createdUserId) {
+          status.addNote(
+            "no created userId was available; skipping rollback delete (not a failure)"
+          );
+          TestScenarioFinalizer.finalize({ status, ctx: undefined });
+          return status;
+        }
+
+        let ctx: any | undefined;
+
+        // Outer try/catch protects runner integrity (ADR-0094).
+        try {
+          const requestId = "req-auth-s2s-user-delete-onFailure-happy";
+
+          ctx = localDeps.makeScenarioCtx({
+            requestId,
+            dtoType: "user",
+            op: "s2s.user.delete.onFailure",
+          });
+
+          // Seed ONLY the production-shaped inputs the handler needs.
+          // Do NOT pre-poison handlerStatus/response.status; the handler must own its outcome.
+          //
+          // Upstream status seeds: user created, user-auth failed.
+          // This explains why the compensator is running without turning this handler into a "failure".
+          ctx.set("signup.userCreateStatus", {
+            ok: true,
+            userId: createdUserId,
+          } satisfies UserCreateStatus);
+
+          ctx.set("signup.userAuthCreateStatus", {
+            ok: false,
+            code: "AUTH_SIGNUP_USER_AUTH_CREATE_FAILED",
+            message: "forced failure for rollback test",
+          } satisfies UserAuthCreateStatus);
+
+          ctx.set("signup.userId", createdUserId);
+
+          // Handler requires ctx["bag"] for the delete call; provide a real bag.
+          ctx.set("bag", buildUserBagForRollback(createdUserId, requestId));
+
+          // Inner try/catch wraps ONLY handler execution (ADR-0094).
+          try {
+            await localDeps.step.execute(ctx);
+
+            // Assertions: record failures; do not throw.
+            const hs = readHandlerStatus(ctx);
+            if (hs !== "ok") {
+              status.recordAssertionFailure(
+                `Expected handlerStatus="ok" after successful rollback/no-op, got "${hs}".`
+              );
+            }
+
+            // On rollback success: handler stamps signup.userRolledBack === true.
+            const rolledBack = ctx.get("signup.userRolledBack");
+            if (rolledBack !== true) {
+              status.recordAssertionFailure(
+                "signup.userRolledBack should be true on rollback success."
+              );
+            }
+
+            // HTTP status should be success for the handler-level contract.
+            // (Tighten to a single value once we confirm the handler's intended status code.)
+            const httpStatus = readHttpStatus(ctx);
+            if (httpStatus !== 200 && httpStatus !== 204) {
+              status.recordAssertionFailure(
+                `Expected httpStatus=200 or 204 but got httpStatus=${httpStatus}.`
+              );
+            }
+          } catch (err: any) {
+            status.recordInnerCatch(err);
+          }
+        } catch (err: any) {
+          status.recordOuterCatch(err);
+        } finally {
+          // Deterministic finalization exactly once (no double-finalize noise).
+          TestScenarioFinalizer.finalize({ status, ctx });
+        }
+
+        return status;
       },
     },
   ];

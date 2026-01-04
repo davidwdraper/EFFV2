@@ -16,6 +16,10 @@
  * Dist-first invariant:
  * - indexAbsolutePath MUST point to the runtime-compiled dist index (.js).
  * - This loader MUST be CommonJS-safe in production.
+ *
+ * Test-runner invariant:
+ * - Silently ignore any step whose handler name starts with "t_".
+ *   (These are test-only helper steps that must not participate in discovery/execution.)
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -51,13 +55,25 @@ export class IndexLoader {
     }
 
     const controller = mod.createController(app) as ControllerJsonBase;
-    const steps = mod.getSteps(ctx, controller);
+    const stepsRaw = mod.getSteps(ctx, controller);
 
-    if (!Array.isArray(steps)) {
+    if (!Array.isArray(stepsRaw)) {
       throw new Error(
         `INDEX_LOADER_INVALID_STEPS: getSteps() in ${indexAbsolutePath} did not return an array`
       );
     }
+
+    // Test-only helper steps: silently skip any handler whose name starts with "t_".
+    const steps = (stepsRaw as HandlerBase[]).filter((h) => {
+      const name =
+        typeof (h as any)?.getHandlerName === "function"
+          ? String((h as any).getHandlerName())
+          : typeof (h as any)?.handlerName === "function"
+          ? String((h as any).handlerName())
+          : String((h as any)?.constructor?.name ?? "");
+
+      return !name.startsWith("t_");
+    });
 
     return { controller, steps };
   }

@@ -25,11 +25,11 @@ export class TreeWalker {
   public execute(): TreeWalkerResult {
     // Runtime (dist) absolute path used for module loading.
     const absolutePath =
-      "/Users/ddraper005/eff/backend/services/auth/dist/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/index.js";
+      "/Users/ddraper005/eff/backend/services/auth/dist/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/UserSignupPL.js";
 
     // Stable human path used for reporting and persisted DTO fields.
     const relativePath =
-      "backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/index.ts";
+      "backend/services/auth/src/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/UserSignupPL.ts";
 
     const marker = "/eff/";
     const markerIdx = absolutePath.indexOf(marker);

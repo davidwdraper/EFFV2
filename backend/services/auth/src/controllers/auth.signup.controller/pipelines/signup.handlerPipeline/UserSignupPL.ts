@@ -3,41 +3,41 @@
  * Docs:
  * - Inherit controller docs (SOP + ADRs).
  * - ADR-0098 (Domain-named pipelines with PL suffix)
+ * - ADR-0099 (Strict missing-test semantics)
+ * - ADR-0100 (Pipeline plans + manifest-driven handler tests)
  *
  * Purpose:
  * - Domain-named pipeline for Auth Signup (dtoType="user").
  *
  * Invariants:
- * - Controller owns orchestration metadata seeding (S2S routing keys, dtoType/op, etc).
- * - Pipeline composes ordered steps.
- * - Pipeline helpers ("h_") may seed ctx keys and may accept args.
- * - Generic handlers remain slug-agnostic and rely on helpers for domain wiring.
+ * - Pipeline planning is PURE:
+ *   - No handler instantiation.
+ *   - No handler execution.
+ * - Handlers are instantiated only during scenario execution.
+ *
+ * Loader contract:
+ * - createController(app) MUST exist.
+ * - getPipelineSteps(runMode?) MUST return StepDefProd[] for "prod", StepDefTest[] for "test".
  */
 
-import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 
+import {
+  PipelineBase,
+  type StepDefProd,
+  type StepDefTest,
+  type RunMode,
+} from "@nv/shared/base/pipeline/PipelineBase";
+
 import { AuthSignupController } from "../../auth.signup.controller";
-
 import { CodeMintUuidHandler } from "@nv/shared/http/handlers/code.mint.uuid";
-import { CodeExtractPasswordHandler } from "./code.extractPassword";
-import { CodePasswordHashHandler } from "./code.passwordHash";
-import { S2sUserCreateHandler } from "./s2s.user.create";
-import { S2sUserAuthCreateHandler } from "./s2s.userAuth.create";
-import { CodeMintUserAuthTokenHandler } from "./code.mintUserAuthToken";
-
-import { S2sRollbackDeleteHandler } from "@nv/shared/http/handlers/s2s.rollbackDelete";
-
-import { HSeedSignupUserIdFromStepUuid } from "./h_seed.signup.userId.fromStepUuid";
-import { HApplySignupUserIdToUserBag } from "./h_apply.signup.userId.toUserBag";
-import { HSeedRollbackDeleteUserOnAuthFailure } from "./h_seed.rollback.deleteUser.onAuthFailure";
 
 /**
  * Domain-named pipeline artifact.
  */
-export class UserSignupPL {
-  public static pipelineName(): string {
+export class UserSignupPL extends PipelineBase {
+  public override pipelineName(): string {
     return "UserSignupPL";
   }
 
@@ -45,36 +45,67 @@ export class UserSignupPL {
     return new AuthSignupController(app);
   }
 
-  public static getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
-    return [
-      new CodeMintUuidHandler(ctx, controller),
+  /**
+   * Single source of truth: step plan + expected test directive live together.
+   *
+   * - runMode="prod": returns StepDefProd[] (no expectedTestName field)
+   * - runMode="test": returns StepDefTest[] (expectedTestName available)
+   */
+  public override steps(runMode: "prod"): StepDefProd[];
+  public override steps(runMode: "test"): StepDefTest[];
+  public override steps(
+    runMode: RunMode = "prod"
+  ): StepDefProd[] | StepDefTest[] {
+    const plan: StepDefTest[] = [
+      {
+        // MUST be stable; drives default "<handlerName>.test.js"
+        handlerName: "code.mint.uuid",
+        handlerCtor: CodeMintUuidHandler,
+
+        // "default" => derive <handlerName>.test.js
+        // "skipped" => intentional opt-out
+        // otherwise  => explicit override module basename (no ".js" enforced here)
+        expectedTestName: "default",
+      },
+
       /*
-      // Helpers: translate baton + apply onto hydrated DTO
-      new HSeedSignupUserIdFromStepUuid(ctx, controller, {
-        fromKey: "step.uuid",
-        toKey: "signup.userId",
-      }),
-      new HApplySignupUserIdToUserBag(ctx, controller, {
-        userIdKey: "signup.userId",
-        bagKey: "bag",
-      }),
-
-      new CodeExtractPasswordHandler(ctx, controller),
-      new CodePasswordHashHandler(ctx, controller),
-      new S2sUserCreateHandler(ctx, controller),
-      new S2sUserAuthCreateHandler(ctx, controller),
-      new CodeMintUserAuthTokenHandler(ctx, controller),
-
-      // Helper seeds rollback config + gate
-      new HSeedRollbackDeleteUserOnAuthFailure(ctx, controller, {
-        slug: "user",
-        version: 1,
-        dtoType: "user",
-      }),
-
-      // Shared generic rollback handler
-      new S2sRollbackDeleteHandler(ctx, controller),
+      {
+        handlerName: "h.seed.signup.userId.from.stepUuid",
+        handlerCtor: HSeedSignupUserIdFromStepUuidHandler,
+        expectedTestName: "default",
+      },
       */
     ];
+
+    // Rails check: we validate the full plan once, then optionally strip for prod callers.
+    this.validatePlans(plan);
+
+    if (runMode === "test") {
+      return plan;
+    }
+
+    // prod mode: strip expectedTestName from the returned shape
+    return plan.map(({ expectedTestName: _ignored, ...prod }) => prod);
   }
+}
+
+/**
+ * Runner entrypoint (required).
+ */
+export function createController(app: AppBase): ControllerJsonBase {
+  return UserSignupPL.createController(app);
+}
+
+/**
+ * Runner entrypoint (plan):
+ * - runMode="prod" => StepDefProd[]
+ * - runMode="test" => StepDefTest[]
+ */
+export function getPipelineSteps(runMode: "prod"): StepDefProd[];
+export function getPipelineSteps(runMode: "test"): StepDefTest[];
+export function getPipelineSteps(
+  runMode: RunMode = "prod"
+): StepDefProd[] | StepDefTest[] {
+  const pl = new UserSignupPL();
+  return pl.steps(runMode as any);
 }

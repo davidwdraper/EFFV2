@@ -2,6 +2,7 @@
 /**
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - ADR-0100 (Pipeline plans + manifest-driven handler tests)
  * - LDD-38 (Test Runner vNext Design)
  * - LDD-39 (StepIterator Micro-Contract — Revised, KISS)
  * - ADR-0077 (Test-Runner vNext — Single Orchestrator Handler)
@@ -10,47 +11,16 @@
  * - ADR-0042 (HandlerContext Bus — KISS)
  *
  * Purpose:
- * - StepIterator: iterate resolved handler steps for a single pipeline.
+ * - StepIterator: iterate StepDef[] for a single pipeline entry.
  *
- * Key invariant:
- * - Scenario ctx is fresh per scenario.
- * - Handler execution is production-shaped:
- *     new Handler(scenarioCtx, controller).run()
- *   NOT “reuse handler instance” and NOT “call protected execute()”.
- *
- * Virtual-server invariant:
- * - Scenario ctx MUST inherit pipeline runtime ("rt") automatically.
- * - Tests must not be SvcRuntime-aware.
- *
- * Execution + persistence model:
- * - The test-runner is NOT a production controller pipeline.
- * - Each handler step is executed independently (a “step === handler”).
- * - StepIterator owns persistence:
- *     - Exactly ONE record write per handler step (HandlerTestDto).
- *     - ScenarioRunner never persists; it only populates the DTO in-memory.
- *
- * Stop policy (ADR-0094 aligned, no ALS semantics):
- * - We DO NOT stop iteration for normal test failures (4xx, assertions, expected-negative, etc).
- * - We STOP immediately for infrastructure failures only:
- *     - “OutcomeCode=5” from ScenarioRunner/TestScenarioStatus means runner/harness/system failure.
- *     - These are the ONLY situations that produce ERROR logs from the runner.
- *
- * Meltdown guard (your rule):
- * - If we observe REAL HTTP 500+ rails failures for 10 handlers in a row,
- *   abort the run early to avoid wasting time and flooding logs.
- * - This is NOT an infrastructure error (so it logs at INFO), but it indicates
- *   the system is effectively unusable (bad env/config/bootstrap/DB/etc).
- *
- * Notes:
- * - No expectErrors anywhere.
- * - No ALS fallbacks for test semantics.
- * - No log-level gymnastics in helpers.
+ * ADR-0100 invariant:
+ * - Step planning is pure.
+ * - Handlers are instantiated ONLY during scenario execution.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { HandlerContext as HandlerContextCtor } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
-import type { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 
 import { withRequestScope } from "@nv/shared/http/requestScope";
@@ -70,6 +40,11 @@ import {
   type ScenarioStep,
 } from "./ScenarioRunner";
 
+import {
+  PipelineBase,
+  type StepDefTest,
+} from "@nv/shared/base/pipeline/PipelineBase";
+
 type LoggerLike = {
   info?: (obj: unknown, msg?: string) => void;
   warn?: (obj: unknown, msg?: string) => void;
@@ -86,13 +61,11 @@ function normalizeScenarios(dto: HandlerTestDto): any[] {
 }
 
 function readScenarioOutcomeCode(s: any): number | undefined {
-  // New ADR-0094 shape (preferred): scenario.details.outcome.code
   const code = s?.details?.outcome?.code;
   return typeof code === "number" && Number.isFinite(code) ? code : undefined;
 }
 
 function readScenarioHttpStatus(s: any): number | undefined {
-  // New ADR-0094 shape (preferred): scenario.details.rails.httpStatus
   const hs = s?.details?.rails?.httpStatus;
   return typeof hs === "number" && Number.isFinite(hs) ? hs : undefined;
 }
@@ -108,14 +81,28 @@ export class StepIterator {
   public async execute(input: {
     ctx: HandlerContext;
     controller: ControllerBase;
-    steps: HandlerBase[];
+
+    // ADR-0100: plan-first, no handler instances.
+    stepDefs: StepDefTest[];
+
     indexRelativePath: string;
+
+    pipelineName?: string;
+
     testRunId: string;
     writer: TestRunWriter;
     target?: { serviceSlug: string; serviceVersion: number };
     app?: AppBase;
   }): Promise<void> {
-    const { ctx, steps, indexRelativePath, testRunId, writer, target } = input;
+    const {
+      ctx,
+      stepDefs,
+      indexRelativePath,
+      testRunId,
+      writer,
+      target,
+      pipelineName,
+    } = input;
 
     const log = ctx.get<LoggerLike>("log");
 
@@ -126,7 +113,7 @@ export class StepIterator {
         {
           event: "stepIterator_missing_target",
           index: indexRelativePath,
-          stepCount: Array.isArray(steps) ? steps.length : "(not-array)",
+          stepCount: Array.isArray(stepDefs) ? stepDefs.length : "(not-array)",
           testRunId,
         },
         msg
@@ -134,31 +121,10 @@ export class StepIterator {
       throw new Error(msg);
     }
 
-    // Fail-fast: StepIterator contract requires a resolved array of handler steps.
-    // This is a pipeline export/loader problem, not “0 steps”.
-    if (!Array.isArray(steps)) {
-      const msg = [
-        "StepIterator.execute: pipeline steps are not an array.",
-        `Index: ${indexRelativePath}`,
-        `Target: ${target.serviceSlug}@${target.serviceVersion}`,
-        `Typeof(steps): ${typeof steps}`,
-        "Ops: fix IndexLoader / pipeline index export shape so resolved.steps is a HandlerBase[] array.",
-      ].join(" ");
-
-      log?.error?.(
-        {
-          event: "stepIterator_steps_not_array",
-          index: indexRelativePath,
-          targetServiceSlug: target.serviceSlug,
-          targetServiceVersion: target.serviceVersion,
-          stepsType: typeof steps,
-          hasSteps: !!steps,
-          testRunId,
-        },
-        msg
+    if (!Array.isArray(stepDefs)) {
+      throw new Error(
+        `StepIterator.execute: stepDefs must be an array (index=${indexRelativePath}).`
       );
-
-      throw new Error(msg);
     }
 
     const scenarioRunner = new ScenarioRunner({
@@ -176,25 +142,30 @@ export class StepIterator {
 
     const app = input.app as AppBase;
 
-    // Meltdown guard: count consecutive handlers that end with REAL 500+ rails errors.
-    // If we hit 10 in a row, abort (INFO) to prevent log spam + wasted time.
     let consecutiveReal500Handlers = 0;
 
-    for (let i = 0; i < steps.length; i++) {
-      const stepInstance = steps[i];
+    for (let i = 0; i < stepDefs.length; i++) {
+      const stepDef = stepDefs[i];
+      const handlerName = String(stepDef?.handlerName ?? "").trim();
 
-      const handlerName =
-        typeof (stepInstance as any).getHandlerName === "function"
-          ? (stepInstance as any).getHandlerName()
-          : stepInstance.constructor.name;
+      if (!handlerName) {
+        throw new Error(
+          `StepIterator.execute: blank handlerName at step index=${i} (index=${indexRelativePath}).`
+        );
+      }
+
+      const expectedTestName = PipelineBase.normalizeExpectedTestName(
+        (stepDef as any)?.expectedTestName
+      );
 
       log?.info?.(
         {
           event: "step_inspected",
           index: indexRelativePath,
           stepIndex: i,
-          stepCount: steps.length,
+          stepCount: stepDefs.length,
           handler: handlerName,
+          expectedTestName,
         },
         "Pipeline step inspected"
       );
@@ -205,6 +176,8 @@ export class StepIterator {
       handlerTestDto.ensureId();
 
       handlerTestDto.setIndexRelativePathOnce(indexRelativePath);
+      if (pipelineName) handlerTestDto.setPipelineNameOnce(pipelineName);
+
       handlerTestDto.setHandlerNameOnce(handlerName);
       handlerTestDto.setTargetServiceSlugOnce(target.serviceSlug);
       handlerTestDto.setTargetServiceVersionOnce(target.serviceVersion);
@@ -215,7 +188,7 @@ export class StepIterator {
         dto: handlerTestDto,
         testRunId,
         stepIndex: i,
-        stepCount: steps.length,
+        stepCount: stepDefs.length,
         indexRelativePath,
         handlerName,
         targetServiceSlug: target.serviceSlug,
@@ -242,34 +215,22 @@ export class StepIterator {
         continue;
       }
 
-      // Build a production-shaped step executor.
-      const handlerCtor = (stepInstance as any).constructor as new (
-        c: HandlerContext,
-        controller: ControllerBase
-      ) => HandlerBase;
-
       const step: ScenarioStep = {
         handlerName,
         execute: async (scenarioCtx: HandlerContext) => {
-          if (!scenarioCtx) {
-            throw new Error(
-              `StepIterator: scenarioCtx is required for handler="${handlerName}"`
-            );
-          }
-
           const requestId =
             scenarioCtx.get<string>("requestId") ?? `scenario-${Date.now()}`;
 
-          // ADR-0094: test semantics are NOT expressed via ALS flags.
-          // requestScope here is only for correlation (requestId/testRunId) and to keep
-          // production-shaped execution boundaries consistent.
           await withRequestScope(
             {
               requestId,
               testRunId,
             },
             async () => {
-              const h = new handlerCtor(scenarioCtx, input.controller);
+              const h = new stepDef.handlerCtor(
+                scenarioCtx,
+                input.controller as any
+              );
               await h.run();
             }
           );
@@ -295,7 +256,6 @@ export class StepIterator {
           if (seed.dtoType) sc.set("dtoType", seed.dtoType);
           if (seed.op) sc.set("op", seed.op);
 
-          // Inherit pipeline metadata for visibility.
           try {
             sc.set("pipeline", ctx.get("pipeline"));
           } catch {}
@@ -314,9 +274,6 @@ export class StepIterator {
           try {
             sc.set("log", ctx.get("log"));
           } catch {}
-
-          // Virtual-server invariant: inherit runtime ("rt") automatically.
-          // Tests must not seed rt; the rails do it.
           try {
             sc.set("rt", ctx.get("rt"));
           } catch {}
@@ -324,13 +281,14 @@ export class StepIterator {
           return sc;
         },
         target,
+        expectedTestName,
       };
 
       let infraAbort = false;
       let handlerEndedWithReal500 = false;
 
       try {
-        await scenarioRunner.run(handlerTestDto, deps);
+        await scenarioRunner.run(handlerTestDto, deps as any);
       } catch (err) {
         const msgErr =
           err instanceof Error ? err.message : String(err ?? "unknown error");
@@ -340,14 +298,13 @@ export class StepIterator {
             event: "scenarioRunner_run_threw",
             index: indexRelativePath,
             stepIndex: i,
-            stepCount: steps.length,
+            stepCount: stepDefs.length,
             handler: handlerName,
             error: msgErr,
           },
           "ScenarioRunner.run threw unexpectedly"
         );
 
-        // Runner threw => infrastructure bug.
         handlerTestDto.markTestError();
         infraAbort = true;
       }
@@ -365,7 +322,7 @@ export class StepIterator {
             event: "handlerTest_finalizeFromScenarios_threw",
             index: indexRelativePath,
             stepIndex: i,
-            stepCount: steps.length,
+            stepCount: stepDefs.length,
             handler: handlerName,
             error: msgErr,
           },
@@ -396,13 +353,8 @@ export class StepIterator {
           break;
       }
 
-      // IMPORTANT: getScenarios() may be undefined in some failure paths.
       const scenarios = normalizeScenarios(handlerTestDto);
 
-      // ADR-0094 infra abort detection:
-      // - If ANY scenario reports outcomeCode=5, this is infrastructure failure and we stop.
-      // Real 500 detection:
-      // - If ANY scenario rails.httpStatus >= 500, count it as a “real 500” for meltdown tracking.
       if (scenarios.length) {
         for (const s of scenarios) {
           const code = readScenarioOutcomeCode(s);
@@ -414,20 +366,7 @@ export class StepIterator {
         }
       }
 
-      let errMsg: string | undefined;
-      let errStack: string | undefined;
-
-      if (scenarios.length) {
-        const bad = scenarios.find((s) => s?.status === "Failed");
-        if (bad) {
-          errMsg = bad.errorMessage;
-          errStack = bad.errorStack;
-        }
-      }
-
       record.terminalStatus = terminalStatus;
-      record.errorMessage = errMsg;
-      record.errorStack = errStack;
 
       try {
         await writer.finalizeHandlerTest(record);
@@ -446,25 +385,19 @@ export class StepIterator {
           },
           "Failed to finalize handler-test record"
         );
-        // This is persistence failure; stop. Continuing would drop records and lie about coverage.
         break;
       }
 
-      // Apply meltdown guard AFTER persistence (one write per handler).
-      if (handlerEndedWithReal500) {
-        consecutiveReal500Handlers++;
-      } else {
-        consecutiveReal500Handlers = 0;
-      }
+      if (handlerEndedWithReal500) consecutiveReal500Handlers++;
+      else consecutiveReal500Handlers = 0;
 
       if (infraAbort) {
-        // ADR-0094: infrastructure failure (outcomeCode=5) is the only immediate abort.
         log?.error?.(
           {
             event: "stepIterator_abort_infra_failure",
             index: indexRelativePath,
             stepIndex: i,
-            stepCount: steps.length,
+            stepCount: stepDefs.length,
             handler: handlerName,
           },
           "Aborting: infrastructure failure detected (outcomeCode=5)."
@@ -473,14 +406,12 @@ export class StepIterator {
       }
 
       if (consecutiveReal500Handlers >= 10) {
-        // Your rule: “real 500s” repeated indicates system meltdown; abort to avoid spam.
-        // INFO (not ERROR) because this is not harness failure; it’s a system unusable state.
         log?.info?.(
           {
             event: "stepIterator_abort_meltdown_500s",
             index: indexRelativePath,
             stepIndex: i,
-            stepCount: steps.length,
+            stepCount: stepDefs.length,
             handler: handlerName,
             consecutiveReal500Handlers,
           },

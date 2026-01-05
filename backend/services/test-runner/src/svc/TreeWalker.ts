@@ -24,6 +24,8 @@ export type TreeWalkerResult = {
 export class TreeWalker {
   public execute(): TreeWalkerResult {
     // Runtime (dist) absolute path used for module loading.
+
+    // ** for testing we return a single pipeline...
     const absolutePath =
       "/Users/ddraper005/eff/backend/services/auth/dist/controllers/auth.signup.controller/pipelines/signup.handlerPipeline/UserSignupPL.js";
 

@@ -9,6 +9,7 @@
  * - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ * - ADR-0099 (Handler test manifest from handlers)
  *
  * Purpose:
  * - Abstract base for handlers:
@@ -18,6 +19,10 @@
  *   • Standardized instrumentation via bound logger
  *   • Thin wrappers over runtime env + error helpers
  *   • Optional per-handler runTest() hook for test-runner
+ *
+ * ADR-0099:
+ * - Handlers declare their compiled test module name via handlerTestName().
+ * - Pipeline owns the manifest; HandlerBase records into controller.activePipeline during ctor.
  *
  * Invariants (locked here; downstream stops defending):
  * - Controllers MUST pass `this` into handler constructors.
@@ -61,6 +66,10 @@ import type { HandlerTestBase } from "./testing/HandlerTestBase";
 import type { HandlerTestResult } from "./testing/HandlerTestBase";
 
 export type { NvHandlerError } from "./handlerBaseExt/errorHelpers";
+
+function stripFinalExtension(p: string): string {
+  return p.replace(/\.[^/.]+$/, "");
+}
 
 export abstract class HandlerBase {
   protected readonly ctx: HandlerContext;
@@ -147,6 +156,9 @@ export abstract class HandlerBase {
 
     this.ctx.set("log", this.log);
 
+    // ADR-0099: record declared test module into the active pipeline (if present).
+    this.tryRecordHandlerTestName();
+
     this.log.debug(
       {
         event: "construct",
@@ -156,6 +168,48 @@ export abstract class HandlerBase {
       },
       "HandlerBase ctor"
     );
+  }
+
+  /**
+   * ADR-0099:
+   * - Returns the compiled (dist-first) test module for this handler.
+   *
+   * Default:
+   * - <compiled handler module>.test.js
+   *
+   * Override options:
+   * - Return an alternate compiled test module path (still .js).
+   * - Return "skipped" to opt out.
+   */
+  public handlerTestName(): string {
+    const base = stripFinalExtension(__filename);
+    return `${base}.test.js`;
+  }
+
+  private tryRecordHandlerTestName(): void {
+    let name = "";
+    try {
+      name = String(this.handlerTestName() ?? "").trim();
+    } catch {
+      name = "";
+    }
+
+    if (!name || name === "skipped") return;
+
+    try {
+      const anyController = this.controller as any;
+      const pl =
+        typeof anyController.tryGetActivePipeline === "function"
+          ? anyController.tryGetActivePipeline()
+          : undefined;
+
+      if (pl && typeof pl.recordHandlerTestName === "function") {
+        pl.recordHandlerTestName(name);
+      }
+    } catch {
+      // Must never break handler construction for metadata.
+      return;
+    }
   }
 
   /**
@@ -413,13 +467,7 @@ export abstract class HandlerBase {
     });
   }
 
-  /**
-   * Mongo config resolution:
-   * 1) Optional pipeline override via ctx["db.mongo.*"] (wins if complete)
-   * 2) Fallback to SvcRuntime vars (DB_STATE-aware) via resolveMongoConfigWithDbState()
-   */
   protected getMongoConfig(): { uri: string; dbName: string } {
-    // 1) Pipeline override (env-service boot edge-case)
     const oUri = this.safeCtxGet<string>("db.mongo.uri");
     const oDb = this.safeCtxGet<string>("db.mongo.dbName");
 
@@ -454,7 +502,6 @@ export abstract class HandlerBase {
       throw new Error("mongo_config_override_incomplete");
     }
 
-    // 2) Standard path: runtime vars (DB_STATE-aware)
     try {
       return resolveMongoConfigWithDbState({
         controller: this.controller,

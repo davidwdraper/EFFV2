@@ -4,6 +4,7 @@
  * - SOP: DTO-first; DTO internals never leak
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  * - ADR-0094 (Test Scenario Error Handling and Logging)
+ * - ADR-0099 (Strict missing-test semantics)
  * - LDD-35 (Handler-level test-runner service)
  * - LDD-38 (Test Runner vNext Design)
  * - LDD-39 (StepIterator Micro-Contract — Revised, KISS)
@@ -21,6 +22,15 @@
  * - No ALS fallbacks for test semantics.
  * - No log-level gymnastics in helpers.
  * - ERROR logs mean runner/test infrastructure failure only (outcomeCode=5).
+ *
+ * ADR-0099 strictness:
+ * - If a pipeline manifest names a test (expectedTestName !== "skipped"),
+ *   then missing module / empty scenarios is a TEST FAILURE (drift), not Skipped.
+ *
+ * Expected test name semantics:
+ * - "skipped": explicit opt-out
+ * - "default": derive from handlerName (=> "<handlerName>.test.js")
+ * - otherwise: explicit override basename (=> "<expectedTestName>.test.js")
  */
 
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
@@ -60,6 +70,17 @@ export type ScenarioDeps = {
   }) => HandlerContext;
 
   target: { serviceSlug: string; serviceVersion: number };
+
+  /**
+   * ADR-0099: expected test module name for this handler step.
+   * - If "skipped": test is intentionally absent.
+   * - If "default": derived from handlerName.
+   * - Otherwise: explicit override (basename).
+   *
+   * NOTE:
+   * - StepIterator MUST pass this from stepDefs[i].expectedTestName (or aligned plan).
+   */
+  expectedTestName?: string;
 };
 
 export interface HandlerTestScenarioDef {
@@ -113,22 +134,40 @@ export class ScenarioRunner {
     dto: HandlerTestDto,
     deps: ScenarioDeps
   ): Promise<HandlerTestDto> {
+    const rawExpected = String(deps.expectedTestName ?? "").trim();
+
+    // ADR-0099: explicit opt-out is allowed.
+    if (rawExpected === "skipped") {
+      this.log?.info("ScenarioRunner.explicitSkipped", {
+        handlerName: dto.getHandlerName(),
+        expectedTestName: rawExpected,
+      });
+      return dto;
+    }
+
+    const resolvedExpectedTestName = this.resolveExpectedTestName({
+      rawExpectedTestName: rawExpected,
+      handlerName: dto.getHandlerName() || deps.step.handlerName,
+    });
+
     this.log?.debug("ScenarioRunner.start", {
       targetServiceSlug: dto.getTargetServiceSlug(),
       targetServiceVersion: dto.getTargetServiceVersion(),
       indexRelativePath: dto.getIndexRelativePath(),
       handlerName: dto.getHandlerName(),
+      expectedTestName: resolvedExpectedTestName,
+      expectedTestFile: `${resolvedExpectedTestName}.test.js`,
     });
 
     const module = await this.loader.loadFor(dto);
 
     if (!module) {
-      this.log?.info("ScenarioRunner.noModule", {
-        targetServiceSlug: dto.getTargetServiceSlug(),
-        targetServiceVersion: dto.getTargetServiceVersion(),
-        indexRelativePath: dto.getIndexRelativePath(),
-        handlerName: dto.getHandlerName(),
+      // ADR-0099: missing module when a test was expected is DRIFT => FAIL.
+      await this.recordMissingTestScenario(dto, deps, {
+        reason: "MISSING_TEST_MODULE",
+        expectedTestName: resolvedExpectedTestName,
       });
+      dto.finalizeFromScenarios();
       return dto;
     }
 
@@ -145,11 +184,10 @@ export class ScenarioRunner {
     }
 
     if (!Array.isArray(scenarios) || scenarios.length === 0) {
-      this.log?.warn("ScenarioRunner.emptyScenarioList", {
-        targetServiceSlug: dto.getTargetServiceSlug(),
-        targetServiceVersion: dto.getTargetServiceVersion(),
-        indexRelativePath: dto.getIndexRelativePath(),
-        handlerName: dto.getHandlerName(),
+      // ADR-0099: empty scenario list when test is expected is DRIFT => FAIL.
+      await this.recordMissingTestScenario(dto, deps, {
+        reason: "EMPTY_SCENARIO_LIST",
+        expectedTestName: resolvedExpectedTestName,
       });
       dto.finalizeFromScenarios();
       return dto;
@@ -211,6 +249,26 @@ export class ScenarioRunner {
     });
 
     return dto;
+  }
+
+  private resolveExpectedTestName(input: {
+    rawExpectedTestName: string;
+    handlerName: string;
+  }): string {
+    const hn = String(input.handlerName ?? "").trim();
+    const raw = String(input.rawExpectedTestName ?? "").trim();
+
+    // If plan forgot to supply anything, treat as derived-from-handler (same behavior as "default").
+    if (!raw || raw === "default") {
+      return hn || "unknown-handler";
+    }
+
+    // "skipped" is handled earlier; treat it as a derived name here only if someone calls us incorrectly.
+    if (raw === "skipped") {
+      return "skipped";
+    }
+
+    return raw;
   }
 
   private async runOneScenario(
@@ -385,6 +443,87 @@ export class ScenarioRunner {
 
       return scenarioStatus;
     }
+  }
+
+  private async recordMissingTestScenario(
+    dto: HandlerTestDto,
+    deps: ScenarioDeps,
+    input: {
+      reason: "MISSING_TEST_MODULE" | "EMPTY_SCENARIO_LIST";
+      expectedTestName: string;
+    }
+  ): Promise<void> {
+    // Non-infra “drift” failure: do NOT use outcomeCode=5.
+    const outcome: TestScenarioOutcome = {
+      code: 1,
+      color: "red",
+      logLevel: "info",
+      abortPipeline: false,
+    };
+
+    const scenarioId =
+      input.reason === "MISSING_TEST_MODULE"
+        ? "missing-test-module"
+        : "empty-scenario-list";
+
+    const scenarioName =
+      input.reason === "MISSING_TEST_MODULE"
+        ? `missing test module: ${input.expectedTestName}`
+        : `empty scenario list: ${input.expectedTestName}`;
+
+    this.log?.info("ScenarioRunner.expectedTestMissing", {
+      reason: input.reason,
+      expectedTestName: input.expectedTestName,
+      expectedTestFile: `${input.expectedTestName}.test.js`,
+      handlerName: dto.getHandlerName(),
+      indexRelativePath: dto.getIndexRelativePath(),
+      targetServiceSlug: dto.getTargetServiceSlug(),
+      targetServiceVersion: dto.getTargetServiceVersion(),
+    });
+
+    const scenarioStatus = createTestScenarioStatus({
+      scenarioId,
+      scenarioName,
+      expected: "success",
+    });
+
+    const msg = [
+      input.reason,
+      `expectedTestName="${input.expectedTestName}"`,
+      `expectedTestFile="${input.expectedTestName}.test.js"`,
+      `handler="${dto.getHandlerName()}"`,
+      `index="${dto.getIndexRelativePath()}"`,
+      "Dev: pipeline plan expected a test that was not loadable/executable. Fix the test module path/name or set expectedTestName='skipped' explicitly.",
+    ].join(" | ");
+
+    try {
+      (scenarioStatus as any).recordAssertionFailure?.(msg);
+    } catch {
+      try {
+        (scenarioStatus as any).addNote?.(msg);
+      } catch {}
+    }
+
+    TestScenarioFinalizer.finalize({ status: scenarioStatus });
+
+    await dto.runScenario(
+      scenarioName,
+      async () => {
+        return {
+          status: "Failed",
+          details: {
+            scenarioId: scenarioStatus.scenarioId(),
+            scenarioName: scenarioStatus.scenarioName(),
+            expected: scenarioStatus.expected(),
+            outcome,
+            rails: scenarioStatus.rails(),
+            caught: scenarioStatus.caught(),
+            notes: scenarioStatus.notes(),
+          },
+        };
+      },
+      { rethrowOnRailError: false }
+    );
   }
 
   private async recordModuleErrorScenario(

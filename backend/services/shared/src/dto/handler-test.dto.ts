@@ -192,10 +192,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
     return this._dbMocks;
   }
   public getS2sMocks(): boolean {
-    return this._s2Mocks;
-  }
-
-  private get _s2Mocks(): boolean {
     return this._s2sMocks;
   }
 
@@ -448,58 +444,58 @@ export class HandlerTestDto extends DtoBase implements IDto {
     }
   }
 
-  // Normalizes scenario status based on test outcome, expectedError, and rails verdict.
-  // IMPORTANT:
-  // - Assertion failures always win (they are real test bugs).
-  // - For runs that complete without throwing, we interpret railsVerdict
-  //   relative to expectedError so that “expected 500” scenarios can PASS.
+  // Normalizes scenario status based on details.
+  // HARD RULE:
+  // - This function MUST NEVER flip a Failed scenario into Passed.
+  // - It may only keep status as-is or downgrade Passed -> Failed.
   private _normalizeScenarioStatus(
     status: HandlerTestScenarioStatus,
     details: unknown
   ): HandlerTestScenarioStatus {
-    let normalized: HandlerTestScenarioStatus = status;
+    // If caller already says Failed, we do not “heal” it. Ever.
+    if (status === "Failed") return "Failed";
 
     const d: any = details;
-    if (d && typeof d === "object") {
-      const outcome =
-        typeof d.outcome === "string"
-          ? d.outcome.trim().toLowerCase()
-          : undefined;
-      const failedAssertions = Array.isArray(d.failedAssertions)
-        ? d.failedAssertions
+    if (!d || typeof d !== "object") return status;
+
+    // New ADR-0094 shape (preferred): details.outcome = { code, color, ... }
+    const outcomeObj =
+      d.outcome && typeof d.outcome === "object" ? d.outcome : undefined;
+    const outcomeColor =
+      outcomeObj && typeof outcomeObj.color === "string"
+        ? String(outcomeObj.color).trim().toLowerCase()
         : undefined;
-      const hasFailedAssertions =
-        !!failedAssertions && failedAssertions.length > 0;
 
-      const expectedError =
-        typeof d.expectedError === "boolean" ? d.expectedError : false;
-      const railsVerdict =
-        typeof d.railsVerdict === "string"
-          ? d.railsVerdict.trim().toLowerCase()
-          : undefined;
+    if (outcomeColor === "red") return "Failed";
+    if (outcomeColor === "green") return "Passed";
 
-      // 1) Hard failures: assertion failures or explicit outcome===failed.
-      if (outcome === "failed" || hasFailedAssertions) {
-        return "Failed";
-      }
+    // Legacy shapes: outcome string + failedAssertions list.
+    const outcomeStr =
+      typeof d.outcome === "string"
+        ? d.outcome.trim().toLowerCase()
+        : undefined;
 
-      // 2) Rails verdict present: interpret relative to expectedError.
-      if (railsVerdict === "rails_error") {
-        // Rails error was explicitly expected -> scenario passes.
-        if (expectedError) {
-          return "Passed";
-        }
-        // Rails error was not expected -> scenario fails.
-        return "Failed";
-      }
+    const failedAssertions = Array.isArray(d.failedAssertions)
+      ? d.failedAssertions
+      : undefined;
 
-      // 3) No rails error; if outcome is passed (or unspecified), treat as Passed.
-      if (outcome === "passed" || outcome === undefined) {
-        normalized = "Passed";
-      }
-    }
+    const hasFailedAssertions =
+      !!failedAssertions && failedAssertions.length > 0;
 
-    return normalized;
+    if (outcomeStr === "failed" || hasFailedAssertions) return "Failed";
+    if (outcomeStr === "passed") return "Passed";
+
+    // Legacy rails error semantics (kept only for backward hydration of old records):
+    const expectedError =
+      typeof d.expectedError === "boolean" ? d.expectedError : false;
+    const railsVerdict =
+      typeof d.railsVerdict === "string"
+        ? d.railsVerdict.trim().toLowerCase()
+        : undefined;
+
+    if (railsVerdict === "rails_error" && !expectedError) return "Failed";
+
+    return status;
   }
 
   /**
@@ -551,16 +547,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
 
   // ─────────────── Scenario enforcement ───────────────
 
-  /**
-   * Forced scenario pattern (locked):
-   *   await dto.runScenario("happy path", async () => { ... })
-   *
-   * The scenario status is STRUCTURED and always recorded.
-   * - Throw => TestError at DTO level (scenario still recorded)
-   *   • by default we rethrow so later scenarios WILL NOT run (happy-path-first rule)
-   *   • callers can opt out via opts.rethrowOnRailError === false
-   * - Return => Passed/Failed based on the return shape
-   */
   public async runScenario(
     name: string,
     fn: () => Promise<ScenarioResult> | ScenarioResult,
@@ -681,15 +667,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
 
   // ─────────────── Finalization (status derived from scenarios) ───────────────
 
-  /**
-   * Compute final TEST status from scenarios (single truth).
-   * - Any Failed => Failed
-   * - Else at least one Passed => Passed
-   * - Else (no scenarios) => Skipped
-   *
-   * Rails metadata (railsVerdict / railsStatus / railsHandlerStatus) is derived
-   * from the first scenario.details, if present, but DOES NOT affect status.
-   */
   public finalizeFromScenarios(): void {
     const finishedAt = new Date().toISOString();
     this._finishedAt = this._finishedAt || finishedAt;
@@ -712,7 +689,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
     } else if (scenarios.some((s) => s.status === "Passed")) {
       this._status = "Passed";
     } else {
-      // Defensive: should never happen because scenario status is locked.
       this._status = "TestError";
     }
 
@@ -753,12 +729,10 @@ export class HandlerTestDto extends DtoBase implements IDto {
     const check = <T>(input: unknown, kind: CheckKind, path: string): T =>
       DtoBase.check<T>(input, kind, { validate, path });
 
-    // id (optional; immutable once set)
     if (typeof j._id === "string" && j._id.trim()) {
       dto.setIdOnce(j._id.trim());
     }
 
-    // header (write-once semantics; all through check + write-once setters)
     const env = DtoBase.check<string | undefined>(j.env, "stringOpt", {
       validate,
       path: "env",
@@ -856,7 +830,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
       dto.setHandlerPurposeOnce(handlerPurpose);
     }
 
-    // outcome fields (mutable)
     if (
       j.status === "Started" ||
       j.status === "Passed" ||
@@ -894,7 +867,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
       dto.setDurationMs(durationMs);
     }
 
-    // scenarios
     if (Array.isArray(j.scenarios)) {
       const rawScenarios: HandlerTestScenario[] = j.scenarios
         .filter((s) => !!s && typeof s === "object")
@@ -957,7 +929,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
     const notes = check<string | undefined>(j.notes, "stringOpt", "notes");
     dto.setNotes(notes);
 
-    // rails metadata (optional)
     const railsVerdict = check<string | undefined>(
       j.railsVerdict,
       "stringOpt",
@@ -987,7 +958,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
       updatedByUserId: j.updatedByUserId,
     });
 
-    // freeze header post-hydration
     dto.freezeWriteOnce();
 
     return dto;
@@ -1039,8 +1009,6 @@ export class HandlerTestDto extends DtoBase implements IDto {
   // ─────────────── DTO-to-DTO patch helper ───────────────
 
   public patchFrom(other: HandlerTestDto): this {
-    // Header is write-once: patch MUST NOT mutate it.
-    // Outcome fields may be patched during upsert flows.
     this._status = other.getStatus();
 
     if (other.getStartedAt()) this._startedAt = other.getStartedAt();

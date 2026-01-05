@@ -5,6 +5,7 @@
  * - ADR-0077 (Test-Runner vNext — Single Orchestrator Handler)
  * - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
  * - ADR-0050 (Wire Bag Envelope; bag-only edges)
+ * - ADR-0100 (Pipeline plans + manifest-driven handler tests)
  * - LDD-38 (Test Runner VNext Design)
  * - LDD-39 (StepIterator Micro-Contract — Revised, KISS)
  *
@@ -13,9 +14,16 @@
  *
  * Dist-first invariant:
  * - Handler test modules are loaded from dist as CommonJS .js files.
- * - Sidecar module filename convention:
- *     <handlerName>.test.js
- *   e.g. code.build.userId.test.js
+ *
+ * Sidecar discovery rule (deterministic):
+ *  1) Service override: sibling of the pipeline entry module:
+ *       <handlerName>.test.js
+ *  2) Shared LEGO block fallback:
+ *       backend/services/shared/dist/http/handlers/<handlerName>.test.js
+ *
+ * IMPORTANT:
+ * - Loader signature is stable: loadFor(dto) only.
+ * - "default"/override/skipped semantics are handled outside this loader.
  */
 
 import * as path from "path";
@@ -58,11 +66,14 @@ export class RunTests {
 
       const testRunId = this.buildTestRunId();
 
-      const moduleLoader = this.buildHandlerTestModuleLoader(walk.pipelines);
+      const moduleLoader = this.buildHandlerTestModuleLoader(
+        walk.pipelines,
+        walk.rootDir
+      );
 
       await new IndexIterator(moduleLoader).execute({
         indices: walk.pipelines,
-        rootDir: walk.rootDir, // <-- REQUIRED: enables target service dist/app.js load
+        rootDir: walk.rootDir,
         app: this.controller.getApp(), // test-runner app (NOT used to construct target controllers)
         pipelineLabel: "run",
         requestIdPrefix: "tr-local",
@@ -125,12 +136,15 @@ export class RunTests {
    * Dist-first, CommonJS-safe test module loader.
    *
    * Map:
-   * - indexRelativePath (DTO / reporting) -> absolutePath (dist index.js)
-   * - Then load sibling sidecar:
-   *     <handlerName>.test.js
+   * - indexRelativePath (DTO / reporting) -> absolutePath (pipeline entry module, dist .js)
+   *
+   * Sidecar resolution (deterministic):
+   *  1) Service override (pipeline sibling dir): <handlerName>.test.js
+   *  2) Shared LEGO fallback: backend/services/shared/dist/http/handlers/<handlerName>.test.js
    */
   private buildHandlerTestModuleLoader(
-    pipelines: Array<{ absolutePath: string; relativePath: string }>
+    pipelines: Array<{ absolutePath: string; relativePath: string }>,
+    rootDir: string
   ): HandlerTestModuleLoader {
     const log = this.ctx.get<any>("log");
 
@@ -138,6 +152,19 @@ export class RunTests {
     for (const p of pipelines) {
       indexMap.set(p.relativePath, p.absolutePath);
     }
+
+    const sharedHandlerTestPath = (handlerName: string): string => {
+      return path.join(
+        rootDir,
+        "backend",
+        "services",
+        "shared",
+        "dist",
+        "http",
+        "handlers",
+        `${handlerName}.test.js`
+      );
+    };
 
     const loader: HandlerTestModuleLoader = {
       async loadFor(dto: HandlerTestDto) {
@@ -150,58 +177,62 @@ export class RunTests {
 
         const indexAbs = indexMap.get(indexRel);
         if (!indexAbs) {
-          if (log?.warn) {
-            log.warn(
-              {
-                event: "handlerTest_module_index_not_found",
-                indexRelativePath: indexRel,
-                handlerName,
-              },
-              "No index mapping found for HandlerTestDto.indexRelativePath"
-            );
-          }
+          log?.warn?.(
+            {
+              event: "handlerTest_module_index_not_found",
+              indexRelativePath: indexRel,
+              handlerName,
+            },
+            "No index mapping found for HandlerTestDto.indexRelativePath"
+          );
           return undefined;
         }
 
-        const dir = path.dirname(indexAbs);
+        const pipelineDir = path.dirname(indexAbs);
 
-        // Dist-first: compiled sidecar module.
-        const candidate = path.join(dir, `${handlerName}.test.js`);
+        const candidates = [
+          // 1) Service override (preferred when present)
+          path.join(pipelineDir, `${handlerName}.test.js`),
 
-        try {
-          // CommonJS-safe load.
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const mod: any = require(candidate);
+          // 2) Shared LEGO fallback
+          sharedHandlerTestPath(handlerName),
+        ];
 
-          if (!mod || typeof mod.getScenarios !== "function") {
-            if (log?.warn) {
-              log.warn(
+        for (const candidate of candidates) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const mod: any = require(candidate);
+
+            if (!mod || typeof mod.getScenarios !== "function") {
+              log?.warn?.(
                 {
                   event: "handlerTest_module_missing_getScenarios",
                   testModulePath: candidate,
                   handlerName,
+                  indexRelativePath: indexRel,
                 },
                 "Test module does not export getScenarios(deps)"
               );
+              return undefined;
             }
-            return undefined;
-          }
 
-          return mod;
-        } catch (err: any) {
-          if (log?.info) {
-            log.info(
-              {
-                event: "handlerTest_module_require_failed",
-                testModulePath: candidate,
-                handlerName,
-                errorMessage: err?.message,
-              },
-              "Failed to require handler test module; treating as no tests"
-            );
+            return mod;
+          } catch (err: any) {
+            // keep looping; only log once after exhausting candidates
           }
-          return undefined;
         }
+
+        log?.info?.(
+          {
+            event: "handlerTest_module_require_failed_all_candidates",
+            handlerName,
+            indexRelativePath: indexRel,
+            attemptedPaths: candidates,
+          },
+          "Failed to require handler test module from any candidate location; treating as no tests"
+        );
+
+        return undefined;
       },
     };
 

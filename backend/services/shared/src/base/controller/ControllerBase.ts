@@ -9,6 +9,7 @@
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
+ *   - ADR-0099 (Handler test manifest from handlers)
  *
  * Purpose:
  * - Shared abstract controller base for all services.
@@ -34,9 +35,18 @@ import {
   preflightContext,
   runPipelineHandlers,
 } from "./controllerContext";
+import type { PipelineBase } from "../pipeline/PipelineBase";
 
 export abstract class ControllerBase {
   protected readonly app: AppBase;
+
+  /**
+   * ADR-0099:
+   * - Active pipeline pointer for metadata recording during handler construction.
+   * - This is NOT HandlerContext state.
+   * - It is cleared immediately after pipeline step construction.
+   */
+  private _activePipeline?: PipelineBase;
 
   public constructor(app: AppBase) {
     this.app = app;
@@ -48,6 +58,20 @@ export abstract class ControllerBase {
 
   public getLogger(): IBoundLogger {
     return this.app.getLogger();
+  }
+
+  /**
+   * ADR-0099: pipeline wiring hook
+   * - Pipelines set this before constructing steps.
+   * - Handlers read it during construction to register handlerTestName().
+   */
+  public setActivePipeline(p: PipelineBase | undefined): void {
+    this._activePipeline = p;
+  }
+
+  /** ADR-0099: handler-side safe peek. */
+  public tryGetActivePipeline(): PipelineBase | undefined {
+    return this._activePipeline;
   }
 
   /**

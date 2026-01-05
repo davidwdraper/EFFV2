@@ -11,6 +11,7 @@
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="_id")
  *   - ADR-0097 (Controller bag hydration + type guarding)
  *   - ADR-0098 (Domain-named pipelines with PL suffix)
+ *   - ADR-0100 (Pipeline plans + manifest-driven handler tests)
  *
  * Purpose:
  * - Orchestrate:
@@ -23,6 +24,10 @@
  * - Controller seeds S2S routing metadata (slug/version) required by downstream MOS handlers.
  * - Pipelines start from a contract-valid ctx["bag"] (or no bag if body is absent).
  * - Controller stays thin: input normalization + orchestration + finalize.
+ *
+ * ADR-0100 note:
+ * - Pipeline planning is pure (ctor refs only).
+ * - Controller instantiates handler instances for production execution.
  */
 
 import { Request, Response } from "express";
@@ -161,6 +166,10 @@ export class AuthSignupController extends ControllerJsonBase {
       }
     }
 
+    // Instantiate the domain pipeline (planning only; PURE).
+    const pl = new UserSignupPL();
+    const pipelineName = pl.pipelineName();
+
     // High-level pipeline selection trace (PIPELINE level)
     this.log.pipeline(
       {
@@ -168,14 +177,16 @@ export class AuthSignupController extends ControllerJsonBase {
         op: "signup",
         dtoType,
         requestId,
-        pipeline: UserSignupPL.pipelineName(),
+        pipeline: pipelineName,
       },
       "auth.signup: selecting signup pipeline"
     );
 
     switch (dtoType) {
       case "user": {
-        const steps = UserSignupPL.getSteps(ctx, this);
+        // ADR-0100: plan-first (ctor refs), then instantiate for production execution.
+        const stepDefs = pl.steps("prod");
+        const steps = stepDefs.map((d) => new d.handlerCtor(ctx, this));
 
         // Pipeline start: log handler list in execution order
         this.log.pipeline(
@@ -184,14 +195,19 @@ export class AuthSignupController extends ControllerJsonBase {
             op: "signup",
             dtoType,
             requestId,
-            pipeline: UserSignupPL.pipelineName(),
-            handlers: steps.map((h) => h.constructor.name),
+            pipeline: pipelineName,
+            handlers: steps.map((h: any) =>
+              typeof h?.getHandlerName === "function"
+                ? String(h.getHandlerName())
+                : String(h?.constructor?.name ?? "unknown")
+            ),
           },
           "auth.signup: pipeline starting"
         );
 
+        // Auth is MOS: do NOT require a DTO registry during preflight.
         await this.runPipeline(ctx, steps, {
-          requireRegistry: true,
+          requireRegistry: false,
         });
 
         // Pipeline completion trace with final handlerStatus
@@ -203,7 +219,7 @@ export class AuthSignupController extends ControllerJsonBase {
             op: "signup",
             dtoType,
             requestId,
-            pipeline: UserSignupPL.pipelineName(),
+            pipeline: pipelineName,
             handlerStatus,
           },
           "auth.signup: pipeline complete"

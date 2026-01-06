@@ -17,7 +17,9 @@
  *
  * Loader contract:
  * - createController(app) MUST exist.
- * - getPipelineSteps(runMode?) MUST return StepDefProd[] for "prod", StepDefTest[] for "test".
+ * - getPipelineSteps(runMode?) MUST return:
+ *     - StepDefLive[] for "live"
+ *     - StepDefTest[] for "test"
  */
 
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
@@ -25,7 +27,7 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 
 import {
   PipelineBase,
-  type StepDefProd,
+  type StepDefLive,
   type StepDefTest,
   type RunMode,
 } from "@nv/shared/base/pipeline/PipelineBase";
@@ -47,45 +49,27 @@ export class UserSignupPL extends PipelineBase {
 
   /**
    * Single source of truth: step plan + expected test directive live together.
-   *
-   * - runMode="prod": returns StepDefProd[] (no expectedTestName field)
-   * - runMode="test": returns StepDefTest[] (expectedTestName available)
+   * Base class will validate + strip expectedTestName for "live".
    */
-  public override steps(runMode: "prod"): StepDefProd[];
-  public override steps(runMode: "test"): StepDefTest[];
-  public override steps(
-    runMode: RunMode = "prod"
-  ): StepDefProd[] | StepDefTest[] {
-    const plan: StepDefTest[] = [
+  protected override buildPlan(): StepDefTest[] {
+    return [
       {
         // MUST be stable; drives default "<handlerName>.test.js"
         handlerName: "code.mint.uuid",
         handlerCtor: CodeMintUuidHandler,
 
-        // "default" => derive <handlerName>.test.js
-        // "skipped" => intentional opt-out
-        // otherwise  => explicit override module basename (no ".js" enforced here)
+        // optional; undefined => "default" (via normalizeExpectedTestName)
         expectedTestName: "default",
       },
 
       /*
       {
-        handlerName: "h.seed.signup.userId.from.stepUuid",
-        handlerCtor: HSeedSignupUserIdFromStepUuidHandler,
-        expectedTestName: "default",
+        handlerName: "h_seed.signup.userId.fromStepUuid",
+        handlerCtor: HSeedSignupUserIdFromStepUuid,
+        // expectedTestName omitted on purpose (defaults to "default")
       },
       */
     ];
-
-    // Rails check: we validate the full plan once, then optionally strip for prod callers.
-    this.validatePlans(plan);
-
-    if (runMode === "test") {
-      return plan;
-    }
-
-    // prod mode: strip expectedTestName from the returned shape
-    return plan.map(({ expectedTestName: _ignored, ...prod }) => prod);
   }
 }
 
@@ -98,14 +82,45 @@ export function createController(app: AppBase): ControllerJsonBase {
 
 /**
  * Runner entrypoint (plan):
- * - runMode="prod" => StepDefProd[]
+ * - runMode="live" => StepDefLive[]
  * - runMode="test" => StepDefTest[]
  */
-export function getPipelineSteps(runMode: "prod"): StepDefProd[];
+export function getPipelineSteps(runMode: "live"): StepDefLive[];
 export function getPipelineSteps(runMode: "test"): StepDefTest[];
 export function getPipelineSteps(
-  runMode: RunMode = "prod"
-): StepDefProd[] | StepDefTest[] {
+  runMode: RunMode = "live"
+): StepDefLive[] | StepDefTest[] {
   const pl = new UserSignupPL();
-  return pl.steps(runMode as any);
+  return pl.getStepDefs(runMode as any);
 }
+
+/*
+
+      new CodeMintUuidHandler(ctx, controller),
+      /*
+      // Helpers: translate baton + apply onto hydrated DTO
+      new HSeedSignupUserIdFromStepUuid(ctx, controller, {
+        fromKey: "step.uuid",
+        toKey: "signup.userId",
+      }),
+      new HApplySignupUserIdToUserBag(ctx, controller, {
+        userIdKey: "signup.userId",
+        bagKey: "bag",
+      }),
+
+      new CodeExtractPasswordHandler(ctx, controller),
+      new CodePasswordHashHandler(ctx, controller),
+      new S2sUserCreateHandler(ctx, controller),
+      new S2sUserAuthCreateHandler(ctx, controller),
+      new CodeMintUserAuthTokenHandler(ctx, controller),
+
+      // Helper seeds rollback config + gate
+      new HSeedRollbackDeleteUserOnAuthFailure(ctx, controller, {
+        slug: "user",
+        version: 1,
+        dtoType: "user",
+      }),
+
+      // Shared generic rollback handler
+      new S2sRollbackDeleteHandler(ctx, controller),
+*/

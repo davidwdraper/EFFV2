@@ -27,7 +27,7 @@
  *
  * ADR-0100 note:
  * - Pipeline planning is pure (ctor refs only).
- * - Controller instantiates handler instances for production execution.
+ * - Controller instantiates handler instances for live execution.
  */
 
 import { Request, Response } from "express";
@@ -184,8 +184,8 @@ export class AuthSignupController extends ControllerJsonBase {
 
     switch (dtoType) {
       case "user": {
-        // ADR-0100: plan-first (ctor refs), then instantiate for production execution.
-        const stepDefs = pl.steps("prod");
+        // ADR-0100: plan-first (ctor refs), then instantiate for live execution.
+        const stepDefs = pl.getStepDefs("live");
         const steps = stepDefs.map((d) => new d.handlerCtor(ctx, this));
 
         // Pipeline start: log handler list in execution order

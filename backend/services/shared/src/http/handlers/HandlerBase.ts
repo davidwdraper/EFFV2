@@ -78,24 +78,8 @@ export abstract class HandlerBase {
   protected readonly controller: ControllerBase;
   protected readonly app: AppBase;
 
-  /**
-   * Registry is OPTIONAL at runtime.
-   * - DB posture services provide it.
-   * - MOS/non-DB services do not.
-   *
-   * IMPORTANT:
-   * - Do not touch registry during construction in a way that can throw.
-   * - Handlers that need it must call this.registry (getter) or getRegistry().
-   */
   private readonly _registry?: IDtoRegistry;
 
-  /**
-   * `rt` is intentionally short: it should be the only runtime “global”
-   * a handler can see. If it isn’t present, the service is mis-wired.
-   *
-   * Invariant:
-   * - Runtime identity is authoritative (ADR-0080). No ctx fallback.
-   */
   protected readonly rt: SvcRuntime;
 
   constructor(ctx: HandlerContext, controller: ControllerBase) {
@@ -108,8 +92,6 @@ export abstract class HandlerBase {
     }
     this.controller = controller;
 
-    // HARD REQUIRE: SvcRuntime must exist or the service is mis-wired.
-    // “No seatbelt, no ignition.”
     const rt = (this.controller as any).getRuntime?.();
     if (!rt) {
       throw new Error(
@@ -125,8 +107,6 @@ export abstract class HandlerBase {
     }
     this.app = app as AppBase;
 
-    // Registry is OPTIONAL — do NOT hard-fail here.
-    // Prefer a soft accessor if present, otherwise try/catch the strict getter.
     let reg: IDtoRegistry | undefined;
     try {
       const anyController = controller as any;
@@ -134,7 +114,6 @@ export abstract class HandlerBase {
       if (typeof anyController.tryGetDtoRegistry === "function") {
         reg = anyController.tryGetDtoRegistry() as IDtoRegistry | undefined;
       } else if (typeof anyController.getDtoRegistry === "function") {
-        // Some controllers throw for non-DB services (correct); we swallow here.
         reg = anyController.getDtoRegistry() as IDtoRegistry | undefined;
       }
     } catch {
@@ -156,7 +135,6 @@ export abstract class HandlerBase {
 
     this.ctx.set("log", this.log);
 
-    // ADR-0099: record declared test module into the active pipeline (if present).
     this.tryRecordHandlerTestName();
 
     this.log.debug(
@@ -170,17 +148,6 @@ export abstract class HandlerBase {
     );
   }
 
-  /**
-   * ADR-0099:
-   * - Returns the compiled (dist-first) test module for this handler.
-   *
-   * Default:
-   * - <compiled handler module>.test.js
-   *
-   * Override options:
-   * - Return an alternate compiled test module path (still .js).
-   * - Return "skipped" to opt out.
-   */
   public handlerTestName(): string {
     const base = stripFinalExtension(__filename);
     return `${base}.test.js`;
@@ -207,20 +174,10 @@ export abstract class HandlerBase {
         pl.recordHandlerTestName(name);
       }
     } catch {
-      // Must never break handler construction for metadata.
       return;
     }
   }
 
-  /**
-   * Strict registry accessor (DB posture only).
-   *
-   * Use when:
-   * - the handler truly needs registry-backed behavior (DTO construction, index hints, etc).
-   *
-   * Behavior:
-   * - Throws if the current service does not provide a registry.
-   */
   protected getRegistry(): IDtoRegistry {
     if (!this._registry) {
       throw new Error(
@@ -231,21 +188,10 @@ export abstract class HandlerBase {
     return this._registry;
   }
 
-  /**
-   * Convenience getter so existing code can keep using `this.registry`
-   * without turning every callsite into `this.getRegistry()`.
-   *
-   * NOTE:
-   * - This will throw (correctly) if used in a non-DB service.
-   */
   protected get registry(): IDtoRegistry {
     return this.getRegistry();
   }
 
-  /**
-   * Optional registry peek (rare).
-   * - Useful for MOS-safe test harnesses that can proceed without it.
-   */
   protected tryGetRegistry(): IDtoRegistry | undefined {
     return this._registry;
   }
@@ -293,7 +239,6 @@ export abstract class HandlerBase {
       log: this.log,
       harness: {
         app: this.app,
-        // Registry may be absent for MOS services; tests that require it must fail explicitly.
         registry: this.tryGetRegistry(),
       },
     };

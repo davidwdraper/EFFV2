@@ -40,12 +40,6 @@ import type { PipelineBase } from "../pipeline/PipelineBase";
 export abstract class ControllerBase {
   protected readonly app: AppBase;
 
-  /**
-   * ADR-0099:
-   * - Active pipeline pointer for metadata recording during handler construction.
-   * - This is NOT HandlerContext state.
-   * - It is cleared immediately after pipeline step construction.
-   */
   private _activePipeline?: PipelineBase;
 
   public constructor(app: AppBase) {
@@ -60,27 +54,14 @@ export abstract class ControllerBase {
     return this.app.getLogger();
   }
 
-  /**
-   * ADR-0099: pipeline wiring hook
-   * - Pipelines set this before constructing steps.
-   * - Handlers read it during construction to register handlerTestName().
-   */
   public setActivePipeline(p: PipelineBase | undefined): void {
     this._activePipeline = p;
   }
 
-  /** ADR-0099: handler-side safe peek. */
   public tryGetActivePipeline(): PipelineBase | undefined {
     return this._activePipeline;
   }
 
-  /**
-   * Runtime accessor (required).
-   *
-   * Why:
-   * - HandlerBase requires controller.getRuntime().
-   * - Controllers seed ctx['rt'] for diagnostics + downstream helpers.
-   */
   public getRuntime(): SvcRuntime {
     const anyApp = this.app as any;
     const rt =
@@ -98,17 +79,10 @@ export abstract class ControllerBase {
     return rt as SvcRuntime;
   }
 
-  /**
-   * Strict registry accessor (DB/API/FS posture only).
-   *
-   * Notes:
-   * - This will throw for MOS/gateway services by design (AppBase guardrail).
-   */
   public getDtoRegistry(): IDtoRegistry {
     return this.app.getDtoRegistry();
   }
 
-  /** Soft registry accessor (allowed for MOS). */
   public tryGetDtoRegistry(): IDtoRegistry | undefined {
     try {
       return this.app.getDtoRegistry();
@@ -116,10 +90,6 @@ export abstract class ControllerBase {
       return undefined;
     }
   }
-
-  // ───────────────────────────────────────────
-  // Context prep helpers (shared)
-  // ───────────────────────────────────────────
 
   protected seedHydrator(
     ctx: HandlerContext,
@@ -157,11 +127,9 @@ export abstract class ControllerBase {
     await runPipelineHandlers(this as any, ctx, handlers, opts);
   }
 
-  // Default posture expectation; services can override if they truly don’t have one.
   public needsRegistry(): boolean {
     return true;
   }
 
-  // Finalize hook is wire-format specific (Json/Html/etc.)
   protected abstract finalize(ctx: HandlerContext): Promise<void>;
 }

@@ -16,6 +16,12 @@
  * ADR-0100 invariant:
  * - Step planning is pure.
  * - Handlers are instantiated ONLY during scenario execution.
+ *
+ * Helper rule (pipeline glue, not manifest):
+ * - If handlerName starts with "h_", the step is treated as a pipeline helper:
+ *   - it executes inline to preserve ordering
+ *   - it does NOT produce handler-test records (no Mongo noise)
+ *   - it does NOT emit "step_inspected" logs
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -82,7 +88,6 @@ export class StepIterator {
     ctx: HandlerContext;
     controller: ControllerBase;
 
-    // ADR-0100: plan-first, no handler instances.
     stepDefs: StepDefTest[];
 
     indexRelativePath: string;
@@ -158,6 +163,79 @@ export class StepIterator {
         (stepDef as any)?.expectedTestName
       );
 
+      const isHelper = handlerName.startsWith("h_");
+
+      if (isHelper) {
+        const requestId =
+          ctx.get<string>("requestId") ?? `tr-helper-${Date.now()}`;
+
+        try {
+          await withRequestScope(
+            {
+              requestId,
+              testRunId,
+            },
+            async () => {
+              const h = new stepDef.handlerCtor(ctx, input.controller);
+              await h.run();
+            }
+          );
+        } catch (err) {
+          const msgErr =
+            err instanceof Error ? err.message : String(err ?? "unknown error");
+
+          log?.error?.(
+            {
+              event: "helper_step_execute_threw",
+              index: indexRelativePath,
+              stepIndex: i,
+              stepCount: stepDefs.length,
+              handler: handlerName,
+              error: msgErr,
+            },
+            "Helper step threw unexpectedly; aborting pipeline iteration"
+          );
+          break;
+        }
+
+        const hs = (() => {
+          try {
+            return ctx.get<number>("response.status");
+          } catch {
+            return undefined;
+          }
+        })();
+
+        const handlerStatus = (() => {
+          try {
+            return ctx.get<string>("handlerStatus");
+          } catch {
+            return undefined;
+          }
+        })();
+
+        if (
+          handlerStatus === "error" ||
+          (typeof hs === "number" && Number.isFinite(hs) && hs >= 500)
+        ) {
+          log?.error?.(
+            {
+              event: "helper_step_failed",
+              index: indexRelativePath,
+              stepIndex: i,
+              stepCount: stepDefs.length,
+              handler: handlerName,
+              handlerStatus,
+              railsStatus: hs,
+            },
+            "Helper step failed (rails error); aborting pipeline iteration"
+          );
+          break;
+        }
+
+        continue;
+      }
+
       log?.info?.(
         {
           event: "step_inspected",
@@ -227,10 +305,7 @@ export class StepIterator {
               testRunId,
             },
             async () => {
-              const h = new stepDef.handlerCtor(
-                scenarioCtx,
-                input.controller as any
-              );
+              const h = new stepDef.handlerCtor(scenarioCtx, input.controller);
               await h.run();
             }
           );

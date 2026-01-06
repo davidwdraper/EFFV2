@@ -27,14 +27,6 @@ import type { HandlerContext } from "../../http/handlers/HandlerContext";
 import type { NvHandlerError } from "../../http/handlers/handlerBaseExt/errorHelpers";
 
 export abstract class ControllerJsonBase extends ControllerExpressBase {
-  /**
-   * Finalize a JSON HTTP response.
-   *
-   * Flow:
-   * 1) If ctx indicates error → write JSON error body.
-   * 2) Else → require ctx["bag"] and serialize it via toBody().
-   * 3) Delegate error logging policy to ControllerExpressBase.
-   */
   protected async finalize(ctx: HandlerContext): Promise<void> {
     const res = ctx.get<Response>("res");
     if (!res) {
@@ -47,9 +39,6 @@ export abstract class ControllerJsonBase extends ControllerExpressBase {
     const status =
       ctx.get<number>("status") ?? ctx.get<number>("response.status") ?? 200;
 
-    // ───────────────────────────────────────────
-    // Error path
-    // ───────────────────────────────────────────
     if (ctx.get<string>("handlerStatus") === "error") {
       const error =
         ctx.get<NvHandlerError>("error") ??
@@ -75,9 +64,6 @@ export abstract class ControllerJsonBase extends ControllerExpressBase {
       return;
     }
 
-    // ───────────────────────────────────────────
-    // Success path
-    // ───────────────────────────────────────────
     const bag = ctx.get<any>("bag");
     if (!bag || typeof bag.toBody !== "function") {
       const body = {

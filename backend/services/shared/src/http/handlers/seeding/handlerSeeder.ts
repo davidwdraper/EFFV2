@@ -6,83 +6,30 @@
  * - ADR-0042 (HandlerContext Bus — KISS)
  *
  * Purpose:
- * - Universal seeder implementation used by default for every pipeline step.
+ * - Universal seeder implementation used by default for pipeline steps that declare
+ *   seeding rules.
+ *
+ * Notes:
  * - Seeders are orchestration rails:
  *   - read from ctx and rt (via ctx["rt"])
  *   - write to ctx only
  *   - no I/O, no payload mutation
  *
- * Notes:
- * - Seeders are NOT handlers and do not produce handler-test records.
- * - Seeders fail-fast by setting error rails on ctx and leaving handlerStatus="error".
- * - Execution loops (controller/test-runner) must stop the pair when ctx is on error rails.
+ * ADR-0101 seeding defaults:
+ * - Pipelines may omit seedSpec entirely; rails normalize to {}.
+ * - This seeder treats missing/invalid rules as an empty ruleset.
  */
 
-import type { HandlerContext } from "../HandlerContext";
-import type { ControllerBase } from "../../../base/controller/ControllerBase";
-
-export type SeedRuleSource =
-  | { kind: "ctx"; key: string }
-  | { kind: "rt"; key: string };
-
-export type SeedRule = {
-  from: SeedRuleSource;
-  to: string;
-  required?: boolean;
-};
-
-export type SeedSpec = {
-  rules: SeedRule[];
-};
-
-export abstract class HandlerSeederBase {
-  protected readonly ctx: HandlerContext;
-  protected readonly controller: ControllerBase;
-  protected readonly seedSpec: SeedSpec;
-
-  public constructor(
-    ctx: HandlerContext,
-    controller: ControllerBase,
-    seedSpec?: SeedSpec
-  ) {
-    this.ctx = ctx;
-    this.controller = controller;
-    this.seedSpec = seedSpec ?? { rules: [] };
-  }
-
-  public abstract run(): Promise<void>;
-
-  protected failSeed(input: {
-    title: string;
-    detail: string;
-    status?: number;
-  }): void {
-    const requestId = this.safeGet("requestId");
-    this.ctx.set("handlerStatus", "error");
-    this.ctx.set("response.status", input.status ?? 500);
-    this.ctx.set("response.body", {
-      title: input.title,
-      detail: input.detail,
-      requestId,
-    });
-  }
-
-  protected safeGet(key: string): any {
-    try {
-      return this.ctx.get(key as any);
-    } catch {
-      return undefined;
-    }
-  }
-}
+import { HandlerSeederBase, SeedRule } from "./handlerSeederBase";
 
 /**
  * Default universal seeder.
+ * - Interprets seedSpec.rules (if present) and copies values from ctx/rt into ctx.
  */
 export class HandlerSeeder extends HandlerSeederBase {
   public async run(): Promise<void> {
     const rules = Array.isArray(this.seedSpec?.rules)
-      ? this.seedSpec.rules
+      ? (this.seedSpec.rules as SeedRule[])
       : [];
 
     for (let i = 0; i < rules.length; i++) {
@@ -151,7 +98,7 @@ export class HandlerSeeder extends HandlerSeederBase {
         return;
       }
 
-      // Always write (even undefined) only when not required; required already returned above.
+      // Only write when we actually have a value.
       if (value !== undefined && value !== null) {
         this.ctx.set(toKey as any, value);
       }

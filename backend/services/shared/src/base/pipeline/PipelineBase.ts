@@ -24,25 +24,23 @@
  * TypeScript notes:
  * - handlerInit is `any` intentionally (constructor assignability rules).
  * - seedSpec is inert data only; interpreted by seeders at run time.
+ *
+ * ADR-0101 seeding defaults:
+ * - If a step omits seeding, rails normalize:
+ *     seedName = "noop"
+ *     seedSpec = {}
+ * - If a step provides seedName but omits seedSpec, rails pass {}.
  */
 
 import type { HandlerContext } from "../../http/handlers/HandlerContext";
 import type { ControllerBase } from "../controller/ControllerBase";
 import type { HandlerBase } from "../../http/handlers/HandlerBase";
-import type {
-  HandlerSeederBase,
-  SeedSpec,
-} from "../../http/handlers/seeding/handlerSeeder";
+import type { SeedSpec } from "../../http/handlers/seeding/handlerSeederBase";
+import type { SeederCtor } from "../../http/handlers/seeding/seederRegistry";
 
 export type RunMode = "live" | "test";
 
 export type ExpectedTestName = "default" | "skipped" | string;
-
-export type SeederCtor = new (
-  ctx: HandlerContext,
-  controller: ControllerBase,
-  seedSpec?: SeedSpec
-) => HandlerSeederBase;
 
 export type StepDefTest = {
   /**
@@ -57,22 +55,24 @@ export type StepDefTest = {
 
   /**
    * Seeder identity for logging/debugging.
-   * Convention: `seed.<handlerName>`
+   *
+   * ADR-0101 defaults:
+   * - omitted => treated as "noop"
    */
-  seedName: string;
+  seedName?: "noop" | "handlerSeeder" | string;
 
   /**
    * Declarative seed spec interpreted by the seeder.
    * MUST be inert data (no functions, no runtime reads).
    *
-   * Noop seeding is explicit:
-   * - seedSpec.rules = []
+   * ADR-0101 defaults:
+   * - omitted => treated as {}
    */
-  seedSpec: SeedSpec;
+  seedSpec?: SeedSpec | Record<string, any>;
 
   /**
    * Optional seeder override constructor.
-   * If omitted, controller/test-runner will use the default HandlerSeeder.
+   * If omitted, execution rails will resolve by seedName via seederRegistry.
    */
   seederCtor?: SeederCtor;
 
@@ -117,16 +117,12 @@ export abstract class PipelineBase {
    */
   protected abstract buildPlan(): StepDefTest[];
 
-  /**
-   * Public unified interface (do NOT override in pipelines).
-   *
-   * - runMode="test": StepDefTest[] (expectedTestName available)
-   * - runMode="live": StepDefLive[] (expectedTestName stripped)
-   */
   public getStepDefs(runMode: "test"): StepDefTest[];
   public getStepDefs(runMode: "live"): StepDefLive[];
   public getStepDefs(runMode: RunMode = "live"): StepDefLive[] | StepDefTest[] {
-    const plan = this.buildPlan();
+    const raw = this.buildPlan();
+
+    const plan = this.normalizePlan(raw);
 
     this.validatePlans(plan);
 
@@ -136,11 +132,36 @@ export abstract class PipelineBase {
   }
 
   /**
+   * ADR-0101 normalization:
+   * - seedName default => "noop"
+   * - seedSpec default => {}
+   * - if seedName present and seedSpec omitted => {}
+   */
+  protected normalizePlan(plan: StepDefTest[]): StepDefTest[] {
+    if (!Array.isArray(plan)) return plan as any;
+
+    return plan.map((s) => {
+      const seedNameRaw =
+        typeof s?.seedName === "string" ? s.seedName.trim() : "";
+      const seedName = seedNameRaw ? seedNameRaw : "noop";
+
+      const seedSpec =
+        s && "seedSpec" in (s as any) ? (s as any).seedSpec ?? {} : {};
+
+      return {
+        ...s,
+        seedName,
+        seedSpec: seedSpec && typeof seedSpec === "object" ? seedSpec : {},
+      };
+    });
+  }
+
+  /**
    * Rails validation for a test-mode plan (StepDefTest[]).
    *
    * - handlerName non-empty + unique
-   * - seedName non-empty
-   * - seedSpec present (rules array exists; may be empty)
+   * - seedName non-empty (post-normalization)
+   * - seedSpec must be an object (post-normalization; may be {})
    * - handlerCtor is a function
    * - expectedTestName is "default"/"skipped" or a non-empty string
    */
@@ -176,10 +197,10 @@ export abstract class PipelineBase {
         );
       }
 
-      const rules = (s as any)?.seedSpec?.rules;
-      if (!Array.isArray(rules)) {
+      const seedSpec = (s as any)?.seedSpec;
+      if (!seedSpec || typeof seedSpec !== "object") {
         throw new Error(
-          `PIPELINE_PLAN_INVALID: StepDef.seedSpec.rules must be an array for handlerName="${handlerName}" (pipeline=${this.pipelineName()}).`
+          `PIPELINE_PLAN_INVALID: StepDef.seedSpec must be an object for handlerName="${handlerName}" (pipeline=${this.pipelineName()}).`
         );
       }
 

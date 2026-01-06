@@ -31,7 +31,7 @@ import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { UserDto } from "@nv/shared/dto/user.dto";
 import { UserDtoRegistry } from "@nv/shared/dto/registry/user.dtoRegistry";
 
-import { HandlerSeeder } from "@nv/shared/http/handlers/seeding/handlerSeeder";
+import { resolveSeederCtor } from "@nv/shared/http/handlers/seeding/seederRegistry";
 
 import { UserSignupPL } from "./pipelines/signup.handlerPipeline/UserSignupPL";
 
@@ -192,6 +192,9 @@ export class AuthSignupController extends ControllerJsonBase {
     // ADR-0100/0101:
     // - plan-first (pure)
     // - execute pairs (seed → handler)
+    // - seeding defaults (no clutter):
+    //     seedName omitted => "noop"
+    //     seedSpec omitted => {}
     const stepDefs = pl.getStepDefs("live");
 
     this.log.pipeline(
@@ -202,17 +205,30 @@ export class AuthSignupController extends ControllerJsonBase {
         requestId,
         pipeline: pipelineName,
         steps: stepDefs.map((d: any) => ({
-          seed: String(d.seedName),
-          handler: String(d.handlerName),
+          seed:
+            typeof d?.seedName === "string" && d.seedName.trim()
+              ? d.seedName.trim()
+              : "noop",
+          handler: String(d?.handlerName ?? ""),
         })),
       },
       "auth.signup: pipeline starting"
     );
 
     for (const d of stepDefs as any[]) {
-      // 1) seed
-      const SeederCtor = (d?.seederCtor ?? HandlerSeeder) as any;
-      const seeder = new SeederCtor(ctx, this, d.seedSpec);
+      const seedName =
+        typeof d?.seedName === "string" && d.seedName.trim()
+          ? d.seedName.trim()
+          : "noop";
+
+      const seedSpec =
+        d && typeof d?.seedSpec === "object" && d.seedSpec !== null
+          ? d.seedSpec
+          : {};
+
+      // 1) seed (no conditionals: resolve by name unless ctor override is provided)
+      const SeederCtor = (d?.seederCtor ?? resolveSeederCtor(seedName)) as any;
+      const seeder = new SeederCtor(ctx, this, seedSpec);
       await seeder.run();
 
       if (ctx.get("handlerStatus") === "error") {

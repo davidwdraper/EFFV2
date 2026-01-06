@@ -11,7 +11,16 @@
  * - Domain-named pipeline for Auth Signup (dtoType="user").
  *
  * Ladder rule (this refactor):
- * - Start with exactly ONE seeder→handler pair (rung #1), get it green, then add rung #2.
+ * - Add one rung at a time: get green, then add the next rung.
+ *
+ * Readability rule:
+ * - buildPlan() is a list of private step factory functions.
+ * - Each function name is camelCased from handlerName.
+ *
+ * ADR-0101 seeding defaults:
+ * - If a step omits seeding entirely, rails treat it as:
+ *     seedName = "noop"
+ *     seedSpec = {}
  */
 
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
@@ -27,6 +36,7 @@ import {
 import { AuthSignupController } from "../../auth.signup.controller";
 
 import { CodeMintUuidHandler } from "@nv/shared/http/handlers/code.mint.uuid";
+import { CodeSetDtoIdHandler } from "@nv/shared/http/handlers/code.set.dtoId";
 
 export class UserSignupPL extends PipelineBase {
   public override pipelineName(): string {
@@ -37,21 +47,34 @@ export class UserSignupPL extends PipelineBase {
     return new AuthSignupController(app);
   }
 
-  /**
-   * RUNG #1 ONLY:
-   * - seed: noop
-   * - handler: code.mint.uuid
-   */
   protected override buildPlan(): StepDefTest[] {
     return [
-      {
-        handlerName: "code.mint.uuid",
-        seedName: "seed.code.mint.uuid",
-        seedSpec: { rules: [] }, // explicit noop seeding
-        handlerCtor: CodeMintUuidHandler,
-        expectedTestName: "default",
-      },
+      // RUNG #1: mint baton uuid
+      this.codeMintUuid(),
+
+      // RUNG #2: apply baton uuid onto dto._id (no seeding required; baton already exists)
+      this.codeSetDtoId(),
     ];
+  }
+
+  // ───────────────────────────────────────────
+  // Steps (camelCased from handlerName)
+  // ───────────────────────────────────────────
+
+  private codeMintUuid(): StepDefTest {
+    return {
+      handlerName: "code.mint.uuid",
+      handlerCtor: CodeMintUuidHandler,
+      expectedTestName: "default",
+    };
+  }
+
+  private codeSetDtoId(): StepDefTest {
+    return {
+      handlerName: "code.set.dtoId",
+      handlerCtor: CodeSetDtoIdHandler,
+      expectedTestName: "default",
+    };
   }
 }
 

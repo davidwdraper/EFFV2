@@ -32,7 +32,7 @@ import { withRequestScope } from "@nv/shared/http/requestScope";
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
 
-import { HandlerSeeder } from "@nv/shared/http/handlers/seeding/handlerSeeder";
+import { resolveSeederCtor } from "@nv/shared/http/handlers/seeding/seederRegistry";
 
 import type {
   TestHandlerTerminalStatus,
@@ -163,13 +163,19 @@ export class StepIterator {
         (stepDef as any)?.expectedTestName
       );
 
+      const seedName =
+        typeof (stepDef as any)?.seedName === "string" &&
+        String((stepDef as any).seedName).trim()
+          ? String((stepDef as any).seedName).trim()
+          : "noop";
+
       log?.info?.(
         {
           event: "step_inspected",
           index: indexRelativePath,
           stepIndex: i,
           stepCount: stepDefs.length,
-          seed: String((stepDef as any)?.seedName ?? ""),
+          seed: seedName,
           handler: handlerName,
           expectedTestName,
         },
@@ -230,11 +236,18 @@ export class StepIterator {
           await withRequestScope({ requestId, testRunId }, async () => {
             // 1) seed
             const SeederCtor = ((stepDef as any)?.seederCtor ??
-              HandlerSeeder) as any;
+              resolveSeederCtor(seedName)) as any;
+
+            const seedSpec =
+              (stepDef as any)?.seedSpec &&
+              typeof (stepDef as any).seedSpec === "object"
+                ? (stepDef as any).seedSpec
+                : {};
+
             const seeder = new SeederCtor(
               scenarioCtx,
               input.controller,
-              (stepDef as any)?.seedSpec
+              seedSpec
             );
             await seeder.run();
 

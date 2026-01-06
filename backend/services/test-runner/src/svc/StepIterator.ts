@@ -3,6 +3,7 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADR-0100 (Pipeline plans + manifest-driven handler tests)
+ * - ADR-0101 (Universal seeder + seeder→handler pairs)
  * - LDD-38 (Test Runner vNext Design)
  * - LDD-39 (StepIterator Micro-Contract — Revised, KISS)
  * - ADR-0077 (Test-Runner vNext — Single Orchestrator Handler)
@@ -13,15 +14,12 @@
  * Purpose:
  * - StepIterator: iterate StepDef[] for a single pipeline entry.
  *
- * ADR-0100 invariant:
- * - Step planning is pure.
- * - Handlers are instantiated ONLY during scenario execution.
+ * ADR-0101 rule:
+ * - A step is a seeder→handler pair.
+ * - Test runner executes BOTH (seeder first, then handler) for the handler under test.
  *
- * Helper rule (pipeline glue, not manifest):
- * - If handlerName starts with "h_", the step is treated as a pipeline helper:
- *   - it executes inline to preserve ordering
- *   - it does NOT produce handler-test records (no Mongo noise)
- *   - it does NOT emit "step_inspected" logs
+ * ADR-0099:
+ * - expectedTestName drives strict missing-test semantics.
  */
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
@@ -33,6 +31,8 @@ import { withRequestScope } from "@nv/shared/http/requestScope";
 
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
 import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+
+import { HandlerSeeder } from "@nv/shared/http/handlers/seeding/handlerSeeder";
 
 import type {
   TestHandlerTerminalStatus,
@@ -163,89 +163,17 @@ export class StepIterator {
         (stepDef as any)?.expectedTestName
       );
 
-      const isHelper = handlerName.startsWith("h_");
-
-      if (isHelper) {
-        const requestId =
-          ctx.get<string>("requestId") ?? `tr-helper-${Date.now()}`;
-
-        try {
-          await withRequestScope(
-            {
-              requestId,
-              testRunId,
-            },
-            async () => {
-              const h = new stepDef.handlerCtor(ctx, input.controller);
-              await h.run();
-            }
-          );
-        } catch (err) {
-          const msgErr =
-            err instanceof Error ? err.message : String(err ?? "unknown error");
-
-          log?.error?.(
-            {
-              event: "helper_step_execute_threw",
-              index: indexRelativePath,
-              stepIndex: i,
-              stepCount: stepDefs.length,
-              handler: handlerName,
-              error: msgErr,
-            },
-            "Helper step threw unexpectedly; aborting pipeline iteration"
-          );
-          break;
-        }
-
-        const hs = (() => {
-          try {
-            return ctx.get<number>("response.status");
-          } catch {
-            return undefined;
-          }
-        })();
-
-        const handlerStatus = (() => {
-          try {
-            return ctx.get<string>("handlerStatus");
-          } catch {
-            return undefined;
-          }
-        })();
-
-        if (
-          handlerStatus === "error" ||
-          (typeof hs === "number" && Number.isFinite(hs) && hs >= 500)
-        ) {
-          log?.error?.(
-            {
-              event: "helper_step_failed",
-              index: indexRelativePath,
-              stepIndex: i,
-              stepCount: stepDefs.length,
-              handler: handlerName,
-              handlerStatus,
-              railsStatus: hs,
-            },
-            "Helper step failed (rails error); aborting pipeline iteration"
-          );
-          break;
-        }
-
-        continue;
-      }
-
       log?.info?.(
         {
           event: "step_inspected",
           index: indexRelativePath,
           stepIndex: i,
           stepCount: stepDefs.length,
+          seed: String((stepDef as any)?.seedName ?? ""),
           handler: handlerName,
           expectedTestName,
         },
-        "Pipeline step inspected"
+        "Pipeline step inspected (pair semantics)"
       );
 
       const handlerTestDto: HandlerTestDto =
@@ -299,16 +227,30 @@ export class StepIterator {
           const requestId =
             scenarioCtx.get<string>("requestId") ?? `scenario-${Date.now()}`;
 
-          await withRequestScope(
-            {
-              requestId,
-              testRunId,
-            },
-            async () => {
-              const h = new stepDef.handlerCtor(scenarioCtx, input.controller);
-              await h.run();
+          await withRequestScope({ requestId, testRunId }, async () => {
+            // 1) seed
+            const SeederCtor = ((stepDef as any)?.seederCtor ??
+              HandlerSeeder) as any;
+            const seeder = new SeederCtor(
+              scenarioCtx,
+              input.controller,
+              (stepDef as any)?.seedSpec
+            );
+            await seeder.run();
+
+            // stop the pair if seeding failed
+            if (scenarioCtx.get("handlerStatus") === "error") {
+              return;
             }
-          );
+
+            // 2) handler
+            const h = new (stepDef as any).handlerCtor(
+              scenarioCtx,
+              input.controller,
+              (stepDef as any).handlerInit
+            );
+            await h.run();
+          });
         },
       };
 

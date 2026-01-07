@@ -13,8 +13,8 @@
  *
  * Purpose:
  * - Happy-path smoke test for CodePasswordHashHandler:
- *   - derives signup.passwordHash + signup.passwordAlgo
- *   - clears signup.passwordClear
+ *   - reads password from HTTP header
+ *   - derives signup.passwordHash + signup.passwordAlgo (+ params + createdAt)
  *   - remains on the "ok" rail (HTTP 200)
  *
  * ADR-0095:
@@ -52,18 +52,18 @@ function readHttpStatus(ctx: any): number {
   return Number.isFinite(n) ? n : 200;
 }
 
-export async function getScenarios(deps: ScenarioDepsLike) {
+export function getScenarios(deps: ScenarioDepsLike) {
   return [
     {
       id: "HappyPath",
-      name: "auth.signup: CodePasswordHashHandler derives hash + algo and clears cleartext password",
+      name: "auth.signup: CodePasswordHashHandler reads password header, derives hash + algo",
       shortCircuitOnFail: true,
 
       async run(localDeps: ScenarioDepsLike): Promise<TestScenarioStatus> {
         const status = createTestScenarioStatus({
           scenarioId: "HappyPath",
           scenarioName:
-            "auth.signup: CodePasswordHashHandler derives hash + algo and clears cleartext password",
+            "auth.signup: CodePasswordHashHandler reads password header, derives hash + algo",
           expected: "success",
         });
 
@@ -77,8 +77,12 @@ export async function getScenarios(deps: ScenarioDepsLike) {
             op: "code.passwordHash",
           });
 
-          // Seed: prior handler extracts cleartext; we provide it here.
-          ctx.set("signup.passwordClear", "StrongPassw0rd#");
+          // Seed inbound headers for the controller/runtime.
+          // Contract: handler reads x-nv-password from controller (preferred).
+          // Test runner environments may expose headers via ctx (compat).
+          ctx.set("http.headers", {
+            "x-nv-password": "StrongPassw0rd#",
+          });
 
           // Inner try/catch wraps ONLY handler execution (ADR-0094).
           try {
@@ -99,13 +103,6 @@ export async function getScenarios(deps: ScenarioDepsLike) {
               );
             }
 
-            const clear = ctx.get("signup.passwordClear");
-            if (typeof clear !== "undefined") {
-              status.recordAssertionFailure(
-                "Expected signup.passwordClear to be cleared (undefined)."
-              );
-            }
-
             const hash = ctx.get("signup.passwordHash");
             if (typeof hash !== "string" || hash.length < 16) {
               status.recordAssertionFailure(
@@ -119,6 +116,28 @@ export async function getScenarios(deps: ScenarioDepsLike) {
                 "Expected signup.passwordAlgo to be a non-empty string."
               );
             }
+
+            const paramsJson = ctx.get("signup.passwordHashParamsJson");
+            if (typeof paramsJson !== "string" || !paramsJson.trim()) {
+              status.recordAssertionFailure(
+                "Expected signup.passwordHashParamsJson to be a non-empty string."
+              );
+            }
+
+            const createdAt = ctx.get("signup.passwordCreatedAt");
+            if (typeof createdAt !== "string" || !createdAt.trim()) {
+              status.recordAssertionFailure(
+                "Expected signup.passwordCreatedAt to be a non-empty string."
+              );
+            }
+
+            // Never stash cleartext.
+            const clear = ctx.get("signup.passwordClear");
+            if (typeof clear !== "undefined") {
+              status.recordAssertionFailure(
+                "Expected signup.passwordClear to remain absent (undefined)."
+              );
+            }
           } catch (err: any) {
             status.recordInnerCatch(err);
           }
@@ -129,6 +148,7 @@ export async function getScenarios(deps: ScenarioDepsLike) {
           TestScenarioFinalizer.finalize({ status, ctx });
         }
 
+        // Critical: unconditional return so TS never complains.
         return status;
       },
     },

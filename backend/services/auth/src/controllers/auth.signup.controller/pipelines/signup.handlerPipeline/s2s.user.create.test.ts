@@ -15,20 +15,12 @@
  * Purpose:
  * - Happy-path smoke test for S2sUserCreateHandler:
  *   - calls user.create using ctx["bag"] (singleton UserDto)
+ *   - requires password-hash outputs from step 3 to exist on ctx
  *   - writes ctx["signup.userCreateStatus"] with ok=true + userId
  *
  * IMPORTANT:
  * - Runner-shaped module: scenarios execute via deps.step.execute(ctx)
  *   so the scenario ctx inherits pipeline runtime ("rt") automatically.
- *
- * Note:
- * - UserDto.givenName / lastName validation forbids digits.
- *   Keep names strictly alphabetic; use email for uniqueness.
- *
- * Shared test handoff:
- * - On happy-path success, stash created userId for follow-on rollback tests:
- *   • ctx["test.shared.userId"]
- *   • globalThis.__nv_handler_test_shared["auth.signup.createdUserId"]
  *
  * ADR-0095:
  * - Exactly one scenario: HappyPath
@@ -57,51 +49,16 @@ type UserCreateStatus =
   | { ok: true; userId?: string }
   | { ok: false; code: string; message: string };
 
-// ───────────────────────────────────────────
-// Shared test handoff (process-local)
-// ───────────────────────────────────────────
-const SHARED_SLOT_KEY = "auth.signup.createdUserId";
-
-function getSharedStore(): Record<string, any> {
-  const g = globalThis as any;
-  if (!g.__nv_handler_test_shared) g.__nv_handler_test_shared = {};
-  return g.__nv_handler_test_shared as Record<string, any>;
-}
-
-function stashCreatedUserId(ctx: any, userId: string): void {
-  if (typeof userId !== "string" || userId.trim().length === 0) return;
-
-  // Best-effort: ctx (only helps if runner reuses ctx across modules)
-  try {
-    if (ctx && typeof ctx.set === "function") {
-      ctx.set("test.shared.userId", userId);
-    }
-  } catch {
-    // ignore
-  }
-
-  // Reliable: same Node process shared store
-  const store = getSharedStore();
-  store[SHARED_SLOT_KEY] = userId;
-}
-
-// ───────────────────────────────────────────
-// DTO/bag helper
-// ───────────────────────────────────────────
 function buildUserBag(
   signupUserId: string,
   requestId: string,
   mutate?: (dto: UserDto) => void
 ): UserBag {
   const registry = new UserDtoRegistryCtor();
-
-  // ✅ Registry-minted happy DTO (sidecar JSON hydrated + validated + collection seeded)
   const dto = registry.getTestDto("happy") as unknown as UserDto;
 
-  // Optional per-scenario tweaks (uniqueness, etc.)
   if (mutate) mutate(dto);
 
-  // Match pipeline behavior: canonical UUIDv4 id applied once.
   dto.setIdOnce?.(signupUserId);
 
   const { bag } = BagBuilder.fromDtos([dto], {
@@ -124,10 +81,6 @@ function readHandlerStatus(ctx: any): string {
   const v = ctx.get("handlerStatus");
   return typeof v === "string" ? v : "ok";
 }
-
-// ───────────────────────────────────────────
-// Assertions (record failures; do not throw)
-// ───────────────────────────────────────────
 
 function assertOkStatus(
   ctx: any,
@@ -152,10 +105,6 @@ function assertOkStatus(
   }
 }
 
-// ───────────────────────────────────────────
-// ScenarioRunner entrypoint
-// ───────────────────────────────────────────
-
 export async function getScenarios(deps: any): Promise<any[]> {
   return [
     {
@@ -167,8 +116,8 @@ export async function getScenarios(deps: any): Promise<any[]> {
         const requestId = "req-auth-s2s-user-create-happy";
         const signupUserId = newUuid();
 
-        // Keep names strictly alphabetic; uniqueness goes in email.
         const bag = buildUserBag(signupUserId, requestId, (dto) => {
+          // Keep names strictly alphabetic; uniqueness goes in email.
           dto.setGivenName?.("Auth");
           dto.setLastName?.("UserCreate");
           dto.setEmail?.(`auth.s2s.user.create+${signupUserId}@example.com`);
@@ -183,7 +132,6 @@ export async function getScenarios(deps: any): Promise<any[]> {
 
         let ctx: any | undefined;
 
-        // Outer try/catch protects runner integrity (ADR-0094).
         try {
           ctx = deps.makeScenarioCtx({
             requestId,
@@ -195,11 +143,18 @@ export async function getScenarios(deps: any): Promise<any[]> {
           ctx.set("signup.userId", signupUserId);
           ctx.set("bag", bag);
 
-          // Inner try/catch wraps ONLY handler execution (ADR-0094).
+          // Seed: step 3 outputs (CodePasswordHashHandler).
+          ctx.set("signup.passwordHash", "deadbeefdeadbeefdeadbeefdeadbeef");
+          ctx.set("signup.passwordAlgo", "scrypt");
+          ctx.set(
+            "signup.passwordHashParamsJson",
+            JSON.stringify({ saltHex: "00", keyLen: 64, algo: "scrypt" })
+          );
+          ctx.set("signup.passwordCreatedAt", new Date().toISOString());
+
           try {
             await deps.step.execute(ctx);
 
-            // Assertions MUST NOT throw (ADR-0094).
             const handlerStatus = readHandlerStatus(ctx);
             if (handlerStatus !== "ok") {
               status.recordAssertionFailure(
@@ -215,16 +170,12 @@ export async function getScenarios(deps: any): Promise<any[]> {
             }
 
             assertOkStatus(ctx, status, signupUserId);
-
-            // ✅ Handoff for rollback tests (best-effort ctx + reliable process-local)
-            stashCreatedUserId(ctx, signupUserId);
           } catch (err: any) {
             status.recordInnerCatch(err);
           }
         } catch (err: any) {
           status.recordOuterCatch(err);
         } finally {
-          // Deterministic finalization exactly once (no double-finalize noise).
           TestScenarioFinalizer.finalize({ status, ctx });
         }
 

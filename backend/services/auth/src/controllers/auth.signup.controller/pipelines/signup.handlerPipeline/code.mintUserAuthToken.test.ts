@@ -16,26 +16,13 @@
  *
  * Purpose:
  * - Happy-path handler test for CodeMintUserAuthTokenHandler (ADR-0094 shape).
- * - Scenario executes via deps.step.execute(ctx) so scenario ctx inherits
- *   pipeline runtime ("rt") automatically.
  *
  * Notes:
  * - This handler caches a module-level MintProvider singleton.
- *   That makes "corrupt env var after success" non-deterministic within the
- *   same process, so we do NOT include any env-corruption scenario here.
- *
- * Hard rules:
- * - No ALS / adaptive logging patterns.
- * - No semantics via ctx flags; expectations live in TestScenarioStatus only.
- * - Never log raw JWT values.
+ *   We therefore do not include any env-corruption scenario here.
  *
  * ADR-0095:
  * - Exactly one scenario: HappyPath
- *
- * ADR-0094:
- * - Inner try/catch wraps ONLY handler execution.
- * - Outer try/catch protects runner integrity.
- * - Finalization is deterministic via TestScenarioFinalizer (run exactly once).
  */
 
 import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
@@ -138,7 +125,7 @@ export async function getScenarios(deps: ScenarioDepsLike): Promise<any[]> {
   return [
     {
       id: "HappyPath",
-      name: "auth.signup: mintUserAuthToken mints a JWT (real env-service config)",
+      name: "auth.signup: mintUserAuthToken mints a JWT (env-service config required)",
       shortCircuitOnFail: true,
 
       async run(localDeps: ScenarioDepsLike): Promise<TestScenarioStatus> {
@@ -148,13 +135,12 @@ export async function getScenarios(deps: ScenarioDepsLike): Promise<any[]> {
         const status = createTestScenarioStatus({
           scenarioId: "HappyPath",
           scenarioName:
-            "auth.signup: mintUserAuthToken mints a JWT (real env-service config)",
+            "auth.signup: mintUserAuthToken mints a JWT (env-service config required)",
           expected: "success",
         });
 
         let ctx: any | undefined;
 
-        // Outer try/catch protects runner integrity (ADR-0094).
         try {
           ctx = localDeps.makeScenarioCtx({
             requestId,
@@ -173,11 +159,9 @@ export async function getScenarios(deps: ScenarioDepsLike): Promise<any[]> {
             ok: true,
           } as UserAuthCreateStatus);
 
-          // Inner try/catch wraps ONLY handler execution (ADR-0094).
           try {
             await localDeps.step.execute(ctx);
 
-            // Assertions MUST NOT throw (ADR-0094).
             const hs = readHandlerStatus(ctx);
             if (hs !== "ok") {
               status.recordAssertionFailure(
@@ -192,7 +176,6 @@ export async function getScenarios(deps: ScenarioDepsLike): Promise<any[]> {
               );
             }
 
-            // No raw JWT logging — just validate structure/presence.
             assertJwtMinted(ctx, status);
           } catch (err: any) {
             status.recordInnerCatch(err);
@@ -200,7 +183,6 @@ export async function getScenarios(deps: ScenarioDepsLike): Promise<any[]> {
         } catch (err: any) {
           status.recordOuterCatch(err);
         } finally {
-          // Deterministic finalization exactly once (no double-finalize noise).
           TestScenarioFinalizer.finalize({ status, ctx });
         }
 

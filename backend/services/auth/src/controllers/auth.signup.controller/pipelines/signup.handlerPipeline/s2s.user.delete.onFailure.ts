@@ -6,31 +6,28 @@
  *   - ADR-0040 (DTO-Only Persistence via Managers)
  *   - ADR-0047 (DtoBag & Views)
  *   - ADR-0050 (Wire Bag Envelope)
- *   - ADR-0057 (Shared SvcClient for S2S Calls)
+ *   - ADR-0057 (ID Generation & Validation — UUIDv4 only) [via baton]
  *   - ADR-0063 (Auth Signup MOS Pipeline)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose (single concern):
- * - Compensating transaction for signup: if user.create succeeded but
- *   user-auth.create failed, delete the newly created user record so the
- *   system does not retain an orphan User without credentials.
+ * - Rollback/cleanup delete of the created user record.
  *
- * Invariants:
- * - Auth remains a MOS (no direct DB writes).
- * - This handler never mutates ctx["bag"]; it only calls the user service.
- * - This handler relies on upstream handlers to set:
- *     ctx["signup.userCreateStatus"]      (S2sUserCreateHandler)
- *     ctx["signup.userAuthCreateStatus"]  (S2sUserAuthCreateHandler)
+ * Canonical ID rule:
+ * - Delete MUST use the baton id: ctx["step.uuid"].
+ *   That is the id minted in step #1 and applied to dto._id in step #2.
  *
- * Behavior:
- * - If userCreateStatus.ok !== true → no-op (nothing to roll back).
- * - If pipeline is not in an error state → no-op (nothing to compensate).
- * - If userAuthCreateStatus.ok === true → no-op (no auth failure).
- * - Else:
- *   - Try to delete user via SvcClient.call() using signup.userId.
- *   - Log loudly on success/failure.
- *   - Ensure handlerStatus === "error" and set a Problem+JSON response that
- *     reflects both the auth failure and the rollback result.
+ * Live vs test behavior:
+ * - LIVE: Only executes when ctx["signup.rollbackUserRequired"] === true.
+ *         On execution, it attempts delete then FAILS the pipeline so
+ *         token minting will not run.
+ * - TEST: Always attempts cleanup delete using ctx["step.uuid"].
+ *         If it cannot delete, the test MUST fail (no false greens).
+ *
+ * Outputs (ctx):
+ * - ctx["signup.userDeleteAttempted"] → boolean
+ * - ctx["signup.userDeleteStatus"]    → { ok:true } or { ok:false, code, message }
+ * - ctx["signup.userRolledBack"]      → boolean (legacy-friendly flag)
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -42,21 +39,22 @@ import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 
 type UserBag = DtoBag<UserDto>;
 
-type UserCreateStatus =
-  | { ok: true; userId?: string }
-  | { ok: false; code: string; message: string };
-
-type UserAuthCreateStatus =
+type UserDeleteStatus =
   | { ok: true }
   | { ok: false; code: string; message: string };
 
+function readRunMode(ctx: any): "live" | "test" {
+  const raw = ctx?.get?.("runMode") ?? ctx?.get?.("pipeline.runMode") ?? "live";
+  return raw === "test" ? "test" : "live";
+}
+
 export class S2sUserDeleteOnFailureHandler extends HandlerBase {
-  constructor(ctx: HandlerContext, controller: ControllerBase) {
+  public constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }
 
   protected handlerPurpose(): string {
-    return "Compensating transaction: delete the created User when user-auth.create fails during signup.";
+    return "Rollback/cleanup: delete the created User using ctx['step.uuid'] (baton).";
   }
 
   protected handlerName(): string {
@@ -64,8 +62,10 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
   }
 
   /**
-   * This is a compensating handler.
-   * It MUST be allowed to run after the pipeline has entered an error state.
+   * This is a compensating/cleanup handler.
+   * It MUST be allowed to run after the pipeline has entered an error state,
+   * and in this design it may also be invoked while the pipeline rail is still ok
+   * (soft-fail from step #5).
    */
   protected override canRunAfterError(): boolean {
     return true;
@@ -73,210 +73,210 @@ export class S2sUserDeleteOnFailureHandler extends HandlerBase {
 
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
+    const runMode = readRunMode(this.ctx as any);
 
-    const status = this.safeCtxGet<number>("status");
-    const handlerStatus = this.safeCtxGet<string>("handlerStatus");
+    // One-flag contract from step #5:
+    const rollbackRequired =
+      this.safeCtxGet<boolean>("signup.rollbackUserRequired") === true;
 
-    const priorFailure =
-      (typeof status === "number" && status >= 400) ||
-      handlerStatus === "error";
+    // Canonical delete id: baton
+    const stepUuid = this.safeCtxGet<string>("step.uuid");
 
-    if (!priorFailure) {
-      this.log.debug(
-        {
-          event: "rollback_skip_no_failure",
-          requestId,
-          status: status ?? null,
-          handlerStatus: handlerStatus ?? "ok",
-        },
-        "auth.signup.rollbackUserOnAuthCreateFailure: pipeline not in error state — no rollback"
-      );
-      return;
-    }
-
-    const userCreateStatus = this.safeCtxGet<UserCreateStatus>(
-      "signup.userCreateStatus"
-    );
-    const userAuthCreateStatus = this.safeCtxGet<UserAuthCreateStatus>(
-      "signup.userAuthCreateStatus"
-    );
-    const signupUserId = this.safeCtxGet<string>("signup.userId");
-
-    if (!userCreateStatus || userCreateStatus.ok !== true) {
-      this.log.debug(
-        {
-          event: "rollback_skip_user_not_created",
-          requestId,
-          hasUserCreateStatus: !!userCreateStatus,
-          userCreateOk: userCreateStatus?.ok ?? null,
-        },
-        "auth.signup.rollbackUserOnAuthCreateFailure: userCreateStatus not successful — no rollback"
-      );
-      return;
-    }
-
-    if (userAuthCreateStatus && userAuthCreateStatus.ok === true) {
-      this.log.debug(
-        { event: "rollback_skip_auth_ok", requestId },
-        "auth.signup.rollbackUserOnAuthCreateFailure: userAuthCreateStatus.ok === true — no rollback"
-      );
-      return;
-    }
-
-    if (!signupUserId || signupUserId.trim().length === 0) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "auth_signup_rollback_user_missing_id",
-        detail:
-          "Auth signup detected a downstream failure after user.create succeeded, " +
-          "but ctx['signup.userId'] was missing or empty. Ops: the user record may exist without " +
-          "credentials; inspect the user service for orphaned records and correct manually.",
-        stage: "rollback.user_id_missing",
-        requestId,
-        origin: { file: __filename, method: "execute" },
-        issues: [{ hasSignupUserId: !!signupUserId }],
-        logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: missing signup.userId; cannot safely rollback user",
-        logLevel: "error",
-      });
-      return;
-    }
-
-    const userBag = this.safeCtxGet<UserBag>("bag");
-    if (!userBag) {
-      this.failWithError({
-        httpStatus: 500,
-        title: "auth_signup_rollback_user_bag_missing",
-        detail:
-          "Auth signup attempted to rollback a previously created user after auth failure, " +
-          "but ctx['bag'] did not contain the expected DtoBag<UserDto>. " +
-          "Ops: the user record may exist without credentials; inspect the user service for " +
-          "orphaned records and correct manually.",
-        stage: "rollback.user_bag_missing",
-        requestId,
-        origin: { file: __filename, method: "execute" },
-        issues: [{ hasUserBag: !!userBag, userId: signupUserId }],
-        logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: ctx['bag'] missing; cannot call user.delete safely",
-        logLevel: "error",
-      });
-      return;
-    }
+    // Optional bag (some delete endpoints may ignore it; id is the real contract)
+    const userBag = this.safeCtxGet<UserBag>("bag") as UserBag | undefined;
 
     const env = (this.rt.getEnv() ?? "").trim();
+
+    let svcClient: SvcClient | undefined;
+    try {
+      svcClient = this.rt.tryCap<SvcClient>("s2s.svcClient");
+    } catch {
+      svcClient = undefined;
+    }
+
+    // Defaults
+    this.ctx.set("signup.userDeleteAttempted", false);
+    this.ctx.set("signup.userRolledBack", false);
+
+    // ───────────────────────────────────────────
+    // LIVE: only run if rollbackRequired===true
+    // ───────────────────────────────────────────
+    if (runMode === "live" && !rollbackRequired) {
+      this.ctx.set("handlerStatus", "ok");
+      return;
+    }
+
+    // ───────────────────────────────────────────
+    // Preconditions for delete (LIVE rollback or TEST cleanup)
+    // ───────────────────────────────────────────
+    if (!stepUuid || stepUuid.trim().length === 0) {
+      this.ctx.set("signup.userDeleteStatus", {
+        ok: false,
+        code: "AUTH_USER_DELETE_STEP_UUID_MISSING",
+        message: "Delete required but ctx['step.uuid'] was missing or empty.",
+      } satisfies UserDeleteStatus);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_user_delete_step_uuid_missing",
+        detail:
+          "User delete/rollback required but ctx['step.uuid'] was missing/empty. " +
+          "Dev: ensure code.mint.uuid runs at rung #1 and writes ctx['step.uuid'], and code.set.dtoId consumes it at rung #2.",
+        stage: "delete.preconditions.step_uuid_missing",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasStepUuid: !!stepUuid, runMode, rollbackRequired }],
+        logMessage:
+          "auth.signup.s2s.user.delete.onFailure: missing step.uuid; cannot delete deterministically.",
+        logLevel: "error",
+      });
+      return;
+    }
+
     if (!env) {
+      this.ctx.set("signup.userDeleteStatus", {
+        ok: false,
+        code: "AUTH_USER_DELETE_ENV_EMPTY",
+        message: "Delete required but rt.getEnv() returned empty.",
+      } satisfies UserDeleteStatus);
+
       this.failWithError({
         httpStatus: 500,
-        title: "auth_signup_rollback_env_empty",
+        title: "auth_user_delete_env_empty",
         detail:
-          "Auth signup attempted to rollback a previously created user after auth failure, " +
-          "but rt.getEnv() returned an empty environment. Ops: verify env-service configuration for this service.",
-        stage: "rollback.env_empty",
+          "User delete/rollback required but rt.getEnv() returned empty. " +
+          "Ops: ensure env-service config is loaded for this service runtime.",
+        stage: "delete.preconditions.env_empty",
         requestId,
         origin: { file: __filename, method: "execute" },
-        issues: [{ env: env ?? null }],
+        issues: [{ env: env ?? null, runMode, rollbackRequired }],
         logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: rt.getEnv() returned empty env",
+          "auth.signup.s2s.user.delete.onFailure: rt.getEnv() empty; cannot call user.delete.",
         logLevel: "error",
       });
       return;
     }
 
-    const svcClient = this.rt.tryCap<SvcClient>("s2s.svcClient");
     if (!svcClient || typeof (svcClient as any).call !== "function") {
+      this.ctx.set("signup.userDeleteStatus", {
+        ok: false,
+        code: "AUTH_USER_DELETE_SVCCLIENT_MISSING",
+        message: 'Delete required but rt cap "s2s.svcClient" was missing.',
+      } satisfies UserDeleteStatus);
+
       this.failWithError({
         httpStatus: 500,
-        title: "auth_signup_rollback_svcclient_cap_missing",
+        title: "auth_user_delete_svcclient_missing",
         detail:
-          'Auth signup rollback requires SvcRuntime capability "s2s.svcClient" to call user.delete. ' +
-          "Dev/Ops: ensure AppBase wires the cap under the canonical key so rollback handlers can run deterministically.",
-        stage: "rollback.cap.s2s.svcClient",
+          'User delete/rollback required but SvcRuntime capability "s2s.svcClient" was missing. ' +
+          "Dev/Ops: wire the canonical cap so rollback/cleanup can run deterministically.",
+        stage: "delete.preconditions.cap_missing",
         requestId,
         origin: { file: __filename, method: "execute" },
-        issues: [{ hasSvcClient: !!svcClient }],
+        issues: [{ hasSvcClient: !!svcClient, runMode, rollbackRequired }],
         logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: missing rt cap s2s.svcClient during rollback",
+          "auth.signup.s2s.user.delete.onFailure: missing s2s.svcClient; cannot delete.",
         logLevel: "error",
       });
       return;
     }
 
-    this.log.info(
-      { event: "rollback_begin", requestId, env, userId: signupUserId },
-      "auth.signup.rollbackUserOnAuthCreateFailure: attempting compensating user.delete"
-    );
+    // ───────────────────────────────────────────
+    // Attempt delete (LIVE rollback or TEST cleanup)
+    // ───────────────────────────────────────────
+    this.ctx.set("signup.userDeleteAttempted", true);
 
     try {
-      const _wire = await svcClient.call({
+      await svcClient.call({
         env,
         slug: "user",
         version: 1,
         dtoType: "user",
         op: "delete",
         method: "DELETE",
-        id: signupUserId,
-        bag: userBag,
+        id: stepUuid,
+        ...(userBag ? { bag: userBag } : {}),
         requestId,
-      });
-      void _wire;
+      } as any);
 
       this.ctx.set("signup.userRolledBack", true);
+      this.ctx.set("signup.userDeleteStatus", {
+        ok: true,
+      } satisfies UserDeleteStatus);
 
-      this.log.info(
-        { event: "rollback_ok", requestId, env, userId: signupUserId },
-        "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback succeeded"
-      );
+      // TEST: cleanup succeeded → ok
+      if (runMode === "test") {
+        this.ctx.set("handlerStatus", "ok");
+        return;
+      }
 
-      // Keep pipeline in error state; we are compensating, not "fixing" the request.
+      // LIVE: rollback succeeded → NOW we hard-fail the pipeline so token minting does not run.
       this.failWithError({
         httpStatus: 502,
         title: "auth_signup_userauth_failed_user_rolled_back",
         detail:
-          "Auth signup failed while creating user-auth credentials, but the previously " +
-          "created user record was rolled back via user.delete. " +
-          "Ops: inspect user-auth logs and confirm no orphaned auth records exist for this userId.",
+          "Auth signup failed while creating user-auth credentials, but the created user was rolled back via user.delete. " +
+          "Ops: inspect user-auth logs; user record should not exist for the baton id.",
         stage: "rollback.user_delete_ok",
         requestId,
         origin: { file: __filename, method: "execute" },
-        issues: [{ env, userId: signupUserId, userRolledBack: true }],
+        issues: [{ env, rolledBack: true, userId: stepUuid }],
         logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: auth failure + successful user rollback",
+          "auth.signup.s2s.user.delete.onFailure: rollback delete OK; failing pipeline to prevent token mint.",
         logLevel: "error",
       });
+      return;
     } catch (err) {
       const message =
         err instanceof Error ? err.message : String(err ?? "Unknown error");
 
       this.ctx.set("signup.userRolledBack", false);
+      this.ctx.set("signup.userDeleteStatus", {
+        ok: false,
+        code:
+          runMode === "test"
+            ? "AUTH_TEST_USER_DELETE_FAILED"
+            : "AUTH_SIGNUP_ROLLBACK_USER_DELETE_FAILED",
+        message,
+      } satisfies UserDeleteStatus);
 
-      this.log.error(
-        {
-          event: "rollback_error",
+      // TEST must fail (no false greens)
+      if (runMode === "test") {
+        this.failWithError({
+          httpStatus: 500,
+          title: "auth_test_user_delete_failed",
+          detail:
+            "Test cleanup delete attempted but failed. This would leave stray user records and produce false positives. " +
+            "Ops: check user service health/routing; Dev: ensure svcClient and env are correctly wired for tests.",
+          stage: "test.cleanup.delete_failed",
           requestId,
-          env,
-          userId: signupUserId,
-          error: message,
-        },
-        "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback FAILED"
-      );
+          origin: { file: __filename, method: "execute" },
+          issues: [{ env, userId: stepUuid }],
+          rawError: err,
+          logMessage:
+            "auth.test.s2s.user.delete.onFailure: cleanup delete FAILED (test must fail).",
+          logLevel: "error",
+        });
+        return;
+      }
 
+      // LIVE rollback failure → fail pipeline loudly
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_userauth_failed_user_rollback_failed",
         detail:
-          "Auth signup failed while creating user-auth credentials, and an attempt to " +
-          "rollback the previously created user record via user.delete also failed. " +
-          "Ops: the system may now contain a User without credentials; inspect user and " +
-          "user-auth services for inconsistencies and correct manually.",
+          "Auth signup failed while creating user-auth credentials, and an attempt to rollback the created user via user.delete also failed. " +
+          "Ops: system may contain a User without credentials; inspect user and user-auth services and correct manually.",
         stage: "rollback.user_delete_failed",
         requestId,
         origin: { file: __filename, method: "execute" },
-        issues: [{ env, userId: signupUserId, userRolledBack: false }],
+        issues: [{ env, userId: stepUuid, rolledBack: false }],
         rawError: err,
         logMessage:
-          "auth.signup.rollbackUserOnAuthCreateFailure: user.delete rollback FAILED",
+          "auth.signup.s2s.user.delete.onFailure: rollback delete FAILED.",
         logLevel: "error",
       });
+      return;
     }
   }
 }

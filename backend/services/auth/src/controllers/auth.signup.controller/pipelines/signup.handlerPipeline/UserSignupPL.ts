@@ -9,18 +9,6 @@
  *
  * Purpose:
  * - Domain-named pipeline for Auth Signup (dtoType="user").
- *
- * Ladder rule (this refactor):
- * - Add one rung at a time: get green, then add the next rung.
- *
- * Readability rule:
- * - buildPlan() is a list of private step factory functions.
- * - Each function name is camelCased from handlerName.
- *
- * ADR-0101 seeding defaults:
- * - If a step omits seeding entirely, rails treat it as:
- *     seedName = "noop"
- *     seedSpec = {}
  */
 
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
@@ -37,6 +25,11 @@ import { AuthSignupController } from "../../auth.signup.controller";
 
 import { CodeMintUuidHandler } from "@nv/shared/http/handlers/code.mint.uuid";
 import { CodeSetDtoIdHandler } from "@nv/shared/http/handlers/code.set.dtoId";
+import { CodePasswordHashHandler } from "./code.passwordHash";
+import { S2sUserCreateHandler } from "./s2s.user.create";
+import { S2sUserAuthCreateHandler } from "./s2s.userAuth.create";
+import { CodeMintUserAuthTokenHandler } from "./code.mintUserAuthToken";
+import { S2sUserDeleteOnFailureHandler } from "./s2s.user.delete.onFailure";
 
 export class UserSignupPL extends PipelineBase {
   public override pipelineName(): string {
@@ -49,17 +42,33 @@ export class UserSignupPL extends PipelineBase {
 
   protected override buildPlan(): StepDefTest[] {
     return [
-      // RUNG #1: mint baton uuid
+      // RUNG #1: mint baton uuid (ctx["step.uuid"])
       this.codeMintUuid(),
 
-      // RUNG #2: apply baton uuid onto dto._id (no seeding required; baton already exists)
+      // RUNG #2: apply baton uuid onto dto._id
       this.codeSetDtoId(),
+
+      // RUNG #3: hash password from inbound header
+      this.codePasswordHash(),
+
+      // RUNG #4: call user.create with hydrated bag
+      this.s2sUserCreate(),
+
+      // RUNG #5: persist credentials via user-auth worker
+      // IMPORTANT: on failure this step sets ctx["signup.rollbackUserRequired"]=true
+      // and keeps the pipeline rail "ok" so rollback can run.
+      this.s2sUserAuthCreate(),
+
+      // RUNG #6: rollback/delete (LIVE: only when rollbackUserRequired===true)
+      // TEST: always cleanup delete using ctx["step.uuid"].
+      // This step sets the general pipeline rail to "error" when rollback was required,
+      // preventing token minting from running.
+      this.s2sUserDeleteOnFailure(),
+
+      // RUNG #7: mint client auth JWT (no-op unless rung #4 and #5 both ok)
+      this.codeMintUserAuthToken(),
     ];
   }
-
-  // ───────────────────────────────────────────
-  // Steps (camelCased from handlerName)
-  // ───────────────────────────────────────────
 
   private codeMintUuid(): StepDefTest {
     return {
@@ -73,6 +82,46 @@ export class UserSignupPL extends PipelineBase {
     return {
       handlerName: "code.set.dtoId",
       handlerCtor: CodeSetDtoIdHandler,
+      expectedTestName: "default",
+    };
+  }
+
+  private codePasswordHash(): StepDefTest {
+    return {
+      handlerName: "code.passwordHash",
+      handlerCtor: CodePasswordHashHandler,
+      expectedTestName: "default",
+    };
+  }
+
+  private s2sUserCreate(): StepDefTest {
+    return {
+      handlerName: "s2s.user.create",
+      handlerCtor: S2sUserCreateHandler,
+      expectedTestName: "default",
+    };
+  }
+
+  private s2sUserAuthCreate(): StepDefTest {
+    return {
+      handlerName: "s2s.userAuth.create",
+      handlerCtor: S2sUserAuthCreateHandler,
+      expectedTestName: "default",
+    };
+  }
+
+  private s2sUserDeleteOnFailure(): StepDefTest {
+    return {
+      handlerName: "s2s.user.delete.onFailure",
+      handlerCtor: S2sUserDeleteOnFailureHandler,
+      expectedTestName: "default",
+    };
+  }
+
+  private codeMintUserAuthToken(): StepDefTest {
+    return {
+      handlerName: "code.mintUserAuthToken",
+      handlerCtor: CodeMintUserAuthTokenHandler,
       expectedTestName: "default",
     };
   }

@@ -7,20 +7,20 @@
  * - ADR-0066 (Password Hashing & Credential Storage) // (future ADR slot)
  *
  * Purpose:
- * - Take the cleartext password extracted earlier in the pipeline and derive:
+ * - Pull the cleartext password from the inbound HTTP header (controller-owned),
+ *   derive:
  *   • A cryptographically strong random salt
  *   • A password hash derived from (password, salt)
  *   • Algo + params metadata suitable for UserAuthDto.hashAlgo/hashParamsJson
- * - Store all values into the HandlerContext for downstream handlers that will
- *   construct and persist a UserAuthDto in the auth storage worker.
+ * - Store only hashed credential outputs into ctx for downstream handlers.
  *
  * Invariants:
  * - Never log the cleartext password.
- * - Never store the cleartext password in ctx once hashing is complete.
+ * - Never store the cleartext password in ctx.
  * - On success, ctx contains:
- *   • ctx["signup.hash"]
- *   • ctx["signup.hashAlgo"]
- *   • ctx["signup.hashParamsJson"]
+ *   • ctx["signup.passwordHash"]
+ *   • ctx["signup.passwordAlgo"]
+ *   • ctx["signup.passwordHashParamsJson"]
  *   • ctx["signup.passwordCreatedAt"]
  *
  * Testing (dist-first sidecar):
@@ -39,13 +39,15 @@ type ScryptFn = (
   keylen: number
 ) => Buffer;
 
+type HeaderReader = (name: string) => string | undefined;
+
 export class CodePasswordHashHandler extends HandlerBase {
-  constructor(ctx: HandlerContext, controller: ControllerBase) {
+  public constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }
 
   protected handlerPurpose(): string {
-    return "Derive a password hash, salt, and metadata from a cleartext signup password and stash only the hashed credentials on the context.";
+    return "Derive a password hash, salt, and metadata from the inbound signup password header and stash only the hashed credentials on the context.";
   }
 
   protected override handlerName(): string {
@@ -55,133 +57,134 @@ export class CodePasswordHashHandler extends HandlerBase {
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
 
-    this.log.debug(
-      { event: "execute_enter", handler: this.constructor.name, requestId },
-      "auth.signup.generatePasswordHash: enter handler"
-    );
+    const headerName = "x-nv-password";
+    const passwordClear = this.readHeader(headerName);
 
-    try {
-      const passwordClear =
-        this.safeCtxGet<string>("signup.passwordClear") ?? undefined;
-
-      if (!passwordClear) {
-        this.failWithError({
-          httpStatus: 500,
-          title: "auth_signup_missing_password",
-          detail:
-            "Auth signup pipeline expected ctx['signup.passwordClear'] to contain the cleartext password before hashing. " +
-            "Dev: ensure CodeExtractPasswordHandler ran and stored the password under ctx['signup.passwordClear'].",
-          stage: "inputs.passwordClear",
-          requestId,
-          origin: { file: __filename, method: "execute" },
-          issues: [{ hasPasswordClear: !!passwordClear }],
-          logMessage:
-            "auth.signup.generatePasswordHash: ctx['signup.passwordClear'] missing before hashing.",
-          logLevel: "error",
-        });
-        return;
-      }
-
-      this.log.debug(
-        { event: "hash_start", handler: this.constructor.name, requestId },
-        "auth.signup.generatePasswordHash: deriving salt and hash"
-      );
-
-      try {
-        // Optional injectable hash function, primarily for tests.
-        const injectedFn = this.ctx.get<ScryptFn>(
-          "signup.passwordHashFn" as any
-        );
-        const scryptFn: ScryptFn =
-          injectedFn && typeof injectedFn === "function"
-            ? injectedFn
-            : crypto.scryptSync;
-
-        // 16 bytes of random salt, hex-encoded.
-        const saltBytes = crypto.randomBytes(16);
-        const saltHex = saltBytes.toString("hex");
-
-        // Derive a key using scrypt. Parameters are fixed so behavior is identical across envs.
-        const keyLen = 64;
-        const key = scryptFn(passwordClear, saltHex, keyLen);
-        const hashHex = key.toString("hex");
-
-        const hashAlgo = "scrypt";
-        const passwordCreatedAt = new Date().toISOString();
-
-        const hashParams = {
-          saltHex,
-          keyLen,
-          algo: hashAlgo,
-        };
-
-        const hashParamsJson = JSON.stringify(hashParams);
-
-        // Store results for downstream handlers.
-        this.ctx.set("signup.hash", hashHex);
-        this.ctx.set("signup.hashAlgo", hashAlgo);
-        this.ctx.set("signup.hashParamsJson", hashParamsJson);
-        this.ctx.set("signup.passwordCreatedAt", passwordCreatedAt);
-
-        // Clear the cleartext password to reduce blast radius.
-        this.ctx.set("signup.passwordClear", undefined);
-
-        this.log.info(
-          {
-            event: "hash_complete",
-            handler: this.constructor.name,
-            requestId,
-            algo: hashAlgo,
-            keyLen,
-          },
-          "auth.signup.generatePasswordHash: password hash and metadata derived"
-        );
-
-        this.ctx.set("handlerStatus", "ok");
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : String(err ?? "Unknown error");
-
-        this.failWithError({
-          httpStatus: 500,
-          title: "auth_signup_hash_failed",
-          detail:
-            "Auth signup failed while hashing the supplied password. " +
-            "Ops: check Node crypto availability and container entropy sources.",
-          stage: "hash.derive",
-          requestId,
-          origin: { file: __filename, method: "execute" },
-          issues: [{ algo: "scrypt", keyLen: 64, message }],
-          rawError: err,
-          logMessage:
-            "auth.signup.generatePasswordHash: scrypt-based password hashing failed.",
-          logLevel: "error",
-        });
-      }
-    } catch (err) {
+    if (!passwordClear) {
       this.failWithError({
-        httpStatus: 500,
-        title: "auth_signup_hash_handler_failure",
-        detail:
-          "Unhandled exception while deriving the password hash. Ops: inspect logs for requestId and stack frame.",
-        stage: "execute.unhandled",
+        httpStatus: 400,
+        title: "auth_signup_missing_password_header",
+        detail: `Auth signup requires a cleartext password header. Missing or empty header: "${headerName}".`,
+        stage: "inputs.passwordHeader",
         requestId,
         origin: { file: __filename, method: "execute" },
-        rawError: err,
-        logMessage:
-          "auth.signup.generatePasswordHash: unhandled exception in handler.",
-        logLevel: "error",
+        issues: [{ headerName, hasValue: false }],
+        logMessage: `auth.signup.passwordHash: missing or empty password header "${headerName}".`,
+        logLevel: "warn",
       });
+      return;
     }
 
-    this.log.debug(
-      {
-        event: "execute_end",
-        handler: this.constructor.name,
+    // Optional injectable hash function, primarily for tests.
+    const injectedFn = this.ctx.get<ScryptFn>("signup.passwordHashFn" as any);
+    const scryptFn: ScryptFn =
+      injectedFn && typeof injectedFn === "function"
+        ? injectedFn
+        : crypto.scryptSync;
+
+    // 16 bytes of random salt, hex-encoded.
+    const saltHex = crypto.randomBytes(16).toString("hex");
+
+    // Derive a key using scrypt. Parameters are fixed so behavior is identical across envs.
+    const keyLen = 64;
+
+    let hashHex: string;
+    try {
+      const key = scryptFn(passwordClear, saltHex, keyLen);
+      hashHex = key.toString("hex");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err ?? "Unknown error");
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_hash_failed",
+        detail:
+          "Auth signup failed while hashing the supplied password. Ops: check Node crypto availability and container entropy sources.",
+        stage: "hash.derive",
         requestId,
-        handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "ok",
-      },
-      "auth.signup.generatePasswordHash: exit handler"
-    );
+        origin: { file: __filename, method: "execute" },
+        issues: [{ algo: "scrypt", keyLen, message }],
+        rawError: err,
+        logMessage: "auth.signup.passwordHash: password hashing failed.",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    const hashAlgo = "scrypt";
+    const passwordCreatedAt = new Date().toISOString();
+
+    const hashParamsJson = JSON.stringify({
+      saltHex,
+      keyLen,
+      algo: hashAlgo,
+    });
+
+    // Store results for downstream handlers.
+    this.ctx.set("signup.passwordHash", hashHex);
+    this.ctx.set("signup.passwordAlgo", hashAlgo);
+    this.ctx.set("signup.passwordHashParamsJson", hashParamsJson);
+    this.ctx.set("signup.passwordCreatedAt", passwordCreatedAt);
+
+    // Critical: never stash cleartext.
+    // (Nothing to clear because we never stored it.)
+
+    this.ctx.set("handlerStatus", "ok");
+  }
+
+  /**
+   * Controller-first header read.
+   *
+   * Contract:
+   * - Handler may read request-only metadata/secrets directly from controller
+   *   when no upstream handler could reasonably produce it.
+   * - This must remain controller-owned (no direct Express req usage here).
+   */
+  private readHeader(name: string): string | undefined {
+    const reader = this.resolveHeaderReader();
+    const raw = reader(name);
+    const v = typeof raw === "string" ? raw.trim() : "";
+    return v ? v : undefined;
+  }
+
+  private resolveHeaderReader(): HeaderReader {
+    const c: any = this.controller as any;
+
+    // Preferred controller contracts (case-insensitive behavior belongs to controller).
+    if (c && typeof c.tryHeader === "function") {
+      return (name: string) => c.tryHeader(name);
+    }
+    if (c && typeof c.getHeader === "function") {
+      return (name: string) => {
+        try {
+          return c.getHeader(name);
+        } catch {
+          return undefined;
+        }
+      };
+    }
+    if (c && typeof c.header === "function") {
+      return (name: string) => c.header(name);
+    }
+
+    // Last-resort test compatibility: some runners stash headers onto ctx.
+    // This is NOT a production contract; it exists to keep tests deterministic.
+    return (name: string) => {
+      const mapA = this.ctx.get<Record<string, any>>("http.headers" as any);
+      const mapB = this.ctx.get<Record<string, any>>("headers" as any);
+      const map = mapA && typeof mapA === "object" ? mapA : mapB;
+
+      if (!map || typeof map !== "object") return undefined;
+
+      const lower = name.toLowerCase();
+      for (const k of Object.keys(map)) {
+        if (String(k).toLowerCase() === lower) {
+          const v = map[k];
+          return typeof v === "string" ? v : String(v ?? "");
+        }
+      }
+      return undefined;
+    };
   }
 }

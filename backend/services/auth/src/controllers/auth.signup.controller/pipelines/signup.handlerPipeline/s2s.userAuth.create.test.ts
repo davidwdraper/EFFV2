@@ -14,13 +14,9 @@
  *
  * Purpose:
  * - Happy-path smoke test for S2sUserAuthCreateHandler:
- *   - calls user-auth.create using signup auth ctx keys
+ *   - uses signup auth ctx keys produced by CodePasswordHashHandler
+ *   - calls user-auth.create via SvcClient
  *   - writes ctx["signup.userAuthCreateStatus"] with ok=true
- *
- * IMPORTANT:
- * - Runner-shaped module: scenarios execute via deps.step.execute(ctx)
- *   so the scenario ctx inherits pipeline runtime ("rt") automatically.
- * - No expectErrors, no ALS semantics, no log downgrades.
  *
  * ADR-0095:
  * - Exactly one scenario: HappyPath
@@ -33,76 +29,13 @@
  * - Finalization is deterministic via TestScenarioFinalizer (run exactly once).
  */
 
-import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { UserDto } from "@nv/shared/dto/user.dto";
-import type { UserAuthDto } from "@nv/shared/dto/user-auth.dto";
-import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
-import { UserDtoRegistry as UserDtoRegistryCtor } from "@nv/shared/dto/registry/user.dtoRegistry";
-import { UserAuthDtoRegistry as UserAuthDtoRegistryCtor } from "@nv/shared/dto/registry/user-auth.dtoRegistry";
-import { newUuid } from "@nv/shared/utils/uuid";
-
 import { createTestScenarioStatus } from "@nv/shared/testing/createTestScenarioStatus";
 import type { TestScenarioStatus } from "@nv/shared/testing/TestScenarioStatus";
 import { TestScenarioFinalizer } from "@nv/shared/testing/TestScenarioFinalizer";
 
-type UserBag = DtoBag<UserDto>;
-
 type UserAuthCreateStatus =
   | { ok: true }
   | { ok: false; code: string; message: string };
-
-// ───────────────────────────────────────────
-// DTO/bag helpers
-// ───────────────────────────────────────────
-
-/**
- * Pipeline invariant:
- * - Edge response bag stays UserDto bag; handler never overwrites ctx["bag"].
- */
-function buildUserBag(
-  signupUserId: string,
-  requestId: string,
-  mutate?: (dto: UserDto) => void
-): UserBag {
-  const registry = new UserDtoRegistryCtor();
-
-  // ✅ Registry-minted happy DTO (sidecar JSON hydrated + validated + collection seeded)
-  const dto = registry.getTestDto("happy") as unknown as UserDto;
-
-  if (mutate) mutate(dto);
-
-  // Match pipeline behavior: canonical UUIDv4 id applied once.
-  dto.setIdOnce?.(signupUserId);
-
-  const { bag } = BagBuilder.fromDtos([dto], {
-    requestId,
-    limit: 1,
-    total: 1,
-    cursor: null,
-  });
-
-  return bag as UserBag;
-}
-
-/**
- * Mint a UserAuthDto for test-data seeding.
- * - Use sidecar-hydrated values to avoid drift.
- */
-function mintUserAuthDto(
-  signupUserId: string,
-  mutate?: (dto: UserAuthDto) => void
-): UserAuthDto {
-  const registry = new UserAuthDtoRegistryCtor();
-
-  // ✅ Registry-minted happy DTO (sidecar JSON hydrated + validated + collection seeded)
-  const dto = registry.getTestDto("happy") as unknown as UserAuthDto;
-
-  // Most auth records are 1:1 with userId; keep it aligned.
-  (dto as any).setUserId?.(signupUserId);
-
-  if (mutate) mutate(dto);
-  return dto;
-}
 
 function readHttpStatus(ctx: any): number {
   const v = ctx.get("response.status") ?? ctx.get("status") ?? 200;
@@ -127,29 +60,6 @@ function assertOkStatus(ctx: any, status: TestScenarioStatus): void {
   }
 }
 
-function extractAuthSeed(authDto: UserAuthDto): {
-  hash?: string;
-  hashAlgo?: string;
-  hashParamsJson?: string;
-  passwordCreatedAt?: string;
-} {
-  const body: any =
-    authDto && typeof (authDto as any).toBody === "function"
-      ? (authDto as any).toBody()
-      : {};
-
-  return {
-    hash: body?.hash,
-    hashAlgo: body?.hashAlgo,
-    hashParamsJson: body?.hashParamsJson,
-    passwordCreatedAt: body?.passwordCreatedAt,
-  };
-}
-
-// ───────────────────────────────────────────
-// ScenarioRunner entrypoint
-// ───────────────────────────────────────────
-
 export async function getScenarios(deps: any): Promise<any[]> {
   return [
     {
@@ -159,19 +69,7 @@ export async function getScenarios(deps: any): Promise<any[]> {
 
       async run(): Promise<TestScenarioStatus> {
         const requestId = "req-auth-s2s-userauth-create-happy";
-        const signupUserId = newUuid();
-
-        const bag = buildUserBag(signupUserId, requestId, (dto) => {
-          dto.setGivenName?.("Auth");
-          dto.setLastName?.("UserAuthCreate");
-          dto.setEmail?.(
-            `auth.s2s.userauth.create+${signupUserId}@example.com`
-          );
-        });
-
-        // ✅ Mint auth test DTO and seed ctx from its sidecar-hydrated values.
-        const authDto = mintUserAuthDto(signupUserId);
-        const seed = extractAuthSeed(authDto);
+        const signupUserId = "00000000-0000-4000-8000-000000000001"; // stable for this unit-ish test
 
         const status = createTestScenarioStatus({
           scenarioId: "HappyPath",
@@ -182,7 +80,6 @@ export async function getScenarios(deps: any): Promise<any[]> {
 
         let ctx: any | undefined;
 
-        // Outer try/catch protects runner integrity (ADR-0094).
         try {
           ctx = deps.makeScenarioCtx({
             requestId,
@@ -194,22 +91,19 @@ export async function getScenarios(deps: any): Promise<any[]> {
 
           // Required handler inputs
           ctx.set("signup.userId", signupUserId);
-          ctx.set("bag", bag);
 
-          // Seed signup auth fields (no Date.now, no drift-y fixtures).
-          if (seed.hash !== undefined) ctx.set("signup.hash", seed.hash);
-          if (seed.hashAlgo !== undefined)
-            ctx.set("signup.hashAlgo", seed.hashAlgo);
-          if (seed.hashParamsJson !== undefined)
-            ctx.set("signup.hashParamsJson", seed.hashParamsJson);
-          if (seed.passwordCreatedAt !== undefined)
-            ctx.set("signup.passwordCreatedAt", seed.passwordCreatedAt);
+          // Seed: step 3 outputs (CodePasswordHashHandler)
+          ctx.set("signup.passwordHash", "deadbeefdeadbeefdeadbeefdeadbeef");
+          ctx.set("signup.passwordAlgo", "scrypt");
+          ctx.set(
+            "signup.passwordHashParamsJson",
+            JSON.stringify({ saltHex: "00", keyLen: 64, algo: "scrypt" })
+          );
+          ctx.set("signup.passwordCreatedAt", new Date().toISOString());
 
-          // Inner try/catch wraps ONLY handler execution (ADR-0094).
           try {
             await deps.step.execute(ctx);
 
-            // Assertions MUST NOT throw (ADR-0094).
             const handlerStatus = readHandlerStatus(ctx);
             if (handlerStatus !== "ok") {
               status.recordAssertionFailure(
@@ -225,17 +119,26 @@ export async function getScenarios(deps: any): Promise<any[]> {
             }
 
             assertOkStatus(ctx, status);
+
+            // Invariant: handler must not overwrite the edge bag
+            const bag = ctx.get("bag");
+            if (typeof bag !== "undefined") {
+              // This handler should not be touching ctx["bag"] at all; keep it absent in this test.
+              // If your runner always seeds bag, remove this assertion.
+              status.recordAssertionFailure(
+                'Expected ctx["bag"] to remain untouched/absent in this isolated handler test.'
+              );
+            }
           } catch (err: any) {
             status.recordInnerCatch(err);
           }
         } catch (err: any) {
           status.recordOuterCatch(err);
         } finally {
-          // Deterministic finalization exactly once (no double-finalize noise).
           TestScenarioFinalizer.finalize({ status, ctx });
         }
 
-        return status;
+        return status; // unconditional return (TS2355 guard)
       },
     },
   ];

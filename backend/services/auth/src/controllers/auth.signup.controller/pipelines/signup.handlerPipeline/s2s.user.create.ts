@@ -14,6 +14,8 @@
  * Purpose:
  * - Use the hydrated DtoBag<UserDto> from ctx["bag"] to call the `user`
  *   service's `create` operation via SvcClient.call().
+ * - Requires the hashed password outputs from CodePasswordHashHandler to be present
+ *   (pipeline ordering invariant), even though this handler does not mutate the bag.
  * - On success, the existing ctx["bag"] remains the MOS edge view; this handler
  *   MUST NOT reassign ctx["bag"] (hydrate is the sole writer).
  *
@@ -41,18 +43,11 @@ import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 type UserBag = DtoBag<UserDto>;
 
 type UserCreateStatus =
-  | {
-      ok: true;
-      userId?: string;
-    }
-  | {
-      ok: false;
-      code: string;
-      message: string;
-    };
+  | { ok: true; userId?: string }
+  | { ok: false; code: string; message: string };
 
 export class S2sUserCreateHandler extends HandlerBase {
-  constructor(ctx: HandlerContext, controller: ControllerBase) {
+  public constructor(ctx: HandlerContext, controller: ControllerBase) {
     super(ctx, controller);
   }
 
@@ -67,244 +62,219 @@ export class S2sUserCreateHandler extends HandlerBase {
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
 
-    this.log.debug(
-      {
-        event: "execute_enter",
-        handler: this.constructor.name,
-        requestId,
-      },
-      "auth.signup.callUserCreate: enter handler"
-    );
+    // ───────────────────────────────────────────
+    // Inputs (no seeder; upstream handlers/controller are responsible)
+    // ───────────────────────────────────────────
 
-    let env: string | undefined;
+    const bag = this.safeCtxGet<UserBag>("bag");
+    if (!bag) {
+      const status: UserCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_MISSING_USER_BAG",
+        message: "Ctx['bag'] was empty before user.create.",
+      };
+      this.ctx.set("signup.userCreateStatus", status);
 
-    try {
-      const bag = this.safeCtxGet<UserBag>("bag");
-
-      if (!bag) {
-        const status: UserCreateStatus = {
-          ok: false,
-          code: "AUTH_SIGNUP_MISSING_USER_BAG",
-          message: "Ctx['bag'] was empty before user.create.",
-        };
-        this.ctx.set("signup.userCreateStatus", status);
-
-        this.failWithError({
-          httpStatus: 500,
-          title: "auth_signup_missing_user_bag",
-          detail:
-            "Auth signup pipeline expected ctx['bag'] to contain a DtoBag<UserDto> before calling user.create. " +
-            "Dev: ensure ToBagUserHandler ran and stored the bag under ctx['bag'].",
-          stage: "inputs.userBag",
-          requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [{ hasBag: !!bag }],
-          logMessage:
-            "auth.signup.callUserCreate: ctx['bag'] missing before user.create.",
-          logLevel: "error",
-        });
-        return;
-      }
-
-      // Runtime identity is authoritative (HandlerBase already hard-requires rt).
-      env = (this.rt.getEnv() ?? "").trim();
-      if (!env) {
-        const status: UserCreateStatus = {
-          ok: false,
-          code: "AUTH_SIGNUP_ENV_EMPTY",
-          message: "rt.getEnv() returned an empty env label.",
-        };
-        this.ctx.set("signup.userCreateStatus", status);
-
-        this.failWithError({
-          httpStatus: 500,
-          title: "auth_signup_env_empty",
-          detail:
-            "Auth signup resolved an empty environment label from SvcRuntime. " +
-            "Ops: verify envBootstrap/env-service configuration for this service.",
-          stage: "config.rt.env.empty",
-          requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [{ env }],
-          logMessage: "auth.signup.callUserCreate: empty env label from rt.",
-          logLevel: "error",
-        });
-        return;
-      }
-
-      // Capability: canonical key is "s2s.svcClient" (wired by AppBase).
-      let svcClient: SvcClient | undefined;
-      try {
-        svcClient = this.rt.tryCap<SvcClient>("s2s.svcClient");
-      } catch {
-        svcClient = undefined;
-      }
-
-      if (!svcClient || typeof (svcClient as any).call !== "function") {
-        const status: UserCreateStatus = {
-          ok: false,
-          code: "AUTH_SIGNUP_SVCCLIENT_CAP_MISSING",
-          message: 'SvcRuntime capability "s2s.svcClient" was not available.',
-        };
-        this.ctx.set("signup.userCreateStatus", status);
-
-        this.failWithError({
-          httpStatus: 500,
-          title: "auth_signup_svcclient_cap_missing",
-          detail:
-            'Auth signup requires SvcRuntime capability "s2s.svcClient" to call the user worker. ' +
-            "Dev/Ops: wire rt caps during envBootstrap/AppBase construction for auth (svcClient must be present).",
-          stage: "config.rt.cap.s2s.svcClient",
-          requestId,
-          origin: { file: __filename, method: "execute" },
-          issues: [{ hasSvcClient: !!svcClient }],
-          logMessage:
-            "auth.signup.callUserCreate: missing rt cap s2s.svcClient.",
-          logLevel: "error",
-        });
-        return;
-      }
-
-      const signupUserId = this.safeCtxGet<string>("signup.userId");
-
-      this.log.debug(
-        {
-          event: "svcclient_call_start",
-          requestId,
-          env,
-          signupUserId,
-          slug: "user",
-          op: "create",
-        },
-        "auth.signup.callUserCreate: calling user.create via SvcClient"
-      );
-
-      // ---- External S2S call to user worker --------------------------------
-      try {
-        // IMPORTANT:
-        // - SvcClient.call returns WireBagJson (wire JSON), not a hydrated DtoBag<T>.
-        // - This handler does not need the returned payload (hydrate is the bag writer).
-        const _wire = await svcClient.call({
-          env,
-          slug: "user",
-          version: 1,
-          dtoType: "user",
-          op: "create",
-          method: "PUT",
-          bag,
-          requestId,
-        });
-        void _wire;
-
-        const status: UserCreateStatus = {
-          ok: true,
-          userId: signupUserId,
-        };
-        this.ctx.set("signup.userCreateStatus", status);
-
-        this.log.info(
-          {
-            event: "svcclient_call_ok",
-            requestId,
-            env,
-            slug: "user",
-            op: "create",
-            userId: signupUserId ?? null,
-          },
-          "auth.signup.callUserCreate: user.create succeeded"
-        );
-
-        this.ctx.set("handlerStatus", "ok");
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : String(err ?? "Unknown error");
-
-        let downstreamStatus: number | undefined;
-        if (err instanceof Error) {
-          const m = err.message.match(/status=(\d{3})/);
-          if (m && m[1]) {
-            const n = Number(m[1]);
-            if (Number.isFinite(n)) {
-              downstreamStatus = n;
-            }
-          }
-        }
-
-        const isDuplicate = downstreamStatus === 409;
-
-        const httpStatus = isDuplicate ? 409 : 502;
-        const status: UserCreateStatus = {
-          ok: false,
-          code: isDuplicate
-            ? "AUTH_SIGNUP_USER_DUPLICATE"
-            : "AUTH_SIGNUP_USER_CREATE_FAILED",
-          message,
-        };
-        this.ctx.set("signup.userCreateStatus", status);
-
-        this.failWithError({
-          httpStatus,
-          title: isDuplicate
-            ? "auth_signup_user_duplicate"
-            : "auth_signup_user_create_failed",
-          detail: isDuplicate
-            ? "Auth signup failed because the user service reported a duplicate user (likely email already in use). Front-end: treat this as a 409 duplicate signup."
-            : "Auth signup failed while calling the user service create endpoint. " +
-              "Ops: check user service health, svcconfig routing for slug='user', and Mongo connectivity.",
-          stage: "s2s.userCreate",
-          requestId,
-          origin: {
-            file: __filename,
-            method: "execute",
-          },
-          issues: [
-            {
-              env,
-              slug: "user",
-              op: "create",
-              downstreamStatus,
-            },
-          ],
-          rawError: err,
-          logMessage: isDuplicate
-            ? "auth.signup.callUserCreate: user.create returned duplicate (mapped to 409)."
-            : "auth.signup.callUserCreate: user.create S2S call failed.",
-          logLevel: isDuplicate ? "warn" : "error",
-        });
-      }
-    } catch (err) {
       this.failWithError({
         httpStatus: 500,
-        title: "auth_signup_user_create_handler_failure",
+        title: "auth_signup_missing_user_bag",
         detail:
-          "Unhandled exception while orchestrating auth signup user.create call. Ops: inspect logs for requestId and stack frame.",
-        stage: "execute.unhandled",
+          "Auth signup pipeline expected ctx['bag'] to contain a DtoBag<UserDto> before calling user.create. " +
+          "Dev: ensure controller hydration (ToBag*) ran and stored the bag under ctx['bag'].",
+        stage: "inputs.userBag",
         requestId,
-        origin: {
-          file: __filename,
-          method: "execute",
-        },
-        rawError: err,
-        logMessage:
-          "auth.signup.callUserCreate: unhandled exception in handler.",
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasBag: !!bag }],
+        logMessage: "auth.signup.s2s.user.create: ctx['bag'] missing.",
         logLevel: "error",
       });
+      return;
     }
 
-    this.log.debug(
-      {
-        event: "execute_end",
-        handler: this.constructor.name,
-        requestId,
-        handlerStatus: this.safeCtxGet<string>("handlerStatus") ?? "ok",
-      },
-      "auth.signup.callUserCreate: exit handler"
+    // Password-hash rung ordering invariant (Step 3 must have run).
+    const passwordHash = this.safeCtxGet<string>("signup.passwordHash");
+    const passwordAlgo = this.safeCtxGet<string>("signup.passwordAlgo");
+    const passwordHashParamsJson = this.safeCtxGet<string>(
+      "signup.passwordHashParamsJson"
     );
+    const passwordCreatedAt = this.safeCtxGet<string>(
+      "signup.passwordCreatedAt"
+    );
+
+    if (
+      !passwordHash ||
+      !passwordAlgo ||
+      !passwordHashParamsJson ||
+      !passwordCreatedAt
+    ) {
+      const status: UserCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_MISSING_PASSWORD_HASH",
+        message:
+          "Password hash outputs were missing before user.create (expected step 3 to run).",
+      };
+      this.ctx.set("signup.userCreateStatus", status);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_missing_password_hash",
+        detail:
+          "Auth signup pipeline expected password-hash outputs to exist before calling user.create. " +
+          "Dev: ensure CodePasswordHashHandler ran and set ctx['signup.passwordHash'|'signup.passwordAlgo'|'signup.passwordHashParamsJson'|'signup.passwordCreatedAt'].",
+        stage: "inputs.passwordHash",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [
+          {
+            hasPasswordHash: !!passwordHash,
+            hasPasswordAlgo: !!passwordAlgo,
+            hasPasswordHashParamsJson: !!passwordHashParamsJson,
+            hasPasswordCreatedAt: !!passwordCreatedAt,
+          },
+        ],
+        logMessage:
+          "auth.signup.s2s.user.create: password hash outputs missing before user.create.",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    // ───────────────────────────────────────────
+    // Runtime config + caps
+    // ───────────────────────────────────────────
+
+    const env = (this.rt.getEnv() ?? "").trim();
+    if (!env) {
+      const status: UserCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_ENV_EMPTY",
+        message: "rt.getEnv() returned an empty env label.",
+      };
+      this.ctx.set("signup.userCreateStatus", status);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_env_empty",
+        detail:
+          "Auth signup resolved an empty environment label from SvcRuntime. " +
+          "Ops: verify envBootstrap/env-service configuration for this service.",
+        stage: "config.rt.env.empty",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ env }],
+        logMessage: "auth.signup.s2s.user.create: empty env label from rt.",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    let svcClient: SvcClient | undefined;
+    try {
+      svcClient = this.rt.tryCap<SvcClient>("s2s.svcClient");
+    } catch {
+      svcClient = undefined;
+    }
+
+    if (!svcClient || typeof (svcClient as any).call !== "function") {
+      const status: UserCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_SVCCLIENT_CAP_MISSING",
+        message: 'SvcRuntime capability "s2s.svcClient" was not available.',
+      };
+      this.ctx.set("signup.userCreateStatus", status);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_svcclient_cap_missing",
+        detail:
+          'Auth signup requires SvcRuntime capability "s2s.svcClient" to call the user worker. ' +
+          "Dev/Ops: wire rt caps during envBootstrap/AppBase construction for auth (svcClient must be present).",
+        stage: "config.rt.cap.s2s.svcClient",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasSvcClient: !!svcClient }],
+        logMessage:
+          "auth.signup.s2s.user.create: missing rt cap s2s.svcClient.",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    const signupUserId = this.safeCtxGet<string>("signup.userId");
+
+    // ───────────────────────────────────────────
+    // S2S call
+    // ───────────────────────────────────────────
+
+    try {
+      // IMPORTANT:
+      // - SvcClient.call returns WireBagJson (wire JSON), not a hydrated DtoBag<T>.
+      // - This handler does not need the returned payload (hydrate is the bag writer).
+      // - This handler never mutates ctx["bag"].
+      const _wire = await svcClient.call({
+        env,
+        slug: "user",
+        version: 1,
+        dtoType: "user",
+        op: "create",
+        method: "PUT",
+        bag,
+        requestId,
+      });
+      void _wire;
+
+      const status: UserCreateStatus = {
+        ok: true,
+        userId: signupUserId,
+      };
+      this.ctx.set("signup.userCreateStatus", status);
+      this.ctx.set("handlerStatus", "ok");
+      return;
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err ?? "Unknown error");
+
+      let downstreamStatus: number | undefined;
+      if (err instanceof Error) {
+        const m = err.message.match(/status=(\d{3})/);
+        if (m && m[1]) {
+          const n = Number(m[1]);
+          if (Number.isFinite(n)) downstreamStatus = n;
+        }
+      }
+
+      const isDuplicate = downstreamStatus === 409;
+      const httpStatus = isDuplicate ? 409 : 502;
+
+      const status: UserCreateStatus = {
+        ok: false,
+        code: isDuplicate
+          ? "AUTH_SIGNUP_USER_DUPLICATE"
+          : "AUTH_SIGNUP_USER_CREATE_FAILED",
+        message,
+      };
+      this.ctx.set("signup.userCreateStatus", status);
+
+      this.failWithError({
+        httpStatus,
+        title: isDuplicate
+          ? "auth_signup_user_duplicate"
+          : "auth_signup_user_create_failed",
+        detail: isDuplicate
+          ? "Auth signup failed because the user service reported a duplicate user (likely email already in use). Front-end: treat this as a 409 duplicate signup."
+          : "Auth signup failed while calling the user service create endpoint. " +
+            "Ops: check user service health, svcconfig routing for slug='user', and Mongo connectivity.",
+        stage: "s2s.userCreate",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ env, slug: "user", op: "create", downstreamStatus }],
+        rawError: err,
+        logMessage: isDuplicate
+          ? "auth.signup.s2s.user.create: duplicate (mapped to 409)."
+          : "auth.signup.s2s.user.create: s2s call failed.",
+        logLevel: isDuplicate ? "warn" : "error",
+      });
+      return;
+    }
   }
 }

@@ -3,7 +3,7 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0066 (Gateway Raw-Payload Passthrough for S2S Calls)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)

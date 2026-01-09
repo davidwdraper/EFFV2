@@ -44,7 +44,7 @@ export class EnvServiceCreateController extends ControllerJsonBase {
     const op = (req.params.op || "create").trim();
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", op);
 
     // Clone-specific route params (present only for op="clone")

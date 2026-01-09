@@ -10,6 +10,7 @@
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *   - ADR-0099 (Handler test manifest from handlers)
+ *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
  *
  * Purpose:
  * - Shared abstract controller base for all services.
@@ -19,15 +20,21 @@
  * Hard contract:
  * - SvcRuntime is mandatory; controllers always seed ctx["rt"].
  * - ctx["svcEnv"] never exists (deleted).
+ *
+ * Registry contract (ADR-0102):
+ * - There is exactly ONE IDtoRegistry contract in the codebase:
+ *     shared/src/registry/IDtoRegistry.ts
+ * - Controllers may expose tryGetDtoRegistry()/getDtoRegistry(), but registry
+ *   presence is service-posture dependent (DB posture only).
  */
 
 import type { Request, Response } from "express";
 import type { AppBase } from "../app/AppBase";
 import type { IBoundLogger } from "../../logger/Logger";
-import type { IDtoRegistry } from "../../registry/RegistryBase";
 import type { SvcRuntime } from "../../runtime/SvcRuntime";
 import { HandlerContext } from "../../http/handlers/HandlerContext";
 import type { HandlerBase } from "../../http/handlers/HandlerBase";
+import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 import {
   seedHydratorIntoContext,
   makeHandlerContext,
@@ -80,12 +87,12 @@ export abstract class ControllerBase {
   }
 
   public getDtoRegistry(): IDtoRegistry {
-    return this.app.getDtoRegistry();
+    return this.app.getDtoRegistry() as unknown as IDtoRegistry;
   }
 
   public tryGetDtoRegistry(): IDtoRegistry | undefined {
     try {
-      return this.app.getDtoRegistry();
+      return this.app.getDtoRegistry() as unknown as IDtoRegistry;
     } catch {
       return undefined;
     }
@@ -127,8 +134,13 @@ export abstract class ControllerBase {
     await runPipelineHandlers(this as any, ctx, handlers, opts);
   }
 
+  /**
+   * Registry requirement is NOT universal.
+   * - Non-DB posture services must run without a registry.
+   * - DB posture controllers override this to true.
+   */
   public needsRegistry(): boolean {
-    return true;
+    return false;
   }
 
   protected abstract finalize(ctx: HandlerContext): Promise<void>;

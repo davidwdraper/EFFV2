@@ -7,22 +7,22 @@
  * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
- * - Take the single EnvServiceDto in ctx["clone.existingBag"], clone it, patch it
+ * - Take the single DbEnvServiceDto in ctx["clone.existingBag"], clone it, patch it
  *   with the new slug, and replace ctx["bag"] with a singleton bag for create.
  *
  * Inputs (ctx):
- * - "clone.existingBag": DtoBag<EnvServiceDto>  (singleton; from query handler)
+ * - "clone.existingBag": DtoBag<DbEnvServiceDto>  (singleton; from query handler)
  * - "clone.targetSlug":  string — new slug to apply (from route :targetSlug)
  *
  * Outputs (ctx):
- * - "bag": DtoBag<EnvServiceDto>  (singleton; cloned + patched DTO)
+ * - "bag": DtoBag<DbEnvServiceDto>  (singleton; cloned + patched DTO)
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import type { IDto } from "@nv/shared/dto/IDto";
 
@@ -36,14 +36,14 @@ export class CodePatchHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Clone EnvServiceDto from clone.existingBag, apply clone.targetSlug, and emit a singleton DtoBag for create.";
+    return "Clone DbEnvServiceDto from clone.existingBag, apply clone.targetSlug, and emit a singleton DtoBag for create.";
   }
 
   protected override async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
 
     const existingBag =
-      this.safeCtxGet<DtoBag<EnvServiceDto>>("clone.existingBag");
+      this.safeCtxGet<DtoBag<DbEnvServiceDto>>("clone.existingBag");
     const targetSlugRaw = this.safeCtxGet<unknown>("clone.targetSlug");
     const targetSlug =
       typeof targetSlugRaw === "string" ? targetSlugRaw.trim() : "";
@@ -87,7 +87,7 @@ export class CodePatchHandler extends HandlerBase {
     if (!sourceDto) return;
 
     // Clone by round-tripping through toBody/fromBody (DTO remains canonical truth).
-    const cloned = this.cloneEnvServiceDto(sourceDto, requestId);
+    const cloned = this.cloneDbEnvServiceDto(sourceDto, requestId);
     if (!cloned) return;
 
     // Apply new slug; keep env/version/vars the same.
@@ -100,7 +100,7 @@ export class CodePatchHandler extends HandlerBase {
         newSlug: targetSlug,
         requestId,
       },
-      "env-service.clone.code.patch: patched cloned EnvServiceDto with new slug"
+      "env-service.clone.code.patch: patched cloned DbEnvServiceDto with new slug"
     );
 
     // Re-bag as a singleton for create.
@@ -115,23 +115,23 @@ export class CodePatchHandler extends HandlerBase {
   }
 
   private safeGetSingleton(
-    bag: DtoBag<EnvServiceDto>,
+    bag: DtoBag<DbEnvServiceDto>,
     requestId: string | undefined
-  ): EnvServiceDto | undefined {
+  ): DbEnvServiceDto | undefined {
     try {
       const dto = bag.getSingleton() as unknown;
-      if (!(dto instanceof EnvServiceDto)) {
+      if (!(dto instanceof DbEnvServiceDto)) {
         this.failWithError({
           httpStatus: 500,
           title: "clone_source_type_mismatch",
           detail:
-            "Expected EnvServiceDto in clone.existingBag singleton; pipeline wiring mismatch. Ops: verify clone pipeline configuration.",
+            "Expected DbEnvServiceDto in clone.existingBag singleton; pipeline wiring mismatch. Ops: verify clone pipeline configuration.",
           stage: "code.patch:type_check",
           requestId,
           rawError: null,
           origin: { file: __filename, method: "safeGetSingleton" },
           logMessage:
-            "env-service.clone.code.patch: clone.existingBag singleton is not EnvServiceDto.",
+            "env-service.clone.code.patch: clone.existingBag singleton is not DbEnvServiceDto.",
           logLevel: "error",
         });
         return undefined;
@@ -156,10 +156,10 @@ export class CodePatchHandler extends HandlerBase {
     }
   }
 
-  private cloneEnvServiceDto(
-    sourceDto: EnvServiceDto,
+  private cloneDbEnvServiceDto(
+    sourceDto: DbEnvServiceDto,
     requestId: string | undefined
-  ): EnvServiceDto | undefined {
+  ): DbEnvServiceDto | undefined {
     try {
       const srcBody = sourceDto.toBody() as any;
 
@@ -168,19 +168,19 @@ export class CodePatchHandler extends HandlerBase {
 
       // We intentionally skip validation here: the source was already validated on read
       // when validateReads=true. The clone will be validated on write in the create pipeline.
-      return EnvServiceDto.fromBody(srcBody, { validate: false });
+      return DbEnvServiceDto.fromBody(srcBody, { validate: false });
     } catch (err) {
       this.failWithError({
         httpStatus: 500,
         title: "clone_source_hydration_failed",
         detail:
-          "Failed to hydrate cloned EnvServiceDto from source JSON. Ops: inspect source DTO shape and EnvServiceDto.fromBody().",
+          "Failed to hydrate cloned DbEnvServiceDto from source JSON. Ops: inspect source DTO shape and DbEnvServiceDto.fromBody().",
         stage: "code.patch:fromBody",
         requestId,
         rawError: err,
-        origin: { file: __filename, method: "cloneEnvServiceDto" },
+        origin: { file: __filename, method: "cloneDbEnvServiceDto" },
         logMessage:
-          "env-service.clone.code.patch: EnvServiceDto.fromBody() threw while hydrating clone.",
+          "env-service.clone.code.patch: DbEnvServiceDto.fromBody() threw while hydrating clone.",
         logLevel: "error",
       });
       return undefined;
@@ -212,7 +212,7 @@ export class CodePatchHandler extends HandlerBase {
         httpStatus: 500,
         title: "clone_bag_build_failed",
         detail:
-          "Failed to build a singleton DtoBag for the cloned EnvServiceDto.",
+          "Failed to build a singleton DtoBag for the cloned DbEnvServiceDto.",
         stage: "code.patch:bag_build",
         requestId,
         rawError: err,

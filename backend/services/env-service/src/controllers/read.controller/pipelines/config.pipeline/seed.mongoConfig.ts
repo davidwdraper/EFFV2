@@ -9,7 +9,7 @@
  *
  * Purpose:
  * - Seed ctx["db.mongo.*"] overrides so downstream shared DB LEGO handlers can
- *   read Mongo without relying on any ctx-held EnvServiceDto.
+ *   read Mongo without relying on any ctx-held DbEnvServiceDto.
  *
  * Why this exists:
  * - env-service is special at boot: its runtime vars ultimately come from its
@@ -90,7 +90,7 @@ export class SeedMongoConfigHandler extends HandlerBase {
         title: "seed_mongo_config_dbvars_missing",
         detail:
           "Unable to read NV_MONGO_URI/NV_MONGO_DB from rt.getDbVar() while seeding pipeline Mongo override. " +
-          "Ops: ensure env-service runtime is constructed from a bootstrap EnvServiceDto that contains NV_MONGO_URI and NV_MONGO_DB for the config DB.",
+          "Ops: ensure env-service runtime is constructed from a bootstrap DbEnvServiceDto that contains NV_MONGO_URI and NV_MONGO_DB for the config DB.",
         stage: "seed.mongoConfig:dbvars_missing",
         requestId,
         origin: { file: __filename, method: "execute" },

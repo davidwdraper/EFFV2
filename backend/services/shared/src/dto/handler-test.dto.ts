@@ -10,7 +10,7 @@
  *   - LDD-38 (Test Runner vNext Design)
  *   - LDD-39 (StepIterator Micro-Contract — Revised, KISS)
  *   - ADR-0078 (DTO write-once private fields; setters in / getters out)
- *   - ADR-0079 (DtoBase.check — single normalization/validation gate)
+ *   - ADR-0079 (DtoBase.check — single normalization/validation gate) [legacy; replaced by file-local check()]
  *
  * Purpose:
  * - Represents ONE handler-test execution record (one document per handler test).
@@ -25,7 +25,7 @@
  * - No nested DTOs
  */
 
-import { DtoBase, type CheckKind } from "./DtoBase";
+import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
 import type { IDto } from "./IDto";
 
@@ -104,6 +104,64 @@ type ScenarioResult =
       status: "Passed" | "Failed";
       details?: unknown;
     };
+
+/**
+ * NOTE:
+ * DtoBase.check / CheckKind were removed from shared. This DTO still needs a
+ * simple normalization/validation gate for its legacy fromBody().
+ */
+type CheckKind =
+  | "string"
+  | "stringOpt"
+  | "number"
+  | "numberOpt"
+  | "boolean"
+  | "booleanOpt";
+
+function check<T>(
+  input: unknown,
+  kind: CheckKind,
+  opts?: { validate?: boolean; path?: string }
+): T {
+  const validate = opts?.validate === true;
+  const path = opts?.path ?? "value";
+
+  const isOpt = kind.endsWith("Opt");
+  const base = isOpt ? (kind.slice(0, -3) as CheckKind) : kind;
+
+  if (input === undefined || input === null) {
+    if (isOpt) return input as T;
+    if (validate) throw new Error(`DTO_FIELD_REQUIRED: ${path} is required.`);
+    return input as T;
+  }
+
+  switch (base) {
+    case "string": {
+      if (typeof input === "string") return input as T;
+      if (validate) throw new Error(`DTO_FIELD_TYPE: ${path} must be string.`);
+      return String(input) as T;
+    }
+
+    case "number": {
+      if (typeof input === "number") return input as T;
+      if (typeof input === "string" && input.trim() !== "") {
+        const n = Number(input);
+        if (Number.isFinite(n)) return n as T;
+      }
+      if (validate) throw new Error(`DTO_FIELD_TYPE: ${path} must be number.`);
+      return input as T;
+    }
+
+    case "boolean": {
+      if (typeof input === "boolean") return input as T;
+      if (validate) throw new Error(`DTO_FIELD_TYPE: ${path} must be boolean.`);
+      return input as T;
+    }
+
+    default:
+      return input as T;
+  }
+}
 
 export class HandlerTestDto extends DtoBase implements IDto {
   // ─────────────── Static: Collection & Index Hints ───────────────
@@ -716,7 +774,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
     }
   }
 
-  // ─────────────── Wire hydration (via DtoBase.check) ───────────────
+  // ─────────────── Wire hydration (legacy static) ───────────────
 
   public static fromBody(
     json: unknown,
@@ -726,109 +784,88 @@ export class HandlerTestDto extends DtoBase implements IDto {
     const j = (json ?? {}) as Partial<HandlerTestJson>;
     const validate = opts?.validate === true;
 
-    const check = <T>(input: unknown, kind: CheckKind, path: string): T =>
-      DtoBase.check<T>(input, kind, { validate, path });
-
     if (typeof j._id === "string" && j._id.trim()) {
       dto.setIdOnce(j._id.trim());
     }
 
-    const env = DtoBase.check<string | undefined>(j.env, "stringOpt", {
+    const env = check<string | undefined>(j.env, "stringOpt", {
       validate,
       path: "env",
     });
-    if (env !== undefined) {
-      dto.setEnvOnce(env);
-    }
+    if (env !== undefined) dto.setEnvOnce(env);
 
-    const dbState = DtoBase.check<string | undefined>(j.dbState, "stringOpt", {
+    const dbState = check<string | undefined>(j.dbState, "stringOpt", {
       validate,
       path: "dbState",
     });
-    if (dbState !== undefined) {
-      dto.setDbStateOnce(dbState);
-    }
+    if (dbState !== undefined) dto.setDbStateOnce(dbState);
 
-    const dbMocks = check<boolean | undefined>(
-      j.dbMocks,
-      "booleanOpt",
-      "dbMocks"
-    );
-    if (dbMocks !== undefined) {
-      dto.setDbMocksOnce(dbMocks);
-    }
+    const dbMocks = check<boolean | undefined>(j.dbMocks, "booleanOpt", {
+      validate,
+      path: "dbMocks",
+    });
+    if (dbMocks !== undefined) dto.setDbMocksOnce(dbMocks);
 
-    const s2sMocks = check<boolean | undefined>(
-      j.s2sMocks,
-      "booleanOpt",
-      "s2sMocks"
-    );
-    if (s2sMocks !== undefined) {
-      dto.setS2sMocksOnce(s2sMocks);
-    }
+    const s2sMocks = check<boolean | undefined>(j.s2sMocks, "booleanOpt", {
+      validate,
+      path: "s2sMocks",
+    });
+    if (s2sMocks !== undefined) dto.setS2sMocksOnce(s2sMocks);
 
-    const targetServiceSlug = DtoBase.check<string | undefined>(
+    const targetServiceSlug = check<string | undefined>(
       j.targetServiceSlug,
       "stringOpt",
       { validate, path: "targetServiceSlug" }
     );
-    if (targetServiceSlug !== undefined) {
+    if (targetServiceSlug !== undefined)
       dto.setTargetServiceSlugOnce(targetServiceSlug);
-    }
 
-    const targetServiceName = DtoBase.check<string | undefined>(
+    const targetServiceName = check<string | undefined>(
       j.targetServiceName,
       "stringOpt",
       { validate, path: "targetServiceName" }
     );
-    if (targetServiceName !== undefined) {
+    if (targetServiceName !== undefined)
       dto.setTargetServiceNameOnce(targetServiceName);
-    }
 
-    const targetServiceVersion = DtoBase.check<number | undefined>(
+    const targetServiceVersion = check<number | undefined>(
       j.targetServiceVersion,
       "numberOpt",
       { validate, path: "targetServiceVersion" }
     );
-    if (targetServiceVersion !== undefined) {
+    if (targetServiceVersion !== undefined)
       dto.setTargetServiceVersionOnce(targetServiceVersion);
-    }
 
-    const indexRelativePath = DtoBase.check<string | undefined>(
+    const indexRelativePath = check<string | undefined>(
       j.indexRelativePath,
       "stringOpt",
       { validate, path: "indexRelativePath" }
     );
-    if (indexRelativePath !== undefined) {
+    if (indexRelativePath !== undefined)
       dto.setIndexRelativePathOnce(indexRelativePath);
-    }
 
-    const pipelineName = DtoBase.check<string | undefined>(
+    const pipelineName = check<string | undefined>(
       j.pipelineName,
       "stringOpt",
-      { validate, path: "pipelineName" }
+      {
+        validate,
+        path: "pipelineName",
+      }
     );
-    if (pipelineName !== undefined) {
-      dto.setPipelineNameOnce(pipelineName);
-    }
+    if (pipelineName !== undefined) dto.setPipelineNameOnce(pipelineName);
 
-    const handlerName = DtoBase.check<string | undefined>(
-      j.handlerName,
-      "stringOpt",
-      { validate, path: "handlerName" }
-    );
-    if (handlerName !== undefined) {
-      dto.setHandlerNameOnce(handlerName);
-    }
+    const handlerName = check<string | undefined>(j.handlerName, "stringOpt", {
+      validate,
+      path: "handlerName",
+    });
+    if (handlerName !== undefined) dto.setHandlerNameOnce(handlerName);
 
     const handlerPurpose = check<string | undefined>(
       j.handlerPurpose,
       "stringOpt",
-      "handlerPurpose"
+      { validate, path: "handlerPurpose" }
     );
-    if (handlerPurpose !== undefined) {
-      dto.setHandlerPurposeOnce(handlerPurpose);
-    }
+    if (handlerPurpose !== undefined) dto.setHandlerPurposeOnce(handlerPurpose);
 
     if (
       j.status === "Started" ||
@@ -840,32 +877,23 @@ export class HandlerTestDto extends DtoBase implements IDto {
       dto.setStatus(j.status);
     }
 
-    const startedAt = check<string | undefined>(
-      j.startedAt,
-      "stringOpt",
-      "startedAt"
-    );
-    if (startedAt !== undefined) {
-      dto.setStartedAt(startedAt);
-    }
+    const startedAt = check<string | undefined>(j.startedAt, "stringOpt", {
+      validate,
+      path: "startedAt",
+    });
+    if (startedAt !== undefined) dto.setStartedAt(startedAt);
 
-    const finishedAt = check<string | undefined>(
-      j.finishedAt,
-      "stringOpt",
-      "finishedAt"
-    );
-    if (finishedAt !== undefined) {
-      dto.setFinishedAt(finishedAt);
-    }
+    const finishedAt = check<string | undefined>(j.finishedAt, "stringOpt", {
+      validate,
+      path: "finishedAt",
+    });
+    if (finishedAt !== undefined) dto.setFinishedAt(finishedAt);
 
-    const durationMs = DtoBase.check<number | undefined>(
-      j.durationMs,
-      "numberOpt",
-      { validate, path: "durationMs" }
-    );
-    if (durationMs !== undefined) {
-      dto.setDurationMs(durationMs);
-    }
+    const durationMs = check<number | undefined>(j.durationMs, "numberOpt", {
+      validate,
+      path: "durationMs",
+    });
+    if (durationMs !== undefined) dto.setDurationMs(durationMs);
 
     if (Array.isArray(j.scenarios)) {
       const rawScenarios: HandlerTestScenario[] = j.scenarios
@@ -874,21 +902,21 @@ export class HandlerTestDto extends DtoBase implements IDto {
           const ss = s as any;
           const basePath = `scenarios[${idx}]`;
 
-          const name = DtoBase.check<string | undefined>(ss.name, "stringOpt", {
+          const name = check<string | undefined>(ss.name, "stringOpt", {
             validate,
             path: `${basePath}.name`,
           });
-          const startedAtSc = DtoBase.check<string | undefined>(
+          const startedAtSc = check<string | undefined>(
             ss.startedAt,
             "stringOpt",
             { validate, path: `${basePath}.startedAt` }
           );
-          const finishedAtSc = DtoBase.check<string | undefined>(
+          const finishedAtSc = check<string | undefined>(
             ss.finishedAt,
             "stringOpt",
             { validate, path: `${basePath}.finishedAt` }
           );
-          const durationMsSc = DtoBase.check<number | undefined>(
+          const durationMsSc = check<number | undefined>(
             ss.durationMs,
             "numberOpt",
             { validate, path: `${basePath}.durationMs` }
@@ -919,34 +947,38 @@ export class HandlerTestDto extends DtoBase implements IDto {
       dto.replaceScenarios(rawScenarios);
     }
 
-    const requestId = check<string | undefined>(
-      j.requestId,
-      "stringOpt",
-      "requestId"
-    );
+    const requestId = check<string | undefined>(j.requestId, "stringOpt", {
+      validate,
+      path: "requestId",
+    });
     dto.setRequestId(requestId);
 
-    const notes = check<string | undefined>(j.notes, "stringOpt", "notes");
+    const notes = check<string | undefined>(j.notes, "stringOpt", {
+      validate,
+      path: "notes",
+    });
     dto.setNotes(notes);
 
     const railsVerdict = check<string | undefined>(
       j.railsVerdict,
       "stringOpt",
-      "railsVerdict"
+      {
+        validate,
+        path: "railsVerdict",
+      }
     );
     dto.setRailsVerdict(railsVerdict);
 
-    const railsStatus = DtoBase.check<number | undefined>(
-      j.railsStatus,
-      "numberOpt",
-      { validate, path: "railsStatus" }
-    );
+    const railsStatus = check<number | undefined>(j.railsStatus, "numberOpt", {
+      validate,
+      path: "railsStatus",
+    });
     dto.setRailsStatus(railsStatus === undefined ? null : railsStatus);
 
     const railsHandlerStatus = check<string | undefined>(
       j.railsHandlerStatus,
       "stringOpt",
-      "railsHandlerStatus"
+      { validate, path: "railsHandlerStatus" }
     );
     dto.setRailsHandlerStatus(
       railsHandlerStatus === undefined ? null : railsHandlerStatus
@@ -1036,6 +1068,51 @@ export class HandlerTestDto extends DtoBase implements IDto {
   }
 
   // ─────────────── IDto contract ───────────────
+
+  public clone(newId?: string): this {
+    const dto = new HandlerTestDto(DtoBase.getSecret());
+
+    // Preserve id unless caller explicitly asks for a new one.
+    if (typeof newId === "string" && newId.trim()) {
+      dto.setIdOnce(newId.trim());
+    } else if (this.hasId()) {
+      dto.setIdOnce(this.getId());
+    }
+
+    // Write-once header: copy, then freeze.
+    dto.setEnvOnce(this._env);
+    dto.setDbStateOnce(this._dbState);
+    dto.setDbMocksOnce(this._dbMocks);
+    dto.setS2sMocksOnce(this._s2sMocks);
+
+    dto.setTargetServiceSlugOnce(this._targetServiceSlug);
+    dto.setTargetServiceNameOnce(this._targetServiceName);
+    dto.setTargetServiceVersionOnce(this._targetServiceVersion);
+
+    dto.setIndexRelativePathOnce(this._indexRelativePath);
+    dto.setPipelineNameOnce(this._pipelineName);
+
+    dto.setHandlerNameOnce(this._handlerName);
+    dto.setHandlerPurposeOnce(this._handlerPurpose);
+
+    dto.freezeWriteOnce();
+
+    // Mutable outcome
+    dto._status = this._status;
+    dto._startedAt = this._startedAt;
+    dto._finishedAt = this._finishedAt;
+    dto._durationMs = this._durationMs;
+    dto._scenarios = this._scenarios.slice();
+
+    dto._requestId = this._requestId;
+    dto._notes = this._notes;
+
+    dto._railsVerdict = this._railsVerdict;
+    dto._railsStatus = this._railsStatus;
+    dto._railsHandlerStatus = this._railsHandlerStatus;
+
+    return dto as this;
+  }
 
   public getType(): string {
     return "handler-test";

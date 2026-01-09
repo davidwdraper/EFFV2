@@ -3,121 +3,38 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0049 (DTO Registry & canonical id)
- *   - ADR-0050 (Wire Bag Envelope)
- *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
- *   - ADR-0074 (DB_STATE-aware DB selection via getDbVar)
+ *   - ADR-0102 (Registry sole DTO creation authority)
+ *   - ADR-0103 (DTO naming convention: keys)
+ *
+ * Status:
+ * - This file is intentionally minimal.
  *
  * Purpose:
- * - Service-level Registry base that **extends** RegistryBase with:
- *    1) DTO hydrators (by type) for controllers/handlers,
- *    2) thin delegation to boot-time index building (no index logic here),
- *    3) simple diagnostics for registered DTOs.
+ * - If anything still imports ServiceRegistryBase, it must NOT drag in dead
+ *   legacy bases (RegistryBase, resolveCtorByType, dbCollectionNameByType).
  *
- * Invariants:
- * - No fallback types. Subclasses must provide the complete ctor map.
- * - Collections come from each DTO class's static dbCollectionName().
- * - Hydrators seed instance collection if missing (root-cause fix).
- * - Single concern: delegate index work to ensureIndexes module.
+ * Invariant:
+ * - Hydration is registry-only: registry.create(dtoKey, body, { validate, mode }).
  */
 
-import type { IDto } from "../dto/IDto";
-import type { DtoCtor } from "./RegistryBase";
-import { RegistryBase } from "./RegistryBase";
+import type { DtoBase } from "../dto/DtoBase";
+import type { IDtoRegistry } from "./IDtoRegistry";
 
-import type { ILogger } from "../logger/Logger";
-import {
-  ensureIndexesForDtos,
-  type DtoCtorWithIndexes,
-  type SvcEnvConfig,
-} from "../dto/persistence/indexes/ensureIndexes";
+type Hydrator<T extends DtoBase = DtoBase> = (json: unknown) => T;
 
-type Hydrator<T extends IDto = IDto> = (json: unknown) => T;
+export abstract class ServiceRegistryBase {
+  protected abstract getRegistry(): IDtoRegistry;
 
-export abstract class ServiceRegistryBase extends RegistryBase {
-  /**
-   * Hook for attaching UserType (and any other per-request security context)
-   * to a DTO instance. Subclasses decide how to resolve and apply user context.
-   *
-   * DTOs that do not participate in field-level security can implement this as
-   * a no-op that simply returns the DTO.
-   */
-  protected abstract applyUserType<T extends IDto = IDto>(dto: T): T;
-
-  /**
-   * Returns a DTO hydrator function for the given registry type key.
-   * The hydrator:
-   *  - constructs the DTO via <Ctor>.fromBody(json, { mode:'wire', validate })
-   *  - ensures the instance's collection name is seeded once from the ctor's static
-   *  - applies per-request user context via applyUserType()
-   */
-  public hydratorFor<T extends IDto = IDto>(
-    type: string,
-    opts?: { validate?: boolean }
+  public hydratorFor<T extends DtoBase = DtoBase>(
+    dtoKey: string,
+    opts?: { validate?: boolean; mode?: "wire" | "db" }
   ): Hydrator<T> {
-    const ctor = this.resolveCtorByType(type) as DtoCtor<T>;
-    const collection = this.dbCollectionNameByType(type);
+    const reg = this.getRegistry();
+    const validate = opts?.validate === true;
+    const mode = opts?.mode;
 
-    return (json: unknown): T => {
-      const dto = ctor.fromBody(json, {
-        mode: "wire",
-        validate: opts?.validate === true,
-      });
-
-      // Seed instance-level collection if absent.
-      const have = (dto as any).getCollectionName?.();
-      if (!have) {
-        if (typeof (dto as any).setCollectionName !== "function") {
-          throw new Error(
-            `REGISTRY_INSTANCE_NO_SETTER: DTO for "${type}" missing setCollectionName().`
-          );
-        }
-        (dto as any).setCollectionName(collection);
-      }
-
-      // Attach UserType / security context (no-op for DTOs that don't care).
-      return this.applyUserType(dto);
+    return (json: unknown) => {
+      return reg.create<T>(dtoKey, json, { validate, mode });
     };
-  }
-
-  /**
-   * Delegate: collect registered DTO CLASSES that declare indexHints and
-   * pass them to the shared ensureIndexes routine. No index logic lives here.
-   *
-   * `env` is typically an EnvServiceDto instance implementing:
-   *   - getEnvVar(name: string): string
-   *   - getDbVar(name: string): string   (DB_STATE-aware)
-   */
-  public async ensureIndexes(env: SvcEnvConfig, log: ILogger): Promise<void> {
-    const map = this.ctorByType();
-
-    const dtos: DtoCtorWithIndexes[] = [];
-    for (const type of Object.keys(map)) {
-      const ctor = this.resolveCtorByType(type) as any;
-      const hasHints =
-        Array.isArray(ctor?.indexHints) &&
-        typeof ctor?.dbCollectionName === "function";
-      if (hasHints) {
-        dtos.push(ctor as DtoCtorWithIndexes);
-      } else {
-        log?.debug?.(
-          { type, hasIndexHints: Array.isArray(ctor?.indexHints) },
-          "registry.ensureIndexes: no indexHints on DTO — skipping"
-        );
-      }
-    }
-
-    await ensureIndexesForDtos({ dtos, env, log });
-  }
-
-  /**
-   * Simple diagnostic listing of registered keys and their collections.
-   */
-  public listRegistered(): Array<{ type: string; collection: string }> {
-    const map = this.ctorByType();
-    return Object.keys(map).map((type) => ({
-      type,
-      collection: this.dbCollectionNameByType(type),
-    }));
   }
 }

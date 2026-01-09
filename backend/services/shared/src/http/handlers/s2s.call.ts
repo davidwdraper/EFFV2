@@ -6,7 +6,7 @@
  *   - ADR-0040 (DTO-Only Persistence; DTO as wire authority)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping; controller builds wire payload)
- *   - ADR-0044 (EnvServiceDto as DTO — key/value env contract)
+ *   - ADR-0044 (DbEnvServiceDto as DTO — key/value env contract)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0052 (S2S via ServiceClient) — future alignment
@@ -18,9 +18,9 @@
  * Inputs (ctx):
  * - "s2s.slug":    string   (target service slug, e.g., "user")
  * - "s2s.version": string   (target API version, e.g., "v1")
- * - "dtoType":     string   (current route dtoType, e.g., "auth")
+ * - "dtoKey":     string   (current route dtoType, e.g., "auth")
  * - "requestId":   string
- * - "svcEnv":      EnvServiceDto (from ControllerBase.makeContext, per ADR-0044)
+ * - "svcEnv":      DbEnvServiceDto (from ControllerBase.makeContext, per ADR-0044)
  *
  * Stub Outputs (current behavior):
  * - "handlerStatus": "error"
@@ -67,9 +67,9 @@ export class S2sCallHandler extends HandlerBase {
     try {
       const slug = this.safeCtxGet<string>("s2s.slug");
       const version = this.safeCtxGet<string>("s2s.version");
-      const dtoType = this.safeCtxGet<string>("dtoType");
+      const dtoType = this.safeCtxGet<string>("dtoKey");
 
-      // EnvServiceDto is already placed on ctx by ControllerBase.makeContext().
+      // DbEnvServiceDto is already placed on ctx by ControllerBase.makeContext().
       const svcEnv = this.safeCtxGet<any>("svcEnv");
       let envLabel = this.safeCtxGet<string>("s2s.env");
 

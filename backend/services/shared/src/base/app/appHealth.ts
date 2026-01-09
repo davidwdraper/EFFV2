@@ -9,13 +9,13 @@
  * - Shared helpers for health & env reload endpoints for AppBase.
  *
  * Invariants:
- * - EnvServiceDto is owned by SvcRuntime, not AppBase.
+ * - DbEnvServiceDto is owned by SvcRuntime, not AppBase.
  * - Env reload MUST update rt via rt.setEnvDto().
  */
 
 import type { Express, Request, Response } from "express";
 import type { IBoundLogger } from "../../logger/Logger";
-import type { EnvServiceDto } from "../../dto/env-service.dto";
+import type { DbEnvServiceDto } from "../../dto/db.env-service.dto";
 import type { SvcRuntime } from "../../runtime/SvcRuntime";
 
 export function computeHealthBasePath(
@@ -75,10 +75,10 @@ type EnvReloadOpts = {
   rt: SvcRuntime;
 
   /**
-   * MUST return the fresh EnvServiceDto (primary).
+   * MUST return the fresh DbEnvServiceDto (primary).
    * The handler will set it into rt via rt.setEnvDto().
    */
-  envReloader: () => Promise<EnvServiceDto>;
+  envReloader: () => Promise<DbEnvServiceDto>;
 };
 
 export function mountEnvReloadRoute(opts: EnvReloadOpts): void {

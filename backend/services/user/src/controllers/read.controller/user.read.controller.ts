@@ -37,7 +37,7 @@ export class UserReadController extends ControllerJsonBase {
     const dtoType = req.params.dtoType;
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", "read");
 
     this.log.debug(

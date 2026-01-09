@@ -7,7 +7,7 @@
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
  *
  * Purpose:
@@ -36,7 +36,7 @@ export class EnvServiceReadController extends ControllerJsonBase {
     const op = "config";
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", op);
 
     this.log.debug(

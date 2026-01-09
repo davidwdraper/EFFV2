@@ -116,7 +116,7 @@ export const UserAuthFields = {
   }),
 } as const;
 
-export class UserAuthDto extends DtoBase {
+export class DbUserAuthDto extends DtoBase {
   public static dbCollectionName(): string {
     return "user-auth";
   }
@@ -189,8 +189,8 @@ export class UserAuthDto extends DtoBase {
   public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
-  ): UserAuthDto {
-    const dto = new UserAuthDto(DtoBase.getSecret());
+  ): DbUserAuthDto {
+    const dto = new DbUserAuthDto(DtoBase.getSecret());
 
     const unwrapped = unwrapMetaEnvelope(json);
     const j = (unwrapped ?? {}) as Partial<UserAuthJson>;
@@ -240,7 +240,7 @@ export class UserAuthDto extends DtoBase {
       return this;
     }
 
-    if (!raw) throw new Error("UserAuthDto.userId: field is required.");
+    if (!raw) throw new Error("DbUserAuthDto.userId: field is required.");
     this._userId = raw;
     return this;
   }
@@ -262,7 +262,7 @@ export class UserAuthDto extends DtoBase {
       return this;
     }
 
-    if (!raw) throw new Error("UserAuthDto.hash: field is required.");
+    if (!raw) throw new Error("DbUserAuthDto.hash: field is required.");
     this._hash = raw;
     return this;
   }
@@ -284,7 +284,7 @@ export class UserAuthDto extends DtoBase {
       return this;
     }
 
-    if (!raw) throw new Error("UserAuthDto.hashAlgo: field is required.");
+    if (!raw) throw new Error("DbUserAuthDto.hashAlgo: field is required.");
     this._hashAlgo = raw;
     return this;
   }
@@ -316,7 +316,7 @@ export class UserAuthDto extends DtoBase {
       JSON.parse(trimmed);
     } catch {
       throw new Error(
-        "UserAuthDto.hashParamsJson: value must be a valid JSON string."
+        "DbUserAuthDto.hashParamsJson: value must be a valid JSON string."
       );
     }
 
@@ -346,12 +346,12 @@ export class UserAuthDto extends DtoBase {
     }
 
     if (!Number.isFinite(n)) {
-      throw new Error("UserAuthDto.failedAttemptCount: field is required.");
+      throw new Error("DbUserAuthDto.failedAttemptCount: field is required.");
     }
     const t = Math.trunc(n);
     if (t < 0) {
       throw new Error(
-        "UserAuthDto.failedAttemptCount: must be a non-negative integer."
+        "DbUserAuthDto.failedAttemptCount: must be a non-negative integer."
       );
     }
     this._failedAttemptCount = t;
@@ -382,7 +382,7 @@ export class UserAuthDto extends DtoBase {
     }
 
     if (Number.isNaN(Date.parse(trimmed))) {
-      throw new Error("UserAuthDto.lastFailedAt: must be an ISO timestamp.");
+      throw new Error("DbUserAuthDto.lastFailedAt: must be an ISO timestamp.");
     }
 
     this._lastFailedAt = trimmed;
@@ -413,7 +413,7 @@ export class UserAuthDto extends DtoBase {
     }
 
     if (Number.isNaN(Date.parse(trimmed))) {
-      throw new Error("UserAuthDto.lockedUntil: must be an ISO timestamp.");
+      throw new Error("DbUserAuthDto.lockedUntil: must be an ISO timestamp.");
     }
 
     this._lockedUntil = trimmed;
@@ -441,12 +441,12 @@ export class UserAuthDto extends DtoBase {
     }
 
     if (!raw) {
-      throw new Error("UserAuthDto.passwordCreatedAt: field is required.");
+      throw new Error("DbUserAuthDto.passwordCreatedAt: field is required.");
     }
 
     if (Number.isNaN(Date.parse(raw))) {
       throw new Error(
-        "UserAuthDto.passwordCreatedAt: must be an ISO timestamp."
+        "DbUserAuthDto.passwordCreatedAt: must be an ISO timestamp."
       );
     }
 
@@ -482,7 +482,7 @@ export class UserAuthDto extends DtoBase {
 
     if (Number.isNaN(Date.parse(trimmed))) {
       throw new Error(
-        "UserAuthDto.passwordUpdatedAt: must be an ISO timestamp."
+        "DbUserAuthDto.passwordUpdatedAt: must be an ISO timestamp."
       );
     }
 

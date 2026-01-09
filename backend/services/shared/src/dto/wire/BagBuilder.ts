@@ -17,7 +17,7 @@
 import { DtoBag } from "../DtoBag";
 import type { IDto } from "../IDto";
 import type { BagMeta } from "./BagMeta";
-import type { IDtoRegistry } from "../../registry/RegistryBase";
+import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 
 export type FromWireOptions = {
   registry: IDtoRegistry;
@@ -139,11 +139,13 @@ export class BagBuilder {
         );
       }
 
-      const Ctor = registry.resolveCtorByType(t); // throws if unknown
-      const dto = Ctor.fromBody(payloadItem as Record<string, unknown>, {
+      // KISS:
+      // - Treat wire "type" discriminator as the registry key (e.g., "db.user.dto").
+      // - Registry owns construction + hydration via ctor injection (ADR-0102).
+      const dto = registry.create(t, payloadItem, {
         mode: "wire",
         validate: true,
-      });
+      }) as IDto;
 
       items.push(dto);
     }

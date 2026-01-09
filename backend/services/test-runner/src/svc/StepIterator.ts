@@ -283,7 +283,7 @@ export class StepIterator {
           sc.set("status", 200);
           sc.set("handlerStatus", "ok");
 
-          if (seed.dtoType) sc.set("dtoType", seed.dtoType);
+          if (seed.dtoType) sc.set("dtoKey", seed.dtoType);
           if (seed.op) sc.set("op", seed.op);
 
           try {

@@ -6,6 +6,7 @@
  *   - ADR-0088
  *   - ADR-0091
  *   - ADR-0092
+ *   - ADR-0102 (edge hydration requires _id UUIDv4)
  *
  * Purpose:
  * - Core deterministic happy-json + hints generation from a runtime Fields object.
@@ -40,7 +41,8 @@ export type StringFieldFormat =
   | "state2"
   | "zip5"
   | "isoTime"
-  | "json";
+  | "json"
+  | "uuidv4";
 
 export type NumberFieldFormat = "lat" | "lng";
 
@@ -99,19 +101,11 @@ function presentByDefaultDefaultsTrue(fd: FieldDescriptor): boolean {
  * - Include required fields always.
  * - Include optional fields too (all-fields tests must be meaningful),
  *   EXCEPT optional+unique fields which are explicitly skipped.
- *
- * Rationale:
- * - Optional+unique requires a uniqueness strategy that does not apply when
- *   the field is absent; we skip it until the test runner supports that explicitly.
  */
 function shouldIncludeInHappy(fd: FieldDescriptor): boolean {
   const required = requiredDefaultsTrue(fd);
   if (required) return true;
-
-  // Optional field. Skip ONLY if unique:true (explicit non-goal).
   if (fd.unique === true) return false;
-
-  // Otherwise include (all-fields happy).
   return true;
 }
 
@@ -162,32 +156,26 @@ function clampNumber(n: number, min?: number, max?: number): number {
  *   then passes that shape into uniqueValueBuilder(shape).
  *
  * IMPORTANT:
- * - Use letters/digits in the exemplar (NOT literal '#') so shapeFromHappyString()
- *   can derive '#'-wildcards from real digits.
- *
- * v1 scope:
- * - Strings only (email/phone special-cased; everything else is a generic string exemplar).
+ * - UUIDv4 is NOT shape-uniquified.
  */
 function makeUniqueExemplar(fieldName: string, fd: FieldDescriptor): string {
   const fmt = fd.format;
 
-  // Email unique exemplar: visually a shape, still a valid-looking email.
-  if (fmt === "email" || fieldName.toLowerCase().includes("email")) {
-    const exemplar = "xxxx+xxxx@xxx.xxx";
-    return clampLen(exemplar, fd.minLen, fd.maxLen);
+  if (fmt === "uuidv4" || fieldName === "_id") {
+    return makeFormattedString(fieldName, fd, "uuidv4");
   }
 
-  // Phone unique exemplar: digits so shapeFromHappyString() yields '#'.
+  if (fmt === "email" || fieldName.toLowerCase().includes("email")) {
+    return clampLen("xxxx+xxxx@xxx.xxx", fd.minLen, fd.maxLen);
+  }
+
   if (fmt === "phoneDigits" || fieldName.toLowerCase().includes("phone")) {
     const minLen = typeof fd.minLen === "number" ? fd.minLen : 10;
     const maxLen = typeof fd.maxLen === "number" ? fd.maxLen : minLen;
-
-    // Prefer a stable 10-digit shape unless constrained otherwise.
     const targetLen = Math.max(1, Math.min(Math.max(minLen, 10), maxLen));
     return clampLen(digitChars(targetLen), fd.minLen, fd.maxLen);
   }
 
-  // Generic unique strings:
   if (fd.alpha) {
     const baseLen = Math.max(fd.minLen ?? 6, 6);
     return clampLen(
@@ -197,8 +185,7 @@ function makeUniqueExemplar(fieldName: string, fd: FieldDescriptor): string {
     );
   }
 
-  const exemplar = "xxxx-xxxx-xxxx";
-  return clampLen(exemplar, fd.minLen, fd.maxLen);
+  return clampLen("xxxx-xxxx-xxxx", fd.minLen, fd.maxLen);
 }
 
 function makeFormattedString(
@@ -207,6 +194,13 @@ function makeFormattedString(
   format: StringFieldFormat
 ): string {
   switch (format) {
+    case "uuidv4":
+      return clampLen(
+        "3d2f1c7a-8b4e-4d3a-a2b8-3c4d5e6f7a8b",
+        fd.minLen,
+        fd.maxLen
+      );
+
     case "email": {
       const local =
         `test+${fieldName.replace(/[^a-zA-Z0-9]+/g, "")}`.slice(0, 40) ||
@@ -221,25 +215,17 @@ function makeFormattedString(
       return clampLen(digitChars(targetLen), fd.minLen, fd.maxLen);
     }
 
-    case "state2": {
+    case "state2":
       return clampLen("CA", fd.minLen ?? 2, fd.maxLen ?? 2);
-    }
 
-    case "zip5": {
+    case "zip5":
       return clampLen("12345", fd.minLen ?? 5, fd.maxLen ?? 5);
-    }
 
-    case "isoTime": {
-      // Deterministic and parseable ISO-8601 timestamp.
-      // Avoid "now" to keep fixtures stable across machines and sessions.
+    case "isoTime":
       return clampLen("2020-01-02T03:04:05.678Z", fd.minLen, fd.maxLen);
-    }
 
-    case "json": {
-      // Smallest useful valid JSON object.
-      // (If a DTO setter requires JSON.parse sanity, this always passes.)
+    case "json":
       return clampLen("{}", fd.minLen, fd.maxLen);
-    }
 
     default:
       return clampLen(`t_${fieldName}`, fd.minLen, fd.maxLen);
@@ -247,28 +233,32 @@ function makeFormattedString(
 }
 
 function makeHappyString(fieldName: string, fd: FieldDescriptor): string {
-  // If the field is unique, emit a shape exemplar (not a meaningful literal).
+  const fmt = fd.format;
+
+  // Number formats never apply to string minting
+  if (fmt === "lat" || fmt === "lng") {
+    return clampLen(`t_${fieldName}`, fd.minLen, fd.maxLen);
+  }
+
+  if (fmt === "uuidv4" || fieldName === "_id") {
+    return makeFormattedString(fieldName, fd, "uuidv4");
+  }
+
   if (fd.unique) {
     return makeUniqueExemplar(fieldName, fd);
   }
 
-  const fmt = fd.format;
-  if (
-    fmt === "email" ||
-    fmt === "phoneDigits" ||
-    fmt === "state2" ||
-    fmt === "zip5" ||
-    fmt === "isoTime" ||
-    fmt === "json"
-  ) {
-    return makeFormattedString(fieldName, fd, fmt);
-  }
+  const sFmt = fmt as StringFieldFormat | undefined;
 
-  const nameLower = fieldName.toLowerCase();
-  if (nameLower.includes("email")) {
-    const local =
-      `test+${fieldName.replace(/[^a-zA-Z0-9]+/g, "")}`.slice(0, 40) || "test";
-    return clampLen(`${local}@nv.test`, fd.minLen, fd.maxLen);
+  if (
+    sFmt === "email" ||
+    sFmt === "phoneDigits" ||
+    sFmt === "state2" ||
+    sFmt === "zip5" ||
+    sFmt === "isoTime" ||
+    sFmt === "json"
+  ) {
+    return makeFormattedString(fieldName, fd, sFmt);
   }
 
   if (fd.alpha) {
@@ -286,16 +276,12 @@ function makeHappyString(fieldName: string, fd: FieldDescriptor): string {
 function makeHappyNumber(fd: FieldDescriptor): number {
   const fmt = fd.format;
 
-  if (fmt === "lat") {
-    return clampNumber(37.7749, fd.min ?? -90, fd.max ?? 90);
-  }
-
-  if (fmt === "lng") {
+  if (fmt === "lat") return clampNumber(37.7749, fd.min ?? -90, fd.max ?? 90);
+  if (fmt === "lng")
     return clampNumber(-122.4194, fd.min ?? -180, fd.max ?? 180);
-  }
 
-  if (typeof fd.min === "number" && Number.isFinite(fd.min)) return fd.min;
-  if (typeof fd.max === "number" && Number.isFinite(fd.max)) return fd.max;
+  if (typeof fd.min === "number") return fd.min;
+  if (typeof fd.max === "number") return fd.max;
   return 1;
 }
 
@@ -314,19 +300,17 @@ function makeHappyValue(fieldName: string, fd: FieldDescriptor): any {
     case "array":
       return [];
     case "object": {
-      const shape = fd.shape ?? {};
       const o: AnyRecord = {};
-      for (const [k, inner] of Object.entries(shape)) {
+      for (const [k, inner] of Object.entries(fd.shape ?? {})) {
         if (!shouldIncludeInHappy(inner)) continue;
         o[k] = makeHappyValue(k, inner);
       }
       return o;
     }
-    case "union": {
-      const options = fd.options ?? [];
-      if (!options.length) return null;
-      return makeHappyValue(fieldName, options[0] as FieldDescriptor);
-    }
+    case "union":
+      return fd.options?.length
+        ? makeHappyValue(fieldName, fd.options[0])
+        : null;
     default:
       return null;
   }
@@ -361,22 +345,22 @@ export function buildHints(
     if (fd.format) hint.format = fd.format;
 
     if (fd.kind === "string") {
-      if (typeof fd.minLen === "number") hint.minLen = fd.minLen;
-      if (typeof fd.maxLen === "number") hint.maxLen = fd.maxLen;
+      if (fd.minLen !== undefined) hint.minLen = fd.minLen;
+      if (fd.maxLen !== undefined) hint.maxLen = fd.maxLen;
       if (fd.alpha) hint.alpha = true;
       if (fd.case) hint.case = fd.case;
     }
 
     if (fd.kind === "number") {
-      if (typeof fd.min === "number") hint.min = fd.min;
-      if (typeof fd.max === "number") hint.max = fd.max;
+      if (fd.min !== undefined) hint.min = fd.min;
+      if (fd.max !== undefined) hint.max = fd.max;
     }
 
     if (uiHints && fd.ui) {
       hint.ui = { promptKey: fd.ui.promptKey, input: fd.ui.input };
     }
 
-    (out.fields as AnyRecord)[fieldName] = hint;
+    out.fields[fieldName] = hint;
   }
 
   return out;
@@ -389,15 +373,9 @@ export function pickFieldsExport(
     if (!k.endsWith("Fields")) continue;
     if (!v || typeof v !== "object") continue;
     const obj = v as AnyRecord;
-    const keys = Object.keys(obj);
-    if (!keys.length) continue;
-    const first = obj[keys[0]];
-    if (
-      first &&
-      typeof first === "object" &&
-      typeof (first as any).kind === "string"
-    ) {
-      return { exportName: k, fields: obj as Record<string, FieldDescriptor> };
+    const first = obj[Object.keys(obj)[0]];
+    if (first && typeof first === "object" && typeof first.kind === "string") {
+      return { exportName: k, fields: obj };
     }
   }
   return null;
@@ -408,8 +386,7 @@ export function pickDtoClassExport(
 ): { exportName: string; dtoClass: any } | null {
   for (const [k, v] of Object.entries(exportsObj)) {
     if (!k.endsWith("Dto")) continue;
-    if (typeof v !== "function") continue;
-    if (typeof (v as any).fromBody === "function") {
+    if (typeof v === "function" && typeof (v as any).fromBody === "function") {
       return { exportName: k, dtoClass: v };
     }
   }
@@ -420,7 +397,7 @@ export function classNameForSidecar(
   dtoAbs: string,
   dtoClassExportName?: string
 ): string {
-  if (dtoClassExportName && dtoClassExportName.endsWith("Dto")) {
+  if (dtoClassExportName?.endsWith("Dto")) {
     return `${dtoClassExportName}Tdata`;
   }
   const base = path.basename(dtoAbs).replace(/\.dto\.ts$/, "");
@@ -430,45 +407,4 @@ export function classNameForSidecar(
     .map((p) => p[0].toUpperCase() + p.slice(1))
     .join("");
   return `${pascal}DtoTdata`;
-}
-
-export function renderSidecarTs(opts: {
-  dtoRelFromCwd: string;
-  dtoAbs: string;
-  tdataClassName: string;
-  happyJson: AnyRecord;
-  hints: AnyRecord;
-}): string {
-  const happyJsonText = JSON.stringify(opts.happyJson, null, 2);
-  const hintsText = JSON.stringify(opts.hints, null, 2);
-  const tdataPath = sidecarPathForDto(opts.dtoAbs).split(path.sep).join("/");
-
-  return `// ${tdataPath}
-/**
- * Docs:
- * - SOP: Deterministic test fixtures; sidecar is happy-only; variants minted downstream.
- * - ADRs:
- *   - ADR-0088 (DTO Test Data Sidecars)
- *   - ADR-0091 (DTO Sidecar Tooling + Testdata Output)
- *   - ADR-0092 (DTO Fields DSL + Testdata Generation)
- *
- * Source DTO:
- * - ${opts.dtoRelFromCwd}
- *
- * Invariants:
- * - getJson() returns DATA ONLY (canonical DTO JSON). No meta envelope.
- * - getHints() returns minimal mutation hints for test tooling (uniquify/missing/etc).
- * - Generated file. Edit DTO Fields DSL, then re-generate.
- */
-
-export class ${opts.tdataClassName} {
-  public static getJson(): unknown {
-    return ${happyJsonText};
-  }
-
-  public static getHints(): unknown {
-    return ${hintsText};
-  }
-}
-`;
 }

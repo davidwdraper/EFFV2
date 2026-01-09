@@ -28,7 +28,7 @@ import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
-import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
+import type { DtoCtor } from "@nv/shared/registry/DtoRegistry";
 
 export class Registry extends ServiceRegistryBase {
   /** Shared minting registry used for convenience constructors. */

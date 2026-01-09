@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
@@ -18,7 +18,7 @@
  * Invariants:
  * - env-service is the first “pure” SvcRuntime service: rt is REQUIRED here.
  * - posture is REQUIRED by AppBaseCtor and must be provided by the entrypoint.
- * - AppBaseCtor does NOT accept envDto/envReloader; EnvServiceDto lives inside rt only.
+ * - AppBaseCtor does NOT accept envDto/envReloader; DbEnvServiceDto lives inside rt only.
  * - env-service env reload must be DB-backed (NOT S2S to itself).
  */
 
@@ -27,8 +27,8 @@ import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
 import type { AppBaseCtor } from "@nv/shared/base/app/AppBase";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import type { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
 import { Registry } from "./registry/Registry";
@@ -50,7 +50,7 @@ type CreateAppOptions = {
 
   /**
    * ADR-0080: canonical runtime container (mandatory for env-service).
-   * rt owns EnvServiceDto and envLabel.
+   * rt owns DbEnvServiceDto and envLabel.
    */
   rt: SvcRuntime;
 
@@ -58,7 +58,7 @@ type CreateAppOptions = {
    * DB-backed env reload (env-service special-case).
    * Must update rt only; never leak DTO sidecars.
    */
-  envReloader: () => Promise<EnvServiceDto>;
+  envReloader: () => Promise<DbEnvServiceDto>;
 };
 
 class EnvServiceApp extends AppBase {
@@ -66,7 +66,7 @@ class EnvServiceApp extends AppBase {
   private readonly registry: Registry;
 
   constructor(private readonly opts: CreateAppOptions) {
-    // Logger is strict and requires SvcEnv; rt already owns the merged EnvServiceDto.
+    // Logger is strict and requires SvcEnv; rt already owns the merged DbEnvServiceDto.
     setLoggerEnv(opts.rt.getSvcEnvDto());
 
     super({

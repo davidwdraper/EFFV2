@@ -7,7 +7,7 @@
  *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
- *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto as DTO — Key/Value Contract)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:

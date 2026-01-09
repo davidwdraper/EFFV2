@@ -152,7 +152,7 @@ export function makeDtoOpHandlerContext(
     return ctx;
   }
 
-  ctx.set("dtoType", dtoType);
+  ctx.set("dtoKey", dtoType);
   ctx.set("op", op);
 
   if (opts?.resolveCollectionName) {

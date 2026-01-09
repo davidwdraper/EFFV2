@@ -4,7 +4,7 @@
  * - SOP: DTO-only persistence; bag-centric reads; controller finalizes from ctx["bag"]
  * - ADRs:
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
+ *   - ADR-0044 (DbEnvServiceDto — one doc per env@slug@version)
  *   - ADR-0047 (DtoBag & Views)
  *   - ADR-0050 (Wire Bag Envelope)
  *
@@ -17,13 +17,13 @@
  *
  * Invariants:
  * - Never leak DTO internals; use getVarsRaw() defensive copies.
- * - Do NOT use EnvServiceDto.patchFrom() for this step (it patches identity fields).
+ * - Do NOT use DbEnvServiceDto.patchFrom() for this step (it patches identity fields).
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 export class CodeMergeVarsHandler extends HandlerBase {
   public constructor(ctx: HandlerContext, controller: any) {
@@ -35,7 +35,7 @@ export class CodeMergeVarsHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Merge service-local vars over root vars and emit an effective EnvServiceDto bag.";
+    return "Merge service-local vars over root vars and emit an effective DbEnvServiceDto bag.";
   }
 
   protected override async execute(): Promise<void> {
@@ -84,7 +84,7 @@ export class CodeMergeVarsHandler extends HandlerBase {
       return;
     }
 
-    const svcDto: EnvServiceDto | undefined = svcDtos[0];
+    const svcDto: DbEnvServiceDto | undefined = svcDtos[0];
 
     const env = this.requireEnvLabel(requestId);
     const slug = this.requireQuerySlug(requestId);
@@ -102,7 +102,7 @@ export class CodeMergeVarsHandler extends HandlerBase {
     };
 
     // Build an effective DTO with requested identity.
-    const effective = EnvServiceDto.fromBody(
+    const effective = DbEnvServiceDto.fromBody(
       {
         env,
         slug,
@@ -123,23 +123,23 @@ export class CodeMergeVarsHandler extends HandlerBase {
   // Local helpers (no shared dependencies)
   // ───────────────────────────────────────────
 
-  private bagToArray(bag: any): EnvServiceDto[] {
+  private bagToArray(bag: any): DbEnvServiceDto[] {
     if (!bag) return [];
 
     try {
       if (typeof bag.items === "function") {
-        return Array.from(bag.items()) as EnvServiceDto[];
+        return Array.from(bag.items()) as DbEnvServiceDto[];
       }
     } catch {
       // fall through
     }
 
-    if (Array.isArray(bag)) return bag as EnvServiceDto[];
+    if (Array.isArray(bag)) return bag as DbEnvServiceDto[];
 
     return [];
   }
 
-  private makeSingletonBag(dto: EnvServiceDto): any {
+  private makeSingletonBag(dto: DbEnvServiceDto): any {
     const anyBag = DtoBag as any;
 
     if (typeof anyBag.fromDtos === "function") {
@@ -165,8 +165,8 @@ export class CodeMergeVarsHandler extends HandlerBase {
         httpStatus: 500,
         title: "env_config_vars_unreadable",
         detail:
-          `Unable to read vars from ${which} EnvServiceDto (getVarsRaw failed). ` +
-          "Dev: ensure EnvServiceDto exposes getVarsRaw() returning an object.",
+          `Unable to read vars from ${which} DbEnvServiceDto (getVarsRaw failed). ` +
+          "Dev: ensure DbEnvServiceDto exposes getVarsRaw() returning an object.",
         stage: `code.mergeVars:${which}.vars`,
         requestId,
         origin: { file: __filename, method: "requireVars" },

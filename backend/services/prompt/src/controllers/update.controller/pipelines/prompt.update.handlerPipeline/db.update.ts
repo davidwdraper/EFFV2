@@ -7,7 +7,7 @@
  *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound; canonical id="_id")
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *
  * Purpose:
  * - Consume the UPDATED **singleton DtoBag** from ctx["bag"] and execute an update().

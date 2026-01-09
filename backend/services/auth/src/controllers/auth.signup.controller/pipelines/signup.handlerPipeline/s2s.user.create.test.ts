@@ -34,7 +34,7 @@
  */
 
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { UserDto } from "@nv/shared/dto/user.dto";
+import type { UserDto } from "@nv/shared/dto/db.user.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import { UserDtoRegistry as UserDtoRegistryCtor } from "@nv/shared/dto/registry/user.dtoRegistry";
 import { newUuid } from "@nv/shared/utils/uuid";

@@ -60,7 +60,7 @@ export class DbEnsureUndefinedPlaceholderHandler extends HandlerBase {
   public async execute(): Promise<void> {
     const requestId = this.ctx.get("requestId");
 
-    const dtoType = this.ctx.get("dtoType");
+    const dtoType = this.ctx.get("dtoKey");
     const language = this.ctx.get("language");
     const version = this.ctx.get("version");
     const promptKey = this.ctx.get("promptKey");

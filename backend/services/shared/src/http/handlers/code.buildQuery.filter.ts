@@ -47,7 +47,7 @@ export type FilterFieldSpec =
   | {
       target: string;
       source: "ctx";
-      /** Context key to read from, e.g. "dtoType" or "op". */
+      /** Context key to read from, e.g. "dtoKey" or "op". */
       key: string;
       required?: boolean;
     }

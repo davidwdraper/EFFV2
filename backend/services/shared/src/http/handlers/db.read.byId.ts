@@ -41,7 +41,7 @@ import type { HandlerContext } from "./HandlerContext";
 import { DbReader } from "../../dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "../../dto/DtoBag";
 import type { DtoBase } from "../../dto/DtoBase";
-import { isValidUuidV4 } from "../../utils/uuid";
+import { isValidUuid } from "../../utils/uuid";
 
 type DtoCtorWithCollection<T> = {
   fromBody: (j: unknown, opts?: { validate?: boolean }) => T;
@@ -76,7 +76,7 @@ export class DbReadByIdHandler extends HandlerBase {
     // ---- Params & basic validation (no external edges) ---------------------
     const params: any = this.safeCtxGet<any>("params") ?? {};
     const rawId = typeof params.id === "string" ? params.id.trim() : "";
-    const dtoType = this.safeCtxGet<string>("dtoType") ?? "";
+    const dtoType = this.safeCtxGet<string>("dtoKey") ?? "";
 
     // Validate dtoType
     if (!dtoType) {
@@ -119,7 +119,7 @@ export class DbReadByIdHandler extends HandlerBase {
     }
 
     // Validate id format
-    if (!isValidUuidV4(rawId)) {
+    if (!isValidUuid(rawId)) {
       this.failWithError({
         httpStatus: 400,
         title: "bad_request_id_format",

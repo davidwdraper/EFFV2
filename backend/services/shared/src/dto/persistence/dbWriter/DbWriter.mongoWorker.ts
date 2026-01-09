@@ -10,8 +10,10 @@
  * Purpose:
  * - Mongo-backed implementation of IDbWriterWorker<TDto>.
  * - Encapsulates all direct Mongo connectivity and duplicate handling.
- * - DbWriter<TDto> delegates to this worker by default; future mock workers
- *   can be injected via constructor without changing handler call sites.
+ *
+ * Critical invariant (ADR-0057):
+ * - This worker MUST NOT mint ids and MUST NOT "heal" `_id` conflicts by cloning.
+ * - Missing id is an upstream error; duplicate `_id` is a 409 conflict.
  */
 
 import { MongoClient, Collection, Db } from "mongodb";
@@ -93,8 +95,6 @@ async function getExplicitCollection(
 
 /* ----------------------- helpers ----------------------------- */
 
-const MAX_DUP_RETRIES = 3;
-
 function requireSingleton<TDto extends DtoBase>(
   bag: DtoBag<TDto>,
   op: "write" | "update"
@@ -110,24 +110,6 @@ function requireSingleton<TDto extends DtoBase>(
   return items[0] as TDto;
 }
 
-/** Enforce clone invariants: same class, same collection; only `_id` may differ. */
-function assertCloneInvariants(before: DtoBase, after: DtoBase): void {
-  const beforeCtor = (before as any)?.constructor;
-  const afterCtor = (after as any)?.constructor;
-  if (beforeCtor !== afterCtor) {
-    throw new Error(
-      "DBWRITER_CLONE_INVARIANT: clone() changed DTO class. Only `_id` may change."
-    );
-  }
-  const beforeColl = before.requireCollectionName();
-  const afterColl = after.requireCollectionName();
-  if (beforeColl !== afterColl) {
-    throw new Error(
-      `DBWRITER_CLONE_INVARIANT: clone() changed dbCollectionName() from "${beforeColl}" to "${afterColl}".`
-    );
-  }
-}
-
 /** Heuristic: does a parsed duplicate refer to the _id key/index? */
 function isIdDuplicate(dup: any): boolean {
   if (!dup) return false;
@@ -137,6 +119,19 @@ function isIdDuplicate(dup: any): boolean {
   if (dup.fields && typeof dup.fields === "object" && "_id" in dup.fields)
     return true;
   return false;
+}
+
+function requireId(
+  base: DtoBase,
+  op: "write" | "writeMany" | "update"
+): string {
+  const id = String(base.getId() ?? "").trim();
+  if (!id) {
+    throw new Error(
+      `DBWRITER_ID_REQUIRED: ${op} requires canonical id to be assigned upstream (ADR-0057).`
+    );
+  }
+  return id;
 }
 
 /* ---------------------- worker class ------------------------- */
@@ -173,35 +168,102 @@ export class MongoDbWriterWorker<TDto extends DtoBase>
 
   /**
    * Insert a single DTO from the singleton bag.
-   * Assign meta + id BEFORE toBody.
+   * Assign meta BEFORE toBody. Id must already exist; no minting here.
    */
   public async write(): Promise<DtoBag<TDto>> {
-    let dto = requireSingleton(this.bag, "write");
-    let collectionName = (dto as DtoBase).requireCollectionName();
-    let coll = await getExplicitCollection(
+    const dto = requireSingleton(this.bag, "write");
+    const base = dto as DtoBase;
+
+    // strict: must already exist
+    requireId(base, "write");
+
+    const collectionName = base.requireCollectionName();
+    const coll = await getExplicitCollection(
       this.mongoUri,
       this.mongoDb,
       collectionName
     );
 
-    for (let attempt = 1; attempt <= MAX_DUP_RETRIES; attempt++) {
-      try {
-        const base = dto as DtoBase;
+    try {
+      base.stampCreatedAt();
+      base.stampOwnerUserId(this.userId);
+      base.stampUpdatedAt(this.userId);
 
-        // Meta first: createdAt/ownerUserId (one-shot), updatedAt/updatedByUserId.
+      const json = base.toBody() as Record<string, unknown>;
+      const wireId = String((json as any)._id ?? "").trim();
+      if (!wireId) {
+        throw new Error(
+          "DBWRITER_WRITE_NO_WIRE_ID: toBody() did not include `_id`."
+        );
+      }
+
+      const res = await coll.insertOne(json as any);
+      const insertedId = String(res?.insertedId ?? "");
+      if (!insertedId) {
+        throw new Error(
+          "DBWRITER_WRITE_NO_ID: insertOne returned no insertedId."
+        );
+      }
+
+      return new DtoBag<TDto>([dto as TDto]);
+    } catch (err) {
+      const dup = parseDuplicateKey(err);
+      if (!dup) {
+        this.log.error(
+          { collection: collectionName, err: (err as Error)?.message },
+          "dbwriter: insert failed (non-duplicate)"
+        );
+        throw err;
+      }
+
+      const idDup = isIdDuplicate(dup);
+
+      this.log.warn(
+        {
+          collection: collectionName,
+          code: 11000,
+          detail: dup,
+          idDuplicate: idDup,
+        },
+        "dbwriter: duplicate key"
+      );
+
+      // IMPORTANT: no clone-retry for _id. Duplicate is a real 409 conflict now.
+      throw new DuplicateKeyError(dup, err as Error);
+    }
+  }
+
+  /**
+   * Batch insert.
+   * Stamps meta only. Id must already exist on every DTO; no minting, no retry cloning.
+   */
+  public async writeMany(bag?: DtoBag<TDto>): Promise<DtoBag<TDto>> {
+    const source = bag ?? this.bag;
+    const inserted: TDto[] = [];
+
+    for (const _item of source.items()) {
+      const dto = _item as TDto;
+      const base = dto as DtoBase;
+
+      requireId(base, "writeMany");
+
+      const collectionName = base.requireCollectionName();
+      const coll = await getExplicitCollection(
+        this.mongoUri,
+        this.mongoDb,
+        collectionName
+      );
+
+      try {
         base.stampCreatedAt();
         base.stampOwnerUserId(this.userId);
         base.stampUpdatedAt(this.userId);
 
-        // Ensure id BEFORE toBody (DtoBase handles generation/validation)
-        base.ensureId();
-
-        // Outbound wire already contains `_id`; writer does no transformations.
         const json = base.toBody() as Record<string, unknown>;
-        const wireId = String((json as any)._id ?? "");
+        const wireId = String((json as any)._id ?? "").trim();
         if (!wireId) {
           throw new Error(
-            "DBWRITER_WRITE_NO_WIRE_ID: toBody() did not include `_id`."
+            "DBWRITER_WRITE_MANY_NO_WIRE_ID: toBody() did not include `_id`."
           );
         }
 
@@ -209,22 +271,17 @@ export class MongoDbWriterWorker<TDto extends DtoBase>
         const insertedId = String(res?.insertedId ?? "");
         if (!insertedId) {
           throw new Error(
-            "DBWRITER_WRITE_NO_ID: insertOne returned no insertedId."
+            "DBWRITER_WRITE_MANY_NO_ID: insertOne returned no insertedId."
           );
         }
 
-        // Success — return a bag containing the exact DTO we inserted
-        return new DtoBag<TDto>([dto as TDto]);
+        inserted.push(dto);
       } catch (err) {
         const dup = parseDuplicateKey(err);
         if (!dup) {
           this.log.error(
-            {
-              attempt,
-              collection: collectionName,
-              err: (err as Error)?.message,
-            },
-            "dbwriter: insert failed (non-duplicate)"
+            { collection: collectionName, err: (err as Error)?.message },
+            "dbwriter: insert failed (many, non-duplicate)"
           );
           throw err;
         }
@@ -232,180 +289,16 @@ export class MongoDbWriterWorker<TDto extends DtoBase>
         const idDup = isIdDuplicate(dup);
         this.log.warn(
           {
-            attempt,
             collection: collectionName,
             code: 11000,
             detail: dup,
             idDuplicate: idDup,
           },
-          "dbwriter: duplicate key"
+          "dbwriter: duplicate key (many)"
         );
 
-        // Non-_id unique violation → surface immediately
-        if (!idDup) throw new DuplicateKeyError(dup, err as Error);
-
-        // _id duplicate — retry with clone + NEW UUID
-        if (attempt < MAX_DUP_RETRIES) {
-          if (typeof (dto as any).clone !== "function") {
-            this.log.warn(
-              { collection: collectionName },
-              "dbwriter: clone() not available; surfacing duplicate"
-            );
-            throw new DuplicateKeyError(dup, err as Error);
-          }
-          const cloned = (dto as any).clone() as DtoBase;
-          assertCloneInvariants(dto as DtoBase, cloned as DtoBase);
-
-          // Fresh meta + id on the clone.
-          cloned.stampCreatedAt();
-          cloned.stampOwnerUserId(this.userId);
-          cloned.stampUpdatedAt(this.userId);
-          cloned.ensureId();
-
-          dto = cloned as TDto;
-
-          // safety: collection should remain identical
-          const nextCollection = (dto as DtoBase).requireCollectionName();
-          if (nextCollection !== collectionName) {
-            this.log.warn(
-              { from: collectionName, to: nextCollection },
-              "dbwriter: collection changed across clone (unexpected)"
-            );
-            collectionName = nextCollection;
-            coll = await getExplicitCollection(
-              this.mongoUri,
-              this.mongoDb,
-              collectionName
-            );
-          }
-
-          continue; // retry
-        }
-
-        // Exhausted retries
+        // No per-item clone retry; surface as 409
         throw new DuplicateKeyError(dup, err as Error);
-      }
-    }
-
-    // Unreachable
-    throw new Error(
-      "DBWRITER_WRITE_EXHAUSTED: exhausted duplicate retries without success."
-    );
-  }
-
-  /**
-   * Batch insert with per-item duplicate handling.
-   * Returns a DtoBag containing all successfully inserted DTOs (with any retried clones).
-   */
-  public async writeMany(bag?: DtoBag<TDto>): Promise<DtoBag<TDto>> {
-    const source = bag ?? this.bag;
-    const inserted: TDto[] = [];
-
-    for (const _item of source.items()) {
-      let dto = _item as TDto;
-      let collectionName = (dto as DtoBase).requireCollectionName();
-      let coll = await getExplicitCollection(
-        this.mongoUri,
-        this.mongoDb,
-        collectionName
-      );
-
-      let insertedOk = false;
-      for (
-        let attempt = 1;
-        attempt <= MAX_DUP_RETRIES && !insertedOk;
-        attempt++
-      ) {
-        try {
-          const base = dto as DtoBase;
-
-          base.stampCreatedAt();
-          base.stampOwnerUserId(this.userId);
-          base.stampUpdatedAt(this.userId);
-          base.ensureId();
-
-          const json = base.toBody() as Record<string, unknown>;
-          const wireId = String((json as any)._id ?? "");
-          if (!wireId) {
-            throw new Error(
-              "DBWRITER_WRITE_MANY_NO_WIRE_ID: toBody() did not include `_id`."
-            );
-          }
-
-          const res = await coll.insertOne(json as any);
-          const insertedId = String(res?.insertedId ?? "");
-          if (!insertedId) {
-            throw new Error(
-              "DBWRITER_WRITE_MANY_NO_ID: insertOne returned no insertedId."
-            );
-          }
-
-          inserted.push(dto as TDto);
-          insertedOk = true;
-        } catch (err) {
-          const dup = parseDuplicateKey(err);
-          if (!dup) {
-            this.log.error(
-              {
-                attempt,
-                collection: collectionName,
-                err: (err as Error)?.message,
-              },
-              "dbwriter: insert failed (many, non-duplicate)"
-            );
-            throw err;
-          }
-
-          const idDup = isIdDuplicate(dup);
-          this.log.warn(
-            {
-              attempt,
-              collection: collectionName,
-              code: 11000,
-              detail: dup,
-              idDuplicate: idDup,
-            },
-            "dbwriter: duplicate key (many)"
-          );
-
-          if (!idDup) throw new DuplicateKeyError(dup, err as Error);
-
-          if (attempt < MAX_DUP_RETRIES) {
-            if (typeof (dto as any).clone !== "function") {
-              this.log.warn(
-                { collection: collectionName },
-                "dbwriter: clone() not available (many); surfacing duplicate"
-              );
-              throw new DuplicateKeyError(dup, err as Error);
-            }
-            const cloned = (dto as any).clone() as DtoBase;
-            assertCloneInvariants(dto as DtoBase, cloned as DtoBase);
-
-            cloned.stampCreatedAt();
-            cloned.stampOwnerUserId(this.userId);
-            cloned.stampUpdatedAt(this.userId);
-            cloned.ensureId();
-
-            dto = cloned as TDto;
-
-            const nextCollection = (dto as DtoBase).requireCollectionName();
-            if (nextCollection !== collectionName) {
-              this.log.warn(
-                { from: collectionName, to: nextCollection },
-                "dbwriter: collection changed across clone (many, unexpected)"
-              );
-              collectionName = nextCollection;
-              coll = await getExplicitCollection(
-                this.mongoUri,
-                this.mongoDb,
-                collectionName
-              );
-            }
-            continue;
-          }
-
-          throw new DuplicateKeyError(dup, err as Error);
-        }
       }
     }
 
@@ -415,17 +308,16 @@ export class MongoDbWriterWorker<TDto extends DtoBase>
   /** Update by canonical id (no id mutation). */
   public async update(): Promise<{ id: string }> {
     const dto = requireSingleton(this.bag, "update");
-    const collectionName = (dto as DtoBase).requireCollectionName();
+    const base = dto as DtoBase;
+
+    const rawId = requireId(base, "update");
+
+    const collectionName = base.requireCollectionName();
     const coll = await getExplicitCollection(
       this.mongoUri,
       this.mongoDb,
       collectionName
     );
-
-    const base = dto as DtoBase;
-
-    // Must already be set; no generation on update.
-    const rawId = base.getId();
 
     // Refresh update meta only; createdAt/ownerUserId stay as-is.
     base.stampUpdatedAt(this.userId);

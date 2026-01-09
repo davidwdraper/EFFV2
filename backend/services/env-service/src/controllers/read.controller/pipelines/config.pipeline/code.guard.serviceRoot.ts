@@ -4,7 +4,7 @@
  * - SOP: per-pipeline folders; single-purpose handlers; fail-fast with Ops guidance
  * - ADRs:
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
+ *   - ADR-0044 (DbEnvServiceDto — one doc per env@slug@version)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta)
  *
  * Purpose:

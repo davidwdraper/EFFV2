@@ -76,11 +76,11 @@ export class CodePasswordHashHandler extends HandlerBase {
     }
 
     // Optional injectable hash function, primarily for tests.
-    const injectedFn = this.ctx.get<ScryptFn>("signup.passwordHashFn" as any);
+    const injectedFn = this.ctx.get<unknown>("signup.passwordHashFn" as any);
     const scryptFn: ScryptFn =
-      injectedFn && typeof injectedFn === "function"
-        ? injectedFn
-        : crypto.scryptSync;
+      typeof injectedFn === "function"
+        ? (injectedFn as ScryptFn)
+        : (crypto.scryptSync as unknown as ScryptFn);
 
     // 16 bytes of random salt, hex-encoded.
     const saltHex = crypto.randomBytes(16).toString("hex");
@@ -127,10 +127,8 @@ export class CodePasswordHashHandler extends HandlerBase {
     this.ctx.set("signup.passwordHashParamsJson", hashParamsJson);
     this.ctx.set("signup.passwordCreatedAt", passwordCreatedAt);
 
-    // Critical: never stash cleartext.
-    // (Nothing to clear because we never stored it.)
-
-    this.ctx.set("handlerStatus", "ok");
+    // Canonical success rail.
+    this.ctx.set("handlerStatus", "success");
   }
 
   /**
@@ -168,23 +166,7 @@ export class CodePasswordHashHandler extends HandlerBase {
       return (name: string) => c.header(name);
     }
 
-    // Last-resort test compatibility: some runners stash headers onto ctx.
-    // This is NOT a production contract; it exists to keep tests deterministic.
-    return (name: string) => {
-      const mapA = this.ctx.get<Record<string, any>>("http.headers" as any);
-      const mapB = this.ctx.get<Record<string, any>>("headers" as any);
-      const map = mapA && typeof mapA === "object" ? mapA : mapB;
-
-      if (!map || typeof map !== "object") return undefined;
-
-      const lower = name.toLowerCase();
-      for (const k of Object.keys(map)) {
-        if (String(k).toLowerCase() === lower) {
-          const v = map[k];
-          return typeof v === "string" ? v : String(v ?? "");
-        }
-      }
-      return undefined;
-    };
+    // No controller header contract available.
+    return () => undefined;
   }
 }

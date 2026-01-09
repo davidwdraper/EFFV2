@@ -21,7 +21,7 @@
 import { UserAuthDto } from "@nv/shared/dto/user-auth.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
-import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
+import type { DtoCtor } from "@nv/shared/registry/DtoRegistry";
 import { UserAuthDtoRegistry } from "@nv/shared/dto/registry/user-auth.dtoRegistry";
 
 export class Registry extends ServiceRegistryBase {

@@ -6,7 +6,7 @@
  *   - ADR-0040 (DTO-Only Persistence; reads hydrate DTOs)
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto as DTO — Key/Value Contract)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")

@@ -19,10 +19,10 @@
  */
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
-import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
+import type { DtoCtor } from "@nv/shared/registry/DtoRegistry";
 
 export class Registry extends ServiceRegistryBase {
   /** Shared secret used by DTO constructors that enforce instantiation discipline. */
@@ -35,7 +35,7 @@ export class Registry extends ServiceRegistryBase {
   protected ctorByType(): Record<string, DtoCtor<IDto>> {
     return {
       // template default DTO
-      ["env-service"]: EnvServiceDto as unknown as DtoCtor<IDto>,
+      ["env-service"]: DbEnvServiceDto as unknown as DtoCtor<IDto>,
       // add new DTOs here as you grow the service:
       // "my-type": MyDto as unknown as DtoCtor<IDto>,
     };
@@ -46,7 +46,7 @@ export class Registry extends ServiceRegistryBase {
    * to a DTO instance.
    *
    * env-service v1:
-   * - EnvServiceDto is purely configuration data, not user-shaped.
+   * - DbEnvServiceDto is purely configuration data, not user-shaped.
    * - There is no field-level security or per-user view adjustment.
    * - DTOs are passed through unchanged.
    *
@@ -59,20 +59,20 @@ export class Registry extends ServiceRegistryBase {
 
   // ─────────────── Convenience constructors (optional) ───────────────
 
-  /** Create a new EnvServiceDto instance with a seeded collection. */
-  public newEnvServiceDto(): EnvServiceDto {
-    const dto = new EnvServiceDto(this.secret);
-    dto.setCollectionName(EnvServiceDto.dbCollectionName());
+  /** Create a new DbEnvServiceDto instance with a seeded collection. */
+  public newDbEnvServiceDto(): DbEnvServiceDto {
+    const dto = new DbEnvServiceDto(this.secret);
+    dto.setCollectionName(DbEnvServiceDto.dbCollectionName());
     return dto;
   }
 
-  /** Hydrate an EnvServiceDto from JSON (validates if requested) and seed collection. */
+  /** Hydrate an DbEnvServiceDto from JSON (validates if requested) and seed collection. */
   public fromJsonEnvService(
     json: unknown,
     opts?: { validate?: boolean }
-  ): EnvServiceDto {
-    const dto = EnvServiceDto.fromBody(json, { validate: !!opts?.validate });
-    dto.setCollectionName(EnvServiceDto.dbCollectionName());
+  ): DbEnvServiceDto {
+    const dto = DbEnvServiceDto.fromBody(json, { validate: !!opts?.validate });
+    dto.setCollectionName(DbEnvServiceDto.dbCollectionName());
     return dto;
   }
 }

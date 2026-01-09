@@ -11,13 +11,13 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { CodeBuildFilterHandler } from "./code.buildFilter";
 import { DbReadListHandler } from "./db.read.list";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed DTO ctor used by handlers
-  ctx.set("list.dtoCtor", EnvServiceDto);
+  ctx.set("list.dtoCtor", DbEnvServiceDto);
 
   return [
     new CodeBuildFilterHandler(ctx, controller),

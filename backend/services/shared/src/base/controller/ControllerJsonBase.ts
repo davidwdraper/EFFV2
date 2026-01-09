@@ -9,6 +9,8 @@
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0050 (Wire Bag Envelope; bag-only edges)
  *   - ADR-0069 (Multi-Format Controllers & DTO Body Semantics)
+ *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
+ *   - ADR-0103 (DTO naming convention: keys, filenames, classnames)
  *
  * Purpose:
  * - JSON wire-format controller base.
@@ -36,10 +38,19 @@ export abstract class ControllerJsonBase extends ControllerExpressBase {
     }
 
     const requestId = ctx.get<string>("requestId") ?? "unknown";
-    const status =
-      ctx.get<number>("status") ?? ctx.get<number>("response.status") ?? 200;
 
-    if (ctx.get<string>("handlerStatus") === "error") {
+    const isError = ctx.get<string>("handlerStatus") === "error";
+
+    // Status rule:
+    // - Prefer explicit ctx["status"] then ctx["response.status"]
+    // - If error and no explicit status was seeded, default to 500 (never 200)
+    const seededStatus =
+      ctx.get<number>("status") ?? ctx.get<number>("response.status");
+
+    const status =
+      typeof seededStatus === "number" ? seededStatus : isError ? 500 : 200;
+
+    if (isError) {
       const error =
         ctx.get<NvHandlerError>("error") ??
         (ctx.get<unknown>("response.body") as NvHandlerError | undefined);
@@ -91,12 +102,19 @@ export abstract class ControllerJsonBase extends ControllerExpressBase {
     const payload = bag.toBody();
     res.status(status).json(payload);
 
+    // Logging:
+    // - dtoKey is canonical (ADR-0103); dtoType may still exist in legacy bags.
+    const dtoKey = ctx.get<string>("dtoKey");
+    const metaDtoKey = (payload as any)?.meta?.dtoKey;
+    const metaDtoType = (payload as any)?.meta?.dtoType;
+
     this.log.debug(
       {
         event: "json_finalize_success",
         requestId,
         status,
-        dtoType: (payload as any)?.meta?.dtoType,
+        dtoKey: dtoKey ?? metaDtoKey,
+        dtoType: metaDtoType,
         count: (payload as any)?.meta?.count,
       },
       "ControllerJsonBase finalized response"

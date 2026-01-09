@@ -28,7 +28,7 @@ import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import { PromptDto } from "@nv/shared/dto/prompt.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import type { IDto } from "@nv/shared/dto/IDto";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 export class CodePatchHandler extends HandlerBase {
@@ -236,7 +236,7 @@ export class CodePatchHandler extends HandlerBase {
 
     // Re-assert instance collection (best-effort; DbWriter will enforce).
     try {
-      const dtoType = this.ctx.get<string>("dtoType");
+      const dtoType = this.ctx.get<string>("dtoKey");
       if (
         dtoType &&
         typeof (this.controller as any).getDtoRegistry === "function"

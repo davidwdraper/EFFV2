@@ -14,7 +14,7 @@ import { randomUUID } from "crypto";
 /**
  * Validate UUIDv4 (lower/upper case acceptable)
  */
-export function isValidUuidV4(value: unknown): value is string {
+export function isValidUuid(value: unknown): value is string {
   if (typeof value !== "string") return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value
@@ -36,10 +36,10 @@ export function newUuid(): string {
  * - Returns lowercase UUID string
  * - Throws with Ops guidance on invalid input
  */
-export function validateUUIDv4String(value: string): string {
+export function validateUUIDString(value: string): string {
   const trimmed = (value ?? "").trim();
 
-  if (!isValidUuidV4(trimmed)) {
+  if (!isValidUuid(trimmed)) {
     throw new Error(
       `INVALID_UUID_V4: "${value}" is not a valid UUIDv4 string. ` +
         `Ops: ensure callers mint ids via newUuid() or provide valid UUIDv4 ` +

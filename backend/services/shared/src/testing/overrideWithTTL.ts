@@ -1,7 +1,7 @@
 // backend/services/shared/src/testing/overrideWithTTL.ts
 /**
  * Docs:
- * - ADR-0044 (EnvServiceDto — Key/Value Contract) [consumer example]
+ * - ADR-0044 (DbEnvServiceDto — Key/Value Contract) [consumer example]
  * - ADR-0074 (DB_STATE-aware DB selection via getDbVar) [context only]
  *
  * Purpose:

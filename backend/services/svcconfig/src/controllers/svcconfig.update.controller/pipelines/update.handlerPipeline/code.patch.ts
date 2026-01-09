@@ -31,7 +31,7 @@ import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import type { IDto } from "@nv/shared/dto/IDto";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";
 
 export class CodePatchHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -211,7 +211,7 @@ export class CodePatchHandler extends HandlerBase {
 
     // ---- Re-assert instance collection (prevents DTO_COLLECTION_UNSET) -----
     try {
-      const dtoType = this.safeCtxGet<string>("dtoType"); // "svcconfig" on this route
+      const dtoType = this.safeCtxGet<string>("dtoKey"); // "svcconfig" on this route
       if (
         dtoType &&
         typeof (this.controller as any).getDtoRegistry === "function"

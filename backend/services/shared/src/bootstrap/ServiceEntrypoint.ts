@@ -4,14 +4,14 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0014 (Base Hierarchy: ServiceEntrypoint vs ServiceBase)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
  * Purpose:
  * - Shared async entrypoint helper for HTTP services.
- * - Owns envBootstrap + EnvServiceDto selection + reloader adaptation +
+ * - Owns envBootstrap + DbEnvServiceDto selection + reloader adaptation +
  *   createApp() + listen() + fatal error handling.
  *
  * Notes:
@@ -27,7 +27,7 @@
 import fs from "fs";
 import path from "path";
 import { envBootstrap } from "./envBootstrap";
-import { EnvServiceDto } from "../dto/env-service.dto";
+import { DbEnvServiceDto } from "../dto/db.env-service.dto";
 import type { DtoBag } from "../dto/DtoBag";
 import type { SvcRuntime } from "../runtime/SvcRuntime";
 import type { SvcPosture } from "../runtime/SvcPosture";
@@ -62,8 +62,8 @@ export interface ServiceEntrypointOptions {
     version: number;
     posture: SvcPosture;
     envLabel: string;
-    envDto: EnvServiceDto;
-    envReloader: () => Promise<EnvServiceDto>;
+    envDto: DbEnvServiceDto;
+    envReloader: () => Promise<DbEnvServiceDto>;
     rt: SvcRuntime;
   }) => Promise<{
     app: {
@@ -90,30 +90,30 @@ export async function runServiceEntrypoint(
         logFile,
       });
 
-    // Step 2: Extract primary EnvServiceDto (first item, deterministic).
-    const it = (envBag as unknown as DtoBag<EnvServiceDto>).items();
+    // Step 2: Extract primary DbEnvServiceDto (first item, deterministic).
+    const it = (envBag as unknown as DtoBag<DbEnvServiceDto>).items();
     const first = it.next();
-    const primary: EnvServiceDto | undefined = first.done
+    const primary: DbEnvServiceDto | undefined = first.done
       ? undefined
       : first.value;
 
     if (!primary) {
       throw new Error(
-        "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No EnvServiceDto in envBag after envBootstrap. " +
+        "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No DbEnvServiceDto in envBag after envBootstrap. " +
           "Ops: verify env-service has a config record for this service (env@slug@version)."
       );
     }
 
     // Step 3: Adapt bag reloader to single-DTO reloader.
-    const envReloaderForApp = async (): Promise<EnvServiceDto> => {
-      const bag: DtoBag<EnvServiceDto> = (await envReloader()) as any;
+    const envReloaderForApp = async (): Promise<DbEnvServiceDto> => {
+      const bag: DtoBag<DbEnvServiceDto> = (await envReloader()) as any;
       const iter = bag.items();
       const one = iter.next();
       if (!one.done && one.value) return one.value;
 
       throw new Error(
         "ENV_RELOADER_EMPTY_BAG: envReloader returned an empty bag. " +
-          "Ops: ensure the service’s EnvServiceDto config record still exists in env-service."
+          "Ops: ensure the service’s DbEnvServiceDto config record still exists in env-service."
       );
     };
 

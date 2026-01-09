@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
  *
@@ -16,7 +16,7 @@
  * Invariants:
  * - No process.env reads here (bootstrap owns it).
  * - Posture is the single source of truth (no checkDb duplication).
- * - No EnvServiceDto unwrapping logic in service code (shared entrypoint owns it).
+ * - No DbEnvServiceDto unwrapping logic in service code (shared entrypoint owns it).
  *
  * Template/test-runner invariant:
  * - POSTURE must be exported from src/app.ts so dist/app.js exposes it for the runner.

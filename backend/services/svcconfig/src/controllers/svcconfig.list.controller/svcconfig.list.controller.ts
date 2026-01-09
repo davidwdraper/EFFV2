@@ -55,7 +55,7 @@ export class SvcconfigListController extends ControllerJsonBase {
     const op = (req.params.op as string) || "list";
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", op);
 
     // Seed caller identity from S2S headers (see LDD-19: S2S protocol).

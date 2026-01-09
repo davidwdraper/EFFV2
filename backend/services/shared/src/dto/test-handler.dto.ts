@@ -24,7 +24,7 @@
  * - Failed assertions are captured as simple strings for easy human scanning.
  */
 
-import { DtoBase, DtoValidationError } from "./DtoBase";
+import { DtoBase } from "./DtoBase";
 import type { IndexHint } from "./persistence/index-hints";
 import type { IDto } from "./IDto";
 
@@ -78,30 +78,16 @@ type TestHandlerJson = {
 };
 
 export class TestHandlerDto extends DtoBase implements IDto {
-  // ─────────────── Static: Collection & Index Hints ───────────────
-
   public static dbCollectionName(): string {
     return "test-handler";
   }
 
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
-    // Parent/child navigation.
     { kind: "lookup", fields: ["runRefId"] },
     { kind: "lookup", fields: ["runId"] },
-
-    // Drill-down by TARGET service/pipeline/handler.
-    {
-      kind: "lookup",
-      fields: ["serviceSlug", "pipelineLabel", "handlerName"],
-    },
-
-    // Filter by outcome.
+    { kind: "lookup", fields: ["serviceSlug", "pipelineLabel", "handlerName"] },
     { kind: "lookup", fields: ["status"] },
-
-    // Optional: environment/state.
     { kind: "lookup", fields: ["env", "dbState"] },
-
-    // Optional: runner drill-down (rare, but sometimes useful).
     { kind: "lookup", fields: ["runnerServiceSlug"] },
   ];
 
@@ -145,8 +131,6 @@ export class TestHandlerDto extends DtoBase implements IDto {
   public requestId: string | undefined;
   public notes: string | undefined;
 
-  // ─────────────── Construction ───────────────
-
   public constructor(
     secretOrMeta?:
       | symbol
@@ -156,8 +140,6 @@ export class TestHandlerDto extends DtoBase implements IDto {
     this.setCollectionName(TestHandlerDto.dbCollectionName());
   }
 
-  // ─────────────── Wire hydration ───────────────
-
   public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
@@ -165,7 +147,6 @@ export class TestHandlerDto extends DtoBase implements IDto {
     const dto = new TestHandlerDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<TestHandlerJson>;
 
-    // id
     if (typeof j._id === "string" && j._id.trim()) {
       dto.setIdOnce(j._id.trim());
     }
@@ -176,39 +157,27 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (typeof j.env === "string") dto.env = j.env.trim();
     if (typeof j.dbState === "string") dto.dbState = j.dbState.trim();
 
-    // TARGET
-    if (typeof j.serviceSlug === "string") {
+    if (typeof j.serviceSlug === "string")
       dto.serviceSlug = j.serviceSlug.trim();
-    }
 
     if (typeof j.serviceVersion === "number") {
       dto.serviceVersion = Math.trunc(j.serviceVersion);
     } else if (typeof j.serviceVersion === "string") {
       const n = Number(j.serviceVersion);
-      if (Number.isFinite(n) && n > 0) {
-        dto.serviceVersion = Math.trunc(n);
-      }
+      if (Number.isFinite(n) && n > 0) dto.serviceVersion = Math.trunc(n);
     }
 
-    if (typeof j.controllerName === "string") {
+    if (typeof j.controllerName === "string")
       dto.controllerName = j.controllerName.trim();
-    }
-
-    if (typeof j.pipelineLabel === "string") {
+    if (typeof j.pipelineLabel === "string")
       dto.pipelineLabel = j.pipelineLabel.trim();
-    }
-
-    if (typeof j.pipelinePath === "string") {
+    if (typeof j.pipelinePath === "string")
       dto.pipelinePath = j.pipelinePath.trim();
-    }
 
-    if (typeof j.handlerName === "string") {
+    if (typeof j.handlerName === "string")
       dto.handlerName = j.handlerName.trim();
-    }
-
-    if (typeof j.handlerPath === "string") {
+    if (typeof j.handlerPath === "string")
       dto.handlerPath = j.handlerPath.trim();
-    }
 
     if (typeof j.dtoType === "string") {
       const t = j.dtoType.trim();
@@ -220,31 +189,22 @@ export class TestHandlerDto extends DtoBase implements IDto {
       dto.scenarioName = s || undefined;
     }
 
-    // RUNNER
-    if (typeof j.runnerServiceSlug === "string") {
+    if (typeof j.runnerServiceSlug === "string")
       dto.runnerServiceSlug = j.runnerServiceSlug.trim();
-    }
 
     if (typeof j.runnerServiceVersion === "number") {
       dto.runnerServiceVersion = Math.trunc(j.runnerServiceVersion);
     } else if (typeof j.runnerServiceVersion === "string") {
       const n = Number(j.runnerServiceVersion);
-      if (Number.isFinite(n) && n > 0) {
-        dto.runnerServiceVersion = Math.trunc(n);
-      }
+      if (Number.isFinite(n) && n > 0) dto.runnerServiceVersion = Math.trunc(n);
     }
 
-    if (typeof j.runnerControllerName === "string") {
+    if (typeof j.runnerControllerName === "string")
       dto.runnerControllerName = j.runnerControllerName.trim();
-    }
-
-    if (typeof j.runnerPipelineLabel === "string") {
+    if (typeof j.runnerPipelineLabel === "string")
       dto.runnerPipelineLabel = j.runnerPipelineLabel.trim();
-    }
-
-    if (typeof j.runnerPipelinePath === "string") {
+    if (typeof j.runnerPipelinePath === "string")
       dto.runnerPipelinePath = j.runnerPipelinePath.trim();
-    }
 
     if (
       j.status === "pass" ||
@@ -265,12 +225,8 @@ export class TestHandlerDto extends DtoBase implements IDto {
         .filter((v) => v.length > 0);
     }
 
-    if (typeof j.startedAt === "string") {
-      dto.startedAt = j.startedAt.trim();
-    }
-    if (typeof j.finishedAt === "string") {
-      dto.finishedAt = j.finishedAt.trim();
-    }
+    if (typeof j.startedAt === "string") dto.startedAt = j.startedAt.trim();
+    if (typeof j.finishedAt === "string") dto.finishedAt = j.finishedAt.trim();
 
     if (typeof j.durationMs === "number") {
       dto.durationMs = Math.max(0, Math.trunc(j.durationMs));
@@ -295,68 +251,54 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (opts?.validate) {
       const issues: { path: string; code: string; message: string }[] = [];
 
-      if (!dto.runId) {
+      if (!dto.runId)
         issues.push({
           path: "runId",
           code: "required",
           message: "runId is required",
         });
-      }
 
-      // TARGET required (this is the whole point of Option A)
-      if (!dto.serviceSlug) {
+      if (!dto.serviceSlug)
         issues.push({
           path: "serviceSlug",
           code: "required",
           message: "serviceSlug (TARGET) is required",
         });
-      }
-
-      if (!dto.controllerName) {
+      if (!dto.controllerName)
         issues.push({
           path: "controllerName",
           code: "required",
           message: "controllerName (TARGET) is required",
         });
-      }
-
-      if (!dto.pipelineLabel) {
+      if (!dto.pipelineLabel)
         issues.push({
           path: "pipelineLabel",
           code: "required",
           message: "pipelineLabel (TARGET) is required",
         });
-      }
-
-      if (!dto.handlerName) {
+      if (!dto.handlerName)
         issues.push({
           path: "handlerName",
           code: "required",
           message: "handlerName (TARGET handler) is required",
         });
-      }
-
-      if (!dto.env) {
+      if (!dto.env)
         issues.push({
           path: "env",
           code: "required",
           message: "env is required",
         });
-      }
 
-      // RUNNER fields are optional (but encouraged). Don’t block persistence.
       if (issues.length) {
-        throw new DtoValidationError(
-          `Invalid TestHandlerDto payload — ${issues.length} issue(s) found.`,
-          issues
+        throw new Error(
+          `DTO_VALIDATION_ERROR: Invalid TestHandlerDto payload — ${issues.length} issue(s). ` +
+            issues.map((x) => `${x.path}:${x.code}`).join(", ")
         );
       }
     }
 
     return dto;
   }
-
-  // ─────────────── Outbound wire shape ───────────────
 
   public toBody(): TestHandlerJson {
     const body: TestHandlerJson = {
@@ -369,7 +311,6 @@ export class TestHandlerDto extends DtoBase implements IDto {
       env: this.env || undefined,
       dbState: this.dbState || undefined,
 
-      // TARGET
       serviceSlug: this.serviceSlug || undefined,
       serviceVersion: this.serviceVersion,
 
@@ -383,7 +324,6 @@ export class TestHandlerDto extends DtoBase implements IDto {
       dtoType: this.dtoType,
       scenarioName: this.scenarioName,
 
-      // RUNNER
       runnerServiceSlug: this.runnerServiceSlug || undefined,
       runnerServiceVersion: this.runnerServiceVersion,
       runnerControllerName: this.runnerControllerName || undefined,
@@ -392,10 +332,9 @@ export class TestHandlerDto extends DtoBase implements IDto {
 
       status: this.status,
       assertionCount: this.assertionCount,
-      failedAssertions:
-        this.failedAssertions && this.failedAssertions.length > 0
-          ? [...this.failedAssertions]
-          : [],
+      failedAssertions: this.failedAssertions?.length
+        ? [...this.failedAssertions]
+        : [],
 
       startedAt: this.startedAt || undefined,
       finishedAt: this.finishedAt || undefined,
@@ -408,8 +347,6 @@ export class TestHandlerDto extends DtoBase implements IDto {
     return this._finalizeToJson(body);
   }
 
-  // ─────────────── DTO-to-DTO patch helper ───────────────
-
   public patchFrom(other: TestHandlerDto): this {
     if (other.runId) this.runId = other.runId;
     if (other.runRefId) this.runRefId = other.runRefId;
@@ -417,11 +354,9 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (other.env) this.env = other.env;
     if (other.dbState) this.dbState = other.dbState;
 
-    // TARGET
     if (other.serviceSlug) this.serviceSlug = other.serviceSlug;
-    if (other.serviceVersion && other.serviceVersion > 0) {
+    if (other.serviceVersion && other.serviceVersion > 0)
       this.serviceVersion = Math.trunc(other.serviceVersion);
-    }
 
     if (other.controllerName) this.controllerName = other.controllerName;
     if (other.pipelineLabel) this.pipelineLabel = other.pipelineLabel;
@@ -433,12 +368,10 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (other.dtoType) this.dtoType = other.dtoType;
     if (other.scenarioName) this.scenarioName = other.scenarioName;
 
-    // RUNNER
     if (other.runnerServiceSlug)
       this.runnerServiceSlug = other.runnerServiceSlug;
-    if (other.runnerServiceVersion && other.runnerServiceVersion > 0) {
+    if (other.runnerServiceVersion && other.runnerServiceVersion > 0)
       this.runnerServiceVersion = Math.trunc(other.runnerServiceVersion);
-    }
     if (other.runnerControllerName)
       this.runnerControllerName = other.runnerControllerName;
     if (other.runnerPipelineLabel)
@@ -446,23 +379,17 @@ export class TestHandlerDto extends DtoBase implements IDto {
     if (other.runnerPipelinePath)
       this.runnerPipelinePath = other.runnerPipelinePath;
 
-    if (other.status) this.status = other.status;
+    this.status = other.status;
 
-    // allow 0 assertions (meaningful)
-    if (other.assertionCount >= 0) {
+    if (other.assertionCount >= 0)
       this.assertionCount = Math.max(0, Math.trunc(other.assertionCount));
-    }
-
-    // allow empty list (meaningful)
-    if (other.failedAssertions) {
+    if (other.failedAssertions)
       this.failedAssertions = [...other.failedAssertions];
-    }
 
     if (other.startedAt) this.startedAt = other.startedAt;
     if (other.finishedAt) this.finishedAt = other.finishedAt;
-    if (other.durationMs >= 0) {
+    if (other.durationMs >= 0)
       this.durationMs = Math.max(0, Math.trunc(other.durationMs));
-    }
 
     if (other.requestId) this.requestId = other.requestId;
     if (other.notes) this.notes = other.notes;
@@ -474,7 +401,23 @@ export class TestHandlerDto extends DtoBase implements IDto {
     return this.patchFrom(other);
   }
 
-  // ─────────────── IDto contract ───────────────
+  public clone(newId?: string): this {
+    const dto = new TestHandlerDto(DtoBase.getSecret()) as this;
+
+    // ID: caller may supply; otherwise preserve current id if present.
+    if (typeof newId === "string" && newId.trim()) {
+      (dto as any).setIdOnce(newId.trim());
+    } else if ((this as any).hasId?.() && (this as any).getId) {
+      // Best effort; does not require getMeta().
+      const existing = (this as any).getId();
+      if (typeof existing === "string" && existing.trim()) {
+        (dto as any).setIdOnce(existing.trim());
+      }
+    }
+
+    dto.patchFromDto(this as any);
+    return dto;
+  }
 
   public getType(): string {
     return "test-handler";

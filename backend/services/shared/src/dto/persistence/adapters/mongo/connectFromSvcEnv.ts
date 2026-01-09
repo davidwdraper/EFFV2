@@ -1,7 +1,7 @@
 // backend/services/shared/src/dto/persistence/adapters/mongo/connectFromSvcEnv.ts
 /**
  * Docs:
- * - ADR-0044 (EnvServiceDto as Key/Value Contract)
+ * - ADR-0044 (DbEnvServiceDto as Key/Value Contract)
  * - ADR-0074 (DB_STATE + _infra database invariants)
  *
  * Purpose:
@@ -15,7 +15,7 @@
  * - NV_MONGO_COLLECTION
  */
 
-// Minimal env-like contract to avoid hard-coupling to EnvServiceDto.
+// Minimal env-like contract to avoid hard-coupling to DbEnvServiceDto.
 type EnvLike = {
   getEnvVar: (name: string) => string;
   getDbVar: (name: string) => string; // NEW — DB_STATE-aware accessor

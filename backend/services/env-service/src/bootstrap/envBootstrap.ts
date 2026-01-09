@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
+ *   - ADR-0044 (DbEnvServiceDto — one doc per env@slug@version)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0074 (DB_STATE + _infra state-invariant DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
@@ -12,14 +12,14 @@
  * Purpose:
  * - Bootstrap env-service without svcenvClient or SvcEnvDto.
  * - Read DB connection details from process.env (.env file).
- * - Use DbReader + EnvConfigReader to load this service's EnvServiceDto config.
+ * - Use DbReader + EnvConfigReader to load this service's DbEnvServiceDto config.
  * - Apply the same root+service merge rules used by the HTTP /config pipeline:
  *     • root slug: "service-root"
  *     • service slug: opts.slug (e.g., "env-service")
  * - Return:
- *     • rt: constructed from envLabel + DB_STATE + merged EnvServiceDto
- *     • envBag: merged DtoBag<EnvServiceDto>
- *     • envReloader: () => Promise<DtoBag<EnvServiceDto>> (same merge logic; updates rt in-place)
+ *     • rt: constructed from envLabel + DB_STATE + merged DbEnvServiceDto
+ *     • envBag: merged DtoBag<DbEnvServiceDto>
+ *     • envReloader: () => Promise<DtoBag<DbEnvServiceDto>> (same merge logic; updates rt in-place)
  *     • host/port: derived via rt vars
  *
  * Rules:
@@ -36,7 +36,7 @@
 
 import fs from "fs";
 import path from "path";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { EnvConfigReader } from "../svc/EnvConfigReader";
@@ -55,8 +55,8 @@ type BootstrapOpts = {
 
 export type EnvBootstrapResult = {
   rt: SvcRuntime;
-  envBag: DtoBag<EnvServiceDto>;
-  envReloader: () => Promise<DtoBag<EnvServiceDto>>;
+  envBag: DtoBag<DbEnvServiceDto>;
+  envReloader: () => Promise<DtoBag<DbEnvServiceDto>>;
   host: string;
   port: number;
 };
@@ -130,8 +130,8 @@ function requireInfraDbName(mongoDb: string, logFile: string): string {
  * - Uses EnvConfigReader.mergeEnvBags(rootBag, svcBag) to get a single merged bag.
  * - Constructs SvcRuntime from:
  *     • envLabel (process.env bootstrap-only)
- *     • DB_STATE (from merged EnvServiceDto)
- *     • merged EnvServiceDto (lives inside rt only)
+ *     • DB_STATE (from merged DbEnvServiceDto)
+ *     • merged DbEnvServiceDto (lives inside rt only)
  * - Derives HTTP host/port via rt vars.
  */
 export async function envBootstrap(
@@ -152,10 +152,10 @@ export async function envBootstrap(
   const envLabel = requireEnv("NV_ENV", logFile);
 
   // 3) Initialize DbReader (shared with handlers)
-  let dbReader: DbReader<EnvServiceDto>;
+  let dbReader: DbReader<DbEnvServiceDto>;
   try {
-    dbReader = new DbReader<EnvServiceDto>({
-      dtoCtor: EnvServiceDto,
+    dbReader = new DbReader<DbEnvServiceDto>({
+      dtoCtor: DbEnvServiceDto,
       mongoUri,
       mongoDb,
     });
@@ -169,7 +169,7 @@ export async function envBootstrap(
   }
 
   // 4) Load root + service bags, then merge via EnvConfigReader.mergeEnvBags().
-  let envBag: DtoBag<EnvServiceDto>;
+  let envBag: DtoBag<DbEnvServiceDto>;
   try {
     const rootBag = await EnvConfigReader.getEnv(dbReader, {
       env: envLabel,
@@ -183,7 +183,7 @@ export async function envBootstrap(
           )}. Ops: check DB connectivity and indexes.`
         );
       }
-      return new DtoBag<EnvServiceDto>([]);
+      return new DtoBag<DbEnvServiceDto>([]);
     });
 
     const svcBag = await EnvConfigReader.getEnv(dbReader, {
@@ -198,7 +198,7 @@ export async function envBootstrap(
           )}. Ops: check DB connectivity and indexes.`
         );
       }
-      return new DtoBag<EnvServiceDto>([]);
+      return new DtoBag<DbEnvServiceDto>([]);
     });
 
     envBag = EnvConfigReader.mergeEnvBags(rootBag, svcBag);
@@ -212,8 +212,8 @@ export async function envBootstrap(
   }
 
   // 5) Select primary DTO (internal only) and construct rt.
-  let primary: EnvServiceDto | undefined;
-  for (const dto of envBag as unknown as Iterable<EnvServiceDto>) {
+  let primary: DbEnvServiceDto | undefined;
+  for (const dto of envBag as unknown as Iterable<DbEnvServiceDto>) {
     primary = dto;
     break;
   }
@@ -221,7 +221,7 @@ export async function envBootstrap(
   if (!primary) {
     fatal(
       logFile,
-      "BOOTSTRAP_ENV_BAG_EMPTY: merged EnvServiceDto bag was empty after successful merge. " +
+      "BOOTSTRAP_ENV_BAG_EMPTY: merged DbEnvServiceDto bag was empty after successful merge. " +
         "Ops: investigate env-service collection contents; this should not happen."
     );
   }
@@ -240,7 +240,7 @@ export async function envBootstrap(
   } catch (err) {
     fatal(
       logFile,
-      "BOOTSTRAP_LOGGER_INIT_FAILED: Failed to initialize shared logger from merged EnvServiceDto. " +
+      "BOOTSTRAP_LOGGER_INIT_FAILED: Failed to initialize shared logger from merged DbEnvServiceDto. " +
         "Ops: ensure LOG_LEVEL exists in env-service config (root/service merge) and is valid.",
       err
     );
@@ -248,7 +248,7 @@ export async function envBootstrap(
 
   let rt: SvcRuntime;
   try {
-    // DB_STATE comes from EnvServiceDto (ADR-0074). env-service bootstrap DB remains _infra and is NOT decorated.
+    // DB_STATE comes from DbEnvServiceDto (ADR-0074). env-service bootstrap DB remains _infra and is NOT decorated.
     const dbState = primary.getEnvVar("DB_STATE");
 
     rt = new SvcRuntime(
@@ -286,33 +286,33 @@ export async function envBootstrap(
   }
 
   // 7) DtoBag-based reloader: same reader, same logic, fresh bag. Updates rt in-place.
-  const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
+  const envReloader = async (): Promise<DtoBag<DbEnvServiceDto>> => {
     const nextEnvLabel = requireEnv("NV_ENV", logFile);
 
     const nextRootBag = await EnvConfigReader.getEnv(dbReader, {
       env: nextEnvLabel,
       slug: "service-root",
       version,
-    }).catch(() => new DtoBag<EnvServiceDto>([]));
+    }).catch(() => new DtoBag<DbEnvServiceDto>([]));
 
     const nextSvcBag = await EnvConfigReader.getEnv(dbReader, {
       env: nextEnvLabel,
       slug,
       version,
-    }).catch(() => new DtoBag<EnvServiceDto>([]));
+    }).catch(() => new DtoBag<DbEnvServiceDto>([]));
 
     const nextBag = EnvConfigReader.mergeEnvBags(nextRootBag, nextSvcBag);
 
-    let nextPrimary: EnvServiceDto | undefined;
-    for (const dto of nextBag as unknown as Iterable<EnvServiceDto>) {
+    let nextPrimary: DbEnvServiceDto | undefined;
+    for (const dto of nextBag as unknown as Iterable<DbEnvServiceDto>) {
       nextPrimary = dto;
       break;
     }
 
     if (!nextPrimary) {
       throw new Error(
-        `ENV_RELOAD_EMPTY_BAG: merged EnvServiceDto bag was empty for env="${nextEnvLabel}", slug="${slug}", version=${version}. ` +
-          "Ops: ensure config docs exist and merge produces at least one EnvServiceDto."
+        `ENV_RELOAD_EMPTY_BAG: merged DbEnvServiceDto bag was empty for env="${nextEnvLabel}", slug="${slug}", version=${version}. ` +
+          "Ops: ensure config docs exist and merge produces at least one DbEnvServiceDto."
       );
     }
 

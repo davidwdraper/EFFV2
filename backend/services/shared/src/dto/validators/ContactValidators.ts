@@ -14,7 +14,8 @@
  *
  * - `emailRequired` / `phoneE164Required`:
  *   • Typed as Validator<string>.
- *   • Enforce presence + format.
+ *   • Validator signature still receives `string | undefined` by contract,
+ *     and REQUIRED semantics are enforced by throwing on undefined/empty.
  *   • Pair with CheckKind "string".
  */
 
@@ -23,16 +24,6 @@ import { DtoValidationError, type Validator } from "../DtoBase";
 export class ContactValidators {
   // ─────────────── Optional Email ───────────────
 
-  /**
-   * Optional email validator.
-   *
-   * Usage:
-   *   const email = DtoBase.check<string | undefined>(j.email, "stringOpt", {
-   *     validate,
-   *     path: "email",
-   *     validator: ContactValidators.emailOpt("email"),
-   *   });
-   */
   public static emailOpt(path: string): Validator<string | undefined> {
     // Simple, pragmatic regex – not trying to fully implement RFC 5322.
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -63,20 +54,12 @@ export class ContactValidators {
     };
   }
 
-  /**
-   * Required email validator.
-   *
-   * Usage:
-   *   const email = DtoBase.check<string>(j.email, "string", {
-   *     validate,
-   *     path: "email",
-   *     validator: ContactValidators.emailRequired("email"),
-   *   });
-   */
+  // ─────────────── Required Email ───────────────
+
   public static emailRequired(path: string): Validator<string> {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    return (value: string) => {
+    return (value: string | undefined) => {
       const trimmed = (value ?? "").trim();
       if (!trimmed) {
         throw new DtoValidationError(`Invalid email at "${path}"`, [
@@ -102,22 +85,6 @@ export class ContactValidators {
 
   // ─────────────── Optional Phone (E.164) ───────────────
 
-  /**
-   * Optional E.164 phone validator.
-   *
-   * Pattern:
-   * - Starts with '+'
-   * - Next digit 1–9 (no leading zero country codes)
-   * - Then 7–14 digits
-   * - Total digits (excluding '+'): 8–15
-   *
-   * Usage:
-   *   const phone = DtoBase.check<string | undefined>(j.phone, "stringOpt", {
-   *     validate,
-   *     path: "phone",
-   *     validator: ContactValidators.phoneE164Opt("phone"),
-   *   });
-   */
   public static phoneE164Opt(path: string): Validator<string | undefined> {
     const e164Regex = /^\+[1-9]\d{7,14}$/;
 
@@ -148,13 +115,12 @@ export class ContactValidators {
     };
   }
 
-  /**
-   * Required E.164 phone validator.
-   */
+  // ─────────────── Required Phone (E.164) ───────────────
+
   public static phoneE164Required(path: string): Validator<string> {
     const e164Regex = /^\+[1-9]\d{7,14}$/;
 
-    return (value: string) => {
+    return (value: string | undefined) => {
       const trimmed = (value ?? "").trim();
       if (!trimmed) {
         throw new DtoValidationError(`Invalid phone at "${path}"`, [

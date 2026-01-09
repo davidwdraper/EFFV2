@@ -6,10 +6,10 @@
  *
  * Purpose:
  * - Optional runtime guardrail that blocks *direct* `process.env` access after boot.
- * - Forces NV code paths to use EnvServiceDto-backed accessors instead of raw env.
+ * - Forces NV code paths to use DbEnvServiceDto-backed accessors instead of raw env.
  *
  * Invariants:
- * - Opt-in only: controlled by NV_PROCESS_ENV_GUARD (read from EnvServiceDto).
+ * - Opt-in only: controlled by NV_PROCESS_ENV_GUARD (read from DbEnvServiceDto).
  * - Must lock once: no mutable allowlists after lock.
  * - Must throw with actionable Ops guidance when blocked.
  * - Must not break Node internals: Node may lazily read env (e.g., FORCE_COLOR) during console/util work.
@@ -52,7 +52,7 @@ function buildBlockedError(opts: {
   return new Error(
     `PROCESS_ENV_GUARD_BLOCKED: Direct process.env access is blocked after boot. ` +
       `Attempted key="${key}" in service="${service}" env="${envLabel}". ` +
-      `Ops: remove raw process.env usage; use EnvServiceDto.getEnvVar()/tryEnvVar() via svcEnv instead. ` +
+      `Ops: remove raw process.env usage; use DbEnvServiceDto.getEnvVar()/tryEnvVar() via svcEnv instead. ` +
       `Ops: ensure the needed key exists in env-service for (env="${envLabel}", slug="${service}", version=<major>). ` +
       `Note: do NOT add fallbacks; fail-fast when required config is missing.`
   );
@@ -168,7 +168,7 @@ function lock(): void {
 }
 
 /**
- * Reads NV_PROCESS_ENV_GUARD from EnvServiceDto-derived values (caller provides raw string).
+ * Reads NV_PROCESS_ENV_GUARD from DbEnvServiceDto-derived values (caller provides raw string).
  * Missing/invalid => treated as disabled (opt-in feature flag).
  */
 export function isProcessEnvGuardEnabled(

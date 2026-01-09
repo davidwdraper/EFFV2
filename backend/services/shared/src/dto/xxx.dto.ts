@@ -159,9 +159,10 @@ export class XxxDto extends DtoBase {
       validator?: (value: T) => void
     ): T =>
       DtoBase.check<T>(input, kind, {
-        validate,
         path,
-        validator,
+        // Current DtoBase.check opts shape: no `validate` flag.
+        // We gate validators instead.
+        validators: validate && validator ? [validator as any] : undefined,
       });
 
     // id (optional; immutable once set)
@@ -174,7 +175,7 @@ export class XxxDto extends DtoBase {
       j.txtfield1,
       "string",
       "txtfield1",
-      StringValidators.nonEmpty("txtfield1")
+      StringValidators.nonEmpty("txtfield1") as any
     );
     dto.setTxtfield1(txtfield1);
 
@@ -182,7 +183,7 @@ export class XxxDto extends DtoBase {
       j.txtfield2,
       "string",
       "txtfield2",
-      StringValidators.nonEmpty("txtfield2")
+      StringValidators.nonEmpty("txtfield2") as any
     );
     dto.setTxtfield2(txtfield2);
 
@@ -191,7 +192,7 @@ export class XxxDto extends DtoBase {
       j.numfield1,
       "number",
       "numfield1",
-      NumberValidators.positiveInt("numfield1")
+      NumberValidators.positiveInt("numfield1") as any
     );
     dto.setNumfield1(numfield1);
 
@@ -199,22 +200,24 @@ export class XxxDto extends DtoBase {
       j.numfield2,
       "number",
       "numfield2",
-      NumberValidators.positiveInt("numfield2")
+      NumberValidators.positiveInt("numfield2") as any
     );
     dto.setNumfield2(numfield2);
 
     // Optional contact fields (stringOpt + *Opt validators)
     const email = DtoBase.check<string | undefined>(j.email, "stringOpt", {
-      validate,
       path: "email",
-      validator: ContactValidators.emailOpt("email"),
+      validators: validate
+        ? [ContactValidators.emailOpt("email") as any]
+        : undefined,
     });
     dto.setEmail(email);
 
     const phone = DtoBase.check<string | undefined>(j.phone, "stringOpt", {
-      validate,
       path: "phone",
-      validator: ContactValidators.phoneE164Opt("phone"),
+      validators: validate
+        ? [ContactValidators.phoneE164Opt("phone") as any]
+        : undefined,
     });
     dto.setPhone(phone);
 
@@ -254,7 +257,7 @@ export class XxxDto extends DtoBase {
    * Internal patch helper for partial updates.
    *
    * Notes:
-   * - Uses DtoBase.check() with validate=false for normalization only.
+   * - Uses DtoBase.check() for normalization only by omitting validators.
    * - Callers are responsible for enforcing any additional business rules.
    */
   public patchFrom(json: Partial<XxxJson>): this {
@@ -263,7 +266,9 @@ export class XxxDto extends DtoBase {
     const txtfield1 = DtoBase.check<string | undefined>(
       j.txtfield1,
       "stringOpt",
-      { validate: false, path: "txtfield1" }
+      {
+        path: "txtfield1",
+      }
     );
     if (txtfield1 !== undefined) {
       this.setTxtfield1(txtfield1);
@@ -272,7 +277,9 @@ export class XxxDto extends DtoBase {
     const txtfield2 = DtoBase.check<string | undefined>(
       j.txtfield2,
       "stringOpt",
-      { validate: false, path: "txtfield2" }
+      {
+        path: "txtfield2",
+      }
     );
     if (txtfield2 !== undefined) {
       this.setTxtfield2(txtfield2);
@@ -281,7 +288,9 @@ export class XxxDto extends DtoBase {
     const numfield1 = DtoBase.check<number | undefined>(
       j.numfield1,
       "numberOpt",
-      { validate: false, path: "numfield1" }
+      {
+        path: "numfield1",
+      }
     );
     if (numfield1 !== undefined) {
       this.setNumfield1(numfield1);
@@ -290,14 +299,15 @@ export class XxxDto extends DtoBase {
     const numfield2 = DtoBase.check<number | undefined>(
       j.numfield2,
       "numberOpt",
-      { validate: false, path: "numfield2" }
+      {
+        path: "numfield2",
+      }
     );
     if (numfield2 !== undefined) {
       this.setNumfield2(numfield2);
     }
 
     const email = DtoBase.check<string | undefined>(j.email, "stringOpt", {
-      validate: false,
       path: "email",
     });
     if (email !== undefined) {
@@ -305,7 +315,6 @@ export class XxxDto extends DtoBase {
     }
 
     const phone = DtoBase.check<string | undefined>(j.phone, "stringOpt", {
-      validate: false,
       path: "phone",
     });
     if (phone !== undefined) {

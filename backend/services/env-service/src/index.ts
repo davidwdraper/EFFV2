@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
+ *   - ADR-0044 (DbEnvServiceDto — one doc per env@slug@version)
  *   - ADR-0074 (DB_STATE-aware DB selection; _infra state-invariant bootstrap DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
@@ -12,7 +12,7 @@
  * Purpose:
  * - Dedicated entrypoint for env-service.
  * - Uses env-service-specific bootstrap that reads DB config from process.env
- *   and loads EnvServiceDto via DbReader, not via SvcClient.
+ *   and loads DbEnvServiceDto via DbReader, not via SvcClient.
  *
  * Invariants:
  * - After envBootstrap(), runtime must not read process.env.
@@ -26,7 +26,7 @@
 
 import createApp from "./app";
 import { envBootstrap } from "./bootstrap/envBootstrap";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 
@@ -60,18 +60,18 @@ function bootLogger(): BootLog {
   };
 }
 
-function firstDtoFromBag(bag: unknown): EnvServiceDto {
-  for (const dto of bag as unknown as Iterable<EnvServiceDto>) {
+function firstDtoFromBag(bag: unknown): DbEnvServiceDto {
+  for (const dto of bag as unknown as Iterable<DbEnvServiceDto>) {
     return dto;
   }
   throw new Error(
-    "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No EnvServiceDto returned from envBootstrap for env-service."
+    "BOOTSTRAP_ENV_BAG_EMPTY_AT_ENTRYPOINT: No DbEnvServiceDto returned from envBootstrap for env-service."
   );
 }
 
 function mergeVarsFromBag(bag: unknown): Record<string, string> {
   const merged: Record<string, string> = {};
-  for (const dto of bag as unknown as Iterable<EnvServiceDto>) {
+  for (const dto of bag as unknown as Iterable<DbEnvServiceDto>) {
     const vars = dto.getVarsRaw();
     for (const [k, v] of Object.entries(vars)) {
       const key = (k ?? "").trim();

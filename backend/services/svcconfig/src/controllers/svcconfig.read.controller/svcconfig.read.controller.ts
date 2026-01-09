@@ -54,7 +54,7 @@ export class SvcconfigReadController extends ControllerJsonBase {
     const op = isS2sRoute ? "s2s-route" : "read";
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", op);
 
     this.log.debug(

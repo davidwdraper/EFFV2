@@ -3,28 +3,24 @@
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
- *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0045 (Index Hints — boot ensure via shared helper)
+ *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
+ *   - ADR-0103 (DTO naming convention: keys, filenames, classnames)
  *   - ADR-0050 (Wire Bag Envelope — canonical wire id is `_id`)
- *   - ADR-0053 (Instantiation discipline via BaseDto secret)
- *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable; WARN on overwrite attempt)
- *   - ADR-0060 (DTO Secure Access Layer)
- *   - ADR-0078 (DTO write-once private fields; setters in / getters out)
+ *   - ADR-0057 (ID Generation & Validation — UUID; immutable)
  *   - ADR-0079 (DtoBase.check — single normalization/validation gate)
  *
  * Purpose:
  * - Base class for all DTOs.
- * - Owns:
- *   • Instantiation secret (prevents ad-hoc `new Dto()` in random code).
- *   • Canonical `_id` lifecycle (UUIDv4, set-once).
- *   • Meta fields (createdAt / updatedAt / updatedByUserId / ownerUserId).
- *   • Collection name plumbing (dbCollectionName → instance).
- *   • Finalization hook for outbound wire JSON.
- *   • Optional per-field access rules for secure getters/setters.
- *   • Shared normalization/validation via DtoBase.check().
+ * - Owns canonical `_id` lifecycle (UUID, set-once) and collection-name plumbing.
+ * - Owns meta stamping utilities used by DbWriter workers (createdAt/updatedAt/owner).
+ *
+ * NOTE:
+ * - Instantiation secret is owned by the registry module (ADR-0102).
+ * - DTOs must never be constructed without the registry secret.
  */
 
-import { newUuid, validateUUIDv4String } from "../utils/uuid";
+import { DTO_INSTANTIATION_SECRET } from "../registry/dtoInstantiationSecret";
+import { newUuid, validateUUIDString, isValidUuid } from "../utils/uuid";
 import { UserType } from "./UserType";
 
 export type DtoMeta = {
@@ -34,37 +30,11 @@ export type DtoMeta = {
   ownerUserId?: string;
 };
 
-type AccessRule = {
-  read: UserType;
-  write: UserType;
+export type DtoCtorOpts = {
+  body?: unknown;
+  validate?: boolean;
+  mode?: "wire" | "db";
 };
-
-type AccessMap = Record<string, AccessRule>;
-
-/**
- * Validation error used by DTOs when they perform
- * per-DTO validation (e.g., EnvServiceDto.fromBody with validate=true).
- *
- * All failures from DtoBase.check() MUST throw this type.
- */
-export class DtoValidationError extends Error {
-  public readonly issues: Array<{
-    path: string;
-    code: string;
-    message: string;
-  }>;
-
-  constructor(
-    message: string,
-    issues: Array<{ path: string; code: string; message: string }>
-  ) {
-    super(message);
-    this.name = "DtoValidationError";
-    this.issues = issues;
-  }
-}
-
-// ─────────────── DtoBase.check() types ───────────────
 
 export type CheckKind =
   | "string"
@@ -74,290 +44,140 @@ export type CheckKind =
   | "boolean"
   | "booleanOpt";
 
-export type Validator<T> = (value: T) => void; // throws DtoValidationError on failure
+export type Validator<T> = (value: T | undefined) => void;
 
-export type CheckOptions<T> = {
-  // When true, validation runs (type + normalization + custom validator).
-  // When false/omitted, check() still normalizes but does not enforce custom validation.
-  validate?: boolean;
-
-  // Field/path name used for errors (required when validate=true).
-  path?: string;
-
-  // Optional, shared or DTO-specific validator.
-  validator?: Validator<T>;
-
-  // Optional, additional normalization after base normalization.
-  normalize?: (value: T) => T;
+export type DtoValidationIssue = {
+  path: string;
+  code: string;
+  message: string;
 };
 
+export class DtoValidationError extends Error {
+  public readonly issues: ReadonlyArray<DtoValidationIssue>;
+
+  public constructor(
+    message: string,
+    issues: ReadonlyArray<DtoValidationIssue>
+  ) {
+    super(message);
+    this.name = "DtoValidationError";
+    this.issues = Array.isArray(issues) ? issues : [];
+  }
+}
+
 export abstract class DtoBase {
-  // ─────────────── Instantiation Secret ───────────────
-
-  private static readonly INSTANTIATION_SECRET = Symbol(
-    "DtoBaseInstantiationSecret"
-  );
-
   public static getSecret(): symbol {
-    return DtoBase.INSTANTIATION_SECRET;
+    return DTO_INSTANTIATION_SECRET;
   }
 
-  // ─────────────── Shared Normalizers ───────────────
-
   /**
-   * Shared helper for normalized "name-like" fields:
-   * - Trims input.
-   * - When validate=true:
-   *     • requires non-empty string
-   *     • enforces /^[A-Za-z][A-Za-z\s'-]*$/ pattern
+   * ADR-0079: single, shared normalization/validation gate.
    *
-   * Can be used by givenName, lastName, actName, businessName, etc.
-   *
-   * NOTE:
-   * - This is legacy/specialized. New DTOs should prefer DtoBase.check()
-   *   plus a dedicated validator instead of calling this directly.
-   */
-  public static normalizeRequiredName(
-    value: unknown,
-    fieldLabel: string,
-    opts?: { validate?: boolean }
-  ): string {
-    const raw =
-      typeof value === "string"
-        ? value.trim()
-        : value == null
-        ? ""
-        : String(value).trim();
-
-    if (!opts?.validate) {
-      // Non-validating paths (e.g. from DB) just get trimmed text.
-      return raw;
-    }
-
-    if (!raw) {
-      throw new Error(
-        `${fieldLabel}: field is required and must not be empty.`
-      );
-    }
-
-    const pattern = /^[A-Za-z][A-Za-z\s'-]*$/;
-    if (!pattern.test(raw)) {
-      throw new Error(
-        `${fieldLabel}: must contain only letters, spaces, apostrophes, or hyphens; digits and other characters are not allowed.`
-      );
-    }
-
-    return raw;
-  }
-
-  // ─────────────── DtoBase.check() — single gate (ADR-0079) ───────────────
-
-  /**
-   * Single DTO-internal gate for normalization + validation of inbound values.
-   *
-   * Requirements (ADR-0079):
-   * - DTO fromBody() MUST call DtoBase.check() then set via setters.
-   * - DTO toBody() reads via getters only; it does not use check().
-   * - No logging. No defaults. No guessing.
-   *
-   * Semantics by kind:
-   * - "string":
-   *     • returns string (trimmed).
-   *     • if validate=true: rejects non-string OR empty-after-trim.
-   * - "stringOpt":
-   *     • returns string | undefined (trimmed; empty → undefined).
-   *     • non-string: if validate=true → error; else → undefined.
-   * - "number":
-   *     • accepts number or numeric string.
-   *     • returns integer via Math.trunc(n).
-   *     • if validate=true: rejects invalid / non-finite.
-   * - "numberOpt":
-   *     • returns number | undefined.
-   *     • invalid / non-finite → undefined (even when validate=true)
-   *       unless a custom validator rejects.
-   * - "boolean":
-   *     • accepts boolean only.
-   *     • if validate=true: rejects non-boolean.
-   *     • if validate=false: non-boolean coerced via Boolean(input).
-   * - "booleanOpt":
-   *     • returns boolean | undefined.
-   *     • null/undefined → undefined.
-   *     • non-boolean: if validate=true → error; else → Boolean(input).
+   * - Required-vs-optional semantics are controlled by `kind`.
+   * - Validators are executed only when a value exists (or after required enforcement).
    */
   public static check<T>(
     input: unknown,
     kind: CheckKind,
-    opts?: CheckOptions<T>
+    opts: {
+      path: string;
+      normalize?: (v: any) => any;
+      validators?: ReadonlyArray<Validator<any>>;
+    }
   ): T {
-    const validate = opts?.validate === true;
-    const path = opts?.path ?? "<unknown>";
+    const path = String(opts?.path ?? "").trim() || "<unknown>";
+    const normalize = opts?.normalize;
+    const validators = opts?.validators ?? [];
 
-    const fail = (code: string, message: string): never => {
-      if (validate && !opts?.path) {
-        throw new DtoValidationError("DTO_CHECK_PATH_REQUIRED", [
-          {
-            path: "<missing>",
-            code: "path_required",
-            message:
-              "DtoBase.check called with validate=true but without a path.",
-          },
-        ]);
-      }
+    const raw = normalize ? normalize(input) : input;
 
-      throw new DtoValidationError(`DTO_CHECK_INVALID: ${path} — ${message}`, [
-        {
-          path,
-          code,
-          message,
-        },
+    const throwType = (expected: string): never => {
+      throw new DtoValidationError(`Invalid value at "${path}"`, [
+        { path, code: "type", message: `Expected ${expected}.` },
       ]);
     };
 
-    let value: unknown;
+    const runValidators = (v: any) => {
+      for (const fn of validators) fn(v);
+    };
 
     switch (kind) {
-      case "string": {
-        if (typeof input !== "string") {
-          if (validate) {
-            fail("type", "Expected string.");
-          }
-          // Non-validating path — best-effort coercion.
-          value = String(input ?? "").trim();
-        } else {
-          value = input.trim();
-        }
-
-        const s = value as string;
-        if (validate && !s) {
-          fail("required", "Non-empty string is required.");
-        }
-
-        break;
-      }
-
       case "stringOpt": {
-        if (input == null) {
-          value = undefined;
-          break;
-        }
-
-        if (typeof input !== "string") {
-          if (validate) {
-            fail("type", "Expected string or undefined.");
-          }
-          // Non-validating: treat non-string as undefined.
-          value = undefined;
-          break;
-        }
-
-        const trimmed = input.trim();
-        value = trimmed ? trimmed : undefined;
-        break;
+        if (raw === undefined || raw === null) return undefined as unknown as T;
+        if (typeof raw !== "string") throwType("string");
+        const v = raw;
+        runValidators(v);
+        return v as unknown as T;
       }
 
-      case "number": {
-        let n: number;
-
-        if (typeof input === "number") {
-          n = input;
-        } else if (typeof input === "string") {
-          const trimmed = input.trim();
-          n = trimmed ? Number(trimmed) : NaN;
-        } else {
-          n = NaN;
+      case "string": {
+        if (raw === undefined || raw === null) {
+          throw new DtoValidationError(`Missing required value at "${path}"`, [
+            { path, code: "required", message: "Value is required." },
+          ]);
         }
-
-        const intVal = Math.trunc(n);
-
-        if (!Number.isFinite(intVal)) {
-          if (validate) {
-            fail("type", "Expected finite numeric value.");
-          }
-          value = intVal; // May be NaN in non-validating paths.
-        } else {
-          value = intVal;
-        }
-
-        break;
+        if (typeof raw !== "string") throwType("string");
+        const v = raw;
+        runValidators(v);
+        return v as unknown as T;
       }
 
       case "numberOpt": {
-        if (input == null || input === "") {
-          value = undefined;
-          break;
+        if (raw === undefined || raw === null) return undefined as unknown as T;
+        if (typeof raw !== "number" || !Number.isFinite(raw)) {
+          throwType("finite number");
         }
-
-        let n: number;
-
-        if (typeof input === "number") {
-          n = input;
-        } else if (typeof input === "string") {
-          const trimmed = input.trim();
-          n = trimmed ? Number(trimmed) : NaN;
-        } else {
-          n = NaN;
-        }
-
-        const intVal = Math.trunc(n);
-        value = Number.isFinite(intVal) ? intVal : undefined;
-        // Note: even when validate=true, invalid numeric becomes undefined,
-        // unless a custom validator rejects.
-        break;
+        const v = raw;
+        runValidators(v);
+        return v as unknown as T;
       }
 
-      case "boolean": {
-        if (typeof input === "boolean") {
-          value = input;
-        } else if (validate) {
-          fail("type", "Expected boolean.");
-        } else {
-          // Non-validating mode: best-effort coercion.
-          value = Boolean(input);
+      case "number": {
+        if (raw === undefined || raw === null) {
+          throw new DtoValidationError(`Missing required value at "${path}"`, [
+            { path, code: "required", message: "Value is required." },
+          ]);
         }
-        break;
+        if (typeof raw !== "number" || !Number.isFinite(raw)) {
+          throwType("finite number");
+        }
+        const v = raw;
+        runValidators(v);
+        return v as unknown as T;
       }
 
       case "booleanOpt": {
-        if (input == null) {
-          value = undefined;
-          break;
-        }
+        if (raw === undefined || raw === null) return undefined as unknown as T;
+        if (typeof raw !== "boolean") throwType("boolean");
+        const v = raw;
+        runValidators(v);
+        return v as unknown as T;
+      }
 
-        if (typeof input === "boolean") {
-          value = input;
-          break;
+      case "boolean": {
+        if (raw === undefined || raw === null) {
+          throw new DtoValidationError(`Missing required value at "${path}"`, [
+            { path, code: "required", message: "Value is required." },
+          ]);
         }
-
-        if (validate) {
-          fail("type", "Expected boolean or undefined.");
-        }
-
-        // Non-validating mode: best-effort coercion.
-        value = Boolean(input);
-        break;
+        if (typeof raw !== "boolean") throwType("boolean");
+        const v = raw;
+        runValidators(v);
+        return v as unknown as T;
       }
 
       default: {
-        fail("kind", `Unsupported CheckKind '${kind as string}'.`);
+        throw new Error(
+          `DTO_CHECK_KIND_UNKNOWN: Unsupported CheckKind "${String(
+            kind
+          )}" at path "${path}".`
+        );
       }
     }
-
-    // Optional extra normalization hook.
-    if (opts?.normalize && value !== undefined) {
-      value = opts.normalize(value as T);
-    }
-
-    // Optional validator hook (only when validate=true).
-    if (validate && opts?.validator && value !== undefined) {
-      opts.validator(value as T);
-    }
-
-    return value as T;
   }
 
   // ─────────────── Identity & Meta ───────────────
 
-  /** Canonical wire id; UUIDv4, immutable once set. */
   protected _id?: string;
 
   protected _createdAt?: string;
@@ -367,25 +187,14 @@ export abstract class DtoBase {
 
   // ─────────────── Collection Name ───────────────
 
-  /** Backing field for the Mongo collection name this DTO instance belongs to. */
   protected _collectionName?: string;
 
   // ─────────────── Access Control Context ───────────────
 
-  /**
-   * Current user type for this DTO instance.
-   * Set once per request lifecycle by the caller (Registry/pipeline).
-   */
   protected _currentUserType: UserType = UserType.Anon;
 
   protected constructor(secretOrMeta?: symbol | DtoMeta) {
-    if (
-      secretOrMeta === DtoBase.INSTANTIATION_SECRET ||
-      secretOrMeta === undefined
-    ) {
-      // Fresh instance; meta/collection will be set explicitly later.
-      return;
-    }
+    if (secretOrMeta === DTO_INSTANTIATION_SECRET) return;
 
     if (typeof secretOrMeta === "object" && secretOrMeta !== null) {
       this.setMeta(secretOrMeta);
@@ -393,14 +202,38 @@ export abstract class DtoBase {
     }
 
     throw new Error(
-      "DTO_INSTANTIATION_DENIED: DtoBase constructed without valid secret or meta."
+      "DTO_INSTANTIATION_DENIED: DTO constructed without the registry secret. " +
+        "Ops: use registry.create(dtoKey, body?) only."
     );
+  }
+
+  protected initCtor(
+    opts: DtoCtorOpts | undefined,
+    hydrate: (
+      body: unknown,
+      hydrateOpts: { validate: boolean; mode?: "wire" | "db" }
+    ) => void
+  ): void {
+    const hasBody =
+      !!opts &&
+      Object.prototype.hasOwnProperty.call(opts, "body") &&
+      opts.body !== undefined;
+
+    if (hasBody) {
+      hydrate(opts!.body, {
+        validate: opts?.validate === true,
+        mode: opts?.mode,
+      });
+      return;
+    }
+
+    this.mintId();
   }
 
   // ─────────────── ID Lifecycle ───────────────
 
   public setIdOnce(id: string): void {
-    const normalized = validateUUIDv4String(id);
+    const normalized = validateUUIDString(id);
 
     if (this._id && this._id !== normalized) {
       throw new Error(
@@ -411,13 +244,20 @@ export abstract class DtoBase {
     this._id = normalized;
   }
 
-  public ensureId(): string {
-    if (this._id) {
-      const normalized = validateUUIDv4String(this._id);
-      this._id = normalized;
-      return normalized;
-    }
+  public tryGetId(): string | undefined {
+    return this._id ? String(this._id) : undefined;
+  }
 
+  public isValidId(id: string): boolean {
+    return isValidUuid(id);
+  }
+
+  public isValidOwnId(): boolean {
+    if (!this._id) return false;
+    return this.isValidId(this._id);
+  }
+
+  public mintId(): string {
     const fresh = newUuid();
     this._id = fresh;
     return fresh;
@@ -426,11 +266,14 @@ export abstract class DtoBase {
   public getId(): string {
     if (!this._id) {
       throw new Error(
-        "DTO_ID_MISSING: getId() called on DTO instance without an assigned `_id`. " +
-          "Call hasId()/ensureId() first or fix the call site."
+        "DTO_ID_MISSING: getId() called on DTO instance without an assigned `_id`."
       );
     }
     return this._id;
+  }
+
+  public requireId(): string {
+    return this.getId();
   }
 
   public hasId(): boolean {
@@ -458,7 +301,7 @@ export abstract class DtoBase {
     if (!name) {
       throw new Error(
         "DTO_COLLECTION_MISSING: DTO instance has no collectionName. " +
-          "Ops: ensure Registry seeded dbCollectionName() via setCollectionName()."
+          "Ops: ensure Registry seeded it via setCollectionName()."
       );
     }
     return name;
@@ -494,17 +337,14 @@ export abstract class DtoBase {
   }
 
   public stampUpdatedAt(userId?: string, date?: Date | string): void {
-    if (typeof date === "string") {
-      this._updatedAt = date;
-    } else {
+    if (typeof date === "string") this._updatedAt = date;
+    else {
       const d = date ?? new Date();
       this._updatedAt = d.toISOString();
     }
 
     const trimmed = (userId ?? "").trim();
-    if (trimmed) {
-      this._updatedByUserId = trimmed;
-    }
+    if (trimmed) this._updatedByUserId = trimmed;
   }
 
   protected _finalizeToJson<TBody extends object>(
@@ -529,84 +369,8 @@ export abstract class DtoBase {
     return this._currentUserType;
   }
 
-  // ─────────────── Secure Field Access Helpers ───────────────
-
-  private _getAccessMap(): AccessMap {
-    const ctor = this.constructor as unknown as {
-      access?: AccessMap;
-      name?: string;
-    };
-    if (!ctor.access) {
-      throw new Error(
-        `DTO_ACCESS_MAP_MISSING: 'access' map is not defined on DTO '${
-          ctor.name ?? "<anonymous>"
-        }'.`
-      );
-    }
-    return ctor.access;
-  }
-
-  protected readField<T = unknown>(fieldName: string): T {
-    const accessMap = this._getAccessMap();
-    const rule = accessMap[fieldName];
-    const dtoName =
-      (this.constructor as { name?: string }).name ?? "<anonymous>";
-
-    if (!rule) {
-      throw new Error(
-        `DTO_ACCESS_RULE_MISSING: No access rule defined for field '${fieldName}' on DTO '${dtoName}'.`
-      );
-    }
-
-    if (this._currentUserType < rule.read) {
-      throw new Error(
-        `DTO_ACCESS_DENIED_READ: UserType ${this._currentUserType} cannot read field '${fieldName}' on DTO '${dtoName}'.`
-      );
-    }
-
-    return (this as any)[`_${fieldName}`] as T;
-  }
-
-  protected writeField<T = unknown>(fieldName: string, value: T): void {
-    const accessMap = this._getAccessMap();
-    const rule = accessMap[fieldName];
-    const dtoName =
-      (this.constructor as { name?: string }).name ?? "<anonymous>";
-
-    if (!rule) {
-      throw new Error(
-        `DTO_ACCESS_RULE_MISSING: No access rule defined for field '${fieldName}' on DTO '${dtoName}'.`
-      );
-    }
-
-    if (this._currentUserType < rule.write) {
-      throw new Error(
-        `DTO_ACCESS_DENIED_WRITE: UserType ${this._currentUserType} cannot write field '${fieldName}' on DTO '${dtoName}'.`
-      );
-    }
-
-    (this as any)[`_${fieldName}`] = value;
-  }
-
-  // ─────────────── Cloning (aligned with ID semantics) ───────────────
-
-  public clone(newId?: string): this {
-    const ctor = this.constructor as { new (...args: any[]): any };
-    const copy = new ctor(DtoBase.getSecret()) as this;
-
-    Object.assign(copy, this);
-
-    if (newId !== undefined) {
-      (copy as any)._id = undefined;
-      copy.setIdOnce(newId);
-    }
-
-    return copy;
-  }
-
-  // ─────────────── Abstracts / Expectations ───────────────
+  // ─────────────── Abstracts ───────────────
 
   public abstract getType(): string;
-
   public abstract toBody(): unknown;
 }

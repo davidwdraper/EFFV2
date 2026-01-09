@@ -17,11 +17,11 @@
  * - Duplicate key → HTTP 409 (mirrors create).
  *
  * Inputs (ctx):
- * - "bag": DtoBag<EnvServiceDto> (UPDATED singleton; from ApplyPatchUpdateHandler)
+ * - "bag": DtoBag<DbEnvServiceDto> (UPDATED singleton; from ApplyPatchUpdateHandler)
  *
  * Outputs (ctx, final-handler invariant):
  * - On success:
- *   - "bag": DtoBag<EnvServiceDto> (persisted singleton bag)
+ *   - "bag": DtoBag<DbEnvServiceDto> (persisted singleton bag)
  *   - "dbWriter.lastId": string (updated id)
  *   - "handlerStatus": "ok"
  * - On error:

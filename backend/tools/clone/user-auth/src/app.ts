@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
@@ -22,8 +22,8 @@
 
 import type { Express, Router } from "express";
 import { AppBase } from "@nv/shared/base/app/AppBase";
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import type { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 
@@ -35,8 +35,8 @@ export type CreateAppOptions = {
   version: number;
   posture: SvcPosture;
 
-  envDto: EnvServiceDto;
-  envReloader: () => Promise<EnvServiceDto>;
+  envDto: DbEnvServiceDto;
+  envReloader: () => Promise<DbEnvServiceDto>;
 
   rt: SvcRuntime;
 };

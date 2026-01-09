@@ -17,7 +17,7 @@
  *   contract exposing:
  *     • getEnvVar(name: string): string
  *     • getDbVar(name: string): string  (DB_STATE-aware)
- *   (e.g. EnvServiceDto).
+ *   (e.g. DbEnvServiceDto).
  */
 
 import type { IndexHint } from "../../persistence/index-hints";
@@ -27,7 +27,7 @@ import { MongoClient } from "mongodb";
 /**
  * Minimal contract for env DTOs used here.
  * Any DTO that can supply Mongo connection strings via getEnvVar/getDbVar
- * is acceptable (typically EnvServiceDto).
+ * is acceptable (typically DbEnvServiceDto).
  */
 export type SvcEnvConfig = {
   getEnvVar: (name: string) => string;
@@ -51,7 +51,7 @@ export interface EnsureIndexesOptions {
   /** Array of DTO CLASSES that declare indexHints and can resolve their collection */
   dtos: DtoCtorWithIndexes[];
   /**
-   * Env config carrier (typically EnvServiceDto) that can supply:
+   * Env config carrier (typically DbEnvServiceDto) that can supply:
    *  - NV_MONGO_URI via getDbVar()   (DB_STATE-aware)
    *  - NV_MONGO_DB  via getDbVar()   (DB_STATE-aware)
    */

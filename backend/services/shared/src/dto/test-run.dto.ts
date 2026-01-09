@@ -365,4 +365,43 @@ export class TestRunDto extends DtoBase implements IDto {
   public getType(): string {
     return "test-run";
   }
+
+  public clone(newId?: string): this {
+    const dto = new TestRunDto(DtoBase.getSecret());
+
+    // ID semantics: new instance gets a fresh id unless caller supplies one.
+    if (typeof newId === "string" && newId.trim()) dto.setIdOnce(newId.trim());
+    else dto.mintId();
+
+    // Copy domain fields. (Meta timestamps intentionally NOT copied.)
+    dto.runId = this.runId;
+
+    dto.env = this.env;
+    dto.dbState = this.dbState;
+
+    dto.serviceSlug = this.serviceSlug;
+    dto.serviceVersion = this.serviceVersion;
+
+    dto.controllerName = this.controllerName;
+    dto.controllerPath = this.controllerPath;
+
+    dto.pipelineLabel = this.pipelineLabel;
+    dto.pipelinePath = this.pipelinePath;
+
+    dto.status = this.status;
+
+    dto.handlerCount = this.handlerCount;
+    dto.passedHandlerCount = this.passedHandlerCount;
+    dto.failedHandlerCount = this.failedHandlerCount;
+    dto.errorHandlerCount = this.errorHandlerCount;
+
+    dto.startedAt = this.startedAt;
+    dto.finishedAt = this.finishedAt;
+    dto.durationMs = this.durationMs;
+
+    dto.requestId = this.requestId;
+    dto.notes = this.notes;
+
+    return dto as this;
+  }
 }

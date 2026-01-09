@@ -1,0 +1,201 @@
+// backend/services/shared/src/registry/DtoRegistry.ts
+/**
+ * Docs:
+ * - SOP: DTO-first; no raw JSON inside rails
+ * - ADRs:
+ *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
+ *   - ADR-0103 (DTO naming convention: keys, filenames, classnames)
+ *   - ADR-0057 (UUID; immutable)
+ *
+ * Purpose:
+ * - Single global DTO registry for NV.
+ * - One entry point:
+ *     registry.create(dtoKey, body?)
+ *
+ * v1 scope (intentional):
+ * - Implements ADR-0102 semantics using ctor-injection DTOs:
+ *   - body absent  => internal mint (new DTO; ctor MUST mint _id)
+ *   - body present => edge/db hydration (new DTO with { body, validate, mode }; ctor MUST require _id; MUST NOT mint)
+ */
+
+import type { DtoBase } from "../dto/DtoBase";
+import { DTO_INSTANTIATION_SECRET } from "./dtoInstantiationSecret";
+import type { IDto } from "../dto/IDto";
+import type { IDtoRegistry, RegistryDto } from "./IDtoRegistry";
+
+import { DbUserDto } from "../dto/db.user.dto";
+import { DbUserAuthDto } from "../dto/db.user-auth.dto";
+import { DbEnvServiceDto } from "../dto/db.env-service.dto";
+
+/** Canonical NV DTO registry key (ADR-0103). */
+export type DtoKey = string;
+
+type AnyDto = DtoBase & IDto;
+
+/**
+ * v1 ctor contract (ADR-0102):
+ * - Scenario A: new Ctor(secret) => MUST mint _id
+ * - Scenario B: new Ctor(secret, { body, validate, mode }) => MUST require _id; MUST NOT mint
+ */
+type DtoCtor<TDto extends AnyDto = AnyDto> = {
+  new (
+    secret: symbol,
+    opts?: { body?: unknown; validate?: boolean; mode?: "wire" | "db" }
+  ): TDto;
+
+  // Optional: migration cross-check for db.* keys.
+  dbCollectionName?: () => string;
+};
+
+type DtoEntry = {
+  key: DtoKey;
+  ctor: DtoCtor;
+  /** For db.* keys, the collection is derived from key segment #2 (ADR-0103). */
+  collectionName?: string;
+};
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && !!v.trim();
+}
+
+function parseDbCollectionFromKey(key: string): string | undefined {
+  // ADR-0103: db.<collection>.<optional...>.dto
+  const parts = String(key ?? "").split(".");
+  if (parts.length < 3) return undefined;
+  if (parts[0] !== "db") return undefined;
+  const coll = parts[1];
+  return isNonEmptyString(coll) ? coll.trim() : undefined;
+}
+
+export class DtoRegistry implements IDtoRegistry {
+  private readonly byKey: Record<string, DtoEntry>;
+
+  constructor() {
+    // v1: explicit registrations. No manifests, no magic.
+    this.byKey = {
+      ["db.user.dto"]: {
+        key: "db.user.dto",
+        ctor: DbUserDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.user.dto"),
+      },
+
+      ["db.user-auth.dto"]: {
+        key: "db.user-auth.dto",
+        ctor: DbUserAuthDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.user-auth.dto"),
+      },
+
+      ["db.env-service.dto"]: {
+        key: "db.env-service.dto",
+        ctor: DbEnvServiceDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.env-service.dto"),
+      },
+    };
+
+    this.assertBootInvariants();
+  }
+
+  /**
+   * ADR-0102 / single entry point.
+   *
+   * Scenario A (no body): internal mint
+   * - new DTO(secret)
+   * - ctor MUST mint _id
+   *
+   * Scenario B (body provided): edge/db hydration
+   * - new DTO(secret, { body, validate, mode })
+   * - ctor MUST require _id; MUST NOT mint
+   *
+   * NOTE:
+   * - Missing _id is enforced inside the DTO hydrator/constructor for Scenario B.
+   * - Registry verifies post-conditions (DTO has a valid id).
+   */
+  public create<TDto extends RegistryDto = RegistryDto>(
+    key: DtoKey,
+    body?: unknown,
+    opts?: { validate?: boolean; mode?: "wire" | "db" }
+  ): TDto {
+    const entry = this.resolve(key);
+    const ctor = entry.ctor as unknown as DtoCtor<TDto>;
+
+    const dto =
+      body === undefined
+        ? new ctor(DTO_INSTANTIATION_SECRET)
+        : new ctor(DTO_INSTANTIATION_SECRET, {
+            body,
+            validate: opts?.validate === true,
+            mode: opts?.mode,
+          });
+
+    const id = dto.getId(); // throws if missing
+    if (!dto.isValidId(id)) {
+      throw new Error(
+        `DTO_ID_INVALID: registry.create("${key}") produced DTO with invalid _id "${id}". ` +
+          "Ops: enforce id via DTO hydration/setter using shared uuid helpers."
+      );
+    }
+
+    if (entry.collectionName) {
+      const have = dto.getCollectionName?.();
+      if (!have) dto.setCollectionName(entry.collectionName);
+    }
+
+    return dto;
+  }
+
+  public resolve(key: DtoKey): DtoEntry {
+    const k = String(key ?? "").trim();
+    const hit = this.byKey[k];
+    if (!hit) {
+      throw new Error(
+        `DTO_REGISTRY_UNKNOWN_KEY: No DTO registered for key "${k}". ` +
+          "Ops: register it in shared/src/registry/DtoRegistry.ts (ADR-0103)."
+      );
+    }
+    return hit;
+  }
+
+  private assertBootInvariants(): void {
+    for (const k of Object.keys(this.byKey)) {
+      if (!k.endsWith(".dto")) {
+        throw new Error(
+          `DTO_REGISTRY_KEY_INVALID: "${k}" must end with ".dto" (ADR-0103).`
+        );
+      }
+
+      const entry = this.byKey[k];
+      const ctorName = (entry.ctor as any)?.name;
+
+      if (!isNonEmptyString(ctorName)) {
+        throw new Error(
+          `DTO_REGISTRY_CTOR_NAME_INVALID: key "${k}" registered with an unnamed ctor.`
+        );
+      }
+
+      if (k.startsWith("db.")) {
+        const coll = parseDbCollectionFromKey(k);
+        if (!coll) {
+          throw new Error(
+            `DTO_REGISTRY_DB_KEY_INVALID: "${k}" must be "db.<collection>....dto" (ADR-0103).`
+          );
+        }
+
+        const fn = (entry.ctor as any)?.dbCollectionName;
+        if (typeof fn === "function") {
+          const dtoColl = String(fn.call(entry.ctor) ?? "").trim();
+          if (!dtoColl) {
+            throw new Error(
+              `DTO_REGISTRY_DB_COLL_EMPTY: "${k}" ctor.dbCollectionName() returned empty.`
+            );
+          }
+          if (dtoColl !== coll) {
+            throw new Error(
+              `DTO_REGISTRY_DB_COLL_MISMATCH: "${k}" implies collection "${coll}" but ctor.dbCollectionName() returned "${dtoColl}". ` +
+                "Ops: fix the DTO or fix the key; they must match (ADR-0103)."
+            );
+          }
+        }
+      }
+    }
+  }
+}

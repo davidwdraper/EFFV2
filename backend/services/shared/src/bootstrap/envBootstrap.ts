@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
@@ -15,8 +15,8 @@
  *
  * Responsibilities:
  * - Read the logical env label from process.env.NV_ENV (bootstrap-only allowed env access).
- * - Use SvcClient + SvcEnvClient to fetch the EnvServiceDto config bag for (envLabel, slug, version).
- * - Work in terms of DtoBag<EnvServiceDto> (no naked DTOs cross this boundary).
+ * - Use SvcClient + SvcEnvClient to fetch the DbEnvServiceDto config bag for (envLabel, slug, version).
+ * - Work in terms of DtoBag<DbEnvServiceDto> (no naked DTOs cross this boundary).
  * - Derive HTTP host/port from the primary DTO in the bag.
  * - Construct SvcRuntime using the REAL bound logger (no shims).
  * - Enforce posture-derived boot rails (DB requirements).
@@ -24,7 +24,7 @@
  * Invariants:
  * - No .env parsing here except NV_ENV (logical environment label) and NV_ENV_SERVICE_URL
  *   for bootstrapping env-service location.
- * - DTO encapsulation is preserved: SvcRuntime must NOT extract and cache vars outside EnvServiceDto.
+ * - DTO encapsulation is preserved: SvcRuntime must NOT extract and cache vars outside DbEnvServiceDto.
  * - All failures log concrete Ops guidance and terminate the process with exit code 1.
  *
  * NOTE (important / current reality):
@@ -38,7 +38,7 @@
 import fs from "fs";
 import path from "path";
 import { DtoBag } from "../dto/DtoBag";
-import { EnvServiceDto } from "../dto/env-service.dto";
+import { DbEnvServiceDto } from "../dto/db.env-service.dto";
 import {
   SvcClient,
   type ISvcClientLogger,
@@ -75,8 +75,8 @@ export type EnvBootstrapResult = {
    * - Frozen for the lifetime of the process; envReloader reuses the same value.
    */
   envLabel: string;
-  envBag: DtoBag<EnvServiceDto>;
-  envReloader: () => Promise<DtoBag<EnvServiceDto>>;
+  envBag: DtoBag<DbEnvServiceDto>;
+  envReloader: () => Promise<DtoBag<DbEnvServiceDto>>;
   host: string;
   port: number;
 
@@ -90,7 +90,7 @@ export type EnvBootstrapResult = {
    * REQUIRED by AppBase ctor for SvcRuntime services.
    *
    * Encapsulation:
-   * - rt holds EnvServiceDto (source of truth), not an extracted vars map.
+   * - rt holds DbEnvServiceDto (source of truth), not an extracted vars map.
    */
   rt: SvcRuntime;
 };
@@ -256,7 +256,7 @@ function enforcePostureRails(
   envLabel: string,
   slug: string,
   version: number,
-  envDto: EnvServiceDto
+  envDto: DbEnvServiceDto
 ): void {
   /**
    * DB posture: require ONLY DB vars here.
@@ -340,14 +340,14 @@ export async function envBootstrap(
 
   const envClient = new SvcEnvClient({ svcClient });
 
-  // 2) Fetch EnvServiceDto config bag
-  let envBag: DtoBag<EnvServiceDto>;
+  // 2) Fetch DbEnvServiceDto config bag
+  let envBag: DtoBag<DbEnvServiceDto>;
   try {
     envBag = await envClient.getConfig({ env: envLabel, slug, version });
   } catch (err) {
     fatal(
       logFile,
-      "BOOTSTRAP_ENV_CONFIG_FAILED: Failed to fetch EnvServiceDto bag from env-service. " +
+      "BOOTSTRAP_ENV_CONFIG_FAILED: Failed to fetch DbEnvServiceDto bag from env-service. " +
         `Ops: ensure a config document exists for env="${envLabel}", slug="${slug}", version=${version}.`,
       err
     );
@@ -355,14 +355,14 @@ export async function envBootstrap(
 
   // 3) Primary DTO = first item (no iterator loop drift)
   const first = envBag.items().next();
-  const primary: EnvServiceDto | undefined = first.done
+  const primary: DbEnvServiceDto | undefined = first.done
     ? undefined
     : first.value;
 
   if (!primary) {
     fatal(
       logFile,
-      "BOOTSTRAP_ENV_BAG_EMPTY: EnvServiceDto bag was empty after successful fetch. " +
+      "BOOTSTRAP_ENV_BAG_EMPTY: DbEnvServiceDto bag was empty after successful fetch. " +
         "Ops: investigate env-service collection contents; this should not happen."
     );
   }
@@ -373,7 +373,7 @@ export async function envBootstrap(
   } catch (err) {
     fatal(
       logFile,
-      "BOOTSTRAP_LOGGER_ENV_FAILED: Failed to initialize logger from EnvServiceDto. " +
+      "BOOTSTRAP_LOGGER_ENV_FAILED: Failed to initialize logger from DbEnvServiceDto. " +
         "Ops/Dev: ensure env-service provides required logger vars (e.g., LOG_LEVEL).",
       err
     );
@@ -415,13 +415,13 @@ export async function envBootstrap(
     fatal(
       logFile,
       "BOOTSTRAP_HTTP_CONFIG_INVALID: Failed to derive NV_HTTP_HOST/NV_HTTP_PORT " +
-        `from EnvServiceDto for env="${envLabel}", slug="${slug}", version=${version}. ` +
+        `from DbEnvServiceDto for env="${envLabel}", slug="${slug}", version=${version}. ` +
         "Ops: ensure these keys exist and are valid.",
       err
     );
   }
 
-  // 7) Build SvcRuntime (ADR-0080) from identity + EnvServiceDto + REAL logger
+  // 7) Build SvcRuntime (ADR-0080) from identity + DbEnvServiceDto + REAL logger
   let dbStateRaw: string;
   try {
     dbStateRaw = primary.getEnvVar("DB_STATE");
@@ -458,13 +458,13 @@ export async function envBootstrap(
     fatal(
       logFile,
       "BOOTSTRAP_RT_CONSTRUCT_FAILED: Failed to construct SvcRuntime. " +
-        "Ops/Dev: verify EnvServiceDto + logger wiring.",
+        "Ops/Dev: verify DbEnvServiceDto + logger wiring.",
       err
     );
   }
 
   // 8) Bag-based reloader: same envLabel, fresh bag each call.
-  const envReloader = async (): Promise<DtoBag<EnvServiceDto>> => {
+  const envReloader = async (): Promise<DtoBag<DbEnvServiceDto>> => {
     return envClient.getConfig({ env: envLabel, slug, version });
   };
 

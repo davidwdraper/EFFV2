@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0044 (EnvServiceDto as DTO — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto as DTO — Key/Value Contract)
  *   - ADR-0030 (SvcConfig architecture — env/slug scoped routing)
  *   - ADR-0017 (Problem+JSON error semantics; Ops-guided detail)
  *   - LDD-19 (S2S protocol; x-service-name caller identity)

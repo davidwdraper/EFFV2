@@ -12,7 +12,7 @@
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Purpose:
- * - Use the hydrated DtoBag<UserDto> from ctx["bag"] to call the `user`
+ * - Use the hydrated DtoBag<DbUserDto> from ctx["bag"] to call the `user`
  *   service's `create` operation via SvcClient.call().
  * - Requires the hashed password outputs from CodePasswordHashHandler to be present
  *   (pipeline ordering invariant), even though this handler does not mutate the bag.
@@ -22,7 +22,7 @@
  * Invariants:
  * - Auth remains a MOS (no direct DB writes).
  * - This handler NEVER calls ctx.set("bag", ...).
- * - Handlers do not reach for app/process/env: they use `this.rt` and request caps.
+ * - Controller owns routing metadata for downstream services (slug/version).
  * - On failure, sets handlerStatus="error" via NvHandlerError on ctx["error"].
  * - Additionally, this handler stamps an explicit signup.userCreateStatus flag
  *   on the ctx bus so downstream transactional handlers (rollback, audit, etc.)
@@ -37,13 +37,13 @@ import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { UserDto } from "@nv/shared/dto/user.dto";
+import type { DbUserDto } from "@nv/shared/dto/db.user.dto";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 
-type UserBag = DtoBag<UserDto>;
+type UserBag = DtoBag<DbUserDto>;
 
 type UserCreateStatus =
-  | { ok: true; userId?: string }
+  | { ok: true; userId: string }
   | { ok: false; code: string; message: string };
 
 export class S2sUserCreateHandler extends HandlerBase {
@@ -52,7 +52,7 @@ export class S2sUserCreateHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Call the user service create endpoint with the hydrated UserDto bag while leaving ctx['bag'] untouched.";
+    return "Call the user service create endpoint with the hydrated DbUserDto bag while leaving ctx['bag'] untouched.";
   }
 
   protected handlerName(): string {
@@ -79,8 +79,8 @@ export class S2sUserCreateHandler extends HandlerBase {
         httpStatus: 500,
         title: "auth_signup_missing_user_bag",
         detail:
-          "Auth signup pipeline expected ctx['bag'] to contain a DtoBag<UserDto> before calling user.create. " +
-          "Dev: ensure controller hydration (ToBag*) ran and stored the bag under ctx['bag'].",
+          "Auth signup pipeline expected ctx['bag'] to contain a DtoBag<DbUserDto> before calling user.create. " +
+          "Dev: ensure controller hydration stored the bag under ctx['bag'].",
         stage: "inputs.userBag",
         requestId,
         origin: { file: __filename, method: "execute" },
@@ -91,7 +91,60 @@ export class S2sUserCreateHandler extends HandlerBase {
       return;
     }
 
-    // Password-hash rung ordering invariant (Step 3 must have run).
+    // Derive userId from the hydrated DTO in the bag (canonical id is dto._id).
+    const items: any[] = (bag as any)?.items;
+    if (!Array.isArray(items) || items.length !== 1) {
+      const status: UserCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_USER_BAG_INVALID",
+        message: "Ctx['bag'] did not contain exactly one user DTO.",
+      };
+      this.ctx.set("signup.userCreateStatus", status);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_user_bag_invalid",
+        detail:
+          "Auth signup expected ctx['bag'] to contain exactly one DbUserDto before calling user.create.",
+        stage: "inputs.userBag.items",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasItems: Array.isArray(items), count: items?.length }],
+        logMessage:
+          "auth.signup.s2s.user.create: bag.items invalid (expected exactly 1).",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    const dto = items[0] as DbUserDto;
+    const userId = typeof (dto as any)?.getId === "function" ? dto.getId() : "";
+
+    if (!userId) {
+      const status: UserCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_USER_ID_MISSING",
+        message: "Hydrated user DTO did not expose a valid id.",
+      };
+      this.ctx.set("signup.userCreateStatus", status);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_user_id_missing",
+        detail:
+          "Auth signup expected the hydrated user DTO to contain a valid _id before calling user.create. " +
+          "Dev: controller hydration must enforce _id (ADR-0102).",
+        stage: "inputs.userDto.id",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasUserId: !!userId }],
+        logMessage: "auth.signup.s2s.user.create: hydrated DTO missing id.",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    // Password-hash rung ordering invariant (Step 1 must have run).
     const passwordHash = this.safeCtxGet<string>("signup.passwordHash");
     const passwordAlgo = this.safeCtxGet<string>("signup.passwordAlgo");
     const passwordHashParamsJson = this.safeCtxGet<string>(
@@ -111,7 +164,7 @@ export class S2sUserCreateHandler extends HandlerBase {
         ok: false,
         code: "AUTH_SIGNUP_MISSING_PASSWORD_HASH",
         message:
-          "Password hash outputs were missing before user.create (expected step 3 to run).",
+          "Password hash outputs were missing before user.create (expected passwordHash step to run).",
       };
       this.ctx.set("signup.userCreateStatus", status);
 
@@ -200,21 +253,51 @@ export class S2sUserCreateHandler extends HandlerBase {
       return;
     }
 
-    const signupUserId = this.safeCtxGet<string>("signup.userId");
+    // Controller-owned routing metadata (do not hardcode).
+    const rawSlug = this.ctx.get<unknown>("s2s.slug.user" as any);
+    const rawVersion = this.ctx.get<unknown>("s2s.version.user" as any);
+
+    const slug = typeof rawSlug === "string" ? rawSlug.trim() : "";
+    const version =
+      typeof rawVersion === "number" && Number.isFinite(rawVersion)
+        ? rawVersion
+        : NaN;
+
+    if (!slug || !Number.isFinite(version)) {
+      const status: UserCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_S2S_ROUTE_META_MISSING",
+        message:
+          "Missing or invalid controller-seeded s2s route metadata for user (slug/version).",
+      };
+      this.ctx.set("signup.userCreateStatus", status);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_s2s_route_meta_missing",
+        detail:
+          "Auth signup requires controller-seeded S2S routing metadata before calling user.create. " +
+          "Dev: controller must set ctx['s2s.slug.user'] (string) and ctx['s2s.version.user'] (number).",
+        stage: "config.s2s.routeMeta",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ rawSlug, rawVersion }],
+        logMessage:
+          "auth.signup.s2s.user.create: missing/invalid s2s.slug.user or s2s.version.user.",
+        logLevel: "error",
+      });
+      return;
+    }
 
     // ───────────────────────────────────────────
     // S2S call
     // ───────────────────────────────────────────
 
     try {
-      // IMPORTANT:
-      // - SvcClient.call returns WireBagJson (wire JSON), not a hydrated DtoBag<T>.
-      // - This handler does not need the returned payload (hydrate is the bag writer).
-      // - This handler never mutates ctx["bag"].
       const _wire = await svcClient.call({
         env,
-        slug: "user",
-        version: 1,
+        slug,
+        version,
         dtoType: "user",
         op: "create",
         method: "PUT",
@@ -225,10 +308,10 @@ export class S2sUserCreateHandler extends HandlerBase {
 
       const status: UserCreateStatus = {
         ok: true,
-        userId: signupUserId,
+        userId,
       };
       this.ctx.set("signup.userCreateStatus", status);
-      this.ctx.set("handlerStatus", "ok");
+      this.ctx.set("handlerStatus", "success");
       return;
     } catch (err) {
       const message =
@@ -267,7 +350,7 @@ export class S2sUserCreateHandler extends HandlerBase {
         stage: "s2s.userCreate",
         requestId,
         origin: { file: __filename, method: "execute" },
-        issues: [{ env, slug: "user", op: "create", downstreamStatus }],
+        issues: [{ env, slug, op: "create", downstreamStatus }],
         rawError: err,
         logMessage: isDuplicate
           ? "auth.signup.s2s.user.create: duplicate (mapped to 409)."

@@ -31,7 +31,7 @@
  *
  * Notes:
  * - Pull DB config via runtime rails (HandlerBase.getMongoConfig()).
- * - Resolve dtoCtor via DtoRegistry + ctx["dtoType"] (no dtoCtor on ctx required).
+ * - Resolve dtoCtor via DtoRegistry + ctx["dtoKey"] (no dtoCtor on ctx required).
  * - Pagination metadata is exposed on ctx for finalize() (e.g., ctx["list.nextCursor"]).
  */
 
@@ -66,7 +66,7 @@ export class DbReadListHandler extends HandlerBase {
     this.log.debug({ event: "execute_start", requestId }, "db.read.list enter");
 
     // ---- dtoType & Registry ------------------------------------------------
-    const dtoType = this.safeCtxGet<string>("dtoType") ?? "";
+    const dtoType = this.safeCtxGet<string>("dtoKey") ?? "";
     if (!dtoType) {
       this.failWithError({
         httpStatus: 400,

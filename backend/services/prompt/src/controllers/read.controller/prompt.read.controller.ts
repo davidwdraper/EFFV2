@@ -40,7 +40,7 @@ export class PromptReadController extends ControllerJsonBase {
     const dtoType = req.params.dtoType;
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", "read");
 
     // Primary route: /read/:language/:version/:promptKey
@@ -119,7 +119,7 @@ export class PromptReadController extends ControllerJsonBase {
     const dtoType = req.params.dtoType;
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", "read");
 
     const language =

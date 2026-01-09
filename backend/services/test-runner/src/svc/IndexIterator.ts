@@ -28,7 +28,7 @@ import { HandlerContext as HandlerContextCtor } from "@nv/shared/http/handlers/H
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 
 import { envBootstrap } from "@nv/shared/bootstrap/envBootstrap";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 
@@ -220,16 +220,18 @@ export class IndexIterator {
     };
   }
 
-  private extractPrimaryEnvDto(envBag: DtoBag<EnvServiceDto>): EnvServiceDto {
+  private extractPrimaryEnvDto(
+    envBag: DtoBag<DbEnvServiceDto>
+  ): DbEnvServiceDto {
     const it = envBag.items();
     const first = it.next();
-    const primary: EnvServiceDto | undefined = first.done
+    const primary: DbEnvServiceDto | undefined = first.done
       ? undefined
       : first.value;
 
     if (!primary) {
       throw new Error(
-        "BOOTSTRAP_ENV_BAG_EMPTY_AT_TEST_RUNNER: No EnvServiceDto in envBag after envBootstrap. " +
+        "BOOTSTRAP_ENV_BAG_EMPTY_AT_TEST_RUNNER: No DbEnvServiceDto in envBag after envBootstrap. " +
           "Ops: verify env-service has a config record for this service (env@slug@version)."
       );
     }
@@ -238,20 +240,20 @@ export class IndexIterator {
   }
 
   private adaptEnvReloader(
-    envReloader: () => Promise<DtoBag<EnvServiceDto>>
-  ): () => Promise<EnvServiceDto> {
-    return async (): Promise<EnvServiceDto> => {
+    envReloader: () => Promise<DtoBag<DbEnvServiceDto>>
+  ): () => Promise<DbEnvServiceDto> {
+    return async (): Promise<DbEnvServiceDto> => {
       const bag = await envReloader();
       const it = bag.items();
       const first = it.next();
-      const primary: EnvServiceDto | undefined = first.done
+      const primary: DbEnvServiceDto | undefined = first.done
         ? undefined
         : first.value;
 
       if (!primary) {
         throw new Error(
           "ENV_RELOADER_EMPTY_BAG_AT_TEST_RUNNER: envReloader returned an empty bag. " +
-            "Ops: ensure the service’s EnvServiceDto config record still exists in env-service."
+            "Ops: ensure the service’s DbEnvServiceDto config record still exists in env-service."
         );
       }
 

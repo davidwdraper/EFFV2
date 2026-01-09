@@ -40,11 +40,20 @@ export abstract class ControllerHtmlBase extends ControllerExpressBase {
     }
 
     const requestId = ctx.get<string>("requestId") ?? "unknown";
+
+    const isError = ctx.get<string>("handlerStatus") === "error";
+
+    // Status rule matches ControllerJsonBase:
+    // - Prefer explicit ctx["status"] then ctx["response.status"]
+    // - If error and no explicit status was seeded, default to 500 (never 200)
+    const seededStatus =
+      ctx.get<number>("status") ?? ctx.get<number>("response.status");
+
     const status =
-      ctx.get<number>("status") ?? ctx.get<number>("response.status") ?? 200;
+      typeof seededStatus === "number" ? seededStatus : isError ? 500 : 200;
 
     // Error path
-    if (ctx.get<string>("handlerStatus") === "error") {
+    if (isError) {
       const error =
         ctx.get<NvHandlerError>("error") ??
         (ctx.get<unknown>("response.body") as NvHandlerError | undefined);

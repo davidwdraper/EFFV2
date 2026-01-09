@@ -4,17 +4,18 @@
  * - SOP: DTO-first persistence via worker services.
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence via Managers)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0047 (DtoBag & Views)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0057 (Shared SvcClient for S2S Calls)
  *   - ADR-0063 (Auth Signup MOS Pipeline)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
  *
  * Purpose:
- * - Construct a DtoBag<UserAuthDto> for the auth storage worker using:
- *   • ctx["signup.userId"]
+ * - Construct a DtoBag<DbUserAuthDto> for the auth storage worker using:
+ *   • userId (derived from hydrated ctx["bag"] user DTO)
  *   • ctx["signup.passwordHash"]
  *   • ctx["signup.passwordAlgo"]
  *   • ctx["signup.passwordHashParamsJson"]
@@ -26,6 +27,7 @@
  *   `user-auth` worker.
  * - This handler NEVER calls ctx.set("bag", ...); the edge response remains
  *   the UserDto bag seeded earlier in the pipeline.
+ * - DTOs are created only via the app registry (ADR-0102).
  * - No silent fallbacks: missing required signup keys hard-fail with ops guidance.
  *
  * Rail semantics (IMPORTANT):
@@ -33,19 +35,19 @@
  * - Instead it sets:
  *     ctx["signup.rollbackUserRequired"] = true
  *     ctx["signup.userAuthCreateStatus"] = { ok:false, ... }
- *   and keeps handlerStatus="ok" so the pipeline can proceed to the rollback step.
+ *   and keeps handlerStatus="success" so the pipeline can proceed to the rollback step.
  */
 
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { UserAuthDto } from "@nv/shared/dto/user-auth.dto";
-import { UserAuthDtoRegistry } from "@nv/shared/dto/registry/user-auth.dtoRegistry";
+import type { DbUserAuthDto } from "@nv/shared/dto/db.user-auth.dto";
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
+import type { DbUserDto } from "@nv/shared/dto/db.user.dto";
 
-type UserAuthBag = DtoBag<UserAuthDto>;
+type UserAuthBag = DtoBag<DbUserAuthDto>;
 
 type UserAuthCreateStatus =
   | { ok: true }
@@ -57,7 +59,7 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Build a UserAuthDto bag from signup context and call the user-auth worker create operation via SvcClient.";
+    return "Build a DbUserAuthDto bag from signup context and call the user-auth worker create operation via SvcClient.";
   }
 
   protected handlerName(): string {
@@ -70,8 +72,70 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
     // Default: rollback not required unless we explicitly set it on failure.
     this.ctx.set("signup.rollbackUserRequired", false);
 
+    // ───────────────────────────────────────────
+    // Derive userId from hydrated user DTO bag (canonical id is dto._id)
+    // ───────────────────────────────────────────
+
+    const userBag = this.safeCtxGet<DtoBag<DbUserDto>>("bag");
+    const userItems: any[] = (userBag as any)?.items;
+
+    if (!userBag || !Array.isArray(userItems) || userItems.length !== 1) {
+      const status: UserAuthCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_MISSING_USER_BAG",
+        message:
+          "Missing or invalid ctx['bag'] before user-auth.create (expected exactly one user DTO).",
+      };
+      this.ctx.set("signup.userAuthCreateStatus", status);
+
+      // Missing bag is a DEV bug: hard fail immediately (no rollback step).
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_missing_user_bag",
+        detail:
+          "Auth signup expected ctx['bag'] to contain exactly one hydrated DbUserDto before calling user-auth.create. " +
+          "Dev: ensure controller hydration seeded ctx['bag'] correctly.",
+        stage: "inputs.userBag",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasBag: !!userBag, count: userItems?.length }],
+        logMessage:
+          "auth.signup.s2s.userAuth.create: missing/invalid user bag before user-auth.create.",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    const userDto = userItems[0] as DbUserDto;
+    const userId =
+      typeof (userDto as any)?.getId === "function" ? userDto.getId() : "";
+
+    if (!userId) {
+      const status: UserAuthCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_USER_ID_MISSING",
+        message: "Hydrated user DTO did not expose a valid id.",
+      };
+      this.ctx.set("signup.userAuthCreateStatus", status);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_user_id_missing",
+        detail:
+          "Auth signup expected the hydrated user DTO to contain a valid _id before calling user-auth.create. " +
+          "Dev: controller hydration must enforce _id (ADR-0102).",
+        stage: "inputs.userDto.id",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasUserId: !!userId }],
+        logMessage:
+          "auth.signup.s2s.userAuth.create: hydrated user DTO missing id.",
+        logLevel: "error",
+      });
+      return;
+    }
+
     // ── Required signup fields ──
-    const userId = this.safeCtxGet<string>("signup.userId");
     const passwordHash = this.safeCtxGet<string>("signup.passwordHash");
     const passwordAlgo = this.safeCtxGet<string>("signup.passwordAlgo");
     const passwordHashParamsJson = this.safeCtxGet<string>(
@@ -81,12 +145,12 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
       "signup.passwordCreatedAt"
     );
 
-    if (!userId || !passwordHash || !passwordAlgo || !passwordCreatedAt) {
+    if (!passwordHash || !passwordAlgo || !passwordCreatedAt) {
       const status: UserAuthCreateStatus = {
         ok: false,
         code: "AUTH_SIGNUP_MISSING_AUTH_FIELDS",
         message:
-          "Missing one or more required keys: signup.userId, signup.passwordHash, signup.passwordAlgo, signup.passwordCreatedAt.",
+          "Missing one or more required keys: signup.passwordHash, signup.passwordAlgo, signup.passwordCreatedAt.",
       };
       this.ctx.set("signup.userAuthCreateStatus", status);
 
@@ -95,17 +159,17 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
         httpStatus: 500,
         title: "auth_signup_missing_auth_fields",
         detail:
-          "Auth signup expected ctx['signup.userId'], ctx['signup.passwordHash'], ctx['signup.passwordAlgo'], and ctx['signup.passwordCreatedAt'] " +
-          "to be populated before calling user-auth.create. Dev: ensure CodePasswordHashHandler ran and stored these values. No fallbacks here.",
+          "Auth signup expected password-hash outputs to be populated before calling user-auth.create. " +
+          "Dev: ensure CodePasswordHashHandler ran and stored these values. No fallbacks here.",
         stage: "inputs.authFields",
         requestId,
         origin: { file: __filename, method: "execute" },
         issues: [
           {
-            hasUserId: !!userId,
             hasPasswordHash: !!passwordHash,
             hasPasswordAlgo: !!passwordAlgo,
             hasPasswordCreatedAt: !!passwordCreatedAt,
+            hasPasswordHashParamsJson: !!passwordHashParamsJson,
           },
         ],
         logMessage:
@@ -115,13 +179,18 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
       return;
     }
 
-    // ── Mint DTO via shared minting registry ──
-    const userAuthRegistry = new UserAuthDtoRegistry();
+    // ───────────────────────────────────────────
+    // Mint DTO via app DTO registry (ADR-0102 / Scenario A)
+    // ───────────────────────────────────────────
 
-    let userAuthDto: UserAuthDto;
+    let userAuthDto: DbUserAuthDto;
     try {
-      userAuthDto = userAuthRegistry.newUserAuthDto();
+      const reg = this.getRegistry();
+      userAuthDto = reg.create<DbUserAuthDto>("db.user-auth.dto", undefined, {
+        validate: true,
+      });
 
+      // NOTE: setters are DTO-defined; we do not construct raw JSON.
       (userAuthDto as any).setUserId(userId);
       (userAuthDto as any).setHash(passwordHash);
       (userAuthDto as any).setHashAlgo(passwordAlgo);
@@ -140,28 +209,25 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
       };
       this.ctx.set("signup.userAuthCreateStatus", status);
 
-      // DTO build failure is also a DEV bug: hard fail (no rollback step).
+      // DTO build failure is a DEV bug: hard fail (no rollback step).
       this.failWithError({
         httpStatus: 500,
         title: "auth_signup_user_auth_dto_invalid",
         detail:
-          "Auth signup failed while constructing UserAuthDto from in-memory data. " +
-          "Dev: verify setter validations and upstream pipeline values.",
+          "Auth signup failed while constructing DbUserAuthDto from in-memory data via the app DTO registry. " +
+          "Dev: verify the DTO registration key (db.user-auth.dto) and setter validations.",
         stage: "dto.build",
         requestId,
         origin: { file: __filename, method: "execute" },
-        issues: [
-          { userIdPresent: true, hashPresent: true, hashAlgoPresent: true },
-        ],
         rawError: err,
         logMessage:
-          "auth.signup.s2s.userAuth.create: UserAuthDto construction failed.",
+          "auth.signup.s2s.userAuth.create: DbUserAuthDto construction failed.",
         logLevel: "error",
       });
       return;
     }
 
-    const bag: UserAuthBag = new DtoBag<UserAuthDto>([userAuthDto]);
+    const bag: UserAuthBag = new DtoBag<DbUserAuthDto>([userAuthDto]);
 
     // ── Runtime: env + svcClient capability ──
     const env = (this.rt.getEnv() ?? "").trim();
@@ -222,12 +288,48 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
       return;
     }
 
+    // Controller-owned routing metadata (do not hardcode).
+    const rawSlug = this.ctx.get<unknown>("s2s.slug.userAuth" as any);
+    const rawVersion = this.ctx.get<unknown>("s2s.version.userAuth" as any);
+
+    const slug = typeof rawSlug === "string" ? rawSlug.trim() : "";
+    const version =
+      typeof rawVersion === "number" && Number.isFinite(rawVersion)
+        ? rawVersion
+        : NaN;
+
+    if (!slug || !Number.isFinite(version)) {
+      const status: UserAuthCreateStatus = {
+        ok: false,
+        code: "AUTH_SIGNUP_S2S_ROUTE_META_MISSING",
+        message:
+          "Missing or invalid controller-seeded s2s route metadata for user-auth (slug/version).",
+      };
+      this.ctx.set("signup.userAuthCreateStatus", status);
+
+      this.failWithError({
+        httpStatus: 500,
+        title: "auth_signup_userauth_route_meta_missing",
+        detail:
+          "Auth signup requires controller-seeded S2S routing metadata before calling user-auth.create. " +
+          "Dev: controller must set ctx['s2s.slug.userAuth'] (string) and ctx['s2s.version.userAuth'] (number).",
+        stage: "config.s2s.routeMeta.userAuth",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ rawSlug, rawVersion }],
+        logMessage:
+          "auth.signup.s2s.userAuth.create: missing/invalid s2s.slug.userAuth or s2s.version.userAuth.",
+        logLevel: "error",
+      });
+      return;
+    }
+
     // ── External S2S call to user-auth worker ──
     try {
       const _wire = await svcClient.call({
         env,
-        slug: "user-auth",
-        version: 1,
+        slug,
+        version,
         dtoType: "user-auth",
         op: "create",
         method: "PUT",
@@ -238,15 +340,15 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
 
       this.ctx.set("signup.userAuthCreateStatus", { ok: true });
       this.ctx.set("signup.rollbackUserRequired", false);
-      this.ctx.set("handlerStatus", "ok");
+      this.ctx.set("handlerStatus", "success");
       return;
     } catch (err) {
       const message =
         err instanceof Error ? err.message : String(err ?? "Unknown error");
 
       // SOFT FAIL:
-      // - We must continue so the rollback step can run.
-      // - We mark rollback required and keep handlerStatus="ok".
+      // - Continue so the rollback step can run.
+      // - Mark rollback required and keep handlerStatus="success".
       this.ctx.set("signup.userAuthCreateStatus", {
         ok: false,
         code: "AUTH_SIGNUP_USER_AUTH_CREATE_FAILED",
@@ -254,10 +356,17 @@ export class S2sUserAuthCreateHandler extends HandlerBase {
       });
 
       this.ctx.set("signup.rollbackUserRequired", true);
-      this.ctx.set("handlerStatus", "ok");
+      this.ctx.set("handlerStatus", "success");
 
       this.log.error(
-        { event: "user_auth_create_failed_soft", requestId, env, message },
+        {
+          event: "user_auth_create_failed_soft",
+          requestId,
+          env,
+          slug,
+          version,
+          message,
+        },
         "auth.signup.s2s.userAuth.create: user-auth.create FAILED (soft-fail; rollback required)"
       );
 

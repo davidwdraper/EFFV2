@@ -2,21 +2,17 @@
 /**
  * Docs:
  * - ADR-0040/41/42/43 (DTO-first, handlers, context bus, failure propagation)
- * - ADR-0045 (Index Hints ensured at boot)
  * - ADR-0048 (Writers accept DtoBag only)
  * - ADR-0053 (Bag Purity — return DTOs, not wire)
- * - ADR-0057 (IDs are UUIDv4; assign BEFORE toBody; immutable thereafter)
- * - ADR-0070 (DbDto/MemDto hierarchy — DB_STATE patterns)
- * - ADR-0072 (Edge Mode Factory — Root Env Switches; mock vs real DbWriter worker)
+ * - ADR-0057 (IDs are canonical; immutable; never minted by DbWriter)
  *
  * Purpose:
  * - Public DbWriter<TDto> facade used by handlers.
- * - Exposes ctor + write/writeMany/update/targetInfo while delegating to an
- *   IDbWriterWorker<TDto> internally.
- * - Default behavior uses MongoDbWriterWorker<TDto>.
- * - When dbState + mockMode are supplied (and no explicit worker is given),
- *   DbWriter selects mock vs real worker via resolveDbWriterMode(), enforcing
- *   DB safety rules centrally.
+ * - DbWriter NEVER mints ids.
+ * - DbWriter performs a final invariant check only:
+ *     dto.isValidOwnId() MUST be true.
+ *
+ * If this fails, upstream rails are broken — and we fail fast.
  */
 
 import type { DtoBase } from "../../DtoBase";
@@ -33,18 +29,13 @@ export interface IDbWriterWorker<TDto extends DtoBase> {
   update(): Promise<{ id: string }>;
 }
 
-/**
- * Error used when DbWriter's edge-mode configuration is invalid or unsafe.
- * - httpStatus=409 so the error sink can surface a proper Problem+JSON
- *   "configuration conflict" instead of a generic 500.
- */
-export class DbWriterEdgeModeConfigError extends Error {
-  public readonly httpStatus = 409;
-  public readonly code = "DBWRITER_EDGE_MODE_CONFIG_INVALID";
+export class DbWriterMissingIdError extends Error {
+  public readonly httpStatus = 400;
+  public readonly code = "DBWRITER_ID_INVALID";
 
   constructor(message: string) {
     super(message);
-    this.name = "DbWriterEdgeModeConfigError";
+    this.name = "DbWriterMissingIdError";
   }
 }
 
@@ -54,63 +45,32 @@ export interface DbWriterConstructorParams<TDto extends DtoBase> {
   mongoDb: string;
   log?: ILogger;
   userId?: string;
-
-  /**
-   * Explicit worker injection.
-   * - If provided, DbWriter uses this worker as-is and does not apply
-   *   edge-mode logic.
-   */
   worker?: IDbWriterWorker<TDto>;
-
-  /**
-   * Edge-mode configuration.
-   *
-   * Semantics:
-   * - If neither dbState nor mockMode is provided, DbWriter uses
-   *   MongoDbWriterWorker directly (no edge-mode).
-   * - If either dbState or mockMode is provided (but not both), DbWriter:
-   *     • logs a WARN,
-   *     • throws DbWriterEdgeModeConfigError (httpStatus=409).
-   * - If both dbState and mockMode are provided, DbWriter:
-   *     • calls resolveDbWriterMode({ dbState, mockMode }),
-   *     • logs and throws DbWriterEdgeModeConfigError if blocked,
-   *     • otherwise picks DbWriterMockWorker or MongoDbWriterWorker.
-   */
   dbState?: string;
   mockMode?: boolean;
 }
 
 export class DbWriter<TDto extends DtoBase> {
   private readonly worker: IDbWriterWorker<TDto>;
+  private readonly bag: DtoBag<TDto>;
+  private readonly log: ILogger;
 
   constructor(params: DbWriterConstructorParams<TDto>) {
-    const log = params.log ?? consoleLogger({ component: "DbWriter" });
+    this.bag = params.bag;
+    this.log = params.log ?? consoleLogger({ component: "DbWriter" });
 
-    // 1) If a custom worker is injected, honor it and skip edge-mode logic.
     if (params.worker) {
       this.worker = params.worker;
       return;
     }
 
-    // 2) Edge-mode semantics: both dbState and mockMode are required if
-    //    either is provided. Partial config is treated as a 409 conflict.
     const hasDbState =
       typeof params.dbState === "string" && params.dbState.trim() !== "";
     const hasMockMode = typeof params.mockMode === "boolean";
-    const anyEdgeConfig = hasDbState || hasMockMode;
 
-    if (anyEdgeConfig && (!hasDbState || !hasMockMode)) {
-      log.warn(
-        {
-          dbState: params.dbState,
-          mockMode: params.mockMode,
-        },
-        "DbWriter: invalid edge-mode configuration (dbState and mockMode must both be supplied when using edge-mode)."
-      );
-
-      throw new DbWriterEdgeModeConfigError(
-        "DbWriter edge-mode configuration is invalid: both DB_STATE (dbState) and DB_MOCKS-derived mockMode are required when constructing DbWriter with edge-mode. " +
-          "Ops: ensure DB_STATE and DB_MOCKS are defined in env-service for this service/version and that mockMode is computed from DB_MOCKS before constructing DbWriter."
+    if (hasDbState !== hasMockMode) {
+      throw new Error(
+        "DBWRITER_EDGE_MODE_CONFIG_INVALID: dbState and mockMode must be supplied together."
       );
     }
 
@@ -121,50 +81,32 @@ export class DbWriter<TDto extends DtoBase> {
       });
 
       if (!decision.ok) {
-        log.warn(
-          {
-            dbState: params.dbState,
-            mockMode: params.mockMode,
-            reason: decision.reason,
-          },
-          "DbWriter: edge-mode safety block; refusing to perform DB writes for this configuration."
-        );
-
-        throw new DbWriterEdgeModeConfigError(
-          "DbWriter edge-mode safety block: " +
-            decision.reason +
-            " Ops: adjust DB_STATE and DB_MOCKS in env-service so that writes are directed only at safe, non-prod databases, " +
-            'and ensure DB_STATE is set to values like "smoke" or "testsuite" for non-mocked test runs.'
-        );
+        throw new Error("DBWRITER_EDGE_MODE_BLOCKED: " + decision.reason);
       }
 
-      if (decision.mode === "mock") {
-        this.worker = new DbWriterMockWorker<TDto>({
-          bag: params.bag,
-          log,
-          userId: params.userId,
-        });
-        return;
-      }
+      this.worker =
+        decision.mode === "mock"
+          ? new DbWriterMockWorker<TDto>({
+              bag: params.bag,
+              log: this.log,
+              userId: params.userId,
+            })
+          : new MongoDbWriterWorker<TDto>({
+              bag: params.bag,
+              mongoUri: params.mongoUri,
+              mongoDb: params.mongoDb,
+              log: this.log,
+              userId: params.userId,
+            });
 
-      // decision.mode === "real"
-      this.worker = new MongoDbWriterWorker<TDto>({
-        bag: params.bag,
-        mongoUri: params.mongoUri,
-        mongoDb: params.mongoDb,
-        log,
-        userId: params.userId,
-      });
       return;
     }
 
-    // 3) No edge-mode configuration supplied at all:
-    //    use MongoDbWriterWorker directly.
     this.worker = new MongoDbWriterWorker<TDto>({
       bag: params.bag,
       mongoUri: params.mongoUri,
       mongoDb: params.mongoDb,
-      log,
+      log: this.log,
       userId: params.userId,
     });
   }
@@ -174,30 +116,52 @@ export class DbWriter<TDto extends DtoBase> {
     return this.worker.targetInfo();
   }
 
-  /**
-   * Insert a single DTO from the singleton bag.
-   * Assign meta + id BEFORE toBody.
-   */
+  /** Insert a single DTO. */
   public async write(): Promise<DtoBag<TDto>> {
+    this.assertDtosHaveValidIds(this.bag, "write");
     return this.worker.write();
   }
 
-  /**
-   * Batch insert with per-item duplicate handling.
-   * Returns a DtoBag containing all successfully inserted DTOs (with any retried clones).
-   */
+  /** Batch insert. */
   public async writeMany(bag?: DtoBag<TDto>): Promise<DtoBag<TDto>> {
+    this.assertDtosHaveValidIds(bag ?? this.bag, "writeMany");
     return this.worker.writeMany(bag);
   }
 
-  /** Update by canonical id (no id mutation). */
+  /** Update by canonical id. */
   public async update(): Promise<{ id: string }> {
+    this.assertDtosHaveValidIds(this.bag, "update");
     return this.worker.update();
+  }
+
+  // ───────────────────────────────────────────
+  // KISS invariant enforcement
+  // ───────────────────────────────────────────
+
+  private assertDtosHaveValidIds(
+    bag: DtoBag<TDto>,
+    op: "write" | "writeMany" | "update"
+  ): void {
+    for (const dto of bag.items()) {
+      if (!dto.isValidOwnId()) {
+        this.log.error(
+          {
+            op,
+            dtoType: dto.getType?.(),
+          },
+          "DbWriter received DTO with missing or invalid _id; refusing persistence."
+        );
+
+        throw new DbWriterMissingIdError(
+          `DbWriter ${op} requires DTO to already have a valid canonical _id. ` +
+            `This indicates a broken upstream invariant (ADR-0102 / ADR-0057).`
+        );
+      }
+    }
   }
 }
 
 /**
- * Re-export DuplicateKeyError so existing imports from "DbWriter" continue to
- * work without touching call sites.
+ * Re-export DuplicateKeyError so existing imports remain valid.
  */
 export { DuplicateKeyError } from "../adapters/mongo/dupeKeyError";

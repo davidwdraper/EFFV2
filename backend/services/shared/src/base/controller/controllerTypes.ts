@@ -18,7 +18,7 @@
  */
 
 import type { IBoundLogger } from "../../logger/Logger";
-import type { IDtoRegistry } from "../../registry/RegistryBase";
+import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 import type { AppBase } from "../app/AppBase";
 import type { SvcRuntime } from "../../runtime/SvcRuntime";
 

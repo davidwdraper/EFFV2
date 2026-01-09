@@ -3,7 +3,7 @@
  * Docs:
  * - SOP: DTO-first; fail-fast on index failures
  * - ADRs:
- *   - ADR-0044 (EnvServiceDto — EnvLike contract)
+ *   - ADR-0044 (DbEnvServiceDto — EnvLike contract)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
  * Purpose:
@@ -13,8 +13,8 @@
  *   • Ensure indexes via registry.ensureIndexes().
  */
 
-import type { EnvServiceDto } from "../../dto/env-service.dto";
-import type { IDtoRegistry } from "../../registry/RegistryBase";
+import type { DbEnvServiceDto } from "../../dto/db.env-service.dto";
+import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 import type { IBoundLogger } from "../../logger/Logger";
 
 export type DbBootContext = {
@@ -22,7 +22,7 @@ export type DbBootContext = {
   component: string;
   envLabel: string;
   checkDb: boolean;
-  envDto: EnvServiceDto;
+  envDto: DbEnvServiceDto;
   log: IBoundLogger;
   registry: IDtoRegistry;
 };

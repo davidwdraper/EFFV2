@@ -37,7 +37,7 @@ import type { HandlerContext } from "../handlers/HandlerContext";
 import type { ControllerBase } from "../../base/controller/ControllerBase";
 import { HandlerBase } from "../handlers/HandlerBase";
 
-import { validateUUIDv4String } from "../../utils/uuid";
+import { validateUUIDString } from "../../utils/uuid";
 import { DtoBag } from "../../dto/DtoBag";
 
 type LoggerLike = {
@@ -102,7 +102,7 @@ export class CodeSetDtoIdHandler extends HandlerBase {
 
     let uuid: string;
     try {
-      uuid = validateUUIDv4String(uuidRaw);
+      uuid = validateUUIDString(uuidRaw);
     } catch (err: any) {
       ctx.set("handlerStatus", "error");
       ctx.set("response.status", 500);

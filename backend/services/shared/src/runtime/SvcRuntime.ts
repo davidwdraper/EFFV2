@@ -10,7 +10,7 @@
  * - Canonical service runtime container, transport-agnostic.
  * - Single source of truth for:
  *   - identity (service/env/version/dbState)
- *   - env-backed vars (via EnvServiceDto; no duplication)
+ *   - env-backed vars (via DbEnvServiceDto; no duplication)
  *   - logger handle
  *   - problem factory
  *   - capability slots (db/s2s/audit/etc.)
@@ -19,7 +19,7 @@
  * - No process.env access (ever).
  * - No Express/HTTP constructs (ever).
  * - No default/fallback config values: missing vars throw with Ops guidance.
- * - DTO encapsulation honored: EnvServiceDto never rides in ctx; it lives inside rt.
+ * - DTO encapsulation honored: DbEnvServiceDto never rides in ctx; it lives inside rt.
  *
  * DB vars (ADR-0074):
  * - DB-related keys (NV_MONGO_*) MUST be read via getDbVar()/tryDbVar().
@@ -31,7 +31,7 @@
 
 import type { IBoundLogger } from "../logger/Logger";
 import { ProblemFactory, type ProblemJson } from "../problem/problem";
-import { EnvServiceDto } from "../dto/env-service.dto";
+import { DbEnvServiceDto } from "../dto/db.env-service.dto";
 
 export type SvcRuntimeIdentity = {
   serviceSlug: string;
@@ -62,12 +62,12 @@ const DB_KEYS = new Set<string>([
 export class SvcRuntime {
   public readonly problem: ProblemFactory;
 
-  private envDto: EnvServiceDto;
+  private envDto: DbEnvServiceDto;
   private readonly capCache: Map<string, unknown>;
 
   public constructor(
     private readonly ident: SvcRuntimeIdentity,
-    envDto: EnvServiceDto,
+    envDto: DbEnvServiceDto,
     private readonly log: IBoundLogger,
     private readonly caps: SvcRuntimeCaps = {}
   ) {
@@ -98,7 +98,7 @@ export class SvcRuntime {
 
     if (!envDto || typeof (envDto as any).getVarsRaw !== "function") {
       throw new Error(
-        "RT_ENV_DTO_INVALID: EnvServiceDto is required. Ops: pass the hydrated EnvServiceDto into SvcRuntime."
+        "RT_ENV_DTO_INVALID: DbEnvServiceDto is required. Ops: pass the hydrated DbEnvServiceDto into SvcRuntime."
       );
     }
 
@@ -278,10 +278,10 @@ export class SvcRuntime {
     return n;
   }
 
-  public setEnvDto(fresh: EnvServiceDto): void {
+  public setEnvDto(fresh: DbEnvServiceDto): void {
     if (!fresh || typeof (fresh as any).getVarsRaw !== "function") {
       throw new Error(
-        "RT_ENV_DTO_INVALID: setEnvDto(fresh) requires a valid EnvServiceDto."
+        "RT_ENV_DTO_INVALID: setEnvDto(fresh) requires a valid DbEnvServiceDto."
       );
     }
 
@@ -315,16 +315,16 @@ export class SvcRuntime {
   // Env DTO access (rt-internal; never in ctx)
   // ───────────────────────────────────────────
 
-  public tryGetSvcEnvDto(): EnvServiceDto | undefined {
+  public tryGetSvcEnvDto(): DbEnvServiceDto | undefined {
     return this.envDto;
   }
 
-  public getSvcEnvDto(): EnvServiceDto {
+  public getSvcEnvDto(): DbEnvServiceDto {
     return this.envDto;
   }
 
   /** @deprecated Use getSvcEnvDto() */
-  public getEnvDto(): EnvServiceDto {
+  public getEnvDto(): DbEnvServiceDto {
     return this.getSvcEnvDto();
   }
 
@@ -437,7 +437,7 @@ export class SvcRuntime {
     }
   }
 
-  private safeVarCount(dto: EnvServiceDto): number | undefined {
+  private safeVarCount(dto: DbEnvServiceDto): number | undefined {
     try {
       const raw = dto.getVarsRaw();
       return raw && typeof raw === "object" ? Object.keys(raw).length : 0;

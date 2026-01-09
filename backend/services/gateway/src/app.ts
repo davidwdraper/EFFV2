@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (svcenv centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
@@ -18,7 +18,7 @@
  * - Posture is the single source of truth (no checkDb duplication).
  * - SvcRuntime is REQUIRED: AppBase ctor must receive rt.
  * - Runtime caps are wired ONLY in AppBase (single source of truth).
- * - EnvServiceDto lives ONLY inside rt (no sidecar envDto passed to AppBase).
+ * - DbEnvServiceDto lives ONLY inside rt (no sidecar envDto passed to AppBase).
  *
  * Test-runner invariant (virtual server):
  * - dist/app.js MUST export:
@@ -31,8 +31,8 @@
 
 import type { Express, Router } from "express";
 import { AppBase } from "@nv/shared/base/app/AppBase";
-import type { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { IDtoRegistry } from "@nv/shared/registry/RegistryBase";
+import type { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
@@ -56,11 +56,11 @@ export type CreateAppOptions = {
 
   /**
    * Legacy (kept for compatibility with shared entrypoint callers).
-   * Do NOT pass these into AppBase; EnvServiceDto is owned by rt.
+   * Do NOT pass these into AppBase; DbEnvServiceDto is owned by rt.
    */
   envLabel?: string;
-  envDto: EnvServiceDto;
-  envReloader: () => Promise<EnvServiceDto>;
+  envDto: DbEnvServiceDto;
+  envReloader: () => Promise<DbEnvServiceDto>;
 
   /**
    * ADR-0080: REQUIRED.

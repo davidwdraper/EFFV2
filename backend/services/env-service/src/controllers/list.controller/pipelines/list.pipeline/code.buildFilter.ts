@@ -8,7 +8,7 @@
  * - SvcRuntime Refactored (ADR-0080)
  *
  * Purpose:
- * - Parse query params into a safe filter object for known EnvServiceDto fields only.
+ * - Parse query params into a safe filter object for known DbEnvServiceDto fields only.
  *
  * Inputs (ctx):
  * - "query": Record<string, unknown> (seeded by ControllerBase)
@@ -37,7 +37,7 @@ export class CodeBuildFilterHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Parse env-service list query params into a safe list.filter object for known EnvServiceDto fields (slug, env, level, version).";
+    return "Parse env-service list query params into a safe list.filter object for known DbEnvServiceDto fields (slug, env, level, version).";
   }
 
   protected override async execute(): Promise<void> {

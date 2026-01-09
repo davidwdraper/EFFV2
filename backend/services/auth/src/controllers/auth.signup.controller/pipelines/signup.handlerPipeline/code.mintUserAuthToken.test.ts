@@ -6,7 +6,7 @@
  * - ADR-0035 (JWKS Service for Public Keys)
  * - ADR-0036 (Token Minter using GCP KMS Sign)
  * - ADR-0040 (DTO-Only Persistence via Managers)
- * - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ * - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  * - ADR-0057 (Shared SvcClient for S2S Calls)
  * - ADR-0063 (Auth Signup MOS Pipeline)
  * - ADR-0071 (Auth Signup JWT Placement — ctx["jwt.userAuth"])

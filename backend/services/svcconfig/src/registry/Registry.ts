@@ -25,7 +25,7 @@ import { UserType } from "@nv/shared/dto/UserType";
 import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
-import type { DtoCtor } from "@nv/shared/registry/RegistryBase";
+import type { DtoCtor } from "@nv/shared/registry/DtoRegistry";
 
 export class Registry extends ServiceRegistryBase {
   /** Shared secret used by DTO constructors that enforce instantiation discipline. */

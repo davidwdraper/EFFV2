@@ -33,7 +33,7 @@ export class EnvServiceDeleteController extends ControllerJsonBase {
     const dtoType = req.params.dtoType;
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", "delete");
 
     this.log.debug(

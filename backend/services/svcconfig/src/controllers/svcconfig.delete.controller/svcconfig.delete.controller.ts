@@ -35,7 +35,7 @@ export class SvcconfigDeleteController extends ControllerJsonBase {
     const ctx: HandlerContext = this.makeContext(req, res);
 
     // Seed op & dtoType; params already include :id from express
-    ctx.set("dtoType", dtoType);
+    ctx.set("dtoKey", dtoType);
     ctx.set("op", "delete");
 
     this.log.debug(

@@ -34,7 +34,7 @@ import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { UserDto } from "@nv/shared/dto/user.dto";
+import type { UserDto } from "@nv/shared/dto/db.user.dto";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 
 type UserBag = DtoBag<UserDto>;

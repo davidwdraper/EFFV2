@@ -32,10 +32,10 @@ import {
 import { PromptsClient } from "../../prompts/PromptsClient";
 import type { IBoundLogger } from "../../logger/Logger";
 import { SvcconfigResolverWithCache } from "../../s2s/SvcconfigResolverWithCache";
-import { EnvServiceDto } from "../../dto/env-service.dto";
+import { DbEnvServiceDto } from "../../dto/db.env-service.dto";
 
 function requirePositiveIntVarFromDto(
-  dto: EnvServiceDto,
+  dto: DbEnvServiceDto,
   name: string
 ): number {
   let raw: string;
@@ -62,7 +62,7 @@ function requirePositiveIntVarFromDto(
   return Math.trunc(n);
 }
 
-function requireAbsoluteUrlFromDto(dto: EnvServiceDto, name: string): string {
+function requireAbsoluteUrlFromDto(dto: DbEnvServiceDto, name: string): string {
   let raw: string;
   try {
     raw = dto.getEnvVar(name);
@@ -183,7 +183,7 @@ function requireSvcconfigResolver(opts: {
   service: string;
   log: IBoundLogger;
   loggerAdapter: ISvcClientLogger;
-  envDto: EnvServiceDto;
+  envDto: DbEnvServiceDto;
   ttlMs: number;
 }): ISvcconfigResolver {
   const { service, log, loggerAdapter, envDto, ttlMs } = opts;
@@ -221,7 +221,7 @@ export function createSvcClientForApp(opts: {
   service: string;
   version: number;
   log: IBoundLogger;
-  envDto: EnvServiceDto;
+  envDto: DbEnvServiceDto;
   s2sMocksEnabled: boolean;
   transport?: ISvcClientTransport;
 }): SvcClient {

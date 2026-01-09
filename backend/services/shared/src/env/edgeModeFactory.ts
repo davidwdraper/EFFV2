@@ -4,7 +4,7 @@
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
  *   - ADR-0039 (env-service centralized non-secret env; runtime reload endpoint)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0072 (Edge Mode Factory — Root Env Switches)
  *
  * Purpose:
@@ -21,7 +21,7 @@
  *   constructors without changing runtime behavior yet.
  *
  * Invariants:
- * - Reads values only from EnvServiceDto (svcEnv), never from process.env.
+ * - Reads values only from DbEnvServiceDto (svcEnv), never from process.env.
  * - Strict parsing:
  *   • NV_MOCK_GUARD_1: "true" | "false"
  *   • NV_MOCK_GUARD_2: "true" | "false"
@@ -29,7 +29,7 @@
  * - Fail-fast on invalid configuration with clear Ops guidance.
  */
 
-import { EnvServiceDto } from "../dto/env-service.dto";
+import { DbEnvServiceDto } from "../dto/db.env-service.dto";
 import { getLogger } from "../logger/Logger";
 
 /**
@@ -58,7 +58,7 @@ interface RootMockSettings {
  * Env keys used by the root "service-root" env-service record to control
  * mock behavior across the fleet.
  *
- * Values are stored as strings in EnvServiceDto._vars and retrieved via
+ * Values are stored as strings in DbEnvServiceDto._vars and retrieved via
  * generic accessors as per ADR-0044.
  */
 const ROOT_MOCK_GUARD_1_KEY = "NV_MOCK_GUARD_1";
@@ -99,13 +99,13 @@ function parseBooleanFlag(raw: string, key: string): boolean {
 }
 
 /**
- * Read and validate the three root mock switches from the given EnvServiceDto.
+ * Read and validate the three root mock switches from the given DbEnvServiceDto.
  *
  * NOTE:
  * - This assumes the provided dto is the root "service-root" record for the
  *   current env. Callers are responsible for fetching the correct dto.
  */
-function readRootMockSettings(rootSvcEnv: EnvServiceDto): RootMockSettings {
+function readRootMockSettings(rootSvcEnv: DbEnvServiceDto): RootMockSettings {
   let guard1Raw: string;
   let guard2Raw: string;
   let modeRaw: string;
@@ -196,7 +196,7 @@ function readRootMockSettings(rootSvcEnv: EnvServiceDto): RootMockSettings {
 }
 
 /**
- * Resolve the effective edge mode from the root "service-root" EnvServiceDto.
+ * Resolve the effective edge mode from the root "service-root" DbEnvServiceDto.
  *
  * CURRENT BEHAVIOR (ADR-0072):
  * - Reads and validates the three root switches.
@@ -208,7 +208,9 @@ function readRootMockSettings(rootSvcEnv: EnvServiceDto): RootMockSettings {
  * - Enforce production safety (e.g., fail-fast if non-prod modes are enabled in prod env),
  * - Drive injection of real vs mock workers for DbWriter/DbReader/DbDeleter and other edges.
  */
-export function resolveEffectiveEdgeMode(rootSvcEnv: EnvServiceDto): EdgeMode {
+export function resolveEffectiveEdgeMode(
+  rootSvcEnv: DbEnvServiceDto
+): EdgeMode {
   const settings = readRootMockSettings(rootSvcEnv);
 
   logger.info(

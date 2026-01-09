@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0013 (Versioned Health Envelope)
  *   - ADR-0039 (env-service centralized non-secret env)
- *   - ADR-0044 (EnvServiceDto — Key/Value Contract)
+ *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
  *   - ADR-0073 (Test-Runner Service — Handler-Level Test Execution)
@@ -23,14 +23,14 @@
  * - Service posture is the single source of truth for boot rails.
  * - Baseline capability surface is wired here (lazy factories).
  * - Handlers must access capabilities through rt only.
- * - EnvServiceDto lives ONLY inside rt (no sidecar copies).
+ * - DbEnvServiceDto lives ONLY inside rt (no sidecar copies).
  */
 
 import type { Express } from "express";
 import express = require("express");
 import { ServiceBase } from "../ServiceBase";
-import type { EnvServiceDto } from "../../dto/env-service.dto";
-import type { IDtoRegistry } from "../../registry/RegistryBase";
+import type { DbEnvServiceDto } from "../../dto/db.env-service.dto";
+import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 import { PromptsClient } from "../../prompts/PromptsClient";
 import {
   SvcClient,
@@ -70,7 +70,7 @@ export type AppBaseCtor = {
 
   /**
    * SvcRuntime is MANDATORY (ADR-0080).
-   * rt owns EnvServiceDto (no sidecar envDto in AppBase).
+   * rt owns DbEnvServiceDto (no sidecar envDto in AppBase).
    */
   rt: SvcRuntime;
 
@@ -246,7 +246,7 @@ export abstract class AppBase extends ServiceBase {
       });
 
       const first = bag.items().next();
-      const primary: EnvServiceDto | undefined = first.done
+      const primary: DbEnvServiceDto | undefined = first.done
         ? undefined
         : first.value;
 
@@ -255,11 +255,11 @@ export abstract class AppBase extends ServiceBase {
           `ENV_RELOAD_EMPTY_BAG: env-service returned an empty bag for env="${rt.getEnv()}", slug="${
             this.service
           }", version=${this.version}. ` +
-            "Ops: ensure the env-service config document exists and contains at least one EnvServiceDto."
+            "Ops: ensure the env-service config document exists and contains at least one DbEnvServiceDto."
         );
       }
 
-      // Single source of truth update: ONLY rt holds EnvServiceDto.
+      // Single source of truth update: ONLY rt holds DbEnvServiceDto.
       rt.setEnvDto(primary);
 
       return primary;
@@ -288,7 +288,7 @@ export abstract class AppBase extends ServiceBase {
     return this.rt;
   }
 
-  public getSvcEnv(): EnvServiceDto {
+  public getSvcEnv(): DbEnvServiceDto {
     return this.rt.getSvcEnvDto();
   }
 
@@ -445,7 +445,7 @@ export abstract class AppBase extends ServiceBase {
         envLabel: this.getEnvLabel(),
         envReloader: async () => {
           const fn =
-            this.rt.getCap<() => Promise<EnvServiceDto>>("env.reloader");
+            this.rt.getCap<() => Promise<DbEnvServiceDto>>("env.reloader");
           return await fn();
         },
       });

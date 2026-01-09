@@ -14,7 +14,7 @@
  * - "clone.sourceKey": string "slug@version@env"
  *
  * Outputs (ctx):
- * - "bag.query.dtoCtor"         = EnvServiceDto
+ * - "bag.query.dtoCtor"         = DbEnvServiceDto
  * - "bag.query.filter"          = { slug, version, env }
  * - "bag.query.targetKey"       = "clone.existingBag"
  * - "bag.query.ensureSingleton" = true
@@ -24,7 +24,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 export class CodeCloneHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
@@ -138,7 +138,7 @@ export class CodeCloneHandler extends HandlerBase {
       this.safeCtxGet<boolean>("clone.validateReads") === true;
 
     // Configure the shared BagPopulateQueryHandler.
-    this.ctx.set("bag.query.dtoCtor", EnvServiceDto);
+    this.ctx.set("bag.query.dtoCtor", DbEnvServiceDto);
     this.ctx.set("bag.query.filter", { slug, version: versionNum, env });
     this.ctx.set("bag.query.targetKey", "clone.existingBag");
     this.ctx.set("bag.query.ensureSingleton", true);

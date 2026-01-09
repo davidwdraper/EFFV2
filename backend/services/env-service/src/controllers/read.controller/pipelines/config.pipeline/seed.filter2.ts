@@ -4,7 +4,7 @@
  * - SOP: per-pipeline folders; handlers under ./handlers
  * - ADRs:
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
+ *   - ADR-0044 (DbEnvServiceDto — one doc per env@slug@version)
  *
  * Purpose:
  * - Seed ctx["bag.query.*"] for DbReadOneByFilterHandler to read the SERVICE-LOCAL
@@ -18,7 +18,7 @@
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 export class SeedFilter2Handler extends HandlerBase {
   public constructor(ctx: HandlerContext, controller: any) {
@@ -40,7 +40,7 @@ export class SeedFilter2Handler extends HandlerBase {
     const slug = this.requireQuerySlug(requestId);
     const version = this.requireQueryVersion(requestId);
 
-    this.ctx.set("bag.query.dtoCtor", EnvServiceDto);
+    this.ctx.set("bag.query.dtoCtor", DbEnvServiceDto);
     this.ctx.set("bag.query.filter", { env, slug, version });
     this.ctx.set("bag.query.targetKey", "env.config.service.bag");
     this.ctx.set("bag.query.validateReads", false);

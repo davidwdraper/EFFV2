@@ -15,7 +15,7 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 import { ToBagHandler } from "@nv/shared/http/handlers/toBag";
 
 // DTO ctor for downstream
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 // Update-specific handlers
 import { DbReadExistingHandler } from "./db.readExisting";
@@ -24,7 +24,7 @@ import { DbUpdateHandler } from "./db.update";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed DTO ctor for downstream handlers
-  ctx.set("update.dtoCtor", EnvServiceDto);
+  ctx.set("update.dtoCtor", DbEnvServiceDto);
 
   return [
     // 1) Hydrate DtoBag<IDto> from JSON body (no singleton shortcut)

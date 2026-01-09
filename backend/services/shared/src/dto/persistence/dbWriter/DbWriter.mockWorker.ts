@@ -9,16 +9,16 @@
  *
  * Purpose:
  * - In-memory / no-op implementation of IDbWriterWorker<TDto> used in mock modes.
- * - Never touches Mongo; stamps meta + ids so DTOs look "as if" they were persisted.
- * - Used by DbWriter via injected `worker` parameter; handlers do not change.
+ * - Never touches Mongo; stamps meta only.
+ *
+ * Critical invariant (ADR-0057):
+ * - DbWriter workers MUST NOT mint ids. Identity must be assigned upstream.
  */
 
 import type { DtoBase } from "../../DtoBase";
 import type { ILogger } from "../../../logger/Logger";
 import { DtoBag } from "../../../dto/DtoBag";
 import type { IDbWriterWorker } from "./DbWriter";
-
-const MAX_DUP_RETRIES = 1; // no actual retries; kept for symmetry
 
 function requireSingleton<TDto extends DtoBase>(
   bag: DtoBag<TDto>,
@@ -33,6 +33,19 @@ function requireSingleton<TDto extends DtoBase>(
     throw new Error(`DBWRITER_MOCK_SINGLETON_REQUIRED: ${msg}`);
   }
   return items[0] as TDto;
+}
+
+function requireId(
+  base: DtoBase,
+  op: "write" | "writeMany" | "update"
+): string {
+  const id = String(base.getId() ?? "").trim();
+  if (!id) {
+    throw new Error(
+      `DBWRITER_MOCK_ID_REQUIRED: ${op} requires canonical id to be assigned upstream (ADR-0057).`
+    );
+  }
+  return id;
 }
 
 export class DbWriterMockWorker<TDto extends DtoBase>
@@ -57,22 +70,24 @@ export class DbWriterMockWorker<TDto extends DtoBase>
 
   /**
    * Mock insert of a single DTO from the singleton bag.
-   * Stamps meta + id so downstream DTOs look persisted, but never touches Mongo.
+   * Stamps meta only; never mints ids.
    */
   public async write(): Promise<DtoBag<TDto>> {
     const dto = requireSingleton(this.bag, "write");
     const base = dto as DtoBase;
 
+    // must already exist (no minting in worker)
+    const id = requireId(base, "write");
+
     base.stampCreatedAt();
     base.stampOwnerUserId(this.userId);
     base.stampUpdatedAt(this.userId);
-    base.ensureId();
 
     const collectionName = base.requireCollectionName();
     this.log.info(
       {
         collection: collectionName,
-        id: base.getId(),
+        id,
       },
       "dbwriter-mock: write() simulated (no DB I/O)"
     );
@@ -82,7 +97,7 @@ export class DbWriterMockWorker<TDto extends DtoBase>
 
   /**
    * Mock batch insert.
-   * Stamps meta + id on each DTO and returns them, without DB I/O.
+   * Stamps meta only; never mints ids.
    */
   public async writeMany(bag?: DtoBag<TDto>): Promise<DtoBag<TDto>> {
     const source = bag ?? this.bag;
@@ -92,16 +107,17 @@ export class DbWriterMockWorker<TDto extends DtoBase>
       const dto = item as TDto;
       const base = dto as DtoBase;
 
+      const id = requireId(base, "writeMany");
+
       base.stampCreatedAt();
       base.stampOwnerUserId(this.userId);
       base.stampUpdatedAt(this.userId);
-      base.ensureId();
 
       const collectionName = base.requireCollectionName();
       this.log.info(
         {
           collection: collectionName,
-          id: base.getId(),
+          id,
         },
         "dbwriter-mock: writeMany() simulated (no DB I/O)"
       );
@@ -114,20 +130,15 @@ export class DbWriterMockWorker<TDto extends DtoBase>
 
   /**
    * Mock update:
-   * - Ensures DTO has an id,
-   * - Stamps updatedAt,
-   * - Returns the id without touching the DB.
+   * - Requires DTO already has an id
+   * - Stamps updatedAt
+   * - Returns id without DB I/O
    */
   public async update(): Promise<{ id: string }> {
     const dto = requireSingleton(this.bag, "update");
     const base = dto as DtoBase;
 
-    const rawId = base.getId();
-    if (!rawId) {
-      throw new Error(
-        "DBWRITER_MOCK_UPDATE_NO_ID: DTO has no id set for update()."
-      );
-    }
+    const id = requireId(base, "update");
 
     base.stampUpdatedAt(this.userId);
 
@@ -135,11 +146,11 @@ export class DbWriterMockWorker<TDto extends DtoBase>
     this.log.info(
       {
         collection: collectionName,
-        id: rawId,
+        id,
       },
       "dbwriter-mock: update() simulated (no DB I/O)"
     );
 
-    return { id: String(rawId) };
+    return { id };
   }
 }

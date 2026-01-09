@@ -9,7 +9,7 @@
  */
 
 import { DtoValidationError, type Validator } from "../DtoBase";
-import { validateUUIDv4String } from "../../utils/uuid";
+import { validateUUIDString } from "../../utils/uuid";
 
 export class IdValidators {
   /**
@@ -24,8 +24,8 @@ export class IdValidators {
       if (value === undefined) return;
 
       try {
-        // validateUUIDv4String throws on invalid input.
-        validateUUIDv4String(value);
+        // validateUUIDString throws on invalid input.
+        validateUUIDString(value);
       } catch {
         throw new DtoValidationError(`Invalid UUIDv4 at "${path}"`, [
           {

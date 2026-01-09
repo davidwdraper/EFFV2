@@ -1,28 +1,23 @@
 // backend/services/shared/src/registry/RegistryBase.ts
 /**
  * Docs:
- * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
+ * - SOP: Keep shared contracts tight; deterministic; no fallbacks
  * - ADRs:
- *   - ADR-0049 (DTO Registry & canonical id)
- *   - ADR-0050 (Wire Bag Envelope)
- *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
- *   - ADR-0088 (DTO Test Data Sidecars)
- *   - ADR-0091 (DTO Sidecar Tooling + Testdata Output)
+ *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
+ *   - ADR-0103 (DTO naming convention: keys, filenames, classnames)
+ *   - ADR-0088/0091 (DTO test-data sidecars)
  *
  * Purpose:
- * - Shared DTO Registry base + helpers.
- * - Guarantees DTO instances created through the registry have their instance-level
- *   collection name set from the DTO class's dbCollectionName() (root-cause fix).
- * - Provides canonical "happy" test DTO minting via DTO test-data sidecars.
+ * - Shared DTO Registry base + helpers (test-data minting, sidecar-driven variants).
  *
- * Invariants:
- * - No fallbacks, no legacy modes. One canonical contract:
- *     protected ctorByType(): Record<string, DtoCtor<IDto>>;
- * - Sidecar is happy-only. Registry owns test variants.
- * - Test-time uniqueness is applied INSIDE the registry (magic box), not by callers.
+ * NOTE:
+ * - The global DTO registry is DtoRegistry (shared/src/registry/DtoRegistry.ts).
+ * - RegistryBase remains useful for test-data minting patterns; it also exposes
+ *   the registry instantiation secret for legacy DTOs until full ctor-injection lands.
  */
 
 import type { IDto } from "../dto/IDto";
+import { newUuid } from "../utils/uuid";
 import {
   shapeFromHappyString,
   uniqueValueBuilder,
@@ -39,8 +34,8 @@ export type DtoCtor<T extends IDto = IDto> = {
 
 /** Minimal wire item shape (ADR-0050). */
 export type BagItemWire = {
-  type: string; // Registry type key, e.g., "xxx"
-  item?: unknown; // DTO JSON payload (optional if callers pass the DTO JSON directly)
+  type: string;
+  item?: unknown;
 };
 
 export interface IDtoRegistry {
@@ -56,12 +51,6 @@ export type TestDtoType = "happy" | "duplicate" | "missing" | "badData";
 /** Minimal structural shape a generated DTO test-data sidecar must satisfy. */
 export type DtoTdataProvider = {
   getJson(): unknown;
-
-  /**
-   * Optional hints (generated alongside happy JSON).
-   * Shape is tool-owned, but RegistryBase treats it as a loose contract:
-   *   { fields: { [fieldName]: { unique?: boolean, ... } } }
-   */
   getHints?: () => unknown;
 };
 
@@ -74,7 +63,6 @@ function asFieldHints(v: unknown): FieldHints {
 }
 
 function cloneJsonObject<T>(v: T): T {
-  // happy JSON is small, deterministic, and data-only; JSON clone is fine here.
   return JSON.parse(JSON.stringify(v)) as T;
 }
 
@@ -83,16 +71,21 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 export abstract class RegistryBase implements IDtoRegistry {
+  // ───────────────────────────────────────────
+  // Instantiation secret (owned by registry, not DTOs)
+  // ───────────────────────────────────────────
+
+  private static readonly INSTANTIATION_SECRET = Symbol(
+    "NvDtoRegistryInstantiationSecret"
+  );
+
+  public static getInstantiationSecret(): symbol {
+    return RegistryBase.INSTANTIATION_SECRET;
+  }
+
   /** Subclasses MUST return the ctor map. No properties, no shims. */
   protected abstract ctorByType(): Record<string, DtoCtor<IDto>>;
 
-  /**
-   * Subclasses MAY provide a map of DTO type keys → happy-only tdata providers.
-   * - Sidecars are generated and happy-only by design.
-   * - Registry is responsible for minting test variants from the happy JSON.
-   *
-   * Default is empty: registries without sidecars simply cannot mint test DTOs.
-   */
   protected tdataByType(): Record<string, DtoTdataProvider> {
     return {};
   }
@@ -141,7 +134,6 @@ export abstract class RegistryBase implements IDtoRegistry {
     const typeKey = (item as any).type as string;
     const ctor = this.resolveCtorByType(typeKey);
 
-    // Accept either BagItemWire or raw DTO JSON; prefer item.item if present.
     const json =
       (item as any).item !== undefined ? (item as any).item : (item as unknown);
 
@@ -150,7 +142,6 @@ export abstract class RegistryBase implements IDtoRegistry {
       validate: opts?.validate === true,
     });
 
-    // Ensure instance has its collection set (once) from the ctor’s static.
     const have = (dto as any).getCollectionName?.();
     if (!have) {
       const coll = this.dbCollectionNameByType(typeKey);
@@ -178,17 +169,6 @@ export abstract class RegistryBase implements IDtoRegistry {
     return this.getTestDtoByType(keys[0], testType);
   }
 
-  /**
-   * Mint a test DTO for an explicit type key.
-   *
-   * Current scope:
-   * - "happy": hydrates from happy-only sidecar JSON, then applies test-time
-   *   uniqueness to fields marked unique:true in sidecar hints (if present).
-   *
-   * IMPORTANT:
-   * - This keeps uniquify inside the registry (no external mutation steps).
-   * - No seed passed around; uniqueness is magic-box (guid+hash) per field.
-   */
   public getTestDtoByType(type: string, testType: TestDtoType = "happy"): IDto {
     if (testType !== "happy") {
       throw new Error(
@@ -200,29 +180,29 @@ export abstract class RegistryBase implements IDtoRegistry {
     const tdata = this.tdataByType()[type];
     if (!tdata || typeof tdata.getJson !== "function") {
       throw new Error(
-        `REGISTRY_TESTDATA_MISSING: no tdata provider registered for type "${type}". ` +
-          `Ops: implement tdataByType() in this registry and map "${type}" to its <Dto>Tdata.getJson().`
+        `REGISTRY_TESTDATA_MISSING: no tdata provider registered for type "${type}".`
       );
     }
 
-    // Start from the tool-generated happy JSON (data-only).
     const happyJsonRaw = tdata.getJson();
-
-    // Clone so we never mutate the generated sidecar object graph.
     const happyJson = cloneJsonObject(happyJsonRaw);
 
-    // Apply uniqueness (if hints exist). This is the only "mutation" in v1,
-    // and it is purely to avoid DB uniqueness collisions during tests.
     const hints =
       typeof tdata.getHints === "function"
         ? asFieldHints(tdata.getHints())
         : {};
+
+    // ADR-0102: wire hydration requires _id to exist (UUIDv4) in the edge payload.
+    // Test-data minting is an edge-hydration path, so ensure _id exists here.
+    this.ensureWireId(type, happyJson);
+
+    // Sidecar-driven uniqueness for non-id fields (email, phone, etc).
+    // IMPORTANT: _id MUST NOT be shape-uniquified (uuidv4 constraints).
     this.applyUniqueHints(type, happyJson, hints);
 
     const ctor = this.resolveCtorByType(type);
     const dto = ctor.fromBody(happyJson, { mode: "wire", validate: true });
 
-    // Mirror fromWireItem() invariant: ensure instance collection is set.
     const have = (dto as any).getCollectionName?.();
     if (!have) {
       const coll = this.dbCollectionNameByType(type);
@@ -237,17 +217,22 @@ export abstract class RegistryBase implements IDtoRegistry {
     return dto;
   }
 
-  /**
-   * Apply test-time uniqueness to fields marked unique:true.
-   *
-   * v1 scope:
-   * - top-level fields only
-   * - string only
-   *
-   * Contract:
-   * - If a unique field is ABSENT from happyJson, do nothing (optional + not present-by-default is allowed).
-   * - If a unique field is PRESENT but not a non-empty string, fail fast (sidecar/tool drift).
-   */
+  private ensureWireId(type: string, targetJson: unknown): void {
+    if (!isPlainObject(targetJson)) {
+      throw new Error(
+        `REGISTRY_TESTDATA_BAD_JSON: tdata.getJson() for "${type}" must return an object.`
+      );
+    }
+
+    const obj = targetJson as Record<string, unknown>;
+
+    // Only seed if missing. If present, DTO validation remains the source of truth.
+    if (obj["_id"] === undefined) {
+      obj["_id"] = newUuid();
+      return;
+    }
+  }
+
   private applyUniqueHints(
     type: string,
     targetJson: unknown,
@@ -268,7 +253,9 @@ export abstract class RegistryBase implements IDtoRegistry {
       const hint = fields[k];
       if (!hint || hint.unique !== true) continue;
 
-      // If the unique field isn't present in happy JSON, leave it absent.
+      // ADR-0102: _id is a uuidv4; never attempt shape-based mutation.
+      if (k === "_id") continue;
+
       if (!(k in obj)) continue;
 
       const cur = obj[k];

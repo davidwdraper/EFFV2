@@ -6,9 +6,16 @@
  * - ADR-0099 (Strict missing-test semantics)
  * - ADR-0100 (Pipeline plans + manifest-driven handler tests)
  * - ADR-0101 (Universal seeder + seeder→handler pairs)
+ * - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
  *
  * Purpose:
  * - Domain-named pipeline for Auth Signup (dtoType="user").
+ *
+ * Key invariant (ADR-0102):
+ * - Signup is Scenario B (edge hydration):
+ *   - Controller hydrates DTO via registry.create(dtoKey, body)
+ *   - DTO ctor hydration MUST require _id (UUIDv4) and MUST NOT mint
+ * - Therefore this pipeline MUST NOT mint or assign dto._id.
  */
 
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
@@ -23,8 +30,6 @@ import {
 
 import { AuthSignupController } from "../../auth.signup.controller";
 
-import { CodeMintUuidHandler } from "@nv/shared/http/handlers/code.mint.uuid";
-import { CodeSetDtoIdHandler } from "@nv/shared/http/handlers/code.set.dtoId";
 import { CodePasswordHashHandler } from "./code.passwordHash";
 import { S2sUserCreateHandler } from "./s2s.user.create";
 import { S2sUserAuthCreateHandler } from "./s2s.userAuth.create";
@@ -42,48 +47,24 @@ export class UserSignupPL extends PipelineBase {
 
   protected override buildPlan(): StepDefTest[] {
     return [
-      // RUNG #1: mint baton uuid (ctx["step.uuid"])
-      this.codeMintUuid(),
-
-      // RUNG #2: apply baton uuid onto dto._id
-      this.codeSetDtoId(),
-
-      // RUNG #3: hash password from inbound header
+      // RUNG #1: hash password from inbound header (or other seeded source)
       this.codePasswordHash(),
 
-      // RUNG #4: call user.create with hydrated bag
+      // RUNG #2: call user.create with hydrated bag (controller owns hydration)
       this.s2sUserCreate(),
 
-      // RUNG #5: persist credentials via user-auth worker
+      // RUNG #3: persist credentials via user-auth worker
       // IMPORTANT: on failure this step sets ctx["signup.rollbackUserRequired"]=true
       // and keeps the pipeline rail "ok" so rollback can run.
       this.s2sUserAuthCreate(),
 
-      // RUNG #6: rollback/delete (LIVE: only when rollbackUserRequired===true)
-      // TEST: always cleanup delete using ctx["step.uuid"].
-      // This step sets the general pipeline rail to "error" when rollback was required,
-      // preventing token minting from running.
+      // RUNG #4: rollback/delete (LIVE: only when rollbackUserRequired===true)
+      // NOTE: any rollback baton must NOT be dto._id.
       this.s2sUserDeleteOnFailure(),
 
-      // RUNG #7: mint client auth JWT (no-op unless rung #4 and #5 both ok)
+      // RUNG #5: mint client auth JWT (no-op unless rung #2 and #3 both ok)
       this.codeMintUserAuthToken(),
     ];
-  }
-
-  private codeMintUuid(): StepDefTest {
-    return {
-      handlerName: "code.mint.uuid",
-      handlerCtor: CodeMintUuidHandler,
-      expectedTestName: "default",
-    };
-  }
-
-  private codeSetDtoId(): StepDefTest {
-    return {
-      handlerName: "code.set.dtoId",
-      handlerCtor: CodeSetDtoIdHandler,
-      expectedTestName: "default",
-    };
   }
 
   private codePasswordHash(): StepDefTest {

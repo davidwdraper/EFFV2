@@ -3,31 +3,26 @@
  * Docs:
  * - SOP: docs/architecture/backend/SOP.md (Reduced, Clean)
  * - ADRs:
- *   - ADR-0041 (Per-route controllers; single-purpose handlers)
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0043 (Finalize mapping; controller builds wire payload)
  *   - ADR-0047 (DtoBag, DtoBagView, and DB-Level Batching)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
- *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
- *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
- *
- * Status:
- * - SvcRuntime Refactored (ADR-0080)
+ *   - ADR-0050 (Wire Bag Envelope — items[] + meta)
+ *   - ADR-0102 (Registry sole DTO creation authority)
+ *   - ADR-0103 (DTO naming convention: keys)
  *
  * Purpose:
- * - Populate a DtoBag from a wire bag envelope (one or many).
- * - Hydrates DTOs via Registry.resolveCtorByType(type).fromBody(json, { validate }).
- * - Sets instance collectionName on each DTO using Registry.dbCollectionNameByType(type).
+ * - Populate a DtoBag from a wire bag envelope using the Registry ONLY.
  *
  * Invariants:
- * - Edges are bag-only (payload { items:[{ type:"<dtoType>", ...}] } ).
- * - Handler never builds wire responses; it only sets ctx["bag"] on success.
- * - On error, uses failWithError() (no response.status / response.body writes).
+ * - ctx["dtoKey"] is the registry key (ADR-0103), e.g. "db.user.dto"
+ * - Wire envelope uses BagBuilder format:
+ *     { items: [ { type: "<dtoKey>", item: <dto-json> } ], meta?: { ... } }
+ * - No legacy `{ doc: ... }` wrapper support. Brand new backend.
  */
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
-import type { IDtoRegistry } from "../../registry/RegistryBase";
+import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 import { BagBuilder } from "../../dto/wire/BagBuilder";
 
 export class ToBagHandler extends HandlerBase {
@@ -40,152 +35,78 @@ export class ToBagHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Populate a DtoBag from a wire bag envelope.";
+    return "Populate a DtoBag from a wire bag envelope using registry-only hydration.";
   }
 
   protected async execute(): Promise<void> {
     const requestId = this.safeCtxGet<string>("requestId");
 
     const body = this.safeCtxGet<any>("body") ?? {};
-    const routeDtoType = this.safeCtxGet<string>("dtoType");
-    const validate = true;
+    const dtoKey = (this.safeCtxGet<string>("dtoKey") ?? "").trim();
 
-    if (!routeDtoType) {
+    if (!dtoKey) {
       this.failWithError({
         httpStatus: 400,
-        title: "missing_dto_type",
-        detail: "Missing required path parameter ':dtoType'.",
-        stage: "toBag:validate.dtoType",
-        requestId,
-        rawError: null,
-        origin: { file: __filename, method: "execute" },
-        logMessage: "toBag: missing dtoType on route.",
-        logLevel: "warn",
-      });
-      return;
-    }
-
-    const items = Array.isArray(body?.items) ? body.items : [];
-    if (items.length === 0) {
-      this.failWithError({
-        httpStatus: 400,
-        title: "bad_request_body",
+        title: "missing_dto_key",
         detail:
-          "Body must be a bag envelope: { items: [ { type: string, doc?: {...} | <inline fields> } ], meta?: {...} }",
-        stage: "toBag:validate.items",
+          "Missing required route dtoKey (expected ADR-0103 key like 'db.user.dto').",
+        stage: "toBag:validate.dtoKey",
         requestId,
         rawError: null,
         origin: { file: __filename, method: "execute" },
-        logMessage: "toBag: empty or missing items[].",
+        logMessage: "toBag: missing dtoKey on route/context.",
         logLevel: "warn",
       });
       return;
     }
 
     const registry: IDtoRegistry = this.controller.getDtoRegistry();
-    const coll = registry.dbCollectionNameByType(routeDtoType);
-    const ctor = registry.resolveCtorByType(routeDtoType);
 
-    const dtos: any[] = [];
+    let result: { bag: any; meta: any };
+    try {
+      result = BagBuilder.fromWire(body, {
+        registry,
+        requestId,
+        allowEmpty: false,
+      });
+    } catch (err) {
+      this.failWithError({
+        httpStatus: 400,
+        title: "bad_request_body",
+        detail: (err as Error)?.message ?? "Invalid wire bag payload.",
+        stage: "toBag:wire.parse",
+        requestId,
+        rawError: err,
+        origin: { file: __filename, method: "execute" },
+        logMessage: "toBag: failed to parse/hydrate wire bag payload.",
+        logLevel: "warn",
+      });
+      return;
+    }
 
-    for (const w of items) {
-      const wType = w?.type;
-      if (wType !== routeDtoType) {
+    // Enforce route dtoKey matches every item.type.
+    // BagBuilder already requires type; we enforce that it equals the route key.
+    const items = Array.from(result.bag.items());
+    for (let i = 0; i < items.length; i++) {
+      const itemType = (items[i] as any)?.getType?.();
+      if (itemType && itemType !== dtoKey) {
         this.failWithError({
           httpStatus: 400,
           title: "type_mismatch",
-          detail: `Bag item type '${wType}' does not match route dtoType '${routeDtoType}'.`,
+          detail: `Hydrated DTO type '${itemType}' does not match route dtoKey '${dtoKey}'.`,
           stage: "toBag:validate.type_match",
           requestId,
           rawError: null,
           origin: { file: __filename, method: "execute" },
-          issues: [{ wireType: wType, routeDtoType }],
-          logMessage: "toBag: wire item type does not match route dtoType.",
+          issues: [{ hydratedType: itemType, routeDtoKey: dtoKey }],
+          logMessage: "toBag: hydrated DTO type does not match route dtoKey.",
           logLevel: "warn",
         });
         return;
       }
-
-      // Support legacy `{ doc:{...} }` and new inline `{ ... }`
-      const raw =
-        (w && typeof w === "object" && "doc" in w ? (w as any).doc : w) ?? {};
-      const json: Record<string, unknown> = {
-        ...(raw as Record<string, unknown>),
-      };
-
-      // Normalize alias key: `${dtoType}Id` → `id` (only if `id` not already present)
-      const aliasKey = `${routeDtoType}Id`;
-      if (
-        (json as any).id == null &&
-        typeof (json as any)[aliasKey] === "string" &&
-        String((json as any)[aliasKey]).trim()
-      ) {
-        (json as any).id = String((json as any)[aliasKey]).trim();
-      }
-
-      // IMPORTANT:
-      // - ctor.fromBody(...validate:true) may throw on DTO validation failures.
-      // - Those are NOT "internal_handler_error" — they are client input errors.
-      // - Convert to a structured failWithError() so we don't log as unhandled exceptions.
-      let dto: any;
-      try {
-        dto = ctor.fromBody(json, { mode: "wire", validate });
-      } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : String(err ?? "unknown");
-
-        this.failWithError({
-          httpStatus: 400,
-          title: "dto_validation_error",
-          detail: msg,
-          stage: "toBag:hydrate.validate",
-          requestId,
-          rawError: err,
-          origin: { file: __filename, method: "execute" },
-          issues: [{ dtoType: routeDtoType }],
-          logMessage: "toBag: DTO validation failed during wire→dto hydration.",
-          // Intentionally "error" so prod sees it — but expected-negative tests will downgrade to INFO via shared rails.
-          logLevel: "error",
-        });
-        return;
-      }
-
-      if (typeof (dto as any).setCollectionName === "function") {
-        (dto as any).setCollectionName(coll);
-      }
-
-      this.log.debug(
-        {
-          event: "hydrate_item",
-          type: routeDtoType,
-          wireId: (json as any)?.id ?? (json as any)?.[aliasKey] ?? "(none)",
-          requestId,
-        },
-        "toBag: wire→dto trace"
-      );
-
-      dtos.push(dto);
     }
 
-    const { bag } = BagBuilder.fromDtos(dtos, {
-      requestId: requestId ?? "unknown",
-      limit: dtos.length,
-      cursor: null,
-      total: dtos.length,
-      ...(body?.meta ? body.meta : {}),
-    });
-
-    this.ctx.set("bag", bag);
+    this.ctx.set("bag", result.bag);
     this.ctx.set("handlerStatus", "ok");
-
-    this.log.debug(
-      {
-        event: "bag_populated",
-        items: dtos.length,
-        dtoType: routeDtoType,
-        requestId,
-      },
-      "toBag: DtoBag created from wire envelope"
-    );
   }
 }

@@ -49,7 +49,7 @@
 import { HandlerContext } from "./HandlerContext";
 import { getLogger, type IBoundLogger } from "../../logger/Logger";
 import type { AppBase } from "../../base/app/AppBase";
-import type { IDtoRegistry } from "../../registry/RegistryBase";
+import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 import type { ControllerBase } from "../../base/controller/ControllerBase";
 import type { SvcRuntime } from "../../runtime/SvcRuntime";
 import {
@@ -508,7 +508,7 @@ export abstract class HandlerBase {
   }
 
   protected safeDtoType(): string | undefined {
-    return this.safeCtxGet<string>("dtoType");
+    return this.safeCtxGet<string>("dtoKey");
   }
 
   protected safePipeline(): string | undefined {

@@ -4,25 +4,25 @@
  * - SOP: DTO-first; DTO internals never leak
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
- *   - ADR-0044 (EnvServiceDto — one doc per env@slug@version)
+ *   - ADR-0044 (DbEnvServiceDto — one doc per env@slug@version)
  *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *
  * Purpose:
- * - Unified helper for reading and merging EnvServiceDto configs.
+ * - Unified helper for reading and merging DbEnvServiceDto configs.
  * - Used by both:
  *     • envBootstrap() (during service boot)
  *     • config pipeline handlers (HTTP GET /config)
  *
  * Invariants:
- * - Each (env, slug, version) yields at most one EnvServiceDto.
- * - No naked DTOs: always return DtoBag<EnvServiceDto>.
+ * - Each (env, slug, version) yields at most one DbEnvServiceDto.
+ * - No naked DTOs: always return DtoBag<DbEnvServiceDto>.
  * - mergeEnvBags() enforces single-item rule for both bags and merges vars deterministically.
  */
 
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
-import { EnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
 
 export type EnvConfigKey = {
   env: string;
@@ -36,9 +36,9 @@ export class EnvConfigReader {
    * Never throws on empty results — caller decides if that’s an error.
    */
   public static async getEnv(
-    dbReader: DbReader<EnvServiceDto>,
+    dbReader: DbReader<DbEnvServiceDto>,
     key: EnvConfigKey
-  ): Promise<DtoBag<EnvServiceDto>> {
+  ): Promise<DtoBag<DbEnvServiceDto>> {
     const { env, slug, version } = key;
     return dbReader.readOneBag({ filter: { env, slug, version } });
   }
@@ -53,9 +53,9 @@ export class EnvConfigReader {
    * - If both have 1 → patch root from service (service wins on collisions).
    */
   public static mergeEnvBags(
-    rootBag?: DtoBag<EnvServiceDto>,
-    serviceBag?: DtoBag<EnvServiceDto>
-  ): DtoBag<EnvServiceDto> {
+    rootBag?: DtoBag<DbEnvServiceDto>,
+    serviceBag?: DtoBag<DbEnvServiceDto>
+  ): DtoBag<DbEnvServiceDto> {
     const rootCount = rootBag?.count?.() ?? 0;
     const svcCount = serviceBag?.count?.() ?? 0;
 
@@ -76,6 +76,6 @@ export class EnvConfigReader {
 
     rootDto.patchFromDto(svcDto);
 
-    return new DtoBag<EnvServiceDto>([rootDto]);
+    return new DtoBag<DbEnvServiceDto>([rootDto]);
   }
 }

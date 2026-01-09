@@ -16,7 +16,7 @@
  * Invariants:
  * - Canonical wire id field is `_id` (UUIDv4 string).
  * - No defaults: mongoUri/mongoDb must be provided explicitly by the caller
- *   (typically via EnvServiceDto.getEnvVar()).
+ *   (typically via DbEnvServiceDto.getEnvVar()).
  * - No DTO/Bag requirement; callers provide the explicit collection name.
  */
 
@@ -29,7 +29,7 @@ export class DbDeleter {
   /**
    * Construct a deleter bound to a specific collection.
    * Callers pass:
-   *  - mongoUri / mongoDb (usually sourced from EnvServiceDto.getEnvVar)
+   *  - mongoUri / mongoDb (usually sourced from DbEnvServiceDto.getEnvVar)
    *  - collectionName (resolved upstream e.g. via Registry.dbCollectionNameByType()).
    */
   constructor(params: {

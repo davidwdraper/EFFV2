@@ -23,7 +23,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 
 export class CodeMergeVarsHandler extends HandlerBase {
   public constructor(ctx: HandlerContext, controller: any) {

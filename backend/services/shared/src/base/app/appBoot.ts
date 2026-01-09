@@ -4,13 +4,18 @@
  * - SOP: DTO-first; fail-fast on index failures
  * - ADRs:
  *   - ADR-0044 (DbEnvServiceDto — EnvLike contract)
+ *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *
  * Purpose:
  * - Centralized DB boot behavior for AppBase:
  *   • Skip index ensure for MOS / non-DB services.
  *   • Log registry snapshot when possible.
- *   • Ensure indexes via registry.ensureIndexes().
+ *   • Ensure indexes via registry.ensureIndexes(...) (fail-fast).
+ *
+ * Key invariant:
+ * - ensureIndexes MUST receive boot context (service/envLabel/envDto/log),
+ *   because env config is not read from process.env (ADR-0080).
  */
 
 import type { DbEnvServiceDto } from "../../dto/db.env-service.dto";
@@ -28,7 +33,7 @@ export type DbBootContext = {
 };
 
 export async function performDbBoot(ctx: DbBootContext): Promise<void> {
-  const { service, component, envLabel, checkDb, envDto, log, registry } = ctx;
+  const { service, component, envLabel, checkDb, log, registry } = ctx;
 
   if (!checkDb) {
     log.info(
@@ -59,9 +64,19 @@ export async function performDbBoot(ctx: DbBootContext): Promise<void> {
   try {
     log.info(
       { service, component, env: envLabel },
-      "boot: ensuring indexes via registry.ensureIndexes()"
+      "boot: ensuring indexes via registry.ensureIndexes(ctx)"
     );
-    await (registry as any).ensureIndexes(envDto, log);
+
+    const ensureFn = (registry as any).ensureIndexes;
+    if (typeof ensureFn !== "function") {
+      throw new Error(
+        `ENSURE_INDEXES_MISSING: registry.ensureIndexes is not a function for service="${service}" component="${component}". ` +
+          "Dev: implement ensureIndexes(ctx) on the concrete registry (DtoRegistry) and ensure AppBase constructs that registry."
+      );
+    }
+
+    // CRITICAL: pass the full boot context so ensureIndexes can read mongo config from envDto.
+    await ensureFn.call(registry, ctx);
   } catch (err) {
     const message = (err as Error)?.message ?? String(err);
     log.error(
@@ -70,7 +85,7 @@ export async function performDbBoot(ctx: DbBootContext): Promise<void> {
         component,
         env: envLabel,
         err: message,
-        hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in env-service config, DTO.indexHints[], and connectivity. Service will not start without indexes.",
+        hint: "Index ensure failed. Ops: verify NV_MONGO_URI/NV_MONGO_DB in env-service config vars (and DB_STATE where required), DTO.indexHints[], and connectivity. Service will not start without indexes.",
       },
       "boot: ensureIndexes threw — aborting boot (fail-fast)"
     );

@@ -28,7 +28,7 @@ import { HandlerContext as HandlerContextCtor } from "@nv/shared/http/handlers/H
 import type { AppBase } from "@nv/shared/base/app/AppBase";
 
 import { envBootstrap } from "@nv/shared/bootstrap/envBootstrap";
-import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 

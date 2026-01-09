@@ -10,7 +10,7 @@
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
- *   - ADR-0056 (Typed routes use :dtoType; handler resolves ctor via Registry)
+ *   - ADR-0056 (Typed routes use :dtoType)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *
  * Status:
@@ -31,7 +31,8 @@
  *
  * Notes:
  * - Pull DB config via runtime rails (HandlerBase.getMongoConfig()).
- * - Resolve dtoCtor via DtoRegistry + ctx["dtoKey"] (no dtoCtor on ctx required).
+ * - For now, dtoCtor is provided by pipeline seeding at ctx["list.dtoCtor"].
+ *   (Handlers are being fixed last; we preserve the existing contract.)
  * - Pagination metadata is exposed on ctx for finalize() (e.g., ctx["list.nextCursor"]).
  */
 
@@ -65,7 +66,7 @@ export class DbReadListHandler extends HandlerBase {
 
     this.log.debug({ event: "execute_start", requestId }, "db.read.list enter");
 
-    // ---- dtoType & Registry ------------------------------------------------
+    // ---- dtoType -----------------------------------------------------------
     const dtoType = this.safeCtxGet<string>("dtoKey") ?? "";
     if (!dtoType) {
       this.failWithError({
@@ -83,27 +84,58 @@ export class DbReadListHandler extends HandlerBase {
       return;
     }
 
-    const registry = this.controller.getDtoRegistry();
-    let dtoCtor: DtoCtorWithCollection<DtoBase>;
-    try {
-      dtoCtor = registry.resolveCtorByType(
-        dtoType
-      ) as unknown as DtoCtorWithCollection<DtoBase>;
-    } catch (err) {
+    // ---- dtoCtor (pipeline-seeded, handlers-last refactor) -----------------
+    const seededCtor = this.safeCtxGet<unknown>("list.dtoCtor") ?? null;
+
+    if (!seededCtor || typeof seededCtor !== "function") {
       this.failWithError({
-        httpStatus: 400,
-        title: "unknown_dto_type",
+        httpStatus: 500,
+        title: "missing_list_dto_ctor",
         detail:
-          err instanceof Error
-            ? err.message
-            : `Unable to resolve DTO constructor for dtoType '${dtoType}'.`,
-        stage: "db.read.list:resolve_dtoCtor",
+          "Missing ctx['list.dtoCtor'] seeding. The list pipeline must seed the DTO ctor before db.read.list runs.",
+        stage: "db.read.list:missing_list.dtoCtor",
         requestId,
-        rawError: err,
+        rawError: null,
         origin: { file: __filename, method: "execute" },
         logMessage:
-          "db.read.list: failed to resolve dtoCtor via registry.resolveCtorByType.",
-        logLevel: "warn",
+          "db.read.list: ctx['list.dtoCtor'] missing; pipeline seeding is required.",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    const dtoCtor = seededCtor as unknown as DtoCtorWithCollection<DtoBase>;
+
+    if (typeof (dtoCtor as any)?.fromBody !== "function") {
+      this.failWithError({
+        httpStatus: 500,
+        title: "invalid_list_dto_ctor",
+        detail:
+          "Invalid ctx['list.dtoCtor']: expected a DTO ctor with static fromBody().",
+        stage: "db.read.list:invalid_list.dtoCtor",
+        requestId,
+        rawError: null,
+        origin: { file: __filename, method: "execute" },
+        logMessage:
+          "db.read.list: ctx['list.dtoCtor'] missing required static fromBody().",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    if (typeof (dtoCtor as any)?.dbCollectionName !== "function") {
+      this.failWithError({
+        httpStatus: 500,
+        title: "invalid_list_dto_ctor",
+        detail:
+          "Invalid ctx['list.dtoCtor']: expected a DTO ctor with static dbCollectionName().",
+        stage: "db.read.list:invalid_list.dtoCtor",
+        requestId,
+        rawError: null,
+        origin: { file: __filename, method: "execute" },
+        logMessage:
+          "db.read.list: ctx['list.dtoCtor'] missing required static dbCollectionName().",
+        logLevel: "error",
       });
       return;
     }
@@ -180,6 +212,9 @@ export class DbReadListHandler extends HandlerBase {
       return;
     }
 
-    this.log.debug({ event: "execute_end", requestId }, "db.read.list exit");
+    this.log.debug(
+      { event: "execute_end", requestId, dtoType },
+      "db.read.list exit"
+    );
   }
 }

@@ -266,6 +266,27 @@ export class DbEnvServiceDto extends DtoBase {
     return this;
   }
 
+  /**
+   * DTO-to-DTO patch helper for internal merges (no wire/json boundary).
+   * Used by EnvConfigReader.mergeEnvBags() to merge service vars into root vars.
+   *
+   * Semantics (env-service contract):
+   * - ONLY vars are merged key-wise.
+   * - Existing vars stay; `other` wins on conflicts; new keys are added.
+   * - env/slug/version are NOT modified here (root identity must remain "service-root").
+   * - id/meta are NOT touched here (ID is immutable per ADR-0057).
+   */
+  public patchFromDto(other: DbEnvServiceDto): this {
+    const otherVars = other?.getVarsRaw?.() ?? {};
+    if (otherVars && Object.keys(otherVars).length > 0) {
+      this._vars = {
+        ...this._vars,
+        ...otherVars,
+      };
+    }
+    return this;
+  }
+
   // ───────────────────────────────────────────────────────────────
   // ADR-0074: DB_STATE-aware DB selection via getDbVar()
   // ───────────────────────────────────────────────────────────────
@@ -395,16 +416,6 @@ export class DbEnvServiceDto extends DtoBase {
       );
     }
     return name.trim();
-  }
-
-  /** @deprecated — use getEnvVar(name) for non-DB keys or getDbVar(name) for DB keys. */
-  public getVar(name: string): string {
-    return this.getEnvVar(name);
-  }
-
-  /** @deprecated — use tryEnvVar(name) for non-DB keys or getDbVar(name, { required:false }) for DB keys. */
-  public maybeVar(name: string): string | undefined {
-    return this.tryEnvVar(name);
   }
 
   public getEnvLabel(): string {

@@ -31,7 +31,7 @@
 
 import type { Express, Router } from "express";
 import { AppBase } from "@nv/shared/base/app/AppBase";
-import type { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import type { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";

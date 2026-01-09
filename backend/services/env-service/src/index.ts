@@ -26,7 +26,7 @@
 
 import createApp from "./app";
 import { envBootstrap } from "./bootstrap/envBootstrap";
-import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 import { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 

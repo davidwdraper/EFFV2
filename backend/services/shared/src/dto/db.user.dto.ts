@@ -124,7 +124,9 @@ export class DbUserDto extends DtoBase {
   public static dbCollectionName(): string {
     return "user";
   }
-
+  public getDtoKey(): string {
+    return "db.user.dto";
+  }
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
     { kind: "unique", fields: ["email"], options: { name: "ux_user_email" } },
     {

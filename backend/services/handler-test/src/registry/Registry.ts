@@ -24,7 +24,7 @@
  *   its convenience methods to that shared registry.
  */
 
-import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+import { HandlerTestDto } from "@nv/shared/dto/db.handler-test.dto";
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";

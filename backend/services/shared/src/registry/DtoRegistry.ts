@@ -18,29 +18,32 @@
  *   - body present => edge/db hydration (new DTO with { body, validate, mode }; ctor MUST require _id; MUST NOT mint)
  */
 
-import type { DtoBase } from "../dto/DtoBase";
 import { DTO_INSTANTIATION_SECRET } from "./dtoInstantiationSecret";
-import type { IDto } from "../dto/IDto";
-import type { IDtoRegistry, RegistryDto } from "./IDtoRegistry";
+import type {
+  IDtoRegistry,
+  RegistryDto,
+  DtoKey,
+  DtoCreateOptions,
+  DtoCreateMode,
+} from "./IDtoRegistry";
 
-import { DbUserDto } from "../dto/db.user.dto";
-import { DbUserAuthDto } from "../dto/db.user-auth.dto";
 import { DbEnvServiceDto } from "../dto/db.env-service.dto";
-
-/** Canonical NV DTO registry key (ADR-0103). */
-export type DtoKey = string;
-
-type AnyDto = DtoBase & IDto;
+import { DbHandlerTestDto } from "../dto/db.handler-test.dto";
+import { DbPromptDto } from "../dto/db.prompt.dto";
+import { DbSvcconfigDto } from "../dto/db.svcconfig.dto";
+import { DbTestHandlerDto } from "../dto/db.test-handler.dto";
+import { DbUserAuthDto } from "../dto/db.user-auth.dto";
+import { DbUserDto } from "../dto/db.user.dto";
 
 /**
  * v1 ctor contract (ADR-0102):
  * - Scenario A: new Ctor(secret) => MUST mint _id
  * - Scenario B: new Ctor(secret, { body, validate, mode }) => MUST require _id; MUST NOT mint
  */
-type DtoCtor<TDto extends AnyDto = AnyDto> = {
+type DtoCtor<TDto extends RegistryDto = RegistryDto> = {
   new (
     secret: symbol,
-    opts?: { body?: unknown; validate?: boolean; mode?: "wire" | "db" }
+    opts?: { body?: unknown; validate?: boolean; mode?: DtoCreateMode }
   ): TDto;
 
   // Optional: migration cross-check for db.* keys.
@@ -73,10 +76,34 @@ export class DtoRegistry implements IDtoRegistry {
   constructor() {
     // v1: explicit registrations. No manifests, no magic.
     this.byKey = {
-      ["db.user.dto"]: {
-        key: "db.user.dto",
-        ctor: DbUserDto as unknown as DtoCtor,
-        collectionName: parseDbCollectionFromKey("db.user.dto"),
+      ["db.env-service.dto"]: {
+        key: "db.env-service.dto",
+        ctor: DbEnvServiceDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.env-service.dto"),
+      },
+
+      ["db.handler-test.dto"]: {
+        key: "db.handler-test.dto",
+        ctor: DbHandlerTestDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.handler-test.dto"),
+      },
+
+      ["db.prompt.dto"]: {
+        key: "db.prompt.dto",
+        ctor: DbPromptDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.prompt.dto"),
+      },
+
+      ["db.svcconfig.dto"]: {
+        key: "db.svcconfig.dto",
+        ctor: DbSvcconfigDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.svcconfig.dto"),
+      },
+
+      ["db.test-handler.dto"]: {
+        key: "db.test-handler.dto",
+        ctor: DbTestHandlerDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.test-handler.dto"),
       },
 
       ["db.user-auth.dto"]: {
@@ -85,10 +112,10 @@ export class DtoRegistry implements IDtoRegistry {
         collectionName: parseDbCollectionFromKey("db.user-auth.dto"),
       },
 
-      ["db.env-service.dto"]: {
-        key: "db.env-service.dto",
-        ctor: DbEnvServiceDto as unknown as DtoCtor,
-        collectionName: parseDbCollectionFromKey("db.env-service.dto"),
+      ["db.user.dto"]: {
+        key: "db.user.dto",
+        ctor: DbUserDto as unknown as DtoCtor,
+        collectionName: parseDbCollectionFromKey("db.user.dto"),
       },
     };
 
@@ -111,11 +138,11 @@ export class DtoRegistry implements IDtoRegistry {
    * - Registry verifies post-conditions (DTO has a valid id).
    */
   public create<TDto extends RegistryDto = RegistryDto>(
-    key: DtoKey,
+    dtoKey: DtoKey,
     body?: unknown,
-    opts?: { validate?: boolean; mode?: "wire" | "db" }
+    opts?: DtoCreateOptions
   ): TDto {
-    const entry = this.resolve(key);
+    const entry = this.resolve(dtoKey);
     const ctor = entry.ctor as unknown as DtoCtor<TDto>;
 
     const dto =
@@ -130,7 +157,7 @@ export class DtoRegistry implements IDtoRegistry {
     const id = dto.getId(); // throws if missing
     if (!dto.isValidId(id)) {
       throw new Error(
-        `DTO_ID_INVALID: registry.create("${key}") produced DTO with invalid _id "${id}". ` +
+        `DTO_ID_INVALID: registry.create("${dtoKey}") produced DTO with invalid _id "${id}". ` +
           "Ops: enforce id via DTO hydration/setter using shared uuid helpers."
       );
     }
@@ -143,8 +170,8 @@ export class DtoRegistry implements IDtoRegistry {
     return dto;
   }
 
-  public resolve(key: DtoKey): DtoEntry {
-    const k = String(key ?? "").trim();
+  public resolve(dtoKey: DtoKey): DtoEntry {
+    const k = String(dtoKey ?? "").trim();
     const hit = this.byKey[k];
     if (!hit) {
       throw new Error(

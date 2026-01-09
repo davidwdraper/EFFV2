@@ -11,7 +11,7 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
-import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
+import { SvcconfigDto } from "@nv/shared/dto/db.svcconfig.dto";
 import { CodeQueryBuilder } from "./code.queryBuilder";
 import { DbReadHandler } from "./db.read";
 

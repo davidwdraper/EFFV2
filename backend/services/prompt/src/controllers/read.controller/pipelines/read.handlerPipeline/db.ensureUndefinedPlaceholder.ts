@@ -29,7 +29,7 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import { PromptDto } from "@nv/shared/dto/prompt.dto";
+import { PromptDto } from "@nv/shared/dto/db.prompt.dto";
 import {
   DbWriter,
   DuplicateKeyError,

@@ -37,7 +37,7 @@ import * as SvcconfigReadPipeline from "./pipelines/read.handlerPipeline";
 import * as SvcconfigS2sRoutePipeline from "./pipelines/s2s-route.pipeline";
 
 // DTO ctor used for query-based reads
-import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
+import { SvcconfigDto } from "@nv/shared/dto/db.svcconfig.dto";
 
 export class SvcconfigReadController extends ControllerJsonBase {
   constructor(app: AppBase) {

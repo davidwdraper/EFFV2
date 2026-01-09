@@ -27,11 +27,11 @@ import express = require("express");
 import { AppBase } from "@nv/shared/base/app/AppBase";
 import type { AppBaseCtor } from "@nv/shared/base/app/AppBase";
 import { setLoggerEnv } from "@nv/shared/logger/Logger";
-import type { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
-import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";
+import type { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
+import type { IDtoRegistry } from "@nv/shared/registry/IDtoRegistry";
+import { DtoRegistry } from "@nv/shared/registry/DtoRegistry";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
 
-import { Registry } from "./registry/Registry";
 import { buildEnvServiceRouter } from "./routes/env-service.route";
 
 // AppBase.ts defines SvcPosture but does not export it.
@@ -62,8 +62,14 @@ type CreateAppOptions = {
 };
 
 class EnvServiceApp extends AppBase {
-  /** Concrete per-service DTO registry (explicit, no barrels). */
-  private readonly registry: Registry;
+  /**
+   * Concrete registry instance.
+   *
+   * IMPORTANT:
+   * - Do NOT name this field "registry" because AppBase already has a private "registry"
+   *   (private members are nominal; same name => type incompatibility).
+   */
+  private readonly dtoRegistry: DtoRegistry;
 
   constructor(private readonly opts: CreateAppOptions) {
     // Logger is strict and requires SvcEnv; rt already owns the merged DbEnvServiceDto.
@@ -76,7 +82,8 @@ class EnvServiceApp extends AppBase {
       rt: opts.rt,
     });
 
-    this.registry = new Registry();
+    // Use the shared registry for now; it already implements IDtoRegistry.create().
+    this.dtoRegistry = new DtoRegistry();
 
     this.log.info(
       {
@@ -96,7 +103,7 @@ class EnvServiceApp extends AppBase {
 
   /** ADR-0049: Base-typed accessor so handlers/controllers stay decoupled. */
   public override getDtoRegistry(): IDtoRegistry {
-    return this.registry;
+    return this.dtoRegistry;
   }
 
   /**

@@ -15,7 +15,7 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 import { ToBagHandler } from "@nv/shared/http/handlers/toBag";
 
 // DTO ctor for downstream
-import { PromptDto } from "@nv/shared/dto/prompt.dto";
+import { PromptDto } from "@nv/shared/dto/db.prompt.dto";
 
 // Update-specific handlers
 import { DbReadExistingHandler } from "./db.readExisting";

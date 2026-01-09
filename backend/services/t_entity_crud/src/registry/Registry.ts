@@ -19,7 +19,7 @@
  */
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
-import { XxxDto } from "@nv/shared/dto/xxx.dto";
+import { XxxDto } from "@nv/shared/dto/db.xxx.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/DtoRegistry";

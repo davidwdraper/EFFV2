@@ -8,7 +8,11 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
- *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="_id")
+ *   - ADR-0098 (Domain-named pipelines with PL suffix)
+ *   - ADR-0099 (Strict missing-test semantics)
+ *   - ADR-0100 (Pipeline plans + manifest-driven handler tests)
+ *   - ADR-0101 (Universal seeder + seeder→handler pairs)
  *
  * Purpose:
  * - Orchestrate GET /api/env-service/v1/:dtoType/config
@@ -23,8 +27,9 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-// Pipelines (resolved via directory index.ts)
-import * as EnvServiceConfigPipeline from "./pipelines/config.pipeline";
+import { resolveSeederCtor } from "@nv/shared/http/handlers/seeding/seederRegistry";
+
+import { EnvServiceReadPL } from "./pipelines/config.pipeline/EnvServiceReadPL";
 
 export class EnvServiceReadController extends ControllerJsonBase {
   constructor(app: AppBase) {
@@ -32,46 +37,107 @@ export class EnvServiceReadController extends ControllerJsonBase {
   }
 
   public async get(req: Request, res: Response): Promise<void> {
-    const dtoType = req.params.dtoType;
+    const routeDtoType = (req.params.dtoType ?? "").trim();
     const op = "config";
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoKey", dtoType);
+    const dtoKey = routeDtoType;
+
+    ctx.set("dtoKey", dtoKey);
     ctx.set("op", op);
 
-    this.log.debug(
-      {
-        event: "pipeline_select",
-        op,
-        dtoType,
-        requestId: ctx.get("requestId"),
-      },
-      "selecting read pipeline"
-    );
+    const requestId = ctx.get("requestId");
 
-    if (dtoType !== "env-service") {
+    // ───────────────────────────────────────────
+    // Pipeline selection
+    // ───────────────────────────────────────────
+    let pl: EnvServiceReadPL | null = null;
+
+    if (dtoKey === "env-service") pl = new EnvServiceReadPL();
+
+    if (!pl) {
       ctx.set("handlerStatus", "error");
       ctx.set("response.status", 501);
       ctx.set("response.body", {
         code: "NOT_IMPLEMENTED",
         title: "Not Implemented",
-        detail: `No read pipeline for dtoType='${dtoType}'`,
-        requestId: ctx.get("requestId"),
+        detail: `No pipeline for dtoType='${routeDtoType}', op='${op}' on env-service.`,
+        requestId,
       });
-      this.log.warn(
-        {
-          event: "pipeline_missing_dtoType",
-          op,
-          dtoType,
-          requestId: ctx.get("requestId"),
-        },
-        "no read pipeline registered for dtoType"
-      );
       return super.finalize(ctx);
     }
 
-    const steps = EnvServiceConfigPipeline.getSteps(ctx, this);
-    await this.runPipeline(ctx, steps, { requireRegistry: false }); // config read uses EnvConfigReader directly
+    const pipelineName = pl.pipelineName();
+
+    this.log.pipeline(
+      {
+        event: "pipeline_select",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+      },
+      "env-service.read: selecting pipeline"
+    );
+
+    const stepDefs = pl.getStepDefs("live");
+
+    this.log.pipeline(
+      {
+        event: "pipeline_start",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+        steps: (stepDefs as any[]).map((d: any) => ({
+          seed:
+            typeof d?.seedName === "string" && d.seedName.trim()
+              ? d.seedName.trim()
+              : "noop",
+          handler: String(d?.handlerName ?? ""),
+        })),
+      },
+      "env-service.read: pipeline starting"
+    );
+
+    for (const d of stepDefs as any[]) {
+      const seedName =
+        typeof d?.seedName === "string" && d.seedName.trim()
+          ? d.seedName.trim()
+          : "noop";
+
+      const seedSpec =
+        d && typeof d?.seedSpec === "object" && d.seedSpec !== null
+          ? d.seedSpec
+          : {};
+
+      // 1) seed (most rungs here use seedName=noop; the “seed.*” steps are handlers today)
+      const SeederCtor = (d?.seederCtor ?? resolveSeederCtor(seedName)) as any;
+      const seeder = new SeederCtor(ctx, this, seedSpec);
+      await seeder.run();
+
+      if (ctx.get("handlerStatus") === "error") break;
+
+      // 2) handler
+      const h = new d.handlerCtor(ctx, this, d.handlerInit);
+      await h.run();
+
+      if (ctx.get("handlerStatus") === "error") break;
+    }
+
+    const handlerStatus = ctx.get("handlerStatus") ?? "success";
+
+    this.log.pipeline(
+      {
+        event: "pipeline_complete",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+        handlerStatus,
+      },
+      "env-service.read: pipeline complete"
+    );
 
     return super.finalize(ctx);
   }

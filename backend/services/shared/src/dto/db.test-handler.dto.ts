@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/test-handler.dto.ts
+// backend/services/shared/src/dto/db.test-handler.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -77,9 +77,13 @@ type TestHandlerJson = {
   updatedByUserId?: string;
 };
 
-export class TestHandlerDto extends DtoBase implements IDto {
+export class DbTestHandlerDto extends DtoBase implements IDto {
   public static dbCollectionName(): string {
     return "test-handler";
+  }
+
+  public getDtoKey(): string {
+    return "db.test-handler.dto";
   }
 
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
@@ -137,14 +141,14 @@ export class TestHandlerDto extends DtoBase implements IDto {
       | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
   ) {
     super(secretOrMeta);
-    this.setCollectionName(TestHandlerDto.dbCollectionName());
+    this.setCollectionName(DbTestHandlerDto.dbCollectionName());
   }
 
   public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
-  ): TestHandlerDto {
-    const dto = new TestHandlerDto(DtoBase.getSecret());
+  ): DbTestHandlerDto {
+    const dto = new DbTestHandlerDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<TestHandlerJson>;
 
     if (typeof j._id === "string" && j._id.trim()) {
@@ -291,7 +295,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
 
       if (issues.length) {
         throw new Error(
-          `DTO_VALIDATION_ERROR: Invalid TestHandlerDto payload — ${issues.length} issue(s). ` +
+          `DTO_VALIDATION_ERROR: Invalid DbTestHandlerDto payload — ${issues.length} issue(s). ` +
             issues.map((x) => `${x.path}:${x.code}`).join(", ")
         );
       }
@@ -347,7 +351,7 @@ export class TestHandlerDto extends DtoBase implements IDto {
     return this._finalizeToJson(body);
   }
 
-  public patchFrom(other: TestHandlerDto): this {
+  public patchFrom(other: DbTestHandlerDto): this {
     if (other.runId) this.runId = other.runId;
     if (other.runRefId) this.runRefId = other.runRefId;
 
@@ -397,12 +401,12 @@ export class TestHandlerDto extends DtoBase implements IDto {
     return this;
   }
 
-  public patchFromDto(other: TestHandlerDto): this {
+  public patchFromDto(other: DbTestHandlerDto): this {
     return this.patchFrom(other);
   }
 
   public clone(newId?: string): this {
-    const dto = new TestHandlerDto(DtoBase.getSecret()) as this;
+    const dto = new DbTestHandlerDto(DtoBase.getSecret()) as this;
 
     // ID: caller may supply; otherwise preserve current id if present.
     if (typeof newId === "string" && newId.trim()) {

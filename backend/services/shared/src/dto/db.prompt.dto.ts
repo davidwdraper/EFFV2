@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/prompt.dto.ts
+// backend/services/shared/src/dto/db.prompt.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -46,14 +46,16 @@ export type PromptJson = {
   updatedByUserId?: string;
 };
 
-export class PromptDto extends DtoBase {
+export class DbPromptDto extends DtoBase {
   /**
    * MongoDB collection name for this DTO.
    */
   public static dbCollectionName(): string {
     return "prompt";
   }
-
+  public getDtoKey(): string {
+    return "db.prompt.dto";
+  }
   /**
    * Index hints consumed by the shared index helper at boot.
    *
@@ -117,8 +119,8 @@ export class PromptDto extends DtoBase {
   public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
-  ): PromptDto {
-    const dto = new PromptDto(DtoBase.getSecret());
+  ): DbPromptDto {
+    const dto = new DbPromptDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<PromptJson>;
 
     // Id discipline — never generate here.

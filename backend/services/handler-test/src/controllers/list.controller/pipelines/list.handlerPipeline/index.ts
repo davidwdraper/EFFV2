@@ -13,7 +13,7 @@ import { BuildFilterHandlerOptions } from "@nv/shared/http/handlers/code.buildQu
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
-import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+import { HandlerTestDto } from "@nv/shared/dto/db.handler-test.dto";
 import { CodeBuildQueryFilterHandler } from "@nv/shared/http/handlers/code.buildQuery.filter";
 import { DbReadListHandler } from "@nv/shared/http/handlers/db.read.list";
 

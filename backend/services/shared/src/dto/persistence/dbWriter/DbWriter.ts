@@ -5,6 +5,7 @@
  * - ADR-0048 (Writers accept DtoBag only)
  * - ADR-0053 (Bag Purity — return DTOs, not wire)
  * - ADR-0057 (IDs are canonical; immutable; never minted by DbWriter)
+ * - ADR-0104 (Drop getType(); replace with getDtoKey(); cloning via dtoKey)
  *
  * Purpose:
  * - Public DbWriter<TDto> facade used by handlers.
@@ -147,7 +148,7 @@ export class DbWriter<TDto extends DtoBase> {
         this.log.error(
           {
             op,
-            dtoType: dto.getType?.(),
+            dtoKey: dto.getDtoKey(),
           },
           "DbWriter received DTO with missing or invalid _id; refusing persistence."
         );

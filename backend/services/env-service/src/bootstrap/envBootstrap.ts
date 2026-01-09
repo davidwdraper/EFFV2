@@ -36,7 +36,7 @@
 
 import fs from "fs";
 import path from "path";
-import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { EnvConfigReader } from "../svc/EnvConfigReader";

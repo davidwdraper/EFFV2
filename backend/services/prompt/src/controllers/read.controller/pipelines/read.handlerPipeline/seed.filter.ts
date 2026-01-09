@@ -20,7 +20,7 @@
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { PromptDto } from "@nv/shared/dto/prompt.dto";
+import { PromptDto } from "@nv/shared/dto/db.prompt.dto";
 
 export class SeedFilterHandler extends HandlerBase {
   public constructor(ctx: HandlerContext, controller: any) {

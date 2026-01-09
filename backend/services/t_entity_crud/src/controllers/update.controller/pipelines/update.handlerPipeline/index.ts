@@ -17,7 +17,7 @@ import { CodePatchHandler } from "@nv/shared/http/handlers/code.patch";
 import { DbUpdateHandler } from "@nv/shared/http/handlers/db.update";
 
 // DTO ctor for downstream
-import { XxxDto } from "@nv/shared/dto/xxx.dto";
+import { XxxDto } from "@nv/shared/dto/db.xxx.dto";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {
   // Seed DTO ctor for downstream handlers

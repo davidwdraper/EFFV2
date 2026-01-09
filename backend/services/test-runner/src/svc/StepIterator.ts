@@ -30,7 +30,7 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { withRequestScope } from "@nv/shared/http/requestScope";
 
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
-import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+import { HandlerTestDto } from "@nv/shared/dto/db.handler-test.dto";
 
 import { resolveSeederCtor } from "@nv/shared/http/handlers/seeding/seederRegistry";
 

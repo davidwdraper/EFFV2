@@ -24,7 +24,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
-import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 
 export class CodeCloneHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {

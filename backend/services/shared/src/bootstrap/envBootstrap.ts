@@ -47,6 +47,7 @@ import {
   type SvcTarget,
 } from "../s2s/SvcClient";
 import { SvcEnvClient } from "../env/svcenvClient";
+import { DtoRegistry } from "../registry/DtoRegistry";
 import { SvcRuntime } from "../runtime/SvcRuntime";
 import { setLoggerEnv, getLogger, type IBoundLogger } from "../logger/Logger";
 import { type SvcPosture, isDbPosture } from "../runtime/SvcPosture";
@@ -338,7 +339,10 @@ export async function envBootstrap(
     );
   }
 
-  const envClient = new SvcEnvClient({ svcClient });
+  // Registry needed to hydrate DbEnvServiceDto from env-service responses.
+  const registry = new DtoRegistry();
+
+  const envClient = new SvcEnvClient({ svcClient, registry });
 
   // 2) Fetch DbEnvServiceDto config bag
   let envBag: DtoBag<DbEnvServiceDto>;

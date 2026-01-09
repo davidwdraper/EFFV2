@@ -32,7 +32,7 @@
  * - Writer never inspects JSON payloads; DtoBag and hydrators own that.
  */
 
-import type { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+import type { HandlerTestDto } from "@nv/shared/dto/db.handler-test.dto";
 import type { HandlerTestResult } from "@nv/shared/http/handlers/testing/HandlerTestBase";
 import type { ILogger } from "@nv/shared/logger/Logger";
 import { DtoBag } from "@nv/shared/dto/DtoBag";

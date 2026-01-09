@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/user-auth.dto.ts
+// backend/services/shared/src/dto/db.user-auth.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -119,6 +119,11 @@ export const UserAuthFields = {
 export class DbUserAuthDto extends DtoBase {
   public static dbCollectionName(): string {
     return "user-auth";
+  }
+
+  /** ADR-0103: must match registry key. */
+  public getDtoKey(): string {
+    return "db.user-auth.dto";
   }
 
   public static readonly access = {
@@ -548,9 +553,5 @@ export class DbUserAuthDto extends DtoBase {
     }
 
     return this;
-  }
-
-  public getType(): string {
-    return "user-auth";
   }
 }

@@ -32,7 +32,7 @@
  */
 
 import { DtoBag } from "../dto/DtoBag";
-import { SvcconfigDto } from "../dto/svcconfig.dto";
+import { DbSvcconfigDto } from "../dto/db.svcconfig.dto";
 import { DtoCache, type DtoCacheKey } from "../dto/dtoCache";
 import type {
   ISvcconfigResolver,
@@ -65,7 +65,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
   private readonly log: ISvcClientLogger;
   private readonly ttlMs: number;
   private readonly baseUrl: string; // base URL for the *svcconfig* service
-  private readonly cache: DtoCache<SvcconfigDto>;
+  private readonly cache: DtoCache<DbSvcconfigDto>;
 
   constructor(opts: SvcconfigResolverOptions) {
     this.log = opts.logger;
@@ -98,9 +98,9 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
 
     this.baseUrl = baseUrl.replace(/\/+$/, "");
 
-    this.cache = new DtoCache<SvcconfigDto>({
+    this.cache = new DtoCache<DbSvcconfigDto>({
       ttlMs: this.ttlMs,
-      bagFactory: (dtos) => new DtoBag<SvcconfigDto>(dtos),
+      bagFactory: (dtos) => new DtoBag<DbSvcconfigDto>(dtos),
     });
   }
 
@@ -215,8 +215,8 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       ? ((parsed as any).items as unknown[])
       : [];
 
-    const dtos: SvcconfigDto[] = items.map((j) =>
-      SvcconfigDto.fromBody(j, { validate: false })
+    const dtos: DbSvcconfigDto[] = items.map((j) =>
+      DbSvcconfigDto.fromBody(j, { validate: false })
     );
 
     for (const dto of dtos) {
@@ -227,7 +227,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       if (!dSlug || !major) continue;
 
       const key = this.makeKey(dEnv, dSlug, major);
-      const singleBag = new DtoBag<SvcconfigDto>([dto]);
+      const singleBag = new DtoBag<DbSvcconfigDto>([dto]);
       this.cache.putBag(key, singleBag);
     }
 
@@ -241,7 +241,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     return `${env}:${slug}:${version}`;
   }
 
-  private readFromCache(key: DtoCacheKey): DtoBag<SvcconfigDto> | undefined {
+  private readFromCache(key: DtoCacheKey): DtoBag<DbSvcconfigDto> | undefined {
     const bag = this.cache.getBag(key);
     return bag ?? undefined;
   }
@@ -250,7 +250,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     env: string,
     slug: string,
     version: number
-  ): Promise<SvcconfigDto | undefined> {
+  ): Promise<DbSvcconfigDto | undefined> {
     const url =
       `${this.baseUrl}/api/svcconfig/v1/svcconfig/s2s-route` +
       `?env=${encodeURIComponent(env)}` +
@@ -326,7 +326,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
       );
     }
 
-    const dto = SvcconfigDto.fromBody(items[0], { validate: false });
+    const dto = DbSvcconfigDto.fromBody(items[0], { validate: false });
 
     const dEnv = dto.env || env;
     const dSlug = dto.slug;
@@ -345,7 +345,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     }
 
     const key = this.makeKey(dEnv, dSlug, major);
-    const bag = new DtoBag<SvcconfigDto>([dto]);
+    const bag = new DtoBag<DbSvcconfigDto>([dto]);
     this.cache.putBag(key, bag);
 
     this.log.debug("svcconfigResolver.singleFetch.cached", {
@@ -359,12 +359,12 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
   }
 
   private pickSingleDtoFromBag(
-    bag: DtoBag<SvcconfigDto>,
+    bag: DtoBag<DbSvcconfigDto>,
     env: string,
     slug: string,
     version: number
-  ): SvcconfigDto | undefined {
-    for (const dto of bag as unknown as Iterable<SvcconfigDto>) return dto;
+  ): DbSvcconfigDto | undefined {
+    for (const dto of bag as unknown as Iterable<DbSvcconfigDto>) return dto;
 
     this.log.error("svcconfigResolver.emptyCachedBag", {
       env,
@@ -375,7 +375,7 @@ export class SvcconfigResolverWithCache implements ISvcconfigResolver {
     return undefined;
   }
 
-  private toSvcTarget(dto: SvcconfigDto, env: string): SvcTarget {
+  private toSvcTarget(dto: DbSvcconfigDto, env: string): SvcTarget {
     const slug = dto.slug;
     const version = dto.majorVersion;
     const targetPort = dto.targetPort;

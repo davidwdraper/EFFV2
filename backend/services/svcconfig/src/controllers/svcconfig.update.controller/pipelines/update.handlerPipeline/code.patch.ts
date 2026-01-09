@@ -28,7 +28,7 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
+import { SvcconfigDto } from "@nv/shared/dto/db.svcconfig.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";

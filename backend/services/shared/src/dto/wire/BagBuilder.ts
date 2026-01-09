@@ -4,14 +4,27 @@
  * - ADRs:
  *   - ADR-0049 (Registry; DTO-only validation; IDs on edges)
  *   - ADR-0050 (Wire Bag Envelope & Cursor Semantics)
+ *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
+ *   - ADR-0104 (Drop getType(); replace with dtoKey(); dtoKey is wire-only, never persisted)
  *
  * Purpose:
- * - Build DtoBag<IDto> either from a wire payload (items[] of typed DTO JSON)
+ * - Build DtoBag<IDto> either from a wire payload (items[] of DTO JSON bodies)
  *   or from already-hydrated DTOs.
+ *
+ * Canonical wire envelope (v2):
+ * - body is JSON string or already-parsed object:
+ *     {
+ *       items: [
+ *         { dtoKey: "<registry-key>", ...dtoBodyFields },
+ *         ...
+ *       ],
+ *       meta?: { cursor?, limit?, total?, requestId?, elapsedMs? }
+ *     }
  *
  * Notes:
  * - No logging here; callers add logs with requestId.
  * - Throws plain Errors with actionable messages (include requestId when provided).
+ * - dtoKey is a WIRE-ONLY discriminator; it MUST NOT be persisted. BagBuilder strips it.
  */
 
 import { DtoBag } from "../DtoBag";
@@ -113,39 +126,49 @@ export class BagBuilder {
     }
 
     const items: IDto[] = [];
+
     for (let i = 0; i < body.items.length; i++) {
-      const wireItem = body.items[i] as Record<string, unknown>;
+      const wireItem = body.items[i];
 
-      const t = String(wireItem?.type ?? "");
-      if (!t) {
-        throw new Error(
-          `BadRequest: items[${i}] missing required "type" discriminator (ADR-0049)${
-            requestId ? ` (requestId=${requestId})` : ""
-          }`
-        );
-      }
-
-      // ADR-0050 wire envelope: each entry is { type, item } where "item" is the DTO JSON payload.
-      const payloadItem = (wireItem as any).item as unknown;
       if (
-        !payloadItem ||
-        typeof payloadItem !== "object" ||
-        Array.isArray(payloadItem)
+        !wireItem ||
+        typeof wireItem !== "object" ||
+        Array.isArray(wireItem)
       ) {
         throw new Error(
-          `BadRequest: items[${i}].item must be an object payload (ADR-0050)${
+          `BadRequest: items[${i}] must be an object${
             requestId ? ` (requestId=${requestId})` : ""
           }`
         );
       }
 
+      const rec = wireItem as Record<string, unknown>;
+
+      const dtoKey = typeof rec.dtoKey === "string" ? rec.dtoKey.trim() : "";
+      if (!dtoKey) {
+        throw new Error(
+          `BadRequest: items[${i}] missing required "dtoKey" discriminator (ADR-0104)${
+            requestId ? ` (requestId=${requestId})` : ""
+          }`
+        );
+      }
+
+      // dtoKey is WIRE-ONLY. Strip it before hydration so it cannot be persisted.
+      // (This is a *hard* rule. If a DTO wants dtoKey, it can read it before BagBuilder.)
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { dtoKey: _drop, ...dtoBody } = rec;
+
       // KISS:
-      // - Treat wire "type" discriminator as the registry key (e.g., "db.user.dto").
+      // - Treat wire dtoKey as the registry key (e.g., "db.user.dto").
       // - Registry owns construction + hydration via ctor injection (ADR-0102).
-      const dto = registry.create(t, payloadItem, {
+      //
+      // Typing note:
+      // - registry.create() returns RegistryDto (DtoBase & IDto). That’s assignable to IDto,
+      //   but we keep this module wire-focused and only expose IDto outward.
+      const dto = registry.create(dtoKey, dtoBody, {
         mode: "wire",
         validate: true,
-      }) as IDto;
+      }) as unknown as IDto;
 
       items.push(dto);
     }
@@ -185,16 +208,18 @@ export class BagBuilder {
   ): { bag: DtoBag<IDto>; meta: BagMeta } {
     const arr = Array.isArray(dtos) ? dtos.slice() : Array.from(dtos);
     const bag = new DtoBag<IDto>(arr);
+
     const meta: BagMeta = {
       cursor: opts?.cursor ?? null,
-      limit: typeof opts?.limit === "number" ? opts!.limit : arr.length,
+      limit: typeof opts?.limit === "number" ? opts.limit : arr.length,
       total:
         typeof opts?.total === "number" || opts?.total === null
-          ? opts!.total
+          ? opts.total
           : arr.length,
       requestId: opts?.requestId ?? generateRequestId(),
       elapsedMs: 0,
     };
+
     return { bag, meta };
   }
 }

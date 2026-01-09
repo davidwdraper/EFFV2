@@ -15,7 +15,7 @@
  *
  * Invariant:
  * - ctx["dtoKey"] is the registry key (ADR-0103), e.g. "db.user.dto"
- * - Collection is resolved via registry.getCollectionName(dtoKey)
+ * - Collection is resolved via registry.resolve(dtoKey).collectionName
  */
 
 import { HandlerBase } from "./HandlerBase";
@@ -95,8 +95,13 @@ export class DbDeleteByIdHandler extends HandlerBase {
 
     let collectionName = "";
     try {
-      collectionName = registry.getCollectionName(dtoKey);
-      if (!collectionName || !collectionName.trim()) {
+      const entry = (registry as any)?.resolve?.(dtoKey);
+      collectionName =
+        entry && typeof entry.collectionName === "string"
+          ? entry.collectionName.trim()
+          : "";
+
+      if (!collectionName) {
         throw new Error(`No collection mapped for dtoKey="${dtoKey}"`);
       }
     } catch (err) {
@@ -109,11 +114,11 @@ export class DbDeleteByIdHandler extends HandlerBase {
             : `Unable to resolve collection for dtoKey "${dtoKey}".`,
         stage: "db.delete.byId:config.collectionFromDtoKey",
         requestId,
-        origin: { file: __filename, method: "execute", dtoKey },
+        origin: { file: __filename, method: "execute" },
         issues: [{ dtoKey }],
         rawError: err,
         logMessage:
-          "db.delete.byId: failed to resolve collection via Registry.getCollectionName(dtoKey).",
+          "db.delete.byId: failed to resolve collection via Registry.resolve(dtoKey).collectionName.",
         logLevel: "warn",
       });
       return;

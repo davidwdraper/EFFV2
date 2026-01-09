@@ -15,7 +15,7 @@ import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJs
 import { ToBagHandler } from "@nv/shared/http/handlers/toBag";
 
 // DTO ctor for downstream
-import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
+import { SvcconfigDto } from "@nv/shared/dto/db.svcconfig.dto";
 
 // Update-specific handlers
 import { DbReadExistingHandler } from "./db.readExisting";

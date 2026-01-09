@@ -11,7 +11,7 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
-import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+import { HandlerTestDto } from "@nv/shared/dto/db.handler-test.dto";
 import { DbReadByIdHandler } from "@nv/shared/http/handlers/db.read.byId";
 
 export function getSteps(ctx: HandlerContext, controller: ControllerJsonBase) {

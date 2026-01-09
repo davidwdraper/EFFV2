@@ -9,10 +9,14 @@
  *   - ADR-0044 (SvcEnv as DTO — Key/Value Contract)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta; limit semantics)
  *   - ADR-0053 (Bag Purity & Wire Envelope Separation)
+ *   - ADR-0098 (Domain-named pipelines with PL suffix)
+ *   - ADR-0099 (Strict missing-test semantics)
+ *   - ADR-0100 (Pipeline plans + manifest-driven handler tests)
+ *   - ADR-0101 (Universal seeder + seeder→handler pairs)
  *
  * Purpose:
  * - Orchestrate PATCH /api/env-service/v1/:dtoType/update/:id
- * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
+ * - Thin controller: select per-(dtoType, op) pipeline; execute seeder→handler pairs.
  *
  * Invariants:
  * - Canonical path param is "id" (legacy :envServiceId normalized to ctx["id"]).
@@ -24,10 +28,9 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-// Pipelines (one folder per dtoType)
-import * as EnvServiceUpdatePipeline from "./pipelines/update.pipeline";
-// Future dtoType example (uncomment when adding a new type):
-// import * as MyNewDtoUpdatePipeline from "./pipelines/myNewDto.update.handlerPipeline";
+import { resolveSeederCtor } from "@nv/shared/http/handlers/seeding/seederRegistry";
+
+import { EnvServiceUpdatePL } from "./pipelines/update.pipeline/EnvServiceUpdatePL";
 
 export class EnvServiceUpdateController extends ControllerJsonBase {
   constructor(app: AppBase) {
@@ -35,66 +38,124 @@ export class EnvServiceUpdateController extends ControllerJsonBase {
   }
 
   public async patch(req: Request, res: Response): Promise<void> {
-    const dtoType = req.params.dtoType;
+    const routeDtoType = (req.params.dtoType ?? "").trim();
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoKey", dtoType);
-    ctx.set("op", "update");
+
+    const dtoKey = routeDtoType;
+    const op = "update";
+
+    ctx.set("dtoKey", dtoKey);
+    ctx.set("op", op);
 
     // Normalize param to canonical "id" (stop envServiceId drift)
     const idParam =
       (req.params as any)?.id ?? (req.params as any)?.envServiceId ?? null;
-    ctx.set("id", idParam);
 
-    // Bind to meta.limit if present (singleton is enforced later in handlers)
+    if (typeof idParam === "string" && idParam.trim()) {
+      ctx.set("id", idParam.trim());
+    } else {
+      ctx.set("id", idParam);
+    }
+
+    // Bind to meta.limit if present (singleton enforced later in handlers)
     ctx.set("bagPolicy", { enforceLimitFromMeta: true });
 
-    this.log.debug(
+    const requestId = ctx.get("requestId");
+
+    // ───────────────────────────────────────────
+    // Pipeline selection
+    // ───────────────────────────────────────────
+    let pl: EnvServiceUpdatePL | null = null;
+
+    if (dtoKey === "env-service") pl = new EnvServiceUpdatePL();
+
+    if (!pl) {
+      ctx.set("handlerStatus", "error");
+      ctx.set("response.status", 501);
+      ctx.set("response.body", {
+        code: "NOT_IMPLEMENTED",
+        title: "Not Implemented",
+        detail: `No pipeline for dtoType='${routeDtoType}', op='${op}' on env-service.`,
+        requestId,
+      });
+      return super.finalize(ctx);
+    }
+
+    const pipelineName = pl.pipelineName();
+
+    this.log.pipeline(
       {
         event: "pipeline_select",
-        op: "update",
-        dtoType,
-        requestId: ctx.get("requestId"),
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
       },
-      "selecting update pipeline"
+      "env-service.update: selecting pipeline"
     );
 
-    switch (dtoType) {
-      case "env-service": {
-        this.seedHydrator(ctx, "env-service", { validate: true });
-        const steps = EnvServiceUpdatePipeline.getSteps(ctx, this);
-        await this.runPipeline(ctx, steps, { requireRegistry: true });
-        break;
-      }
+    const stepDefs = pl.getStepDefs("live");
 
-      // Future dtoType example:
-      // case "myNewDto": {
-      //   this.seedHydrator(ctx, "MyNewDto", { validate: true });
-      //   const steps = MyNewDtoUpdatePipeline.getSteps(ctx, this);
-      //   await this.runPipeline(ctx, steps, { requireRegistry: true });
-      //   break;
-      // }
+    this.log.pipeline(
+      {
+        event: "pipeline_start",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+        steps: (stepDefs as any[]).map((d: any) => ({
+          seed:
+            typeof d?.seedName === "string" && d.seedName.trim()
+              ? d.seedName.trim()
+              : "noop",
+          handler: String(d?.handlerName ?? ""),
+        })),
+      },
+      "env-service.update: pipeline starting"
+    );
 
-      default: {
-        ctx.set("handlerStatus", "error");
-        ctx.set("response.status", 501);
-        ctx.set("response.body", {
-          code: "NOT_IMPLEMENTED",
-          title: "Not Implemented",
-          detail: `No update pipeline for dtoType='${dtoType}'`,
-          requestId: ctx.get("requestId"),
-        });
-        this.log.warn(
-          {
-            event: "pipeline_missing",
-            op: "update",
-            dtoType,
-            requestId: ctx.get("requestId"),
-          },
-          "no update pipeline registered for dtoType"
-        );
-      }
+    // ───────────────────────────────────────────
+    // Execute seeder→handler pairs (ADR-0101)
+    // ───────────────────────────────────────────
+    for (const d of stepDefs as any[]) {
+      const seedName =
+        typeof d?.seedName === "string" && d.seedName.trim()
+          ? d.seedName.trim()
+          : "noop";
+
+      const seedSpec =
+        d && typeof d?.seedSpec === "object" && d.seedSpec !== null
+          ? d.seedSpec
+          : {};
+
+      // 1) seed
+      const SeederCtor = (d?.seederCtor ?? resolveSeederCtor(seedName)) as any;
+      const seeder = new SeederCtor(ctx, this, seedSpec);
+      await seeder.run();
+
+      if (ctx.get("handlerStatus") === "error") break;
+
+      // 2) handler
+      const h = new d.handlerCtor(ctx, this, d.handlerInit);
+      await h.run();
+
+      if (ctx.get("handlerStatus") === "error") break;
     }
+
+    const handlerStatus = ctx.get("handlerStatus") ?? "success";
+
+    this.log.pipeline(
+      {
+        event: "pipeline_complete",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+        handlerStatus,
+      },
+      "env-service.update: pipeline complete"
+    );
 
     return super.finalize(ctx);
   }

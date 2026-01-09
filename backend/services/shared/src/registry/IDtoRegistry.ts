@@ -8,6 +8,10 @@
  * - Registry creates DTO instances that are BOTH:
  *   - DtoBase descendants (for id + collection plumbing)
  *   - IDto (for bags/wire/persistence contract)
+ *
+ * Notes:
+ * - The registry key is the canonical DTO key (aka dtoKey).
+ * - dtoKey replaces any legacy “type” notion (getType()).
  */
 
 import type { DtoBase } from "../dto/DtoBase";
@@ -15,10 +19,19 @@ import type { IDto } from "../dto/IDto";
 
 export type RegistryDto = DtoBase & IDto;
 
+export type DtoKey = string;
+
+export type DtoCreateMode = "wire" | "db";
+
+export type DtoCreateOptions = {
+  validate?: boolean;
+  mode?: DtoCreateMode;
+};
+
 export interface IDtoRegistry {
   create<TDto extends RegistryDto = RegistryDto>(
-    key: string,
+    dtoKey: DtoKey,
     body?: unknown,
-    opts?: { validate?: boolean; mode?: "wire" | "db" }
+    opts?: DtoCreateOptions
   ): TDto;
 }

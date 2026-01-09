@@ -8,18 +8,22 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
- *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — items[] + meta; canonical id="_id")
+ *   - ADR-0098 (Domain-named pipelines with PL suffix)
+ *   - ADR-0099 (Strict missing-test semantics)
+ *   - ADR-0100 (Pipeline plans + manifest-driven handler tests)
+ *   - ADR-0101 (Universal seeder + seeder→handler pairs)
+ *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
  *
  * Purpose:
  * - Orchestrate:
  *     - PUT /api/env-service/v1/:dtoType/create
  *     - PUT /api/env-service/v1/:dtoType/clone/:sourceKey/:targetSlug
- * - Thin controller: choose per-(dtoType, op) pipeline; pipeline defines handler order.
+ * - Thin controller: select per-(dtoType, op) pipeline; execute seeder→handler pairs.
  *
  * Invariants:
- * - Edges are bag-only for CREATE (payload { items:[{ type:"<dtoType>", ...}] } ).
- * - Create requires exactly 1 DTO item; enforced in pipeline handlers.
- * - Clone uses DB read → clone() → DB create; no direct caller mutation of DTOs.
+ * - Controller orchestrates only; handlers do work.
+ * - No ID minting here. No business logic here.
  */
 
 import { Request, Response } from "express";
@@ -27,12 +31,11 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-// Pipelines (one folder per op)
-import * as EnvServiceCreatePipeline from "./pipelines/create.pipeline";
-import * as EnvServiceClonePipeline from "./pipelines/clone.pipeline";
+import { resolveSeederCtor } from "@nv/shared/http/handlers/seeding/seederRegistry";
 
-// Future dtoType example (uncomment when adding a new type/op):
-// import * as MyNewDtoCreatePipeline from "./pipelines/myNewDto.create.handlerPipeline";
+// Pipelines (one folder per op)
+import { EnvServiceCreatePL } from "./pipelines/create.pipeline/EnvServiceCreatePL";
+import { EnvServiceCreateClonePL } from "./pipelines/clone.pipeline/EnvServiceCreateClonePL";
 
 export class EnvServiceCreateController extends ControllerJsonBase {
   constructor(app: AppBase) {
@@ -40,91 +43,141 @@ export class EnvServiceCreateController extends ControllerJsonBase {
   }
 
   public async put(req: Request, res: Response): Promise<void> {
-    const dtoType = req.params.dtoType;
-    const op = (req.params.op || "create").trim();
+    const routeDtoType = (req.params.dtoType ?? "").trim();
+
+    // op selection:
+    // - if the route exposes :op, we respect it
+    // - otherwise, infer clone when clone params exist
+    const rawOp =
+      typeof (req.params as any)?.op === "string" ? (req.params as any).op : "";
+    const inferredOp =
+      typeof req.params.sourceKey === "string" ||
+      typeof req.params.targetSlug === "string"
+        ? "clone"
+        : "create";
+
+    const op = (rawOp || inferredOp || "create").trim();
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoKey", dtoType);
+
+    // Route param remains for URL stability; dtoKey is what the rails use.
+    const dtoKey = routeDtoType;
+
+    ctx.set("dtoKey", dtoKey);
     ctx.set("op", op);
 
-    // Clone-specific route params (present only for op="clone")
-    if (req.params.sourceKey) {
-      ctx.set("clone.sourceKey", req.params.sourceKey);
+    // Clone-specific route params
+    if (
+      typeof req.params.sourceKey === "string" &&
+      req.params.sourceKey.trim()
+    ) {
+      ctx.set("clone.sourceKey", req.params.sourceKey.trim());
     }
-    if (req.params.targetSlug) {
-      ctx.set("clone.targetSlug", req.params.targetSlug);
+    if (
+      typeof req.params.targetSlug === "string" &&
+      req.params.targetSlug.trim()
+    ) {
+      ctx.set("clone.targetSlug", req.params.targetSlug.trim());
     }
 
-    this.log.debug(
+    const requestId = ctx.get("requestId");
+
+    // ───────────────────────────────────────────
+    // Pipeline selection (dtoType + op)
+    // ───────────────────────────────────────────
+    let pl: EnvServiceCreatePL | EnvServiceCreateClonePL | null = null;
+
+    if (dtoKey === "env-service") {
+      if (op === "create") pl = new EnvServiceCreatePL();
+      else if (op === "clone") pl = new EnvServiceCreateClonePL();
+    }
+
+    if (!pl) {
+      ctx.set("handlerStatus", "error");
+      ctx.set("response.status", 501);
+      ctx.set("response.body", {
+        code: "NOT_IMPLEMENTED",
+        title: "Not Implemented",
+        detail: `No pipeline for dtoType='${routeDtoType}', op='${op}' on env-service.`,
+        requestId,
+      });
+      return super.finalize(ctx);
+    }
+
+    const pipelineName = pl.pipelineName();
+
+    this.log.pipeline(
       {
         event: "pipeline_select",
         op,
-        dtoType,
-        requestId: ctx.get("requestId"),
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
       },
-      "selecting create/clone pipeline"
+      "env-service.create: selecting pipeline"
     );
 
-    switch (dtoType) {
-      case "env-service": {
-        switch (op) {
-          case "create": {
-            this.seedHydrator(ctx, "env-service", { validate: true });
-            const steps = EnvServiceCreatePipeline.getSteps(ctx, this);
-            await this.runPipeline(ctx, steps, { requireRegistry: true });
-            break;
-          }
+    const stepDefs = pl.getStepDefs("live");
 
-          case "clone": {
-            this.seedHydrator(ctx, "env-service", { validate: true });
-            const steps = EnvServiceClonePipeline.getSteps(ctx, this);
-            await this.runPipeline(ctx, steps, { requireRegistry: true });
-            break;
-          }
+    this.log.pipeline(
+      {
+        event: "pipeline_start",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+        steps: (stepDefs as any[]).map((d: any) => ({
+          seed:
+            typeof d?.seedName === "string" && d.seedName.trim()
+              ? d.seedName.trim()
+              : "noop",
+          handler: String(d?.handlerName ?? ""),
+        })),
+      },
+      "env-service.create: pipeline starting"
+    );
 
-          default: {
-            ctx.set("handlerStatus", "error");
-            ctx.set("response.status", 501);
-            ctx.set("response.body", {
-              code: "NOT_IMPLEMENTED",
-              title: "Not Implemented",
-              detail: `No create pipeline for dtoType='${dtoType}', op='${op}'`,
-              requestId: ctx.get("requestId"),
-            });
-            this.log.warn(
-              {
-                event: "pipeline_missing",
-                op,
-                dtoType,
-                requestId: ctx.get("requestId"),
-              },
-              "no create/clone pipeline registered for dtoType/op"
-            );
-          }
-        }
-        break;
-      }
+    // ───────────────────────────────────────────
+    // Execute seeder→handler pairs (ADR-0101)
+    // ───────────────────────────────────────────
+    for (const d of stepDefs as any[]) {
+      const seedName =
+        typeof d?.seedName === "string" && d.seedName.trim()
+          ? d.seedName.trim()
+          : "noop";
 
-      default: {
-        ctx.set("handlerStatus", "error");
-        ctx.set("response.status", 501);
-        ctx.set("response.body", {
-          code: "NOT_IMPLEMENTED",
-          title: "Not Implemented",
-          detail: `No create pipeline for dtoType='${dtoType}'`,
-          requestId: ctx.get("requestId"),
-        });
-        this.log.warn(
-          {
-            event: "pipeline_missing_dtoType",
-            op,
-            dtoType,
-            requestId: ctx.get("requestId"),
-          },
-          "no create/clone pipeline registered for dtoType"
-        );
-      }
+      const seedSpec =
+        d && typeof d?.seedSpec === "object" && d.seedSpec !== null
+          ? d.seedSpec
+          : {};
+
+      // 1) seed
+      const SeederCtor = (d?.seederCtor ?? resolveSeederCtor(seedName)) as any;
+      const seeder = new SeederCtor(ctx, this, seedSpec);
+      await seeder.run();
+
+      if (ctx.get("handlerStatus") === "error") break;
+
+      // 2) handler
+      const h = new d.handlerCtor(ctx, this, d.handlerInit);
+      await h.run();
+
+      if (ctx.get("handlerStatus") === "error") break;
     }
+
+    const handlerStatus = ctx.get("handlerStatus") ?? "success";
+
+    this.log.pipeline(
+      {
+        event: "pipeline_complete",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+        handlerStatus,
+      },
+      "env-service.create: pipeline complete"
+    );
 
     return super.finalize(ctx);
   }

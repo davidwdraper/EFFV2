@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/xxx.dto.ts
+// backend/services/shared/src/dto/db.xxx.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -46,13 +46,15 @@ type XxxJson = {
   updatedByUserId?: string;
 };
 
-export class XxxDto extends DtoBase {
+export class DbXxxDto extends DtoBase {
   // ─────────────── Collection & Index Hints ───────────────
 
   public static dbCollectionName(): string {
     return "xxx";
   }
-
+  public getDtoKey(): string {
+    return "db.xxx.dto";
+  }
   public static readonly indexHints: ReadonlyArray<IndexHint> = [
     {
       kind: "unique",
@@ -90,7 +92,7 @@ export class XxxDto extends DtoBase {
       | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
   ) {
     super(secretOrMeta);
-    this.setCollectionName(XxxDto.dbCollectionName());
+    this.setCollectionName(DbXxxDto.dbCollectionName());
   }
 
   // ─────────────── Getters (no public fields) ───────────────
@@ -147,8 +149,11 @@ export class XxxDto extends DtoBase {
 
   // ─────────────── Wire hydration (ADR-0079 via DtoBase.check) ───────────────
 
-  public static fromBody(json: unknown, opts?: { validate?: boolean }): XxxDto {
-    const dto = new XxxDto(DtoBase.getSecret());
+  public static fromBody(
+    json: unknown,
+    opts?: { validate?: boolean }
+  ): DbXxxDto {
+    const dto = new DbXxxDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<XxxJson>;
     const validate = opts?.validate === true;
 

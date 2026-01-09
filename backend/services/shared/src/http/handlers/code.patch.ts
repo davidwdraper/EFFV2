@@ -160,13 +160,20 @@ export class CodePatchHandler extends HandlerBase {
     }
 
     // Re-assert collection name if missing (defensive; should already be present).
+    // NOTE: IDtoRegistry does NOT expose getCollectionName(); use resolve(dtoKey) and read the entry.
     try {
       const dtoKey = this.ctx.get<string>("dtoKey"); // expected: ADR-0103 key, e.g. "db.user.dto"
       if (dtoKey && typeof this.controller?.getDtoRegistry === "function") {
         const reg: IDtoRegistry = this.controller.getDtoRegistry();
-        const coll = reg.getCollectionName(dtoKey);
+
+        const entry = (reg as any)?.resolve?.(dtoKey);
+        const coll =
+          entry && typeof entry.collectionName === "string"
+            ? entry.collectionName.trim()
+            : "";
 
         if (
+          coll &&
           !existing.getCollectionName?.() &&
           typeof existing.setCollectionName === "function"
         ) {

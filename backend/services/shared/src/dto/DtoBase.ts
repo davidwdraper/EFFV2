@@ -8,11 +8,13 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical wire id is `_id`)
  *   - ADR-0057 (ID Generation & Validation — UUID; immutable)
  *   - ADR-0079 (DtoBase.check — single normalization/validation gate)
+ *   - ADR-0104 (Drop getType(); replace with getDtoKey(); cloning via dtoKey)
  *
  * Purpose:
  * - Base class for all DTOs.
  * - Owns canonical `_id` lifecycle (UUID, set-once) and collection-name plumbing.
  * - Owns meta stamping utilities used by DbWriter workers (createdAt/updatedAt/owner).
+ * - Provides default clone() implementation (override in derived DTOs if needed).
  *
  * NOTE:
  * - Instantiation secret is owned by the registry module (ADR-0102).
@@ -22,6 +24,7 @@
 import { DTO_INSTANTIATION_SECRET } from "../registry/dtoInstantiationSecret";
 import { newUuid, validateUUIDString, isValidUuid } from "../utils/uuid";
 import { UserType } from "./UserType";
+import type { IDto } from "./IDto";
 
 export type DtoMeta = {
   createdAt?: string;
@@ -65,7 +68,7 @@ export class DtoValidationError extends Error {
   }
 }
 
-export abstract class DtoBase {
+export abstract class DtoBase implements IDto {
   public static getSecret(): symbol {
     return DTO_INSTANTIATION_SECRET;
   }
@@ -369,8 +372,115 @@ export abstract class DtoBase {
     return this._currentUserType;
   }
 
+  // ─────────────── Clone (default) ───────────────
+
+  private static _stripCloneIdAndMeta(
+    body: Record<string, unknown>
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...body };
+
+    // Canonical id key (wire + db)
+    delete out._id;
+
+    // If any DTOs still emit id, strip it too (defensive, not “legacy support”).
+    delete (out as any).id;
+
+    // Meta must NOT carry over to a clone.
+    delete out.createdAt;
+    delete out.updatedAt;
+    delete out.updatedByUserId;
+    delete out.ownerUserId;
+
+    return out;
+  }
+
+  /**
+   * Default clone:
+   * - round-trip through the DTO’s own toBody()/fromBody() contract (least brittle)
+   * - strip id + meta
+   * - re-mint id (or accept caller-provided newId)
+   *
+   * If a DTO’s fromBody() requires _id, it MUST override clone().
+   */
+  public clone(newId?: string): this {
+    const ctor = this.constructor as any;
+
+    if (typeof ctor?.fromBody !== "function") {
+      throw new Error(
+        `DTO_CLONE_NO_FROM_BODY: ${
+          ctor?.name ?? "<unknown>"
+        } is missing static fromBody(). ` +
+          "Dev: implement fromBody() on the DTO class or override clone()."
+      );
+    }
+
+    const raw = this.toBody();
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(
+        `DTO_CLONE_BAD_TO_BODY: ${
+          ctor?.name ?? "<unknown>"
+        } toBody() must return a JSON-ready object.`
+      );
+    }
+
+    const stripped = DtoBase._stripCloneIdAndMeta(
+      raw as Record<string, unknown>
+    );
+
+    // Try common fromBody signatures without playing “types are suggestions”.
+    let cloned: any;
+    try {
+      // Prefer newer signature: fromBody(json, { validate, mode })
+      cloned = ctor.fromBody(stripped, { validate: false, mode: "wire" });
+    } catch (_err1) {
+      // Fallback: fromBody(json, { validate })
+      cloned = ctor.fromBody(stripped, { validate: false });
+    }
+
+    if (!cloned || typeof cloned !== "object") {
+      throw new Error(
+        `DTO_CLONE_FROM_BODY_INVALID: ${
+          ctor?.name ?? "<unknown>"
+        } fromBody() did not return an object instance.`
+      );
+    }
+
+    // Preserve instance collection plumbing (important for DB ops).
+    const coll = this.getCollectionName();
+    if (coll && typeof (cloned as any).setCollectionName === "function") {
+      (cloned as any).setCollectionName(coll);
+    }
+
+    // Re-mint / set caller-provided id.
+    const id =
+      typeof newId === "string" && newId.trim() ? newId.trim() : undefined;
+    if (id) (cloned as any).setIdOnce(id);
+    else if (typeof (cloned as any).mintId === "function")
+      (cloned as any).mintId();
+    else
+      throw new Error(
+        "DTO_CLONE_NO_MINT_ID: cloned instance missing mintId()."
+      );
+
+    // Meta must be clean on clones (clone starts life as “new”).
+    if (typeof (cloned as any).setMeta === "function") {
+      (cloned as any).setMeta({});
+    } else {
+      // Best-effort wipe if derived doesn't expose setMeta (still keeps us honest).
+      (cloned as any)._createdAt = undefined;
+      (cloned as any)._updatedAt = undefined;
+      (cloned as any)._updatedByUserId = undefined;
+      (cloned as any)._ownerUserId = undefined;
+    }
+
+    return cloned as this;
+  }
+
   // ─────────────── Abstracts ───────────────
 
-  public abstract getType(): string;
-  public abstract toBody(): unknown;
+  /** Replaces getType(); MUST match the registry key for this DTO. */
+  public abstract getDtoKey(): string;
+
+  /** Must be JSON-ready (POJO). Transport handles JSON.stringify(). */
+  public abstract toBody(): Record<string, unknown>;
 }

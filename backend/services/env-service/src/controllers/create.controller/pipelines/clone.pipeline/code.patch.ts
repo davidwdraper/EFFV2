@@ -22,7 +22,7 @@ import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import { DbEnvServiceDto } from "@nv/shared/dto/env-service.dto";
+import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
 import type { IDto } from "@nv/shared/dto/IDto";
 
@@ -89,9 +89,6 @@ export class CodePatchHandler extends HandlerBase {
     // Clone by round-tripping through toBody/fromBody (DTO remains canonical truth).
     const cloned = this.cloneDbEnvServiceDto(sourceDto, requestId);
     if (!cloned) return;
-
-    // Apply new slug; keep env/version/vars the same.
-    cloned.slug = targetSlug;
 
     this.log.debug(
       {

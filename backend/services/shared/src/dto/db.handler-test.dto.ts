@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/handler-test.dto.ts
+// backend/services/shared/src/dto/db.handler-test.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -163,7 +163,7 @@ function check<T>(
   }
 }
 
-export class HandlerTestDto extends DtoBase implements IDto {
+export class DbHandlerTestDto extends DtoBase implements IDto {
   // ─────────────── Static: Collection & Index Hints ───────────────
 
   public static dbCollectionName(): string {
@@ -235,13 +235,16 @@ export class HandlerTestDto extends DtoBase implements IDto {
       | { createdAt?: string; updatedAt?: string; updatedByUserId?: string }
   ) {
     super(secretOrMeta);
-    this.setCollectionName(HandlerTestDto.dbCollectionName());
+    this.setCollectionName(DbHandlerTestDto.dbCollectionName());
   }
 
   // ─────────────── Getters only (ADR-0078) ───────────────
 
   public getEnv(): string {
     return this._env;
+  }
+  public getDtoKey(): string {
+    return "db.handler-test.dto";
   }
   public getDbState(): string {
     return this._dbState;
@@ -386,12 +389,12 @@ export class HandlerTestDto extends DtoBase implements IDto {
   private _guardWriteOnce(fieldKey: string): void {
     if (this._writeOnceFrozen) {
       throw new Error(
-        `HandlerTestDto write-once field "${fieldKey}" is frozen`
+        `DbHandlerTestDto write-once field "${fieldKey}" is frozen`
       );
     }
     if (this._writeOnceTouched.has(fieldKey)) {
       throw new Error(
-        `HandlerTestDto write-once field "${fieldKey}" already set`
+        `DbHandlerTestDto write-once field "${fieldKey}" already set`
       );
     }
   }
@@ -613,7 +616,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
     const scenarioName = (name ?? "").trim();
     if (!scenarioName) {
       throw new Error(
-        `HandlerTestDto.runScenario requires a non-empty scenario name`
+        `DbHandlerTestDto.runScenario requires a non-empty scenario name`
       );
     }
 
@@ -779,8 +782,8 @@ export class HandlerTestDto extends DtoBase implements IDto {
   public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
-  ): HandlerTestDto {
-    const dto = new HandlerTestDto(DtoBase.getSecret());
+  ): DbHandlerTestDto {
+    const dto = new DbHandlerTestDto(DtoBase.getSecret());
     const j = (json ?? {}) as Partial<HandlerTestJson>;
     const validate = opts?.validate === true;
 
@@ -1040,7 +1043,7 @@ export class HandlerTestDto extends DtoBase implements IDto {
 
   // ─────────────── DTO-to-DTO patch helper ───────────────
 
-  public patchFrom(other: HandlerTestDto): this {
+  public patchFrom(other: DbHandlerTestDto): this {
     this._status = other.getStatus();
 
     if (other.getStartedAt()) this._startedAt = other.getStartedAt();
@@ -1063,14 +1066,14 @@ export class HandlerTestDto extends DtoBase implements IDto {
     return this;
   }
 
-  public patchFromDto(other: HandlerTestDto): this {
+  public patchFromDto(other: DbHandlerTestDto): this {
     return this.patchFrom(other);
   }
 
   // ─────────────── IDto contract ───────────────
 
   public clone(newId?: string): this {
-    const dto = new HandlerTestDto(DtoBase.getSecret());
+    const dto = new DbHandlerTestDto(DtoBase.getSecret());
 
     // Preserve id unless caller explicitly asks for a new one.
     if (typeof newId === "string" && newId.trim()) {

@@ -13,10 +13,10 @@
  *
  * Purpose:
  * - Concrete ISvcconfigResolver implementation backed by the svcconfig service
- *   and an in-process TTL cache of SvcconfigDto entries.
+ *   and an in-process TTL cache of DbSvcconfigDto entries.
  *
  * Behavior:
- * - Key space: (env, slug, majorVersion) → SvcconfigDto.
+ * - Key space: (env, slug, majorVersion) → DbSvcconfigDto.
  * - Cache: TTL per key; TTL is extended on each successful lookup.
  * - svcconfig service itself is special-cased to avoid recursion:
  *   • slug === "svcconfig" → baseUrl comes from NV_SVCCONFIG_URL.
@@ -25,7 +25,7 @@
  * - This resolver is SvcClient-specific; it is *not* the same resolver type
  *   used by routePolicyGate (which has its own contract).
  * - For normal targets:
- *   • `baseUrl` is taken **directly from SvcconfigDto.baseUrl`.
+ *   • `baseUrl` is taken **directly from DbSvcconfigDto.baseUrl`.
  *   • `targetPort` is still stored for gateway and ops, but SvcClient does
  *     not derive URLs from it.
  * - If a record lacks a usable baseUrl, we treat it as a misconfiguration
@@ -39,7 +39,7 @@ import type {
 } from "./SvcClient.types";
 import { DtoCache } from "../dto/dtoCache";
 import { DtoBag } from "../dto/DtoBag";
-import { SvcconfigDto } from "../dto/svcconfig.dto";
+import { DbSvcconfigDto } from "../dto/db.svcconfig.dto";
 
 type WireBagJson = {
   items?: unknown[];
@@ -50,8 +50,8 @@ type SvcconfigResolverOptions = {
   /**
    * Base protocol/host used for *worker* services.
    * - Example (dev): "http://127.0.0.1"
-   * - Historically, port came from SvcconfigDto.targetPort.
-   * - With baseUrl on SvcconfigDto, this is primarily used for:
+   * - Historically, port came from DbSvcconfigDto.targetPort.
+   * - With baseUrl on DbSvcconfigDto, this is primarily used for:
    *   • svcconfig self-resolution (via NV_SVCCONFIG_URL), and
    *   • diagnostics / potential fallback logging.
    */
@@ -70,15 +70,15 @@ type SvcconfigResolverOptions = {
 export class SvcconfigResolver implements ISvcconfigResolver {
   private readonly workerBaseHost: string;
   private readonly logger: ISvcClientLogger;
-  private readonly cache: DtoCache<SvcconfigDto>;
+  private readonly cache: DtoCache<DbSvcconfigDto>;
 
   constructor(opts: SvcconfigResolverOptions) {
     this.workerBaseHost = opts.workerBaseHost.replace(/\/+$/, "");
     this.logger = opts.logger;
 
-    this.cache = new DtoCache<SvcconfigDto>({
+    this.cache = new DtoCache<DbSvcconfigDto>({
       ttlMs: opts.ttlMs,
-      bagFactory: (dtos) => new DtoBag<SvcconfigDto>(dtos),
+      bagFactory: (dtos) => new DtoBag<DbSvcconfigDto>(dtos),
     });
   }
 
@@ -139,7 +139,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
 
     // 2) Cache miss: fetch from svcconfig service.
     const dto = await this.fetchFromSvcconfig(env, slug, version);
-    bag = new DtoBag<SvcconfigDto>([dto]);
+    bag = new DtoBag<DbSvcconfigDto>([dto]);
     this.cache.putBag(key, bag);
 
     return this.toSvcTarget(dto, env);
@@ -152,17 +152,17 @@ export class SvcconfigResolver implements ISvcconfigResolver {
   }
 
   /**
-   * Pick the single SvcconfigDto from a bag.
+   * Pick the single DbSvcconfigDto from a bag.
    * - Today we expect at most one document per (env, slug, version).
    */
   private pickSingleDto(
-    bag: DtoBag<SvcconfigDto>,
+    bag: DtoBag<DbSvcconfigDto>,
     env: string,
     slug: string,
     version: number
-  ): SvcconfigDto {
+  ): DbSvcconfigDto {
     // Rely on DtoBag iteration; first DTO wins.
-    for (const dto of bag as unknown as Iterable<SvcconfigDto>) {
+    for (const dto of bag as unknown as Iterable<DbSvcconfigDto>) {
       return dto;
     }
 
@@ -195,7 +195,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
     env: string,
     slug: string,
     version: number
-  ): Promise<SvcconfigDto> {
+  ): Promise<DbSvcconfigDto> {
     const svcconfigBase = this.getSvcconfigBaseUrl(env);
     const url =
       `${svcconfigBase}/api/svcconfig/v1/svcconfig/s2s-route` +
@@ -254,7 +254,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
     if (items.length === 0) {
       const msg =
         "SvcconfigResolver: svcconfig returned no entries for env/slug/version on s2s-route lookup. " +
-        "Ops: ensure a SvcconfigDto exists with matching env, slug, and majorVersion.";
+        "Ops: ensure a DbSvcconfigDto exists with matching env, slug, and majorVersion.";
       this.logger.warn("svcconfig_resolver.fetch.no_entries", {
         env,
         slug,
@@ -279,7 +279,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
       throw new Error(msg);
     }
 
-    const dto = SvcconfigDto.fromBody(items[0], { validate: false });
+    const dto = DbSvcconfigDto.fromBody(items[0], { validate: false });
 
     return dto;
   }
@@ -307,7 +307,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
   }
 
   /**
-   * Convert SvcconfigDto into a SvcTarget.
+   * Convert DbSvcconfigDto into a SvcTarget.
    *
    * Rules:
    * - If isEnabled=false or isS2STarget=false:
@@ -318,7 +318,7 @@ export class SvcconfigResolver implements ISvcconfigResolver {
    *     • Require a non-empty dto.baseUrl.
    *     • If baseUrl is blank/invalid, treat as misconfiguration and refuse to authorize.
    */
-  private toSvcTarget(dto: SvcconfigDto, env: string): SvcTarget {
+  private toSvcTarget(dto: DbSvcconfigDto, env: string): SvcTarget {
     const slug = dto.slug;
     const version = dto.majorVersion;
     const targetPort = dto.targetPort;

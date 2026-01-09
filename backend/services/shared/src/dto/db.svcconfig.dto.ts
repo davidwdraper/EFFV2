@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/svcconfig.dto.ts
+// backend/services/shared/src/dto/db.svcconfig.dto.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -21,8 +21,8 @@
  *   gates), while this DTO now uses standard private-field setters/getters.
  *
  * Construction (ADR-0102):
- * - Scenario A: new SvcconfigDto(secret) => MUST mint _id (handled by DtoBase)
- * - Scenario B: new SvcconfigDto(secret, { body }) => MUST require _id UUIDv4, MUST NOT mint
+ * - Scenario A: new DbSvcconfigDto(secret) => MUST mint _id (handled by DtoBase)
+ * - Scenario B: new DbSvcconfigDto(secret, { body }) => MUST require _id UUIDv4, MUST NOT mint
  */
 
 import { DtoBase, type DtoCtorOpts, type DtoMeta } from "./DtoBase";
@@ -56,12 +56,14 @@ export type SvcconfigJson = {
   updatedByUserId?: string;
 };
 
-export class SvcconfigDto extends DtoBase {
+export class DbSvcconfigDto extends DtoBase {
   /** Hardwired collection for this DTO. */
   public static dbCollectionName(): string {
     return "svcconfig";
   }
-
+  public getDtoKey(): string {
+    return "db.svcconfig.dto";
+  }
   /**
    * Per-field access rules.
    * NOTE:
@@ -197,7 +199,7 @@ export class SvcconfigDto extends DtoBase {
     const rawId = typeof j._id === "string" ? j._id.trim() : "";
     if (!rawId) {
       throw new Error(
-        "DTO_ID_MISSING: SvcconfigDto hydration requires '_id' (UUIDv4) on the inbound payload."
+        "DTO_ID_MISSING: DbSvcconfigDto hydration requires '_id' (UUIDv4) on the inbound payload."
       );
     }
     this.setIdOnce(validateUUIDString(rawId));
@@ -228,18 +230,21 @@ export class SvcconfigDto extends DtoBase {
     });
 
     if (opts?.validate) {
-      if (!this._env) throw new Error("SvcconfigDto.env: field is required.");
-      if (!this._slug) throw new Error("SvcconfigDto.slug: field is required.");
+      if (!this._env) throw new Error("DbSvcconfigDto.env: field is required.");
+      if (!this._slug)
+        throw new Error("DbSvcconfigDto.slug: field is required.");
       if (!this._majorVersion || this._majorVersion <= 0) {
         throw new Error(
-          "SvcconfigDto.majorVersion: must be a positive integer."
+          "DbSvcconfigDto.majorVersion: must be a positive integer."
         );
       }
       if (!this._baseUrl) {
-        throw new Error("SvcconfigDto.baseUrl: field is required.");
+        throw new Error("DbSvcconfigDto.baseUrl: field is required.");
       }
       if (!Number.isFinite(this._targetPort) || this._targetPort <= 0) {
-        throw new Error("SvcconfigDto.targetPort: must be a positive integer.");
+        throw new Error(
+          "DbSvcconfigDto.targetPort: must be a positive integer."
+        );
       }
     }
   }
@@ -248,8 +253,8 @@ export class SvcconfigDto extends DtoBase {
   public static fromBody(
     json: unknown,
     opts?: { validate?: boolean }
-  ): SvcconfigDto {
-    return new SvcconfigDto(DtoBase.getSecret(), {
+  ): DbSvcconfigDto {
+    return new DbSvcconfigDto(DtoBase.getSecret(), {
       body: json,
       validate: opts?.validate === true,
     });

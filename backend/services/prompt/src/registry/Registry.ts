@@ -21,7 +21,7 @@
  */
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
-import { PromptDto } from "@nv/shared/dto/prompt.dto";
+import { PromptDto } from "@nv/shared/dto/db.prompt.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/DtoRegistry";

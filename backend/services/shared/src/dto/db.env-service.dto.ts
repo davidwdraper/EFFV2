@@ -121,6 +121,11 @@ export class DbEnvServiceDto extends DtoBase {
     });
   }
 
+  /** ADR-0103: must match registry key. */
+  public getDtoKey(): string {
+    return "db.env-service.dto";
+  }
+
   private hydrateFromBody(json: unknown, opts?: { validate?: boolean }): void {
     const unwrapped = unwrapMetaEnvelope(json);
     const j = (unwrapped ?? {}) as Partial<EnvServiceJson>;
@@ -161,6 +166,20 @@ export class DbEnvServiceDto extends DtoBase {
       throw new Error("DbEnvServiceDto.env: field is required.");
     }
     return this;
+  }
+
+  // inside export class DbEnvServiceDto extends DtoBase { ... }
+
+  public static fromBody(
+    body: unknown,
+    opts?: { validate?: boolean; mode?: "wire" | "db" }
+  ): DbEnvServiceDto {
+    // Use the registry secret via the base class helper (no direct secret import).
+    return new DbEnvServiceDto(DtoBase.getSecret(), {
+      body,
+      validate: opts?.validate === true,
+      mode: opts?.mode,
+    });
   }
 
   public get slug(): string {
@@ -390,10 +409,6 @@ export class DbEnvServiceDto extends DtoBase {
 
   public getEnvLabel(): string {
     return this._env.trim();
-  }
-
-  public getType(): string {
-    return "env-service";
   }
 
   private assertValidSelf(): void {

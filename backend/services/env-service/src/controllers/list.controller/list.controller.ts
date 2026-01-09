@@ -9,15 +9,18 @@
  *   - ADR-0043 (Finalize mapping)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
- *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
+ *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
+ *   - ADR-0098 (Domain-named pipelines with PL suffix)
+ *   - ADR-0099 (Strict missing-test semantics)
+ *   - ADR-0100 (Pipeline plans + manifest-driven handler tests)
+ *   - ADR-0101 (Universal seeder + seeder→handler pairs)
  *
  * Purpose:
  * - Orchestrate GET /api/env-service/v1/:dtoType/list
- * - Thin controller: choose per-dtoType pipeline; pipeline defines handler order.
+ * - Thin controller: select per-(dtoType, op) pipeline; execute seeder→handler pairs.
  *
  * Notes:
- * - Cursor pagination via ?limit=&cursor=.
- * - DTO is the source of truth; serialization via toBody() (stamps meta).
+ * - Cursor pagination via ?limit=&cursor= (handlers own parsing).
  */
 
 import { Request, Response } from "express";
@@ -25,10 +28,9 @@ import type { AppBase } from "@nv/shared/base/app/AppBase";
 import { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 
-// Pipelines (one folder per dtoType)
-import * as EnvServiceListPipeline from "./pipelines/list.pipeline";
-// Future dtoType example (uncomment when adding a new type):
-// import * as MyNewDtoListPipeline from "./pipelines/myNewDto.list.handlerPipeline";
+import { resolveSeederCtor } from "@nv/shared/http/handlers/seeding/seederRegistry";
+
+import { EnvServiceListPL } from "./pipelines/list.pipeline/EnvServiceListPL";
 
 export class EnvServiceListController extends ControllerJsonBase {
   constructor(app: AppBase) {
@@ -36,58 +38,108 @@ export class EnvServiceListController extends ControllerJsonBase {
   }
 
   public async get(req: Request, res: Response): Promise<void> {
-    const dtoType = req.params.dtoType;
+    const routeDtoType = (req.params.dtoType ?? "").trim();
 
     const ctx: HandlerContext = this.makeContext(req, res);
-    ctx.set("dtoKey", dtoType);
-    ctx.set("op", "list");
 
-    this.log.debug(
+    const dtoKey = routeDtoType;
+    const op = "list";
+
+    ctx.set("dtoKey", dtoKey);
+    ctx.set("op", op);
+
+    const requestId = ctx.get("requestId");
+
+    // ───────────────────────────────────────────
+    // Pipeline selection
+    // ───────────────────────────────────────────
+    let pl: EnvServiceListPL | null = null;
+
+    if (dtoKey === "env-service") pl = new EnvServiceListPL();
+
+    if (!pl) {
+      ctx.set("handlerStatus", "error");
+      ctx.set("response.status", 501);
+      ctx.set("response.body", {
+        code: "NOT_IMPLEMENTED",
+        title: "Not Implemented",
+        detail: `No pipeline for dtoType='${routeDtoType}', op='${op}' on env-service.`,
+        requestId,
+      });
+      return super.finalize(ctx);
+    }
+
+    const pipelineName = pl.pipelineName();
+
+    this.log.pipeline(
       {
         event: "pipeline_select",
-        op: "list",
-        dtoType,
-        requestId: ctx.get("requestId"),
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
       },
-      "selecting list pipeline"
+      "env-service.list: selecting pipeline"
     );
 
-    switch (dtoType) {
-      case "env-service": {
-        this.seedHydrator(ctx, "env-service", { validate: false }); // <== don't need to validate
-        const steps = EnvServiceListPipeline.getSteps(ctx, this);
-        await this.runPipeline(ctx, steps, { requireRegistry: false });
-        break;
-      }
+    const stepDefs = pl.getStepDefs("live");
 
-      // Future dtoType example:
-      // case "myNewDto": {
-      //   this.seedHydrator(ctx, "MyNewDto", { validate: true });
-      //   const steps = MyNewDtoListPipeline.getSteps(ctx, this);
-      //   await this.runPipeline(ctx, steps, { requireRegistry: false });
-      //   break;
-      // }
+    this.log.pipeline(
+      {
+        event: "pipeline_start",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+        steps: (stepDefs as any[]).map((d: any) => ({
+          seed:
+            typeof d?.seedName === "string" && d.seedName.trim()
+              ? d.seedName.trim()
+              : "noop",
+          handler: String(d?.handlerName ?? ""),
+        })),
+      },
+      "env-service.list: pipeline starting"
+    );
 
-      default: {
-        ctx.set("handlerStatus", "error");
-        ctx.set("response.status", 501);
-        ctx.set("response.body", {
-          code: "NOT_IMPLEMENTED",
-          title: "Not Implemented",
-          detail: `No list pipeline for dtoType='${dtoType}'`,
-          requestId: ctx.get("requestId"),
-        });
-        this.log.warn(
-          {
-            event: "pipeline_missing",
-            op: "list",
-            dtoType,
-            requestId: ctx.get("requestId"),
-          },
-          "no list pipeline registered for dtoType"
-        );
-      }
+    for (const d of stepDefs as any[]) {
+      const seedName =
+        typeof d?.seedName === "string" && d.seedName.trim()
+          ? d.seedName.trim()
+          : "noop";
+
+      const seedSpec =
+        d && typeof d?.seedSpec === "object" && d.seedSpec !== null
+          ? d.seedSpec
+          : {};
+
+      // 1) seed
+      const SeederCtor = (d?.seederCtor ?? resolveSeederCtor(seedName)) as any;
+      const seeder = new SeederCtor(ctx, this, seedSpec);
+      await seeder.run();
+
+      if (ctx.get("handlerStatus") === "error") break;
+
+      // 2) handler
+      const h = new d.handlerCtor(ctx, this, d.handlerInit);
+      await h.run();
+
+      if (ctx.get("handlerStatus") === "error") break;
     }
+
+    const handlerStatus = ctx.get("handlerStatus") ?? "success";
+
+    this.log.pipeline(
+      {
+        event: "pipeline_complete",
+        op,
+        dtoType: dtoKey,
+        requestId,
+        pipeline: pipelineName,
+        handlerStatus,
+      },
+      "env-service.list: pipeline complete"
+    );
 
     return super.finalize(ctx);
   }

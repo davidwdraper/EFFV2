@@ -22,7 +22,7 @@
 
 import { DtoBase } from "@nv/shared/dto/DtoBase";
 import { UserType } from "@nv/shared/dto/UserType";
-import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
+import { SvcconfigDto } from "@nv/shared/dto/db.svcconfig.dto";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
 import type { IDto } from "@nv/shared/dto/IDto";
 import type { DtoCtor } from "@nv/shared/registry/DtoRegistry";

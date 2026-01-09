@@ -13,7 +13,7 @@
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
-import { SvcconfigDto } from "@nv/shared/dto/svcconfig.dto";
+import { SvcconfigDto } from "@nv/shared/dto/db.svcconfig.dto";
 import { ListAllFilterHandler } from "./listAllFilter.list.handler";
 import { DbReadListHandler } from "@nv/shared/http/handlers/db.read.list";
 

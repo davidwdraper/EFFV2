@@ -33,7 +33,7 @@
  * - otherwise: explicit override basename (=> "<expectedTestName>.test.js")
  */
 
-import { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+import { HandlerTestDto } from "@nv/shared/dto/db.handler-test.dto";
 
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";

@@ -39,7 +39,7 @@ import { SvcTestRunWriter } from "./TestRunWriter";
 import type { SvcClient } from "@nv/shared/s2s/SvcClient";
 
 import type { HandlerTestModuleLoader } from "./ScenarioRunner";
-import type { HandlerTestDto } from "@nv/shared/dto/handler-test.dto";
+import type { HandlerTestDto } from "@nv/shared/dto/db.handler-test.dto";
 
 export class RunTests {
   public constructor(

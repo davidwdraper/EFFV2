@@ -31,6 +31,7 @@ import express = require("express");
 import { ServiceBase } from "../ServiceBase";
 import type { DbEnvServiceDto } from "../../dto/db.env-service.dto";
 import type { IDtoRegistry } from "../../registry/IDtoRegistry";
+import { DtoRegistry } from "../../registry/DtoRegistry";
 import { PromptsClient } from "../../prompts/PromptsClient";
 import {
   SvcClient,
@@ -102,6 +103,12 @@ export abstract class AppBase extends ServiceBase {
 
   private readonly rt: SvcRuntime;
 
+  /**
+   * Registry is needed by SvcEnvClient to hydrate DbEnvServiceDto via registry-only rules (ADR-0102).
+   * AppBase owns a single instance for the process to avoid drift.
+   */
+  private readonly registry: IDtoRegistry;
+
   constructor(opts: AppBaseCtor) {
     super({ service: opts.service });
 
@@ -122,6 +129,9 @@ export abstract class AppBase extends ServiceBase {
       );
     }
     this.rt = opts.rt;
+
+    // Single registry instance per process.
+    this.registry = new DtoRegistry();
 
     // envLabel is owned by rt. envDto inside rt must agree (if dto exposes env label).
     try {
@@ -236,7 +246,10 @@ export abstract class AppBase extends ServiceBase {
   protected wireEnvReloadCap(): void {
     this.rt.setCapFactory("env.reloader", async (rt) => {
       const svcClient = rt.getCap<SvcClient>("s2s.svcClient");
-      const envClient = new SvcEnvClient({ svcClient });
+      const envClient = new SvcEnvClient({
+        svcClient,
+        registry: this.registry,
+      });
 
       // Always reload the SAME logical env label (frozen in rt identity).
       const bag = await envClient.getConfig({
@@ -332,10 +345,13 @@ export abstract class AppBase extends ServiceBase {
   }
 
   public getDtoRegistry(): IDtoRegistry {
-    throw new Error(
-      `DTO_REGISTRY_NOT_AVAILABLE: service="${this.service}" v${this.version} does not provide a DtoRegistry. ` +
-        "Dev: only DB posture services may call getDtoRegistry()."
-    );
+    if (!this.checkDb) {
+      throw new Error(
+        `DTO_REGISTRY_NOT_AVAILABLE: service="${this.service}" v${this.version} does not provide a DtoRegistry. ` +
+          "Dev: only DB posture services may call getDtoRegistry()."
+      );
+    }
+    return this.registry;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -411,11 +427,7 @@ export abstract class AppBase extends ServiceBase {
       return;
     }
 
-    const svcClient = this.getSvcClient();
-    const envClient = new SvcEnvClient({ svcClient });
-
     const checker = new InfraHealthCheck(this.rt);
-
     await checker.run();
   }
 

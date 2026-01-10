@@ -7,6 +7,8 @@
  *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (DB operators take SvcRuntime; index logic lives at DB boundary)
  *
  * Purpose:
  * - Consume the UPDATED singleton DtoBag<DtoBase> from ctx["bag"] and execute an update().
@@ -20,7 +22,10 @@ import type { DtoBase } from "../../dto/DtoBase";
 import {
   DbWriter,
   DuplicateKeyError,
+  type DbWriteDtoCtor,
 } from "../../dto/persistence/dbWriter/DbWriter";
+
+type WriteDtoCtor = DbWriteDtoCtor<DtoBase>;
 
 export class DbUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -76,14 +81,32 @@ export class DbUpdateHandler extends HandlerBase {
       return;
     }
 
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    // ADR-0106: DbWriter requires dtoCtor for collection targeting.
+    // Index contract validation remains inside DbWriter.
+    const dtoCtor = this.safeCtxGet<WriteDtoCtor>("db.dtoCtor");
+    if (!dtoCtor) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dtoCtor_missing",
+        detail:
+          "DB dtoCtor missing. Dev: seed ctx['db.dtoCtor'] with the DB DTO constructor before db.update runs.",
+        stage: "config.dtoCtor",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasDtoCtor: false }],
+        logMessage: "bag.toDb.update — ctx['db.dtoCtor'] missing.",
+        logLevel: "error",
+      });
+      return;
+    }
+
     const baseBag = bag as DtoBag<DtoBase>;
 
     try {
       const writer = new DbWriter<DtoBase>({
+        rt: this.rt,
+        dtoCtor,
         bag: baseBag,
-        mongoUri,
-        mongoDb,
         log: this.log,
       });
 

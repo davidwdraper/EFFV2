@@ -5,9 +5,10 @@
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0042 (HandlerContext Bus — KISS)
- *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0050 (Wire Bag Envelope — items[] + meta)
  *   - ADR-0064 (Prompts Service, PromptsClient, Missing-Prompt Semantics)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (DB operators take SvcRuntime; index logic lives at DB boundary)
  *
  * Purpose:
  * - Post-read operational handler:
@@ -29,16 +30,15 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 
 import { DtoBag } from "@nv/shared/dto/DtoBag";
-import { PromptDto } from "@nv/shared/dto/db.prompt.dto";
+import type { DtoBase } from "@nv/shared/dto/DtoBase";
+import { DbPromptDto } from "@nv/shared/dto/db.prompt.dto";
 import {
   DbWriter,
   DuplicateKeyError,
+  type DbWriteDtoCtor,
 } from "@nv/shared/dto/persistence/dbWriter/DbWriter";
 
-type SvcEnvLike = {
-  getEnvVar(name: string): string;
-  getDbVar(name: string): string;
-};
+type WriteDtoCtor = DbWriteDtoCtor<DtoBase>;
 
 export class DbEnsureUndefinedPlaceholderHandler extends HandlerBase {
   public constructor(ctx: HandlerContext, controller: ControllerJsonBase) {
@@ -110,27 +110,9 @@ export class DbEnsureUndefinedPlaceholderHandler extends HandlerBase {
       return;
     }
 
-    const svcEnv = this.ctx.get("svcEnv") as SvcEnvLike | undefined;
-    if (
-      !svcEnv ||
-      typeof svcEnv.getDbVar !== "function" ||
-      typeof svcEnv.getEnvVar !== "function"
-    ) {
-      this.log.warn(
-        {
-          event: "undefined_prompt_placeholder_skip_missing_env",
-          requestId,
-          dtoType,
-          language,
-          version,
-          promptKey,
-        },
-        "prompt placeholder write skipped: ctx['svcEnv'] missing or invalid. Ops: verify envBootstrap populated svcEnv on HandlerContext."
-      );
-      return;
-    }
-
-    const placeholder = PromptDto.fromBody(
+    // ADR-0106: no svcEnv/db vars at call sites; DbWriter sources DB config via SvcRuntime.
+    // Also: this handler does not require env plumbing; runtime owns it.
+    const placeholder = DbPromptDto.fromBody(
       {
         promptKey: promptKey.trim(),
         language: language.trim(),
@@ -141,25 +123,14 @@ export class DbEnsureUndefinedPlaceholderHandler extends HandlerBase {
       { validate: false }
     );
 
-    /**
-     * Critical:
-     * This DTO is created inside a handler (not via Registry.hydratorFor),
-     * so it will NOT have collectionName seeded automatically.
-     * DbWriter requires collectionName for all DTO instances.
-     */
-    placeholder.setCollectionName(PromptDto.dbCollectionName());
+    const placeholderBag = new DtoBag<DbPromptDto>([placeholder]);
 
-    const placeholderBag = new DtoBag<PromptDto>([placeholder]);
-
-    let writer: DbWriter<PromptDto>;
+    let writer: DbWriter<DbPromptDto>;
     try {
-      const mongoUri = svcEnv.getDbVar("NV_MONGO_URI");
-      const mongoDb = svcEnv.getDbVar("NV_MONGO_DB");
-
-      writer = new DbWriter<PromptDto>({
+      writer = new DbWriter<DbPromptDto>({
+        rt: this.rt,
+        dtoCtor: DbPromptDto as unknown as WriteDtoCtor,
         bag: placeholderBag,
-        mongoUri,
-        mongoDb,
         log: this.log,
       });
     } catch (err: unknown) {

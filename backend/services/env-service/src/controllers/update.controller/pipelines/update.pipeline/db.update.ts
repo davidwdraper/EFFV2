@@ -8,6 +8,7 @@
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound)
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (DB operators take SvcRuntime; index logic lives at DB boundary)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -18,6 +19,7 @@
  *
  * Inputs (ctx):
  * - "bag": DtoBag<DbEnvServiceDto> (UPDATED singleton; from ApplyPatchUpdateHandler)
+ * - "db.dtoCtor": DbWriteDtoCtor (required; DB DTO ctor for collection targeting)
  *
  * Outputs (ctx, final-handler invariant):
  * - On success:
@@ -30,6 +32,7 @@
  * Invariants:
  * - No controller.getSvcEnv() checks (runtime owns env plumbing).
  * - No success payload outside ctx["bag"].
+ * - No mongoUri/mongoDb/index logic at call sites (ADR-0106).
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -40,7 +43,10 @@ import type { DtoBase } from "@nv/shared/dto/DtoBase";
 import {
   DbWriter,
   DuplicateKeyError,
+  type DbWriteDtoCtor,
 } from "@nv/shared/dto/persistence/dbWriter/DbWriter";
+
+type WriteDtoCtor = DbWriteDtoCtor<DtoBase>;
 
 export class DbUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
@@ -97,15 +103,30 @@ export class DbUpdateHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws ------------------------------------------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    // --- Required context: DB DTO ctor (collection targeting; index contract validated in DbWriter) ---
+    const dtoCtor = this.safeCtxGet<WriteDtoCtor>("db.dtoCtor");
+    if (!dtoCtor) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dtoCtor_missing",
+        detail:
+          "DB dtoCtor missing. Dev: seed ctx['db.dtoCtor'] with the DB DTO constructor before db.update runs.",
+        stage: "db.update:config.dtoCtor",
+        requestId,
+        rawError: null,
+        origin: { file: __filename, method: "execute" },
+        logMessage: "env-service.update.db.update: ctx['db.dtoCtor'] missing.",
+        logLevel: "error",
+      });
+      return;
+    }
 
-    // --- External edge: DB update -------------------------------------------
+    // --- External edge: DB update (ADR-0106: only rt crosses the boundary) ---
     try {
       const writer = new DbWriter<DtoBase>({
+        rt: this.rt,
+        dtoCtor,
         bag,
-        mongoUri,
-        mongoDb,
         log: this.log,
         userId: this.safeCtxGet<string>("userId"),
       });

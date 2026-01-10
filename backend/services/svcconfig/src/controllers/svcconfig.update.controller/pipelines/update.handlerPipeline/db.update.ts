@@ -9,6 +9,7 @@
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
  *   - ADR-0044 (DbEnvServiceDto as DTO — Key/Value Contract)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (DB operators take SvcRuntime; index logic lives at DB boundary)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -19,10 +20,19 @@
  *
  * Inputs (ctx):
  * - "bag": DtoBag<SvcconfigDto>   (UPDATED singleton; from ApplyPatchUpdateHandler)
+ * - "db.dtoCtor": DbWriteDtoCtor  (required; DB DTO ctor for collection targeting)
  *
- * Outputs (ctx):
- * - "result": { ok: true, id }
- * - "status": 200
+ * Outputs (ctx, ADR-0106 + finalize invariants):
+ * - On success:
+ *   - "bag": unchanged (still the UPDATED singleton bag)
+ *   - "updatedId": string
+ *   - "handlerStatus": "ok"
+ * - On error:
+ *   - failWithError(...) sets handlerStatus="error" + response.status/body
+ *
+ * Notes:
+ * - This file previously wrote ctx["result"]/ctx["status"]. That violates the
+ *   bag-only success invariant. ControllerBase.finalize() owns the wire payload.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
@@ -32,7 +42,10 @@ import type { DtoBase } from "@nv/shared/dto/DtoBase";
 import {
   DbWriter,
   DuplicateKeyError,
+  type DbWriteDtoCtor,
 } from "@nv/shared/dto/persistence/dbWriter/DbWriter";
+
+type WriteDtoCtor = DbWriteDtoCtor<DtoBase>;
 
 export class DbUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -53,7 +66,7 @@ export class DbUpdateHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Execute a bag-centric update of a singleton svcconfig DtoBag via DbWriter and expose the updated id on ctx['result'].";
+    return "Execute a bag-centric update of a singleton svcconfig DtoBag via DbWriter and expose the updated id on ctx['updatedId'].";
   }
 
   protected async execute(): Promise<void> {
@@ -123,19 +136,40 @@ export class DbUpdateHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
-
-    // Optional: diagnose whether ControllerBase is actually holding svcEnv.
-    const svcEnv = (this.controller as any).getSvcEnv?.();
-    const hasSvcEnv = !!svcEnv;
+    // ADR-0106: DbWriter requires dtoCtor for collection targeting.
+    // Index contract validation remains inside DbWriter.
+    const dtoCtor = this.safeCtxGet<WriteDtoCtor>("db.dtoCtor");
+    if (!dtoCtor) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dtoCtor_missing",
+        detail:
+          "DB dtoCtor missing. Dev: seed ctx['db.dtoCtor'] with the DB DTO constructor before db.update runs.",
+        stage: "svcconfig.update.dbUpdate.dtoCtor_missing",
+        requestId,
+        origin: {
+          file: __filename,
+          method: "execute",
+        },
+        issues: [
+          {
+            key: "db.dtoCtor",
+            present: false,
+          },
+        ],
+        logMessage:
+          "DbUpdateHandler.execute missing ctx['db.dtoCtor'] for svcconfig update",
+        logLevel: "error",
+      });
+      return;
+    }
 
     // --- Writer (bag-centric; use DtoBase for DbWriter contract) ------------
     const baseBag = bag as unknown as DtoBag<DtoBase>;
     const writer = new DbWriter<DtoBase>({
+      rt: this.rt,
+      dtoCtor,
       bag: baseBag,
-      mongoUri,
-      mongoDb,
       log: this.log,
     });
 
@@ -168,9 +202,9 @@ export class DbUpdateHandler extends HandlerBase {
         "DbUpdateHandler.execute update complete"
       );
 
+      // Success: bag already contains the updated DTO (from ApplyPatchUpdateHandler).
+      // Do NOT set ctx['result'] / ctx['status'] / ctx['response.*'] here.
       this.ctx.set("updatedId", id);
-      this.ctx.set("result", { ok: true, id });
-      this.ctx.set("status", 200);
       this.ctx.set("handlerStatus", "ok");
     } catch (err: any) {
       if (err instanceof DuplicateKeyError) {
@@ -214,23 +248,6 @@ export class DbUpdateHandler extends HandlerBase {
           logLevel: "warn",
         });
 
-        // Preserve legacy expectations: status + error code shape for controller/wire.
-        this.ctx.set("status", 409);
-        this.ctx.set("error", {
-          code: "DUPLICATE",
-          title: "Conflict",
-          detail: (err as Error).message,
-          issues: keyPath
-            ? [
-                {
-                  path: keyPath,
-                  code: "unique",
-                  message: "duplicate value",
-                },
-              ]
-            : undefined,
-        });
-
         return;
       }
 
@@ -263,7 +280,6 @@ export class DbUpdateHandler extends HandlerBase {
       {
         event: "execute_exit",
         handler: this.handlerName(),
-        status: this.safeCtxGet<number>("status") ?? 200,
         requestId,
       },
       "DbUpdateHandler.execute bagToDb.update exit"

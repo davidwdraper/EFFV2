@@ -7,7 +7,8 @@
  *   - ADR-0048 (Revised — all reads/writes speak DtoBag)
  *   - ADR-0050 (Wire Bag Envelope; singleton inbound; canonical id="_id")
  *   - ADR-0053 (Bag Purity; no naked DTOs on the bus)
- *   - ADR-0044 (DbEnvServiceDto — Key/Value Contract)
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (DB operators take SvcRuntime; index logic lives at DB boundary)
  *
  * Purpose:
  * - Consume the UPDATED **singleton DtoBag** from ctx["bag"] and execute an update().
@@ -28,17 +29,21 @@
  * Invariants:
  * - On success, this handler MUST NOT write ctx["result"] or ctx["response.body"].
  *   ControllerBase.finalize() owns the wire payload.
+ * - No mongoUri/mongoDb/index logic at call sites (ADR-0106).
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { DtoBase } from "@nv/shared/dto/DtoBase";
+import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
 import {
   DbWriter,
   DuplicateKeyError,
+  type DbWriteDtoCtor,
 } from "@nv/shared/dto/persistence/dbWriter/DbWriter";
-import type { ControllerJsonBase } from "@nv/shared/base/controller/ControllerJsonBase";
+
+type WriteDtoCtor = DbWriteDtoCtor<DtoBase>;
 
 export class DbUpdateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerJsonBase) {
@@ -91,14 +96,23 @@ export class DbUpdateHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws (SvcRuntime contract) ---------------------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    // ADR-0106: DbWriter needs dtoCtor for collection targeting.
+    // Index contract validation remains inside DbWriter.
+    const dtoCtor = this.ctx.get("db.dtoCtor") as WriteDtoCtor | undefined;
+    if (!dtoCtor) {
+      this._badRequest(
+        "DTOCTOR_MISSING",
+        "DB dtoCtor missing. Dev: seed ctx['db.dtoCtor'] with the DB DTO constructor before db.update runs.",
+        requestId
+      );
+      return;
+    }
 
     const baseBag = bag as unknown as DtoBag<DtoBase>;
     const writer = new DbWriter<DtoBase>({
+      rt: this.rt,
+      dtoCtor,
       bag: baseBag,
-      mongoUri,
-      mongoDb,
       log: this.log,
     });
 

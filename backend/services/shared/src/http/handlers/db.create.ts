@@ -8,6 +8,7 @@
  *   - ADR-0050 (Wire Bag Envelope)
  *   - ADR-0053 (Bag Purity; final handler leaves DtoBag only)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (DB operators take SvcRuntime; index logic lives at DB boundary)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -22,6 +23,7 @@
  * Config (ctx):
  * - "bag.write.targetKey":       string ctx key to READ/WRITE the bag (default: "bag")
  * - "bag.write.ensureSingleton": boolean (default: true)
+ * - "db.dtoCtor": DbWriteDtoCtor (required; DB DTO ctor for collection targeting)
  *
  * Inputs (ctx):
  * - [targetKey]: DtoBag<DtoBase> (required)
@@ -39,6 +41,7 @@
  * - No success payloads outside of a DtoBag.
  * - No ctx["result"] writes.
  * - No ctx["response.body"] on success.
+ * - No mongoUri/mongoDb/index logic at call sites (ADR-0106).
  */
 
 import { HandlerBase } from "./HandlerBase";
@@ -48,7 +51,10 @@ import type { DtoBase } from "../../dto/DtoBase";
 import {
   DbWriter,
   DuplicateKeyError,
+  type DbWriteDtoCtor,
 } from "../../dto/persistence/dbWriter/DbWriter";
+
+type WriteDtoCtor = DbWriteDtoCtor<DtoBase>;
 
 export class DbCreateHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -117,17 +123,33 @@ export class DbCreateHandler extends HandlerBase {
       }
     }
 
-    // ---- Missing DB config throws (runtime rails) --------------------------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    // ADR-0106: DbWriter requires dtoCtor for collection targeting.
+    // Index contract validation remains inside DbWriter.
+    const dtoCtor = this.safeCtxGet<WriteDtoCtor>("db.dtoCtor");
+    if (!dtoCtor) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dtoCtor_missing",
+        detail:
+          "DB dtoCtor missing. Dev: seed ctx['db.dtoCtor'] with the DB DTO constructor before db.create runs.",
+        stage: "db.create:config.dtoCtor",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasDtoCtor: false }],
+        logMessage: "db.create: ctx['db.dtoCtor'] missing.",
+        logLevel: "error",
+      });
+      return;
+    }
 
     // ---- External edge: DB write ------------------------------------------
     const userId = this.safeCtxGet<string>("userId");
 
     try {
       const writer = new DbWriter<DtoBase>({
+        rt: this.rt,
+        dtoCtor,
         bag: bag as DtoBag<DtoBase>,
-        mongoUri,
-        mongoDb,
         log: this.log,
         userId,
       });
@@ -152,7 +174,6 @@ export class DbCreateHandler extends HandlerBase {
           handler: this.getHandlerName(),
           targetKey,
           id: persisted.getId(),
-          collection: persisted.requireCollectionName(),
           requestId,
         },
         "db.create exit"

@@ -9,21 +9,26 @@
  *   - ADR-0057 (UUID)
  *   - ADR-0102 (Registry sole DTO creation authority)
  *   - ADR-0103 (DTO naming convention: keys)
+ *   - ADR-0106 (DB operators take SvcRuntime; index logic lives at DB boundary)
  *
  * Purpose:
  * - Generic DELETE-by-id handler for typed routes.
  *
  * Invariant:
  * - ctx["dtoKey"] is the registry key (ADR-0103), e.g. "db.user.dto"
- * - Collection is resolved via registry.resolve(dtoKey).collectionName
  */
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
-import { DbDeleter } from "../../dto/persistence/dbDeleter/DbDeleter";
+import {
+  DbDeleter,
+  type DbDeleteDtoCtor,
+} from "../../dto/persistence/dbDeleter/DbDeleter";
 import { isValidUuid } from "../../utils/uuid";
 import { DtoBag } from "../../dto/DtoBag";
 import type { IDtoRegistry } from "../../registry/IDtoRegistry";
+
+type DeleteDtoCtor = DbDeleteDtoCtor;
 
 export class DbDeleteByIdHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -35,7 +40,7 @@ export class DbDeleteByIdHandler extends HandlerBase {
   }
 
   protected handlerPurpose(): string {
-    return "Delete a single document by UUIDv4 id using dtoKey and the Registry for collection resolution.";
+    return "Delete a single document by UUIDv4 id using dtoKey; deleter targets collection via seeded DB dtoCtor.";
   }
 
   protected override async execute(): Promise<void> {
@@ -91,16 +96,15 @@ export class DbDeleteByIdHandler extends HandlerBase {
       return;
     }
 
+    // Optional: keep registry resolution for actionable errors (ADR-0056),
+    // but it is NOT the deleter's input anymore (deleter takes dtoCtor).
     const registry: IDtoRegistry = this.controller.getDtoRegistry();
-
-    let collectionName = "";
     try {
       const entry = (registry as any)?.resolve?.(dtoKey);
-      collectionName =
+      const collectionName =
         entry && typeof entry.collectionName === "string"
           ? entry.collectionName.trim()
           : "";
-
       if (!collectionName) {
         throw new Error(`No collection mapped for dtoKey="${dtoKey}"`);
       }
@@ -124,10 +128,29 @@ export class DbDeleteByIdHandler extends HandlerBase {
       return;
     }
 
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    // ADR-0106: DbDeleter targets via dtoCtor (collection + index contract) and sources DB config from rt.
+    const dtoCtor = this.safeCtxGet<DeleteDtoCtor>("db.dtoCtor");
+    if (!dtoCtor) {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dtoCtor_missing",
+        detail:
+          "DB dtoCtor missing. Dev: seed ctx['db.dtoCtor'] with the DB DTO constructor before db.delete.byId runs.",
+        stage: "db.delete.byId:config.dtoCtor",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ key: "db.dtoCtor", present: false }],
+        logMessage: "db.delete.byId: ctx['db.dtoCtor'] missing.",
+        logLevel: "error",
+      });
+      return;
+    }
 
     try {
-      const deleter = new DbDeleter({ mongoUri, mongoDb, collectionName });
+      const deleter = new DbDeleter({
+        rt: this.rt,
+        dtoCtor,
+      });
 
       const { deleted } = await deleter.deleteById(rawId);
 
@@ -141,9 +164,8 @@ export class DbDeleteByIdHandler extends HandlerBase {
           origin: {
             file: __filename,
             method: "execute",
-            collection: collectionName,
           },
-          issues: [{ id: rawId, collection: collectionName }],
+          issues: [{ id: rawId, dtoKey }],
           logMessage: "db.delete.byId: no document matched supplied id.",
           logLevel: "warn",
         });
@@ -164,9 +186,8 @@ export class DbDeleteByIdHandler extends HandlerBase {
         origin: {
           file: __filename,
           method: "execute",
-          collection: collectionName,
         },
-        issues: [{ id: rawId, dtoKey, collection: collectionName }],
+        issues: [{ id: rawId, dtoKey }],
         rawError: err,
         logMessage: "db.delete.byId: unexpected error during deleteById().",
         logLevel: "error",

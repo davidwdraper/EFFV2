@@ -11,16 +11,18 @@
  * - Centralized DB boot behavior for AppBase:
  *   • Skip index ensure for MOS / non-DB services.
  *   • Log registry snapshot when possible.
- *   • Ensure indexes via registry.ensureIndexes(...) (fail-fast).
+ *   • Ensure indexes via shared ensureIndexesForDtos(...) (fail-fast).
  *
  * Key invariant:
- * - ensureIndexes MUST receive boot context (service/envLabel/envDto/log),
+ * - Index ensure MUST receive boot context (service/envLabel/envDto/log),
  *   because env config is not read from process.env (ADR-0080).
  */
 
 import type { DbEnvServiceDto } from "../../dto/db.env-service.dto";
 import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 import type { IBoundLogger } from "../../logger/Logger";
+
+import { ensureIndexesForDtos } from "../../dto/persistence/indexes/ensureIndexes";
 
 export type DbBootContext = {
   service: string;
@@ -33,12 +35,12 @@ export type DbBootContext = {
 };
 
 export async function performDbBoot(ctx: DbBootContext): Promise<void> {
-  const { service, component, envLabel, checkDb, log, registry } = ctx;
+  const { service, component, envLabel, checkDb, log, registry, envDto } = ctx;
 
   if (!checkDb) {
     log.info(
       { service, component, env: envLabel },
-      "boot: CHECK_DB=false — skipping registry.listRegistered() and registry.ensureIndexes() (MOS, no DB required)"
+      "boot: CHECK_DB=false — skipping registry diagnostics and index ensure (MOS, no DB required)"
     );
     return;
   }
@@ -60,23 +62,30 @@ export async function performDbBoot(ctx: DbBootContext): Promise<void> {
     );
   }
 
-  // 2) Ensure indexes via Registry. On failure: log rich context, then rethrow (fail-fast).
+  // 2) Ensure indexes via shared helper. On failure: log rich context, then rethrow (fail-fast).
   try {
     log.info(
       { service, component, env: envLabel },
-      "boot: ensuring indexes via registry.ensureIndexes(ctx)"
+      "boot: ensuring indexes via ensureIndexesForDtos(...)"
     );
 
-    const ensureFn = (registry as any).ensureIndexes;
-    if (typeof ensureFn !== "function") {
+    const listFn = (registry as any).listDbDtoCtorsForIndexes;
+    if (typeof listFn !== "function") {
       throw new Error(
-        `ENSURE_INDEXES_MISSING: registry.ensureIndexes is not a function for service="${service}" component="${component}". ` +
-          "Dev: implement ensureIndexes(ctx) on the concrete registry (DtoRegistry) and ensure AppBase constructs that registry."
+        `ENSURE_INDEXES_REGISTRY_LIST_MISSING: registry.listDbDtoCtorsForIndexes is not a function for service="${service}" component="${component}". ` +
+          "Dev: implement listDbDtoCtorsForIndexes() on the concrete registry (DtoRegistry)."
       );
     }
 
-    // CRITICAL: pass the full boot context so ensureIndexes can read mongo config from envDto.
-    await ensureFn.call(registry, ctx);
+    const dtos = listFn.call(registry);
+
+    // DbEnvServiceDto is now aligned with ADR-0074 / ensureIndexesForDtos contract:
+    // getDbVar(name): string (throws if missing/empty), DB_STATE-aware.
+    await ensureIndexesForDtos({
+      dtos,
+      env: envDto,
+      log,
+    });
   } catch (err) {
     const message = (err as Error)?.message ?? String(err);
     log.error(

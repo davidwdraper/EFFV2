@@ -27,6 +27,12 @@
  * Invariants:
  * - DTO must not read process.env (ADR-0080).
  * - Runtime config reads must come from vars + DTO identity.
+ *
+ * Var access semantics (ADR-0074):
+ * - getEnvVar(name): required (string or throw)
+ * - tryEnvVar(name): optional (string | undefined)
+ * - getDbVar(name): required (string or throw)  ✅ DB_STATE-aware
+ * - tryDbVar(name): optional (string | undefined) ✅ DB_STATE-aware when present
  */
 
 import { DtoBase, type DtoCtorOpts } from "./DtoBase";
@@ -167,8 +173,6 @@ export class DbEnvServiceDto extends DtoBase {
     }
     return this;
   }
-
-  // inside export class DbEnvServiceDto extends DtoBase { ... }
 
   public static fromBody(
     body: unknown,
@@ -374,12 +378,11 @@ export class DbEnvServiceDto extends DtoBase {
     return Object.keys(this._vars).sort();
   }
 
-  public getDbVar(
-    name: string,
-    opts?: { required?: boolean }
-  ): string | undefined {
-    const required = opts?.required !== false;
-
+  /**
+   * Required DB var accessor (ADR-0074).
+   * Returns string (DB_STATE-aware for NV_MONGO_DB) or throws if missing/empty.
+   */
+  public getDbVar(name: string): string {
     if (!this.isDbKey(name)) {
       throw new Error(
         `ENV_DBVAR_NON_DB_KEY: "${name}" is not registered as a DB-related key. ` +
@@ -389,7 +392,6 @@ export class DbEnvServiceDto extends DtoBase {
 
     const raw = this._vars[name];
     if (raw === undefined || raw === null || `${raw}`.trim() === "") {
-      if (!required) return undefined;
       throw new Error(
         `ENV_DBVAR_MISSING: "${name}" is not defined or empty for env="${this._env}", ` +
           `slug="${this._slug}", version=${this._version}. ` +
@@ -406,16 +408,34 @@ export class DbEnvServiceDto extends DtoBase {
     return value;
   }
 
-  public getResolvedDbName(): string {
-    const name = this.getDbVar("NV_MONGO_DB");
-    if (!name) {
+  /**
+   * Optional DB var accessor (ADR-0074).
+   * Returns string | undefined (DB_STATE-aware for NV_MONGO_DB when present).
+   */
+  public tryDbVar(name: string): string | undefined {
+    if (!this.isDbKey(name)) {
       throw new Error(
-        `ENV_DBNAME_MISSING: NV_MONGO_DB could not be resolved for env="${this._env}", ` +
-          `slug="${this._slug}", version=${this._version}. ` +
-          "Ops: ensure NV_MONGO_DB and DB_STATE are configured correctly."
+        `ENV_DBVAR_NON_DB_KEY: "${name}" is not registered as a DB-related key. ` +
+          "Ops: use tryEnvVar() for non-DB keys, or extend DbEnvServiceDto.dbKeys if this is truly DB-related."
       );
     }
-    return name.trim();
+
+    const raw = this._vars[name];
+    if (raw === undefined || raw === null || `${raw}`.trim() === "") {
+      return undefined;
+    }
+
+    const value = `${raw}`.trim();
+
+    if (name === "NV_MONGO_DB") {
+      return this.decorateDbName(value).trim();
+    }
+
+    return value;
+  }
+
+  public getResolvedDbName(): string {
+    return this.getDbVar("NV_MONGO_DB").trim();
   }
 
   public getEnvLabel(): string {

@@ -5,6 +5,7 @@
  * - ADRs:
  *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
  *   - ADR-0103 (DTO naming convention: keys, filenames, classnames)
+ *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0057 (UUID; immutable)
  *
  * Purpose:
@@ -16,6 +17,10 @@
  * - Implements ADR-0102 semantics using ctor-injection DTOs:
  *   - body absent  => internal mint (new DTO; ctor MUST mint _id)
  *   - body present => edge/db hydration (new DTO with { body, validate, mode }; ctor MUST require _id; MUST NOT mint)
+ *
+ * Single-concern rule:
+ * - This registry does NOT touch Mongo.
+ * - It only knows what DTOs are registered and how to construct them.
  */
 
 import { DTO_INSTANTIATION_SECRET } from "./dtoInstantiationSecret";
@@ -26,6 +31,8 @@ import type {
   DtoCreateOptions,
   DtoCreateMode,
 } from "./IDtoRegistry";
+
+import type { DtoCtorWithIndexes } from "../dto/persistence/indexes/ensureIndexes";
 
 import { DbEnvServiceDto } from "../dto/db.env-service.dto";
 import { DbHandlerTestDto } from "../dto/db.handler-test.dto";
@@ -122,21 +129,6 @@ export class DtoRegistry implements IDtoRegistry {
     this.assertBootInvariants();
   }
 
-  /**
-   * ADR-0102 / single entry point.
-   *
-   * Scenario A (no body): internal mint
-   * - new DTO(secret)
-   * - ctor MUST mint _id
-   *
-   * Scenario B (body provided): edge/db hydration
-   * - new DTO(secret, { body, validate, mode })
-   * - ctor MUST require _id; MUST NOT mint
-   *
-   * NOTE:
-   * - Missing _id is enforced inside the DTO hydrator/constructor for Scenario B.
-   * - Registry verifies post-conditions (DTO has a valid id).
-   */
   public create<TDto extends RegistryDto = RegistryDto>(
     dtoKey: DtoKey,
     body?: unknown,
@@ -168,6 +160,43 @@ export class DtoRegistry implements IDtoRegistry {
     }
 
     return dto;
+  }
+
+  /**
+   * ADR-0045:
+   * Expose registered db.* DTO CLASSES that can participate in boot index ensure.
+   *
+   * This remains registry-only: we validate the class surface, but do not touch Mongo.
+   */
+  public listDbDtoCtorsForIndexes(): ReadonlyArray<DtoCtorWithIndexes> {
+    const out: DtoCtorWithIndexes[] = [];
+
+    for (const k of Object.keys(this.byKey)) {
+      if (!k.startsWith("db.")) continue;
+
+      const ctorAny: any = this.byKey[k].ctor;
+
+      if (!Array.isArray(ctorAny?.indexHints)) {
+        throw new Error(
+          `DTO_INDEX_HINTS_MISSING: "${k}" ctor "${
+            ctorAny?.name ?? "<anon>"
+          }" is registered but does not expose static indexHints[]. ` +
+            "Dev: add static indexHints to the DTO class (ADR-0045)."
+        );
+      }
+      if (typeof ctorAny?.dbCollectionName !== "function") {
+        throw new Error(
+          `DTO_DB_COLLECTION_NAME_MISSING: "${k}" ctor "${
+            ctorAny?.name ?? "<anon>"
+          }" is registered but does not expose static dbCollectionName(). ` +
+            "Dev: add dbCollectionName() to the DTO class (ADR-0045)."
+        );
+      }
+
+      out.push(ctorAny as DtoCtorWithIndexes);
+    }
+
+    return out;
   }
 
   public resolve(dtoKey: DtoKey): DtoEntry {

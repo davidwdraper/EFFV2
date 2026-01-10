@@ -11,6 +11,7 @@
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
  *   - ADR-0074 (DB_STATE guardrail, getDbVar, and `_infra` DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -38,18 +39,28 @@
  *   - MUST set ctx["response.status"] (HTTP status code).
  *   - MUST set ctx["response.body"] (problem+json-style object).
  *
- * Notes:
- * - DB config is obtained via HandlerBase.getMongoConfig(), which reads DB vars
- *   from SvcRuntime and applies ADR-0074 DB_STATE semantics (domain DBs get
- *   <base>_<DB_STATE>, *_infra DBs ignore DB_STATE).
+ * Notes (ADR-0106):
+ * - DbReader is runtime-driven:
+ *   - DB config comes from SvcRuntime (rt.getDbVar()).
+ *   - Index ensure is done lazily via rt.getCap("db.indexGate") before DB ops.
+ * - Therefore this handler MUST NOT pull mongoUri/mongoDb itself.
+ *
+ * ADR-0106 invariant (critical):
+ * - Handlers must not reference index concepts or types (including indexHints).
+ * - DbReader validates index contracts internally at the DB boundary.
  */
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
-import { DbReader } from "../../dto/persistence/dbReader/DbReader";
+import {
+  DbReader,
+  type DbReadDtoCtor,
+} from "../../dto/persistence/dbReader/DbReader";
 import { ControllerBase } from "../../base/controller/ControllerBase";
 
 const ORIGIN_FILE = "backend/services/shared/src/http/handlers/db.read.list.ts";
+
+type ListDtoCtor = DbReadDtoCtor<unknown>;
 
 export class DbReadListHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
@@ -76,31 +87,29 @@ export class DbReadListHandler extends HandlerBase {
     );
 
     // --- Required DTO ctor ---------------------------------------------------
-    const dtoCtor = this.safeCtxGet<any>("list.dtoCtor");
-    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
+    const seeded = this.safeCtxGet<unknown>("list.dtoCtor");
+
+    // NOTE:
+    // - DTO classes are functions at runtime.
+    // - Accept function OR object to avoid forcing wrappers.
+    if (
+      !seeded ||
+      (typeof seeded !== "function" && typeof seeded !== "object")
+    ) {
       const err = this.failWithError({
         httpStatus: 500,
         title: "dto_ctor_missing",
         detail:
-          "DTO constructor missing in ctx['list.dtoCtor'] or missing static fromBody(). Ops: upstream pipeline must set list.dtoCtor to the DTO class.",
+          "DTO constructor missing in ctx['list.dtoCtor']. Ops: upstream pipeline must set list.dtoCtor to the DTO class.",
         stage: "config.dtoCtor",
         requestId,
-        origin: {
-          file: ORIGIN_FILE,
-          method: "execute",
-        },
-        issues: [
-          {
-            hasDtoCtor: !!dtoCtor,
-            hasFromBody: !!dtoCtor?.fromBody,
-          },
-        ],
+        origin: { file: ORIGIN_FILE, method: "execute" },
+        issues: [{ hasDtoCtor: !!seeded, type: typeof seeded }],
         logMessage:
           "dbRead.list — DTO ctor missing or invalid (ctx['list.dtoCtor']).",
         logLevel: "error",
       });
 
-      // Ensure finalize-visible error surface (even if helpers change later).
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", err.httpStatus);
       this.ctx.set("response.body", {
@@ -114,8 +123,65 @@ export class DbReadListHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws (runtime-owned, DB_STATE-aware) -----------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    const dtoCtor = seeded as unknown as ListDtoCtor;
+
+    // Validate only handler-facing ctor surface (no indexHints here).
+    // DbReader enforces the index contract at the DB boundary (ADR-0106).
+    if (typeof (dtoCtor as any)?.fromBody !== "function") {
+      const err = this.failWithError({
+        httpStatus: 500,
+        title: "dto_ctor_missing",
+        detail:
+          "DTO constructor missing static fromBody(). Ops: upstream pipeline must set list.dtoCtor to the DTO class.",
+        stage: "config.dtoCtor.fromBody",
+        requestId,
+        origin: { file: ORIGIN_FILE, method: "execute" },
+        issues: [{ hasFromBody: false }],
+        logMessage:
+          "dbRead.list — DTO ctor missing required static fromBody().",
+        logLevel: "error",
+      });
+
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", err.httpStatus);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: err.title,
+        status: err.httpStatus,
+        code: "DTO_CTOR_MISSING",
+        detail: err.detail,
+        requestId,
+      });
+      return;
+    }
+
+    if (typeof (dtoCtor as any)?.dbCollectionName !== "function") {
+      const err = this.failWithError({
+        httpStatus: 500,
+        title: "dto_ctor_missing_collection",
+        detail:
+          "DTO ctor missing static dbCollectionName(). Dev: add it on the DTO class.",
+        stage: "config.dtoCtor.dbCollectionName",
+        requestId,
+        origin: { file: ORIGIN_FILE, method: "execute" },
+        issues: [{ hasDbCollectionName: false }],
+        logMessage:
+          "dbRead.list — DTO ctor missing dbCollectionName(); cannot target collection.",
+        logLevel: "error",
+      });
+
+      this.ctx.set("handlerStatus", "error");
+      this.ctx.set("response.status", err.httpStatus);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: err.title,
+        status: err.httpStatus,
+        code: "DTO_CTOR_MISSING_COLLECTION",
+        detail: err.detail,
+        requestId,
+      });
+      return;
+    }
 
     // --- Filter + pagination -------------------------------------------------
     const filter =
@@ -141,9 +207,8 @@ export class DbReadListHandler extends HandlerBase {
     let collectionName = "";
     try {
       const reader = new DbReader<any>({
+        rt: this.rt,
         dtoCtor,
-        mongoUri,
-        mongoDb,
         validateReads: false,
       });
 
@@ -229,7 +294,6 @@ export class DbReadListHandler extends HandlerBase {
         logLevel: isBadCursor ? "warn" : "error",
       });
 
-      // Ensure finalize-visible error surface (no guessing inside controllers).
       this.ctx.set("handlerStatus", "error");
       this.ctx.set("response.status", err.httpStatus);
       this.ctx.set("response.body", {

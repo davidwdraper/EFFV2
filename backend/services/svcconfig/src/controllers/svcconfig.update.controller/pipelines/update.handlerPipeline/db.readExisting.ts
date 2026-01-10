@@ -4,7 +4,9 @@
  * - ADR-0040 (DTO-only persistence via Managers)
  * - ADR-0041/42/43/44
  * - ADR-0048 (Revised — bag-centric reads)
+ * - ADR-0074 (DB_STATE guardrail, getDbVar())
  * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ * - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -20,13 +22,22 @@
  * Outputs (ctx):
  * - "existingBag": DtoBag<SvcconfigDto>  (size 0 or 1)
  * - "dbReader": DbReader<SvcconfigDto>
+ *
+ * ADR-0106:
+ * - DbReader is runtime-driven: it pulls DB config + IndexGate via rt.
+ * - Callers MUST NOT pass mongoUri/mongoDb or touch index concepts/types.
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
+import {
+  DbReader,
+  type DbReadDtoCtor,
+} from "@nv/shared/dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import type { IDto } from "@nv/shared/dto/IDto";
+
+type UpdateDtoCtor = DbReadDtoCtor<unknown>;
 
 export class DbReadExistingHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -104,13 +115,16 @@ export class DbReadExistingHandler extends HandlerBase {
     }
 
     // --- Required dtoCtor ----------------------------------------------------
-    const dtoCtor = this.safeCtxGet<any>("update.dtoCtor");
-    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
+    const seededCtor = this.safeCtxGet<unknown>("update.dtoCtor");
+    if (
+      !seededCtor ||
+      (typeof seededCtor !== "function" && typeof seededCtor !== "object")
+    ) {
       const error = this.failWithError({
         httpStatus: 500,
         title: "internal_error",
         detail:
-          "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromBody(). Dev: ensure update pipeline seeds 'update.dtoCtor' correctly.",
+          "DTO constructor missing/invalid in ctx as 'update.dtoCtor'. Dev: ensure update pipeline seeds 'update.dtoCtor' correctly.",
         stage: "svcconfig.update.readExisting.dtoCtor",
         requestId,
         origin: {
@@ -120,8 +134,8 @@ export class DbReadExistingHandler extends HandlerBase {
         issues: [
           {
             key: "update.dtoCtor",
-            hasDtoCtor: !!dtoCtor,
-            hasFromBody: !!dtoCtor?.fromBody,
+            hasDtoCtor: !!seededCtor,
+            type: typeof seededCtor,
           },
         ],
         logMessage:
@@ -133,8 +147,7 @@ export class DbReadExistingHandler extends HandlerBase {
       this.ctx.set("response.body", {
         type: "about:blank",
         title: "Internal Error",
-        detail:
-          "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromBody().",
+        detail: error.detail,
         status: error.httpStatus,
         code: "DTO_CTOR_MISSING",
         requestId,
@@ -142,12 +155,63 @@ export class DbReadExistingHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    const dtoCtor = seededCtor as unknown as UpdateDtoCtor;
 
-    // Optional: diagnose whether ControllerBase is actually holding svcEnv.
-    const svcEnv = (this.controller as any).getSvcEnv?.();
-    const hasSvcEnv = !!svcEnv;
+    // Handler-facing ctor surface only (no indexHints checks here).
+    // DbReader validates index contracts internally at the DB boundary (ADR-0106).
+    if (typeof (dtoCtor as any)?.fromBody !== "function") {
+      const error = this.failWithError({
+        httpStatus: 500,
+        title: "internal_error",
+        detail:
+          "DTO constructor in ctx['update.dtoCtor'] is missing static fromBody(). Dev: ensure update.dtoCtor is the DTO class.",
+        stage: "svcconfig.update.readExisting.dtoCtor.fromBody",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ key: "update.dtoCtor", hasFromBody: false }],
+        logMessage:
+          "DbReadExistingHandler.execute update.dtoCtor missing fromBody(); cannot hydrate DTOs",
+        logLevel: "error",
+      });
+
+      this.ctx.set("response.status", error.httpStatus);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: "Internal Error",
+        detail: error.detail,
+        status: error.httpStatus,
+        code: "DTO_CTOR_INVALID",
+        requestId,
+      });
+      return;
+    }
+
+    if (typeof (dtoCtor as any)?.dbCollectionName !== "function") {
+      const error = this.failWithError({
+        httpStatus: 500,
+        title: "internal_error",
+        detail:
+          "DTO constructor in ctx['update.dtoCtor'] is missing static dbCollectionName(). Dev: add dbCollectionName() to the DTO class.",
+        stage: "svcconfig.update.readExisting.dtoCtor.dbCollectionName",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ key: "update.dtoCtor", hasDbCollectionName: false }],
+        logMessage:
+          "DbReadExistingHandler.execute update.dtoCtor missing dbCollectionName(); cannot target collection",
+        logLevel: "error",
+      });
+
+      this.ctx.set("response.status", error.httpStatus);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: "Internal Error",
+        detail: error.detail,
+        status: error.httpStatus,
+        code: "DTO_CTOR_INVALID",
+        requestId,
+      });
+      return;
+    }
 
     // --- Reader + fetch as **BAG** ------------------------------------------
     const validateReads =
@@ -155,9 +219,8 @@ export class DbReadExistingHandler extends HandlerBase {
 
     try {
       const reader = new DbReader<any>({
+        rt: this.rt,
         dtoCtor,
-        mongoUri,
-        mongoDb,
         validateReads,
       });
       this.ctx.set("dbReader", reader);

@@ -5,7 +5,7 @@
  * - ADRs:
  *   - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
  *   - ADR-0103 (DTO naming convention: keys, filenames, classnames)
- *   - ADR-0045 (Index Hints — boot ensure via shared helper)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *   - ADR-0057 (UUID; immutable)
  *
  * Purpose:
@@ -21,6 +21,7 @@
  * Single-concern rule:
  * - This registry does NOT touch Mongo.
  * - It only knows what DTOs are registered and how to construct them.
+ * - It does NOT participate in index ensuring (ADR-0106).
  */
 
 import { DTO_INSTANTIATION_SECRET } from "./dtoInstantiationSecret";
@@ -31,8 +32,6 @@ import type {
   DtoCreateOptions,
   DtoCreateMode,
 } from "./IDtoRegistry";
-
-import type { DtoCtorWithIndexes } from "../dto/persistence/indexes/ensureIndexes";
 
 import { DbEnvServiceDto } from "../dto/db.env-service.dto";
 import { DbHandlerTestDto } from "../dto/db.handler-test.dto";
@@ -160,43 +159,6 @@ export class DtoRegistry implements IDtoRegistry {
     }
 
     return dto;
-  }
-
-  /**
-   * ADR-0045:
-   * Expose registered db.* DTO CLASSES that can participate in boot index ensure.
-   *
-   * This remains registry-only: we validate the class surface, but do not touch Mongo.
-   */
-  public listDbDtoCtorsForIndexes(): ReadonlyArray<DtoCtorWithIndexes> {
-    const out: DtoCtorWithIndexes[] = [];
-
-    for (const k of Object.keys(this.byKey)) {
-      if (!k.startsWith("db.")) continue;
-
-      const ctorAny: any = this.byKey[k].ctor;
-
-      if (!Array.isArray(ctorAny?.indexHints)) {
-        throw new Error(
-          `DTO_INDEX_HINTS_MISSING: "${k}" ctor "${
-            ctorAny?.name ?? "<anon>"
-          }" is registered but does not expose static indexHints[]. ` +
-            "Dev: add static indexHints to the DTO class (ADR-0045)."
-        );
-      }
-      if (typeof ctorAny?.dbCollectionName !== "function") {
-        throw new Error(
-          `DTO_DB_COLLECTION_NAME_MISSING: "${k}" ctor "${
-            ctorAny?.name ?? "<anon>"
-          }" is registered but does not expose static dbCollectionName(). ` +
-            "Dev: add dbCollectionName() to the DTO class (ADR-0045)."
-        );
-      }
-
-      out.push(ctorAny as DtoCtorWithIndexes);
-    }
-
-    return out;
   }
 
   public resolve(dtoKey: DtoKey): DtoEntry {

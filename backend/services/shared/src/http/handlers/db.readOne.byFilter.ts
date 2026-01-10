@@ -6,7 +6,9 @@
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0047/0048 (All reads return DtoBag)
  *   - ADR-0050 (Wire Bag Envelope)
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar())
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -31,13 +33,22 @@
  * - This is a mid-pipeline helper; it does not build wire payloads.
  * - Final handlers are responsible for ensuring ctx["bag"] is the canonical
  *   bag used by ControllerBase.finalize().
+ *
+ * ADR-0106 invariant (critical):
+ * - Handlers must not reference index concepts or types (including indexHints).
+ * - DbReader validates index contracts internally at the DB boundary.
  */
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
-import { DbReader } from "../../dto/persistence/dbReader/DbReader";
+import {
+  DbReader,
+  type DbReadDtoCtor,
+} from "../../dto/persistence/dbReader/DbReader";
 import { DtoBag } from "../../dto/DtoBag";
 import type { IDto } from "../../dto/IDto";
+
+type QueryDtoCtor = DbReadDtoCtor<unknown>;
 
 export class DbReadOneByFilterHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -65,7 +76,7 @@ export class DbReadOneByFilterHandler extends HandlerBase {
     );
 
     // ---- Config from ctx ----------------------------------------------------
-    const dtoCtor = this.safeCtxGet<any>("bag.query.dtoCtor");
+    const seeded = this.safeCtxGet<unknown>("bag.query.dtoCtor");
     const filter =
       this.safeCtxGet<Record<string, unknown>>("bag.query.filter") ?? {};
     const targetKey = this.safeCtxGet<string>("bag.query.targetKey") ?? "bag";
@@ -74,7 +85,10 @@ export class DbReadOneByFilterHandler extends HandlerBase {
     const ensureSingleton =
       this.safeCtxGet<boolean>("bag.query.ensureSingleton") === true;
 
-    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
+    if (
+      !seeded ||
+      (typeof seeded !== "function" && typeof seeded !== "object")
+    ) {
       this.failWithError({
         httpStatus: 500,
         title: "bag_query_dto_ctor_missing",
@@ -86,8 +100,8 @@ export class DbReadOneByFilterHandler extends HandlerBase {
         issues: [
           {
             targetKey,
-            hasDtoCtor: !!dtoCtor,
-            hasFromBody: !!dtoCtor?.fromBody,
+            hasDtoCtor: !!seeded,
+            type: typeof seeded,
           },
         ],
         logMessage:
@@ -97,8 +111,42 @@ export class DbReadOneByFilterHandler extends HandlerBase {
       return;
     }
 
-    // ---- DB config comes from HandlerBase rails (override OR runtime) -------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    const dtoCtor = seeded as unknown as QueryDtoCtor;
+
+    // Validate only handler-facing ctor surface (no indexHints here).
+    // DbReader enforces the index contract at the DB boundary (ADR-0106).
+    if (typeof (dtoCtor as any)?.fromBody !== "function") {
+      this.failWithError({
+        httpStatus: 500,
+        title: "bag_query_dto_ctor_invalid",
+        detail:
+          "bag.query.dtoCtor invalid: missing static fromBody(). Dev: ensure ctx['bag.query.dtoCtor'] is the DTO class.",
+        stage: "db.readOne.byFilter:config.dtoCtor.fromBody",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ targetKey, hasFromBody: false }],
+        logMessage: "db.readOne.byFilter: dtoCtor missing static fromBody().",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    if (typeof (dtoCtor as any)?.dbCollectionName !== "function") {
+      this.failWithError({
+        httpStatus: 500,
+        title: "bag_query_dto_ctor_invalid",
+        detail:
+          "bag.query.dtoCtor invalid: missing static dbCollectionName(). Dev: add it to the DTO class.",
+        stage: "db.readOne.byFilter:config.dtoCtor.dbCollectionName",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ targetKey, hasDbCollectionName: false }],
+        logMessage:
+          "db.readOne.byFilter: dtoCtor missing static dbCollectionName().",
+        logLevel: "error",
+      });
+      return;
+    }
 
     // ---- External edge: DB read -------------------------------------------
     let bag: DtoBag<IDto>;
@@ -106,9 +154,8 @@ export class DbReadOneByFilterHandler extends HandlerBase {
 
     try {
       reader = new DbReader<any>({
+        rt: this.rt,
         dtoCtor,
-        mongoUri,
-        mongoDb,
         validateReads,
       });
 
@@ -127,6 +174,7 @@ export class DbReadOneByFilterHandler extends HandlerBase {
         issues: [
           {
             targetKey,
+            // filter can be large; still useful for ops in non-prod logs
             filter,
             validateReads,
           },

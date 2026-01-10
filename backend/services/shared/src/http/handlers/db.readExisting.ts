@@ -4,6 +4,9 @@
  * - ADR-0040 (DTO-only persistence via Managers)
  * - ADR-0041/42/43/44
  * - ADR-0048 (Revised — bag-centric reads)
+ * - ADR-0074 (DB_STATE guardrail, getDbVar())
+ * - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ * - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Purpose:
  * - Build DbReader<DtoBase> and load existing doc by canonical ctx["id"].
@@ -19,11 +22,18 @@
  * - "handlerStatus": "ok" | "error"
  * - On error only:
  *   - ctx["error"]: NvHandlerError (mapped to ProblemDetails by finalize)
+ *
+ * ADR-0106 invariant (critical):
+ * - Handlers must not reference index concepts or types (including indexHints).
+ * - DbReader validates index contracts internally at the DB boundary.
  */
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
-import { DbReader } from "../../dto/persistence/dbReader/DbReader";
+import {
+  DbReader,
+  type DbReadDtoCtor,
+} from "../../dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "../../dto/DtoBag";
 import type { IDto } from "../../dto/IDto";
 import type { DtoBase } from "../../dto/DtoBase";
@@ -61,24 +71,64 @@ export class DbReadExistingHandler extends HandlerBase {
       return;
     }
 
-    const dtoCtor = this.ctx.get<any>("update.dtoCtor");
-    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
+    const seeded = this.ctx.get<unknown>("update.dtoCtor");
+
+    // DTO classes are functions at runtime; allow object for test doubles.
+    if (
+      !seeded ||
+      (typeof seeded !== "function" && typeof seeded !== "object")
+    ) {
       this.failWithError({
         httpStatus: 500,
         title: "dto_ctor_missing",
         detail:
-          "DTO constructor missing in ctx as 'update.dtoCtor' or missing static fromBody(). Dev: ensure controller seeds a valid DTO ctor.",
+          "DTO constructor missing in ctx as 'update.dtoCtor'. Dev: ensure controller seeds a valid DTO ctor.",
         stage: "config.dtoCtor",
         requestId,
         origin: { file: __filename, method: "execute" },
-        issues: [{ hasDtoCtor: !!dtoCtor, hasFromBody: !!dtoCtor?.fromBody }],
-        logMessage: "db.readExisting — invalid ctx['update.dtoCtor'].",
+        issues: [{ hasDtoCtor: !!seeded, type: typeof seeded }],
+        logMessage: "db.readExisting — ctx['update.dtoCtor'] missing/invalid.",
         logLevel: "error",
       });
       return;
     }
 
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    const dtoCtor = seeded as unknown as DbReadDtoCtor<DtoBase>;
+
+    // Validate only handler-facing ctor surface (no indexHints here).
+    // DbReader enforces the index contract at the DB boundary (ADR-0106).
+    if (typeof (dtoCtor as any)?.fromBody !== "function") {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dto_ctor_invalid",
+        detail:
+          "DTO ctor in ctx['update.dtoCtor'] is missing static fromBody(). Dev: fix the DTO or controller seeding.",
+        stage: "config.dtoCtor.fromBody",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasFromBody: false }],
+        logMessage: "db.readExisting — dtoCtor missing fromBody().",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    if (typeof (dtoCtor as any)?.dbCollectionName !== "function") {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dto_ctor_invalid",
+        detail:
+          "DTO ctor in ctx['update.dtoCtor'] is missing static dbCollectionName(). Dev: fix the DTO or controller seeding.",
+        stage: "config.dtoCtor.dbCollectionName",
+        requestId,
+        origin: { file: __filename, method: "execute" },
+        issues: [{ hasDbCollectionName: false }],
+        logMessage: "db.readExisting — dtoCtor missing dbCollectionName().",
+        logLevel: "error",
+      });
+      return;
+    }
+
     const validateReads =
       this.ctx.get<boolean>("update.validateReads") ?? false;
 
@@ -86,9 +136,8 @@ export class DbReadExistingHandler extends HandlerBase {
 
     try {
       const reader = new DbReader<DtoBase>({
+        rt: this.rt,
         dtoCtor,
-        mongoUri,
-        mongoDb,
         validateReads,
       });
 

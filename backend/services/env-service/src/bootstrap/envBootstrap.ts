@@ -5,13 +5,13 @@
  * - ADRs:
  *   - ADR-0040 (DTO-Only Persistence)
  *   - ADR-0044 (DbEnvServiceDto — one doc per env@slug@version)
- *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *   - ADR-0074 (DB_STATE + _infra state-invariant DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Purpose:
  * - Bootstrap env-service without svcenvClient or SvcEnvDto.
- * - Read DB connection details from process.env (.env file).
+ * - Read bootstrap DB connection details from process.env (.env file).
  * - Use DbReader + EnvConfigReader to load this service's DbEnvServiceDto config.
  * - Apply the same root+service merge rules used by the HTTP /config pipeline:
  *     • root slug: "service-root"
@@ -32,6 +32,15 @@
  * Guardrail (critical):
  * - The bootstrap DB MUST be state-invariant and end with "_infra".
  * - If it does not, we hard-fail to avoid silently creating a fresh DB via DB_STATE decoration.
+ *
+ * ADR-0106 note (bootstrap):
+ * - DbReader requires an rt so it can consult rt.getCap("db.indexGate") at the DB boundary.
+ * - During bootstrap we do not yet have a real SvcRuntime because we are loading the env DTO that
+ *   becomes the runtime’s envDto.
+ * - Therefore, bootstrap uses a minimal rt-shaped shim whose ONLY purpose is:
+ *     • getDbVar("NV_MONGO_URI"|"NV_MONGO_DB")
+ *     • getCap("db.indexGate") (no-op during bootstrap reads)
+ * - After the real rt is constructed, we rebuild DbReader using it for the envReloader path.
  */
 
 import fs from "fs";
@@ -122,6 +131,55 @@ function requireInfraDbName(mongoDb: string, logFile: string): string {
 }
 
 /**
+ * Build a minimal rt-shaped shim for bootstrap-only DB reads.
+ *
+ * Why:
+ * - We must read DbEnvServiceDto from Mongo before we can construct the real SvcRuntime.
+ * - DbReader consults rt.getCap("db.indexGate") at the DB boundary (ADR-0106).
+ *
+ * Policy:
+ * - This shim exposes ONLY what DbReader needs:
+ *   - getDbVar("NV_MONGO_URI"|"NV_MONGO_DB")
+ *   - getCap("db.indexGate") (no-op for bootstrap reads)
+ *
+ * Rationale:
+ * - Bootstrap reads are config fetch only; they should not be blocked by index enforcement.
+ * - After the real rt is built, the runtime-wired IndexGate governs subsequent DB ops.
+ */
+function makeBootstrapRtShim(params: {
+  mongoUri: string;
+  mongoDb: string;
+}): SvcRuntime {
+  const { mongoUri, mongoDb } = params;
+
+  const noopIndexGate = {
+    async ensureForDtoCtor(_dtoCtor: unknown): Promise<void> {
+      return;
+    },
+  };
+
+  const shim: any = {
+    getDbVar(key: string): string {
+      const k = String(key ?? "").trim();
+      if (k === "NV_MONGO_URI") return mongoUri;
+      if (k === "NV_MONGO_DB") return mongoDb;
+      throw new Error(
+        `BOOTSTRAP_RT_SHIM_DBVAR_UNSUPPORTED: getDbVar("${k}") is not supported in envBootstrap shim.`
+      );
+    },
+    getCap(name: string): unknown {
+      const k = String(name ?? "").trim();
+      if (k === "db.indexGate") return noopIndexGate;
+      throw new Error(
+        `BOOTSTRAP_RT_SHIM_CAP_UNSUPPORTED: getCap("${k}") is not supported in envBootstrap shim.`
+      );
+    },
+  };
+
+  return shim as SvcRuntime;
+}
+
+/**
  * Bootstrap env-service:
  * - Reads DB config from env (NV_MONGO_URI / NV_MONGO_DB).
  * - Uses DbReader + EnvConfigReader.getEnv() to fetch:
@@ -151,18 +209,18 @@ export async function envBootstrap(
   // 2) Determine current logical environment label (no fallbacks).
   const envLabel = requireEnv("NV_ENV", logFile);
 
-  // 3) Initialize DbReader (shared with handlers)
-  let dbReader: DbReader<DbEnvServiceDto>;
+  // 3) Initialize DbReader for bootstrap reads using an rt-shaped shim.
+  let dbReaderBootstrap: DbReader<DbEnvServiceDto>;
   try {
-    dbReader = new DbReader<DbEnvServiceDto>({
+    const bootstrapRt = makeBootstrapRtShim({ mongoUri, mongoDb });
+    dbReaderBootstrap = new DbReader<DbEnvServiceDto>({
+      rt: bootstrapRt,
       dtoCtor: DbEnvServiceDto,
-      mongoUri,
-      mongoDb,
     });
   } catch (err) {
     fatal(
       logFile,
-      "BOOTSTRAP_DBREADER_INIT_FAILED: Failed to construct DbReader. " +
+      "BOOTSTRAP_DBREADER_INIT_FAILED: Failed to construct bootstrap DbReader. " +
         "Ops: verify NV_MONGO_URI/NV_MONGO_DB configuration for env-service.",
       err
     );
@@ -171,7 +229,7 @@ export async function envBootstrap(
   // 4) Load root + service bags, then merge via EnvConfigReader.mergeEnvBags().
   let envBag: DtoBag<DbEnvServiceDto>;
   try {
-    const rootBag = await EnvConfigReader.getEnv(dbReader, {
+    const rootBag = await EnvConfigReader.getEnv(dbReaderBootstrap, {
       env: envLabel,
       slug: "service-root",
       version,
@@ -180,13 +238,13 @@ export async function envBootstrap(
         throw new Error(
           `ROOT_CONFIG_READ_FAILED: ${String(
             (err as Error)?.message ?? err
-          )}. Ops: check DB connectivity and indexes.`
+          )}. Ops: check DB connectivity.`
         );
       }
       return new DtoBag<DbEnvServiceDto>([]);
     });
 
-    const svcBag = await EnvConfigReader.getEnv(dbReader, {
+    const svcBag = await EnvConfigReader.getEnv(dbReaderBootstrap, {
       env: envLabel,
       slug,
       version,
@@ -195,7 +253,7 @@ export async function envBootstrap(
         throw new Error(
           `SERVICE_CONFIG_READ_FAILED: ${String(
             (err as Error)?.message ?? err
-          )}. Ops: check DB connectivity and indexes.`
+          )}. Ops: check DB connectivity.`
         );
       }
       return new DtoBag<DbEnvServiceDto>([]);
@@ -212,12 +270,7 @@ export async function envBootstrap(
   }
 
   // 5) Select primary DTO (internal only) and construct rt.
-  let primary: DbEnvServiceDto | undefined;
-  for (const dto of envBag as unknown as Iterable<DbEnvServiceDto>) {
-    primary = dto;
-    break;
-  }
-
+  const primary = envBag.items().next().value as DbEnvServiceDto | undefined;
   if (!primary) {
     fatal(
       logFile,
@@ -285,17 +338,34 @@ export async function envBootstrap(
     );
   }
 
-  // 7) DtoBag-based reloader: same reader, same logic, fresh bag. Updates rt in-place.
+  // 7) Build a runtime-backed DbReader for reloads and all subsequent logic.
+  // This ensures later DB ops run with the real rt capabilities (ADR-0106).
+  let dbReaderRuntime: DbReader<DbEnvServiceDto>;
+  try {
+    dbReaderRuntime = new DbReader<DbEnvServiceDto>({
+      rt,
+      dtoCtor: DbEnvServiceDto,
+    });
+  } catch (err) {
+    fatal(
+      logFile,
+      "BOOTSTRAP_DBREADER_RUNTIME_INIT_FAILED: Failed to construct runtime DbReader. " +
+        "Ops: verify rt DB vars and db.indexGate wiring (ADR-0106).",
+      err
+    );
+  }
+
+  // 8) DtoBag-based reloader: same merge logic, fresh bag. Updates rt in-place.
   const envReloader = async (): Promise<DtoBag<DbEnvServiceDto>> => {
     const nextEnvLabel = requireEnv("NV_ENV", logFile);
 
-    const nextRootBag = await EnvConfigReader.getEnv(dbReader, {
+    const nextRootBag = await EnvConfigReader.getEnv(dbReaderRuntime, {
       env: nextEnvLabel,
       slug: "service-root",
       version,
     }).catch(() => new DtoBag<DbEnvServiceDto>([]));
 
-    const nextSvcBag = await EnvConfigReader.getEnv(dbReader, {
+    const nextSvcBag = await EnvConfigReader.getEnv(dbReaderRuntime, {
       env: nextEnvLabel,
       slug,
       version,
@@ -303,11 +373,9 @@ export async function envBootstrap(
 
     const nextBag = EnvConfigReader.mergeEnvBags(nextRootBag, nextSvcBag);
 
-    let nextPrimary: DbEnvServiceDto | undefined;
-    for (const dto of nextBag as unknown as Iterable<DbEnvServiceDto>) {
-      nextPrimary = dto;
-      break;
-    }
+    const nextPrimary = nextBag.items().next().value as
+      | DbEnvServiceDto
+      | undefined;
 
     if (!nextPrimary) {
       throw new Error(

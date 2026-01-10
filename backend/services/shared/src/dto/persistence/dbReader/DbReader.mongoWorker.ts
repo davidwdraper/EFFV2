@@ -29,7 +29,6 @@ import { DtoBag } from "../../../dto/DtoBag";
 import { coerceForMongoQuery } from "../adapters/mongo/queryHelper";
 import { MongoClient, Collection, Db, Document } from "mongodb";
 import type {
-  DbReaderOptions,
   IDbReaderWorker,
   ReadBatchArgs,
   ReadBatchResult,
@@ -93,15 +92,28 @@ function ordersEqual(a: OrderSpec, b: OrderSpec): boolean {
   return true;
 }
 
+/* ----------------- worker ctor surface ----------------- */
+
+export type MongoDbReaderWorkerOptions<TDto> = {
+  dtoCtor: {
+    fromBody: (j: unknown, opts?: { validate?: boolean }) => TDto;
+    dbCollectionName: () => string;
+    name?: string;
+  };
+  mongoUri: string;
+  mongoDb: string;
+  validateReads?: boolean;
+};
+
 /* ---------------------------------------------------------------------- */
 
 export class MongoDbReaderWorker<TDto> implements IDbReaderWorker<TDto> {
-  private readonly dtoCtor: DbReaderOptions<TDto>["dtoCtor"];
+  private readonly dtoCtor: MongoDbReaderWorkerOptions<TDto>["dtoCtor"];
   private readonly mongoUri: string;
   private readonly mongoDb: string;
   private readonly validateReads: boolean;
 
-  constructor(opts: DbReaderOptions<TDto>) {
+  constructor(opts: MongoDbReaderWorkerOptions<TDto>) {
     this.dtoCtor = opts.dtoCtor;
     this.mongoUri = opts.mongoUri;
     this.mongoDb = opts.mongoDb;
@@ -157,7 +169,6 @@ export class MongoDbReaderWorker<TDto> implements IDbReaderWorker<TDto> {
       return new DtoBag<TDto>([]);
     }
 
-    // UUIDv4 string primary key — query directly by `_id` as a string.
     const raw = await col.findOne({ [WIRE_ID_FIELD]: dtoId } as any);
     if (!raw) return new DtoBag<TDto>([]);
     const dto = this.hydrateDto(raw as WireDoc);

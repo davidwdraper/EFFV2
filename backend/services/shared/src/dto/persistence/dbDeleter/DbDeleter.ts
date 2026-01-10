@@ -7,48 +7,140 @@
  *   - ADR-0048 (Revised) — Reader/Writer/Deleter contracts at adapter edge
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id" on wire)
  *   - ADR-0056 (DELETE uses <DtoTypeKey>; controller resolves collection)
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar())
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Purpose:
  * - Public DbDeleter facade used by handlers.
- * - Mirrors the original API while delegating to an IDbDeleterWorker.
- * - Default worker is MongoDbDeleterWorker, preserving existing behavior.
+ * - Delegates to an IDbDeleterWorker.
+ * - Default worker is MongoDbDeleterWorker.
  *
- * Invariants:
- * - Canonical wire id field is `_id` (UUIDv4 string).
- * - No defaults: mongoUri/mongoDb must be provided explicitly by the caller
- *   (typically via DbEnvServiceDto.getEnvVar()).
- * - No DTO/Bag requirement; callers provide the explicit collection name.
+ * ADR-0106:
+ * - This facade MUST ensure indexes via rt.getCap("db.indexGate") before DB ops.
+ * - This facade MUST source DB config via SvcRuntime (no param sprawl).
  */
 
+import type { SvcRuntime } from "../../../runtime/SvcRuntime";
+import type { IIndexGate } from "../indexes/IndexGate";
 import type { IDbDeleterWorker } from "./DbDeleter.mongoWorker";
 import { MongoDbDeleterWorker } from "./DbDeleter.mongoWorker";
 
+/**
+ * Handler-facing DTO ctor contract (ADR-0106):
+ * - Handlers MUST NOT mention index concepts/types.
+ * - DbDeleter accepts a minimal ctor for collection targeting; index contracts
+ *   are validated internally and used only at the DB boundary.
+ */
+export type DbDeleteDtoCtor = {
+  dbCollectionName: () => string;
+  name?: string;
+};
+
+/** Internal-only contract required to interact with IndexGate (ADR-0106). */
+type DbDeleteDtoCtorWithIndex = DbDeleteDtoCtor & {
+  indexHints: ReadonlyArray<unknown>;
+};
+
 export class DbDeleter {
+  private readonly rt: SvcRuntime;
+
+  // Keep both views:
+  // - handler-facing (no index typing)
+  // - internal (validated to include indexHints)
+  private readonly dtoCtor: DbDeleteDtoCtor;
+  private readonly dtoCtorWithIndex: DbDeleteDtoCtorWithIndex;
+
   private readonly worker: IDbDeleterWorker;
 
   /**
-   * Construct a deleter bound to a specific collection.
-   * Callers pass:
-   *  - mongoUri / mongoDb (usually sourced from DbEnvServiceDto.getEnvVar)
-   *  - collectionName (resolved upstream e.g. via Registry.dbCollectionNameByType()).
+   * Construct a deleter bound to a specific DTO's collection.
+   * DB connectivity is sourced from rt (ADR-0074).
    */
   constructor(params: {
-    mongoUri: string;
-    mongoDb: string;
-    collectionName: string;
+    rt: SvcRuntime;
+    dtoCtor: DbDeleteDtoCtor;
     worker?: IDbDeleterWorker;
   }) {
-    this.worker =
-      params.worker ??
-      new MongoDbDeleterWorker({
-        mongoUri: params.mongoUri,
-        mongoDb: params.mongoDb,
-        collectionName: params.collectionName,
-      });
+    this.rt = params.rt;
+    this.dtoCtor = params.dtoCtor;
+
+    // Validate once up-front so ensureIndexes() can call IndexGate safely.
+    this.dtoCtorWithIndex = this.requireDtoIndexContract(params.dtoCtor);
+
+    if (params.worker) {
+      this.worker = params.worker;
+      return;
+    }
+
+    const mongoUri = this.rt.getDbVar("NV_MONGO_URI");
+    const mongoDb = this.rt.getDbVar("NV_MONGO_DB");
+
+    const collectionName = this.dtoCtor.dbCollectionName();
+    if (!collectionName?.trim()) {
+      throw new Error(
+        `DBDELETER_EMPTY_COLLECTION: dtoCtor "${
+          this.dtoCtor.name ?? "<anon>"
+        }" returned empty dbCollectionName(). Dev: hard-wire a non-empty string.`
+      );
+    }
+
+    this.worker = new MongoDbDeleterWorker({
+      mongoUri,
+      mongoDb,
+      collectionName,
+    });
+  }
+
+  /** ADR-0106: ensure indexes before any DB operation. */
+  private async ensureIndexes(): Promise<void> {
+    const gate = this.rt.getCap<IIndexGate>("db.indexGate");
+    await gate.ensureForDtoCtor(this.dtoCtorWithIndex as unknown as any);
+  }
+
+  /**
+   * ADR-0106: Runtime contract enforcement (handler must remain ignorant).
+   * Throws actionable errors if a non-DB DTO (or malformed ctor) is used at the DB boundary.
+   */
+  private requireDtoIndexContract(
+    dtoCtor: DbDeleteDtoCtor
+  ): DbDeleteDtoCtorWithIndex {
+    const name = this.safeCtorName(dtoCtor);
+
+    if (!dtoCtor || typeof dtoCtor !== "object") {
+      throw new Error(
+        `DbDeleter(dtoCtor): expected an object ctor, got ${typeof dtoCtor} (dto=${name}).`
+      );
+    }
+    if (typeof dtoCtor.dbCollectionName !== "function") {
+      throw new Error(
+        `DbDeleter(dtoCtor): missing dbCollectionName() function (dto=${name}).`
+      );
+    }
+
+    const anyCtor = dtoCtor as unknown as { indexHints?: unknown };
+    const hints = anyCtor.indexHints;
+
+    if (!Array.isArray(hints)) {
+      throw new Error(
+        `DbDeleter(dtoCtor): DTO is missing index contract (indexHints[]). ` +
+          `Only DB DTOs are valid for persistence ops. (dto=${name}, collection=${dtoCtor.dbCollectionName()})`
+      );
+    }
+
+    return dtoCtor as unknown as DbDeleteDtoCtorWithIndex;
+  }
+
+  private safeCtorName(dtoCtor: DbDeleteDtoCtor): string {
+    try {
+      return (dtoCtor as any)?.name ?? "unknown";
+    } catch {
+      return "unknown";
+    }
   }
 
   /** Introspection hook for handlers to log target collection. */
   public async targetInfo(): Promise<{ collectionName: string }> {
+    await this.ensureIndexes();
     return this.worker.targetInfo();
   }
 
@@ -59,31 +151,23 @@ export class DbDeleter {
   public async deleteById(
     id: string
   ): Promise<{ deleted: number; id: string }> {
+    await this.ensureIndexes();
     return this.worker.deleteById(id);
   }
 
   /**
    * Convenience one-shot: delete by id without keeping an instance around.
-   * Exactly mirrors deleteById() semantics.
-   *
-   * NOTE:
-   * - This uses the default MongoDbDeleterWorker via the facade, so future
-   *   edge-mode injection still flows through here without changing callers.
+   * Mirrors deleteById() semantics.
    */
   public static async deleteOne(params: {
-    mongoUri: string;
-    mongoDb: string;
-    collectionName: string;
+    rt: SvcRuntime;
+    dtoCtor: DbDeleteDtoCtor;
     id: string;
   }): Promise<{ deleted: number; id: string }> {
-    const { mongoUri, mongoDb, collectionName, id } = params;
-
     const deleter = new DbDeleter({
-      mongoUri,
-      mongoDb,
-      collectionName,
+      rt: params.rt,
+      dtoCtor: params.dtoCtor,
     });
-
-    return deleter.deleteById(id);
+    return deleter.deleteById(params.id);
   }
 }

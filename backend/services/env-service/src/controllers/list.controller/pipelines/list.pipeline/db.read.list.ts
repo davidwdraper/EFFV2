@@ -8,10 +8,11 @@
  *   - ADR-0042 (HandlerContext Bus — KISS)
  *   - ADR-0043 (Finalize mapping; controller builds wire payload)
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
- *   - ADR-0048 (DbReader/DbWriter contracts)
+ *   - ADR-0048 (DbReader/DbWriter/DbDeleter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *   - ADR-0056 (Typed routes use :dtoType)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -30,7 +31,8 @@
  *   - Use HandlerBase.failWithError(...) for problem+json responses.
  *
  * Notes:
- * - Pull DB config via runtime rails (HandlerBase.getMongoConfig()).
+ * - DbReader now receives rt (ADR-0106) and is responsible for ensuring indexes
+ *   via rt.getCap("db.indexGate") before DB ops.
  * - For now, dtoCtor is provided by pipeline seeding at ctx["list.dtoCtor"].
  *   (Handlers are being fixed last; we preserve the existing contract.)
  * - Pagination metadata is exposed on ctx for finalize() (e.g., ctx["list.nextCursor"]).
@@ -39,14 +41,19 @@
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
-import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
+import {
+  DbReader,
+  type DbReadDtoCtor,
+} from "@nv/shared/dto/persistence/dbReader/DbReader";
 import type { DtoBase } from "@nv/shared/dto/DtoBase";
 
-type DtoCtorWithCollection<T> = {
-  fromBody: (j: unknown, opts?: { validate?: boolean }) => T;
-  dbCollectionName: () => string;
-  name?: string;
-};
+/**
+ * ADR-0106:
+ * - Handlers must remain ignorant of index logic and IndexGate.
+ * - Therefore, handlers must NOT reference indexHints (even in local typing).
+ * - DbReader validates the index contract at the DB boundary.
+ */
+type ListDtoCtor = DbReadDtoCtor<DtoBase>;
 
 export class DbReadListHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {
@@ -87,7 +94,14 @@ export class DbReadListHandler extends HandlerBase {
     // ---- dtoCtor (pipeline-seeded, handlers-last refactor) -----------------
     const seededCtor = this.safeCtxGet<unknown>("list.dtoCtor") ?? null;
 
-    if (!seededCtor || typeof seededCtor !== "function") {
+    // NOTE:
+    // - Some pipelines seed the ctor as the class itself (typeof DbXxxDto),
+    //   which is a function at runtime.
+    // - We accept function OR object to avoid forcing pointless wrappers.
+    if (
+      !seededCtor ||
+      (typeof seededCtor !== "function" && typeof seededCtor !== "object")
+    ) {
       this.failWithError({
         httpStatus: 500,
         title: "missing_list_dto_ctor",
@@ -104,15 +118,19 @@ export class DbReadListHandler extends HandlerBase {
       return;
     }
 
-    const dtoCtor = seededCtor as unknown as DtoCtorWithCollection<DtoBase>;
+    const dtoCtor = seededCtor as unknown as ListDtoCtor;
 
+    // ---- validate seeded ctor surface (fail-fast, actionable) --------------
+    // IMPORTANT:
+    // - Validate only the handler-facing contract (no indexHints).
+    // - DbReader enforces the index contract at the DB boundary (ADR-0106).
     if (typeof (dtoCtor as any)?.fromBody !== "function") {
       this.failWithError({
         httpStatus: 500,
         title: "invalid_list_dto_ctor",
         detail:
           "Invalid ctx['list.dtoCtor']: expected a DTO ctor with static fromBody().",
-        stage: "db.read.list:invalid_list.dtoCtor",
+        stage: "db.read.list:invalid_list.dtoCtor.fromBody",
         requestId,
         rawError: null,
         origin: { file: __filename, method: "execute" },
@@ -129,7 +147,7 @@ export class DbReadListHandler extends HandlerBase {
         title: "invalid_list_dto_ctor",
         detail:
           "Invalid ctx['list.dtoCtor']: expected a DTO ctor with static dbCollectionName().",
-        stage: "db.read.list:invalid_list.dtoCtor",
+        stage: "db.read.list:invalid_list.dtoCtor.dbCollectionName",
         requestId,
         rawError: null,
         origin: { file: __filename, method: "execute" },
@@ -139,9 +157,6 @@ export class DbReadListHandler extends HandlerBase {
       });
       return;
     }
-
-    // ---- DB config (runtime rails) ----------------------------------------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
 
     // ---- Filter + pagination params from ctx ------------------------------
     const filter =
@@ -166,9 +181,8 @@ export class DbReadListHandler extends HandlerBase {
     // ---- External edge: DB read -------------------------------------------
     try {
       const reader = new DbReader<DtoBase>({
+        rt: this.rt,
         dtoCtor,
-        mongoUri,
-        mongoDb,
         validateReads: false,
       });
 

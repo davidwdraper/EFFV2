@@ -11,7 +11,9 @@
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="id")
  *   - ADR-0053 (Bag Purity; only bags on the bus)
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar())
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -34,20 +36,23 @@
  *   - ctx["handlerStatus"] MUST be "error".
  *   - ctx["status"] MUST be set (HTTP status).
  *   - ctx["error"] MUST carry an NvHandlerError (ProblemDetails source).
+ *
+ * ADR-0106 invariant (critical):
+ * - Handlers must not reference index concepts or types (including indexHints).
+ * - DbReader validates index contracts internally at the DB boundary.
  */
 
 import { HandlerBase } from "./HandlerBase";
 import type { HandlerContext } from "./HandlerContext";
-import { DbReader } from "../../dto/persistence/dbReader/DbReader";
+import {
+  DbReader,
+  type DbReadDtoCtor,
+} from "../../dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "../../dto/DtoBag";
 import type { DtoBase } from "../../dto/DtoBase";
 import { isValidUuid } from "../../utils/uuid";
 
-type DtoCtorWithCollection<T> = {
-  fromBody: (j: unknown, opts?: { validate?: boolean }) => T;
-  dbCollectionName: () => string;
-  name?: string;
-};
+type ReadDtoCtor = DbReadDtoCtor<DtoBase>;
 
 export class DbReadByIdHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -175,11 +180,9 @@ export class DbReadByIdHandler extends HandlerBase {
       return;
     }
 
-    let dtoCtor: DtoCtorWithCollection<DtoBase>;
+    let dtoCtor: ReadDtoCtor;
     try {
-      dtoCtor = registry.resolveCtorByType(
-        dtoType
-      ) as unknown as DtoCtorWithCollection<DtoBase>;
+      dtoCtor = registry.resolveCtorByType(dtoType) as unknown as ReadDtoCtor;
     } catch (err) {
       this.failWithError({
         httpStatus: 400,
@@ -203,16 +206,48 @@ export class DbReadByIdHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    // Fail-fast: validate only handler-facing ctor surface (no indexHints here).
+    // DbReader enforces the index contract at the DB boundary (ADR-0106).
+    if (typeof (dtoCtor as any)?.fromBody !== "function") {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dto_ctor_invalid",
+        detail:
+          "Resolved DTO ctor is missing static fromBody(). Dev: fix the DTO or registry wiring.",
+        stage: "config.dtoCtor.fromBody",
+        requestId,
+        origin: { file: __filename, method: "execute", dtoType },
+        issues: [{ dtoType, hasFromBody: false }],
+        logMessage:
+          "dbRead.byId — registry returned DTO ctor missing fromBody().",
+        logLevel: "error",
+      });
+      return;
+    }
 
-    // ---- External edge: read by id via DbReader ----------------------------
+    if (typeof (dtoCtor as any)?.dbCollectionName !== "function") {
+      this.failWithError({
+        httpStatus: 500,
+        title: "dto_ctor_invalid",
+        detail:
+          "Resolved DTO ctor is missing static dbCollectionName(). Dev: fix the DTO or registry wiring.",
+        stage: "config.dtoCtor.dbCollectionName",
+        requestId,
+        origin: { file: __filename, method: "execute", dtoType },
+        issues: [{ dtoType, hasDbCollectionName: false }],
+        logMessage:
+          "dbRead.byId — registry returned DTO ctor missing dbCollectionName().",
+        logLevel: "error",
+      });
+      return;
+    }
+
+    // ---- External edge: read by id via DbReader (runtime-driven) -----------
     let collectionName = "";
     try {
       const reader = new DbReader<DtoBase>({
+        rt: this.rt,
         dtoCtor,
-        mongoUri,
-        mongoDb,
         validateReads: false,
       });
 

@@ -2,7 +2,7 @@
 /**
  * Docs:
  * - ADR-0102 (Registry sole DTO creation authority + _id minting rules)
- * - ADR-0045 (Index Hints — boot ensure via shared helper)
+ * - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Purpose:
  * - Single DTO registry contract for NV.
@@ -14,15 +14,13 @@
  * - The registry key is the canonical DTO key (aka dtoKey).
  * - dtoKey replaces any legacy “type” notion (getType()).
  *
- * Index ensure:
- * - Registry does NOT perform DB work.
- * - It only exposes which registered db.* DTO CLASSES participate in
- *   boot-time index ensure (single concern: registration metadata).
+ * Index ensure (ADR-0106):
+ * - The registry has NO index-related surface area.
+ * - Index ensuring is a persistence-boundary concern via IndexGate.
  */
 
 import type { DtoBase } from "../dto/DtoBase";
 import type { IDto } from "../dto/IDto";
-import type { DtoCtorWithIndexes } from "../dto/persistence/indexes/ensureIndexes";
 
 export type RegistryDto = DtoBase & IDto;
 
@@ -41,14 +39,4 @@ export interface IDtoRegistry {
     body?: unknown,
     opts?: DtoCreateOptions
   ): TDto;
-
-  /**
-   * ADR-0045:
-   * Return registered db.* DTO CLASSES that declare:
-   *  - static indexHints: ReadonlyArray<IndexHint>
-   *  - static dbCollectionName(): string
-   *
-   * Boot code passes this list into ensureIndexesForDtos(...).
-   */
-  listDbDtoCtorsForIndexes(): ReadonlyArray<DtoCtorWithIndexes>;
 }

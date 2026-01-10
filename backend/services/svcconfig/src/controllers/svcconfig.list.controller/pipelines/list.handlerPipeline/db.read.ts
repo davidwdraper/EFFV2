@@ -10,6 +10,9 @@
  *   - ADR-0047 (DtoBag/DtoBagView + DB-level batching)
  *   - ADR-0048 (DbReader/DbWriter contracts)
  *   - ADR-0050 (Wire Bag Envelope — canonical id="_id")
+ *   - ADR-0074 (DB_STATE guardrail, getDbVar())
+ *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Status:
  * - SvcRuntime Refactored (ADR-0080)
@@ -31,15 +34,23 @@
  *   - MUST set ctx["response.status"] (HTTP status).
  *   - MUST set ctx["response.body"] (problem+json-style object).
  *
- * Notes:
- * - DB config is resolved via HandlerBase.getMongoConfig(), which reads from
- *   SvcRuntime vars and applies DB_STATE semantics (ADR-0074).
+ * Notes (ADR-0106):
+ * - DbReader is runtime-driven:
+ *   - DB config comes from SvcRuntime (rt.getDbVar()).
+ *   - Index ensure is done lazily via rt.getCap("db.indexGate") before DB ops.
+ * - Therefore this handler MUST NOT call getMongoConfig() or pass mongoUri/mongoDb.
  * - DTO ctor is supplied via ctx["list.dtoCtor"] by the pipeline.
+ * - Handlers must not reference index concepts or types (no indexHints typing here).
  */
 
 import { HandlerBase } from "@nv/shared/http/handlers/HandlerBase";
 import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
-import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
+import {
+  DbReader,
+  type DbReadDtoCtor,
+} from "@nv/shared/dto/persistence/dbReader/DbReader";
+
+type ListDtoCtor = DbReadDtoCtor<unknown>;
 
 export class DbReadHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {
@@ -76,23 +87,24 @@ export class DbReadHandler extends HandlerBase {
     );
 
     // --- Required DTO ctor ---------------------------------------------------
-    const dtoCtor = this.safeCtxGet<any>("list.dtoCtor");
-    if (!dtoCtor || typeof dtoCtor.fromBody !== "function") {
+    const seeded = this.safeCtxGet<unknown>("list.dtoCtor");
+    if (
+      !seeded ||
+      (typeof seeded !== "function" && typeof seeded !== "object")
+    ) {
       const error = this.failWithError({
         httpStatus: 500,
         title: "internal_error",
         detail:
-          "DTO constructor missing in ctx as 'list.dtoCtor' or missing static fromBody(). Dev: ensure pipeline seeds 'list.dtoCtor' before DbReadHandler.",
+          "DTO constructor missing/invalid in ctx as 'list.dtoCtor'. Dev: ensure pipeline seeds 'list.dtoCtor' to the DTO class before DbReadHandler.",
         stage: "list.dbRead.dtoCtor",
         requestId,
-        origin: {
-          method: "execute",
-        },
+        origin: { method: "execute" },
         issues: [
           {
             key: "list.dtoCtor",
-            hasDtoCtor: !!dtoCtor,
-            hasFromBody: !!dtoCtor?.fromBody,
+            hasDtoCtor: !!seeded,
+            type: typeof seeded,
           },
         ],
         logMessage:
@@ -112,8 +124,63 @@ export class DbReadHandler extends HandlerBase {
       return;
     }
 
-    // ---- Missing DB config throws ------------------------
-    const { uri: mongoUri, dbName: mongoDb } = this.getMongoConfig();
+    const dtoCtor = seeded as unknown as ListDtoCtor;
+
+    // Validate only handler-facing ctor surface (no indexHints here).
+    // DbReader enforces index contracts internally at the DB boundary (ADR-0106).
+    if (typeof (dtoCtor as any)?.fromBody !== "function") {
+      const error = this.failWithError({
+        httpStatus: 500,
+        title: "internal_error",
+        detail:
+          "DTO constructor in ctx['list.dtoCtor'] is missing static fromBody(). Dev: ensure list.dtoCtor is the DTO class.",
+        stage: "list.dbRead.dtoCtor.fromBody",
+        requestId,
+        origin: { method: "execute" },
+        issues: [{ key: "list.dtoCtor", hasFromBody: false }],
+        logMessage:
+          "DbReadHandler.execute list.dtoCtor missing fromBody(); cannot hydrate DTOs",
+        logLevel: "error",
+      });
+
+      this.ctx.set("response.status", error.httpStatus);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: error.title,
+        detail: error.detail,
+        status: error.httpStatus,
+        code: "DTO_CTOR_INVALID",
+        requestId,
+      });
+      return;
+    }
+
+    if (typeof (dtoCtor as any)?.dbCollectionName !== "function") {
+      const error = this.failWithError({
+        httpStatus: 500,
+        title: "internal_error",
+        detail:
+          "DTO constructor in ctx['list.dtoCtor'] is missing static dbCollectionName(). Dev: add dbCollectionName() to the DTO class.",
+        stage: "list.dbRead.dtoCtor.dbCollectionName",
+        requestId,
+        origin: { method: "execute" },
+        issues: [{ key: "list.dtoCtor", hasDbCollectionName: false }],
+        logMessage:
+          "DbReadHandler.execute list.dtoCtor missing dbCollectionName(); cannot target collection",
+        logLevel: "error",
+      });
+
+      this.ctx.set("response.status", error.httpStatus);
+      this.ctx.set("response.body", {
+        type: "about:blank",
+        title: error.title,
+        detail: error.detail,
+        status: error.httpStatus,
+        code: "DTO_CTOR_INVALID",
+        requestId,
+      });
+      return;
+    }
 
     // --- Filter + pagination -------------------------------------------------
     const filterRaw = this.safeCtxGet<unknown>("list.filter");
@@ -128,9 +195,7 @@ export class DbReadHandler extends HandlerBase {
             "list.filter must be an object. Dev: ensure upstream query builder sets a plain object on ctx['list.filter'].",
           stage: "list.dbRead.filter_shape",
           requestId,
-          origin: {
-            method: "execute",
-          },
+          origin: { method: "execute" },
           issues: [
             {
               key: "list.filter",
@@ -168,9 +233,7 @@ export class DbReadHandler extends HandlerBase {
             "Query payload must be an object with simple key/value pairs. Ops: inspect client usage of svcconfig list endpoint.",
           stage: "list.dbRead.query_shape",
           requestId,
-          origin: {
-            method: "execute",
-          },
+          origin: { method: "execute" },
           issues: [
             {
               key: "query",
@@ -230,9 +293,8 @@ export class DbReadHandler extends HandlerBase {
     try {
       // --- Reader + batch read -----------------------------------------------
       const reader = new DbReader<any>({
+        rt: this.rt,
         dtoCtor,
-        mongoUri,
-        mongoDb,
         validateReads: false,
       });
 
@@ -286,9 +348,7 @@ export class DbReadHandler extends HandlerBase {
           "Database batch read for svcconfig list failed unexpectedly. Ops: inspect logs for handler, collection, and requestId.",
         stage: "list.dbRead.readBatch",
         requestId,
-        origin: {
-          method: "execute",
-        },
+        origin: { method: "execute" },
         issues: [
           {
             hint: "Check Mongo connectivity, collection indexes, and reader configuration.",

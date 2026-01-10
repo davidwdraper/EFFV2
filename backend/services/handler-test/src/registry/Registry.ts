@@ -5,12 +5,11 @@
  * - ADRs:
  *   - ADR-0049 (DTO Registry & canonical id)
  *   - ADR-0053 (Instantiation Discipline via Registry Secret)
- *   - ADR-0045 (Index Hints — boot ensure via shared helper)
  *
  * Purpose:
  * - Per-service DTO Registry that **extends ServiceRegistryBase**:
  *   • single source of truth for DTO constructors (ctorByType)
- *   • inherits hydratorFor(), ensureIndexes(), listRegistered()
+ *   • inherits hydratorFor(), listRegistered()
  *
  * Invariants:
  * - One registry per service.

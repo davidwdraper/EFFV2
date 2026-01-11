@@ -9,6 +9,7 @@
  *   - ADR-0049 (DTO Registry & Wire Discrimination)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Purpose:
  * - Orchestration-only app. Defines order; no business logic or helpers here.
@@ -31,6 +32,7 @@ import type { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 import type { IDtoRegistry } from "@nv/shared/registry/IDtoRegistry";
 import { DtoRegistry } from "@nv/shared/registry/DtoRegistry";
 import type { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+import { MongoIndexGate } from "@nv/shared/dto/persistence/indexes/MongoIndexGate";
 
 import { buildEnvServiceRouter } from "./routes/env-service.route";
 
@@ -85,6 +87,9 @@ class EnvServiceApp extends AppBase {
     // Use the shared registry for now; it already implements IDtoRegistry.create().
     this.dtoRegistry = new DtoRegistry();
 
+    // ADR-0106: DB posture must wire db.indexGate so persistence ops can lazily ensure indexes.
+    this.wireDbIndexGateCap();
+
     this.log.info(
       {
         appEnvLabel: this.getEnvLabel(),
@@ -92,6 +97,31 @@ class EnvServiceApp extends AppBase {
         rt: opts.rt.describe(),
       },
       "env-service app constructed"
+    );
+  }
+
+  private wireDbIndexGateCap(): void {
+    const rt = this.getRuntime();
+
+    rt.setCapFactory("db.indexGate", (rt) => {
+      const mongoUri = rt.getDbVar("NV_MONGO_URI");
+      const mongoDb = rt.getDbVar("NV_MONGO_DB");
+
+      return new MongoIndexGate({
+        mongoUri,
+        mongoDb,
+        log: rt.getLogger(),
+      });
+    });
+
+    this.log.info(
+      {
+        event: "rt_cap_factory_wired",
+        capKey: "db.indexGate",
+        service: this.service,
+        version: this.version,
+      },
+      "wired runtime cap factory"
     );
   }
 

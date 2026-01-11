@@ -37,15 +37,19 @@
  * - DbReader requires an rt so it can consult rt.getCap("db.indexGate") at the DB boundary.
  * - During bootstrap we do not yet have a real SvcRuntime because we are loading the env DTO that
  *   becomes the runtime’s envDto.
- * - Therefore, bootstrap uses a minimal rt-shaped shim whose ONLY purpose is:
- *     • getDbVar("NV_MONGO_URI"|"NV_MONGO_DB")
- *     • getCap("db.indexGate") (no-op during bootstrap reads)
- * - After the real rt is constructed, we rebuild DbReader using it for the envReloader path.
+ *
+ * env-service special-case (IMPORTANT):
+ * - Unlike other services, env-service MUST be able to heal its own indexes on boot,
+ *   because it reads its own config collection during bootstrap.
+ * - Therefore, bootstrap wires a REAL Mongo-backed IndexGate (not a no-op).
  */
 
 import fs from "fs";
 import path from "path";
-import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
+import {
+  DbEnvServiceDto,
+  DbEnvServiceDtoReadCtor,
+} from "@nv/shared/dto/db.env-service.dto";
 import { DtoBag } from "@nv/shared/dto/DtoBag";
 import { DbReader } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import { EnvConfigReader } from "../svc/EnvConfigReader";
@@ -55,6 +59,7 @@ import {
   type IBoundLogger,
 } from "@nv/shared/logger/Logger";
 import { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+import { MongoIndexGate } from "@nv/shared/dto/persistence/indexes/MongoIndexGate";
 
 type BootstrapOpts = {
   slug: string;
@@ -133,30 +138,15 @@ function requireInfraDbName(mongoDb: string, logFile: string): string {
 /**
  * Build a minimal rt-shaped shim for bootstrap-only DB reads.
  *
- * Why:
- * - We must read DbEnvServiceDto from Mongo before we can construct the real SvcRuntime.
- * - DbReader consults rt.getCap("db.indexGate") at the DB boundary (ADR-0106).
- *
- * Policy:
- * - This shim exposes ONLY what DbReader needs:
- *   - getDbVar("NV_MONGO_URI"|"NV_MONGO_DB")
- *   - getCap("db.indexGate") (no-op for bootstrap reads)
- *
- * Rationale:
- * - Bootstrap reads are config fetch only; they should not be blocked by index enforcement.
- * - After the real rt is built, the runtime-wired IndexGate governs subsequent DB ops.
+ * env-service special-case:
+ * - This shim MUST provide a REAL db.indexGate so bootstrap reads can heal indexes
+ *   (ADR-0106), because env-service reads its own env-service collection on boot.
  */
 function makeBootstrapRtShim(params: {
   mongoUri: string;
   mongoDb: string;
 }): SvcRuntime {
   const { mongoUri, mongoDb } = params;
-
-  const noopIndexGate = {
-    async ensureForDtoCtor(_dtoCtor: unknown): Promise<void> {
-      return;
-    },
-  };
 
   const shim: any = {
     getDbVar(key: string): string {
@@ -169,7 +159,16 @@ function makeBootstrapRtShim(params: {
     },
     getCap(name: string): unknown {
       const k = String(name ?? "").trim();
-      if (k === "db.indexGate") return noopIndexGate;
+
+      if (k === "db.indexGate") {
+        // REAL index gate: bootstrap must be able to ensure missing indexes.
+        return new MongoIndexGate({
+          mongoUri,
+          mongoDb,
+          // no logger yet (logger requires env DTO); gate is still fully functional
+        });
+      }
+
       throw new Error(
         `BOOTSTRAP_RT_SHIM_CAP_UNSUPPORTED: getCap("${k}") is not supported in envBootstrap shim.`
       );
@@ -210,12 +209,13 @@ export async function envBootstrap(
   const envLabel = requireEnv("NV_ENV", logFile);
 
   // 3) Initialize DbReader for bootstrap reads using an rt-shaped shim.
+  //    IMPORTANT: env-service special-case uses a REAL index gate in the shim.
   let dbReaderBootstrap: DbReader<DbEnvServiceDto>;
   try {
     const bootstrapRt = makeBootstrapRtShim({ mongoUri, mongoDb });
     dbReaderBootstrap = new DbReader<DbEnvServiceDto>({
       rt: bootstrapRt,
-      dtoCtor: DbEnvServiceDto,
+      dtoCtor: DbEnvServiceDtoReadCtor,
     });
   } catch (err) {
     fatal(
@@ -238,7 +238,7 @@ export async function envBootstrap(
         throw new Error(
           `ROOT_CONFIG_READ_FAILED: ${String(
             (err as Error)?.message ?? err
-          )}. Ops: check DB connectivity.`
+          )}. Ops: check DB connectivity and bootstrap collection/index state.`
         );
       }
       return new DtoBag<DbEnvServiceDto>([]);
@@ -253,7 +253,7 @@ export async function envBootstrap(
         throw new Error(
           `SERVICE_CONFIG_READ_FAILED: ${String(
             (err as Error)?.message ?? err
-          )}. Ops: check DB connectivity.`
+          )}. Ops: check DB connectivity and bootstrap collection/index state.`
         );
       }
       return new DtoBag<DbEnvServiceDto>([]);
@@ -344,7 +344,7 @@ export async function envBootstrap(
   try {
     dbReaderRuntime = new DbReader<DbEnvServiceDto>({
       rt,
-      dtoCtor: DbEnvServiceDto,
+      dtoCtor: DbEnvServiceDtoReadCtor,
     });
   } catch (err) {
     fatal(

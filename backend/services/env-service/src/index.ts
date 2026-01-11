@@ -8,6 +8,7 @@
  *   - ADR-0074 (DB_STATE-aware DB selection; _infra state-invariant bootstrap DBs)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
  *   - ADR-0084 (Service Posture & Boot-Time Rails)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Purpose:
  * - Dedicated entrypoint for env-service.
@@ -26,8 +27,7 @@
 
 import createApp from "./app";
 import { envBootstrap } from "./bootstrap/envBootstrap";
-import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
-import { SvcRuntime } from "@nv/shared/runtime/SvcRuntime";
+import type { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 import type { SvcPosture } from "@nv/shared/runtime/SvcPosture";
 
 const SERVICE_SLUG = "env-service";
@@ -69,52 +69,27 @@ function firstDtoFromBag(bag: unknown): DbEnvServiceDto {
   );
 }
 
-function mergeVarsFromBag(bag: unknown): Record<string, string> {
-  const merged: Record<string, string> = {};
-  for (const dto of bag as unknown as Iterable<DbEnvServiceDto>) {
-    const vars = dto.getVarsRaw();
-    for (const [k, v] of Object.entries(vars)) {
-      const key = (k ?? "").trim();
-      if (!key) continue;
-      merged[key] = String(v ?? "");
-    }
-  }
-  return merged;
-}
-
 (async () => {
   try {
-    const { envBag, envReloader, host, port } = await envBootstrap({
+    const { rt, envBag, envReloader, host, port } = await envBootstrap({
       slug: SERVICE_SLUG,
       version: SERVICE_VERSION,
     });
 
+    // Bind the entrypoint logger (console) to rt only for this file’s boot messages.
+    // Runtime’s real logger is already configured inside envBootstrap.
+    bootLogger().info(
+      {
+        event: "rt_construct",
+        ...rt.describe(),
+        service: SERVICE_SLUG,
+        version: SERVICE_VERSION,
+      },
+      "SvcRuntime constructed"
+    );
+
     const primary = firstDtoFromBag(envBag);
     const envLabel = primary.getEnvLabel();
-
-    // NOTE:
-    // SvcRuntime requires dbState at construction time; we compute it from the
-    // bootstrap bag’s merged vars, but runtime remains DTO-backed (no vars map cache).
-    const mergedVars = mergeVarsFromBag(envBag);
-
-    const dbState = (mergedVars["DB_STATE"] ?? "").trim();
-    if (!dbState) {
-      throw new Error(
-        `BOOTSTRAP_DBSTATE_MISSING: DB_STATE is required for env="${envLabel}", slug="${SERVICE_SLUG}", version=${SERVICE_VERSION}. ` +
-          'Ops: set "DB_STATE" in the env-service config record(s) (root and/or service) for this env.'
-      );
-    }
-
-    const rt = new SvcRuntime(
-      {
-        serviceSlug: SERVICE_SLUG,
-        serviceVersion: SERVICE_VERSION,
-        env: envLabel,
-        dbState,
-      },
-      primary,
-      bootLogger() as any
-    );
 
     const { app } = await createApp({
       slug: SERVICE_SLUG,

@@ -11,6 +11,7 @@
  *   - ADR-0057 (ID Generation & Validation — UUIDv4; immutable)
  *   - ADR-0074 (DB_STATE-aware DB selection via getDbVar; _infra DBs state-invariant)
  *   - ADR-0080 (SvcRuntime — Transport-Agnostic Service Runtime)
+ *   - ADR-0106 (Lazy index ensure via persistence IndexGate)
  *
  * Purpose:
  * - Concrete DB DTO for env-service configuration records.
@@ -378,10 +379,6 @@ export class DbEnvServiceDto extends DtoBase {
     return Object.keys(this._vars).sort();
   }
 
-  /**
-   * Required DB var accessor (ADR-0074).
-   * Returns string (DB_STATE-aware for NV_MONGO_DB) or throws if missing/empty.
-   */
   public getDbVar(name: string): string {
     if (!this.isDbKey(name)) {
       throw new Error(
@@ -408,10 +405,6 @@ export class DbEnvServiceDto extends DtoBase {
     return value;
   }
 
-  /**
-   * Optional DB var accessor (ADR-0074).
-   * Returns string | undefined (DB_STATE-aware for NV_MONGO_DB when present).
-   */
   public tryDbVar(name: string): string | undefined {
     if (!this.isDbKey(name)) {
       throw new Error(
@@ -473,3 +466,26 @@ export class DbEnvServiceDto extends DtoBase {
     }
   }
 }
+
+/**
+ * ADR-0106: Canonical DbReader ctor descriptor for DbEnvServiceDto.
+ *
+ * IMPORTANT (layering):
+ * - DTOs must NOT import persistence modules.
+ * - This export is intentionally *structural*: DbReader will accept it because it
+ *   matches the required shape at the DB boundary (fromBody + dbCollectionName),
+ *   and it carries indexHints[] for internal index contract validation.
+ */
+type DbEnvServiceDtoReadCtorShape = {
+  fromBody: (j: unknown, opts?: { validate?: boolean }) => DbEnvServiceDto;
+  dbCollectionName: () => string;
+  indexHints: ReadonlyArray<IndexHint>;
+  name?: string;
+};
+
+export const DbEnvServiceDtoReadCtor = {
+  fromBody: DbEnvServiceDto.fromBody.bind(DbEnvServiceDto),
+  dbCollectionName: DbEnvServiceDto.dbCollectionName.bind(DbEnvServiceDto),
+  indexHints: DbEnvServiceDto.indexHints,
+  name: "DbEnvServiceDto",
+} satisfies DbEnvServiceDtoReadCtorShape;

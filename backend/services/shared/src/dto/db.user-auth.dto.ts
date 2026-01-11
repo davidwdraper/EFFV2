@@ -18,9 +18,9 @@
  */
 
 import { DtoBase } from "./DtoBase";
-import { UserType } from "./UserType";
-import type { IndexHint } from "./persistence/index-hints";
-import { field, unwrapMetaEnvelope } from "./dsl";
+import { UserType } from "../../../packages/dto/core/UserType";
+import type { IndexHint } from "../../../packages/dto/core/index-hints";
+import { field, unwrapMetaEnvelope } from "../../../packages/core/dsl";
 
 export type UserAuthJson = {
   _id?: string;

@@ -36,10 +36,10 @@
  * - tryDbVar(name): optional (string | undefined) ✅ DB_STATE-aware when present
  */
 
-import { DtoBase, type DtoCtorOpts } from "./DtoBase";
-import type { IndexHint } from "./persistence/index-hints";
-import { validateUUIDString } from "../utils/uuid";
-import { field, unwrapMetaEnvelope } from "./dsl";
+import { DtoBase, type DtoCtorOpts } from "@nv/dto.core/DtoBase";
+import type { IndexHint } from "@nv/dto.core/index-hints";
+import { validateUUIDString } from "@nv/core/utils/uuid";
+import { field, unwrapMetaEnvelope } from "@nv/core/dsl";
 
 export type EnvServiceJson = {
   _id?: string;

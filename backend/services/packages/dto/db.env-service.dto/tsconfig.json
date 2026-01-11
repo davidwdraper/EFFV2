@@ -1,0 +1,18 @@
+// backend/services/packages/dto/db.env-service.dto/tsconfig.json
+{
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+
+    // CRITICAL:
+    // For package builds, do NOT path-alias into other packages' *source*.
+    // We want Node/package resolution to use installed workspace packages' dist/*.d.ts.
+    "paths": {}
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["dist", "node_modules"]
+}

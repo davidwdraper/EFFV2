@@ -9,7 +9,7 @@
  */
 
 import { DtoValidationError, type Validator } from "../DtoBase";
-import { validateUUIDString } from "../../../shared/src/utils/uuid";
+import { validateUUIDString } from "@nv/core/utils/uuid";
 
 export class IdValidators {
   /**

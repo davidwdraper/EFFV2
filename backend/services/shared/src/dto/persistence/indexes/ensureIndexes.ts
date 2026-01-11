@@ -26,7 +26,7 @@
  *   (e.g. DbEnvServiceDto).
  */
 
-import type { IndexHint } from "../../persistence/index-hints";
+import type { IndexHint } from "../../../../../packages/dto/core/index-hints";
 import type { ILogger } from "../../../logger/Logger";
 import { MongoClient } from "mongodb";
 

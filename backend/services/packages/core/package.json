@@ -1,0 +1,29 @@
+{
+  "name": "@nv/core",
+  "version": "0.1.0",
+  "private": false,
+  "_nvHeader": "SOP header: Core shared utilities. Public API via wildcard exports. Consumers import @nv/core/<File> or @nv/core/<folder>/<File> (never /src, never /dist).",
+  "main": "dist/DtoBase.js",
+  "types": "dist/DtoBase.d.ts",
+  "exports": {
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*/*": {
+      "types": "./dist/*/*.d.ts",
+      "default": "./dist/*/*.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && rm -f tsconfig.tsbuildinfo && tsc -p tsconfig.json",
+    "clean": "rm -rf dist && rm -f tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@types/node": "^20.12.12"
+  }
+}

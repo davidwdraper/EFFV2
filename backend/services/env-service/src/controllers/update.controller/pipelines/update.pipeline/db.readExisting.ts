@@ -35,7 +35,7 @@ import {
   type DbReadDtoCtor,
 } from "@nv/shared/dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
-import type { IDto } from "@nv/shared/dto/IDto";
+import type { IDto } from "backend/services/packages/dto/core/IDto";
 
 /**
  * ADR-0106:

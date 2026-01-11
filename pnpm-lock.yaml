@@ -30,12 +30,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -49,12 +43,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -68,12 +56,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -87,12 +69,44 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.2
+
+  backend/services/packages/core:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.12.12
+        version: 20.19.19
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.2
+
+  backend/services/packages/dto/core:
+    dependencies:
+      '@nv/core':
+        specifier: workspace:*
+        version: link:../../core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.12.12
+        version: 20.19.19
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.2
+
+  backend/services/packages/dto/db.env-service.dto:
+    dependencies:
+      '@nv/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@nv/dto.core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.12.12
+        version: 20.19.19
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -106,12 +120,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -140,12 +148,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -159,12 +161,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -178,12 +174,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -197,12 +187,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2
@@ -216,12 +200,6 @@ importers:
       '@types/node':
         specifier: ^20.12.12
         version: 20.19.19
-      tsconfig-paths:
-        specifier: ^4.2.0
-        version: 4.2.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.20.6
       typescript:
         specifier: ^5.6.3
         version: 5.9.2

@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/UserType.ts
+// backend/services/packages/dto/UserType.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak

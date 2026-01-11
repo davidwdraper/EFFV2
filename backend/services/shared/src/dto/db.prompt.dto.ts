@@ -19,7 +19,7 @@
  */
 
 import { DtoBase } from "./DtoBase";
-import type { IndexHint } from "./persistence/index-hints";
+import type { IndexHint } from "../../../packages/dto/core/index-hints";
 
 // Wire-friendly shape
 export type PromptJson = {

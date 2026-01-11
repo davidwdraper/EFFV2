@@ -9,6 +9,15 @@
     "declaration": true,
     "declarationMap": true
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*",
+    "../packages/dto/core/IDto.ts",
+    "../packages/dto/validators",
+    "../packages/dto/core/utils",
+    "../packages/dto/core/dtoInstantiationSecret.ts",
+    "../packages/dto/core/UserType.ts",
+    "../packages/dto/core/index-hints.ts",
+    "../packages/core/dsl"
+  ],
   "exclude": ["dist", "node_modules"]
 }

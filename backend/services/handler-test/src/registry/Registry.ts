@@ -26,7 +26,7 @@
 import { HandlerTestDto } from "@nv/shared/dto/db.handler-test.dto";
 import { HandlerTestDtoRegistry } from "@nv/shared/dto/registry/handler-test.dtoRegistry";
 import { ServiceRegistryBase } from "@nv/shared/registry/ServiceRegistryBase";
-import type { IDto } from "@nv/shared/dto/IDto";
+import type { IDto } from "backend/services/packages/dto/core/IDto";
 import type { DtoCtor } from "@nv/shared/registry/DtoRegistry";
 
 export class Registry extends ServiceRegistryBase {

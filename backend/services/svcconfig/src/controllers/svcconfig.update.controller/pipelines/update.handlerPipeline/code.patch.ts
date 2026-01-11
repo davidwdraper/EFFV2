@@ -30,7 +30,7 @@ import type { HandlerContext } from "@nv/shared/http/handlers/HandlerContext";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import { SvcconfigDto } from "@nv/shared/dto/db.svcconfig.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
-import type { IDto } from "@nv/shared/dto/IDto";
+import type { IDto } from "backend/services/packages/dto/core/IDto";
 import type { IDtoRegistry } from "@nv/shared/registry/DtoRegistry";
 
 export class CodePatchHandler extends HandlerBase {

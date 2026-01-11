@@ -24,7 +24,7 @@ import type { ControllerBase } from "@nv/shared/base/controller/ControllerBase";
 import type { DtoBag } from "@nv/shared/dto/DtoBag";
 import { DbEnvServiceDto } from "@nv/shared/dto/db.env-service.dto";
 import { BagBuilder } from "@nv/shared/dto/wire/BagBuilder";
-import type { IDto } from "@nv/shared/dto/IDto";
+import type { IDto } from "backend/services/packages/dto/core/IDto";
 
 export class CodePatchHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: ControllerBase) {

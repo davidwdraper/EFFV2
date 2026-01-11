@@ -28,7 +28,7 @@
  */
 
 import { DtoBag } from "../DtoBag";
-import type { IDto } from "../IDto";
+import type { IDto } from "../../../../packages/dto/core/IDto";
 import type { BagMeta } from "./BagMeta";
 import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 

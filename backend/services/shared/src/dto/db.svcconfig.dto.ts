@@ -26,10 +26,10 @@
  */
 
 import { DtoBase, type DtoCtorOpts, type DtoMeta } from "./DtoBase";
-import { UserType } from "./UserType";
-import type { IndexHint } from "./persistence/index-hints";
-import { validateUUIDString } from "../utils/uuid";
-import { unwrapMetaEnvelope } from "./dsl";
+import { UserType } from "../../../packages/dto/core/UserType";
+import type { IndexHint } from "../../../packages/dto/core/index-hints";
+import { validateUUIDString } from "../../../packages/dto/core/utils/uuid";
+import { unwrapMetaEnvelope } from "../../../packages/core/dsl";
 
 // Wire-friendly shape
 export type SvcconfigJson = {

@@ -24,7 +24,7 @@ import {
   DbDeleter,
   type DbDeleteDtoCtor,
 } from "../../dto/persistence/dbDeleter/DbDeleter";
-import { isValidUuid } from "../../utils/uuid";
+import { isValidUuid } from "../../../../packages/dto/core/utils/uuid";
 import { DtoBag } from "../../dto/DtoBag";
 import type { IDtoRegistry } from "../../registry/IDtoRegistry";
 

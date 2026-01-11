@@ -35,7 +35,7 @@ import {
   type DbReadDtoCtor,
 } from "../../dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "../../dto/DtoBag";
-import type { IDto } from "../../dto/IDto";
+import type { IDto } from "../../../../packages/dto/core/IDto";
 import type { DtoBase } from "../../dto/DtoBase";
 
 export class DbReadExistingHandler extends HandlerBase {

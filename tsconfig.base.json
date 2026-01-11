@@ -15,6 +15,9 @@
     "resolveJsonModule": true,
     "noEmitOnError": true,
 
-    "baseUrl": "."
+    "baseUrl": ".",
+    "paths": {
+      "@nv/core/*": ["backend/services/packages/core/*"]
+    }
   }
 }

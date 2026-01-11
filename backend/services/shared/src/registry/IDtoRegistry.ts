@@ -20,7 +20,7 @@
  */
 
 import type { DtoBase } from "../dto/DtoBase";
-import type { IDto } from "../dto/IDto";
+import type { IDto } from "../../../packages/dto/core/IDto";
 
 export type RegistryDto = DtoBase & IDto;
 

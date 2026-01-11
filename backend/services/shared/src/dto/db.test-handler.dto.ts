@@ -25,8 +25,8 @@
  */
 
 import { DtoBase } from "./DtoBase";
-import type { IndexHint } from "./persistence/index-hints";
-import type { IDto } from "./IDto";
+import type { IndexHint } from "../../../packages/dto/core/index-hints";
+import type { IDto } from "../../../packages/dto/core/IDto";
 
 export type TestHandlerStatus = "pass" | "fail" | "error" | "skip";
 

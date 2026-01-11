@@ -3,7 +3,9 @@
   "private": true,
   "_nvHeader": "SOP: Core SOP (Reduced, Clean). ADRs: central env & gateway-only JWKS. No god-files. Old macOS bash.",
   "workspaces": [
-    "backend/services/*"
+    "backend/services/*",
+    "backend/services/packages/*",
+    "backend/services/packages/*/*"
   ],
   "devDependencies": {
     "@types/node": "^20.12.12",

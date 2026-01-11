@@ -25,7 +25,7 @@ import type { DtoBag } from "../../dto/DtoBag";
 import type { DtoBase } from "../../dto/DtoBase";
 import { BagBuilder } from "../../dto/wire/BagBuilder";
 import type { IDtoRegistry } from "../../registry/IDtoRegistry";
-import type { IDto } from "../../dto/IDto";
+import type { IDto } from "../../../../packages/dto/core/IDto";
 
 export class CodePatchHandler extends HandlerBase {
   constructor(ctx: HandlerContext, controller: any) {

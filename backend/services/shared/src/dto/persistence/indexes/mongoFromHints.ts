@@ -6,7 +6,7 @@
  * - IMPORTANT: omit optional flags unless they’re explicitly boolean/defined.
  */
 
-import type { IndexHint } from "../index-hints";
+import type { IndexHint } from "../../../../../packages/dto/core/index-hints";
 
 export type MongoIndexSpec = {
   keys: Record<string, 1 | -1 | "text" | "hashed">;

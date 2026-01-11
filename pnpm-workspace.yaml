@@ -1,3 +1,5 @@
 packages:
   - "backend/services/*"
   - "services/*"
+  - backend/services/packages/*
+  - backend/services/packages/*/*

@@ -1,4 +1,4 @@
-// backend/services/shared/src/dto/DtoBase.ts
+// backend/services/packages/dto/core/DtoBase.ts
 /**
  * Docs:
  * - SOP: DTO-first; DTO internals never leak
@@ -21,8 +21,8 @@
  * - DTOs must never be constructed without the registry secret.
  */
 
-import { DTO_INSTANTIATION_SECRET } from "../registry/dtoInstantiationSecret";
-import { newUuid, validateUUIDString, isValidUuid } from "../utils/uuid";
+import { DTO_INSTANTIATION_SECRET } from "./dtoInstantiationSecret";
+import { newUuid, validateUUIDString, isValidUuid } from "@nv/core/utils/uuid"
 import { UserType } from "./UserType";
 import type { IDto } from "./IDto";
 

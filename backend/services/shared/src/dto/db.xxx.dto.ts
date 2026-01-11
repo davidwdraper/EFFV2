@@ -21,10 +21,10 @@
  */
 
 import { DtoBase, type CheckKind } from "./DtoBase";
-import type { IndexHint } from "./persistence/index-hints";
-import { StringValidators } from "./validators/StringValidators";
-import { NumberValidators } from "./validators/NumberValidators";
-import { ContactValidators } from "./validators/ContactValidators";
+import type { IndexHint } from "../../../packages/dto/core/index-hints";
+import { StringValidators } from "../../../packages/dto/validators/StringValidators";
+import { NumberValidators } from "../../../packages/dto/validators/NumberValidators";
+import { ContactValidators } from "../../../packages/dto/validators/ContactValidators";
 
 // Wire-friendly shape
 type XxxJson = {

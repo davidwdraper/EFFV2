@@ -46,7 +46,7 @@ import {
   type DbReadDtoCtor,
 } from "../../dto/persistence/dbReader/DbReader";
 import { DtoBag } from "../../dto/DtoBag";
-import type { IDto } from "../../dto/IDto";
+import type { IDto } from "../../../../packages/dto/core/IDto";
 
 type QueryDtoCtor = DbReadDtoCtor<unknown>;
 

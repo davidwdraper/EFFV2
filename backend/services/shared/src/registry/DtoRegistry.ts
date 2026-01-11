@@ -24,7 +24,7 @@
  * - It does NOT participate in index ensuring (ADR-0106).
  */
 
-import { DTO_INSTANTIATION_SECRET } from "./dtoInstantiationSecret";
+import { DTO_INSTANTIATION_SECRET } from "../../../packages/dto/core/dtoInstantiationSecret";
 import type {
   IDtoRegistry,
   RegistryDto,

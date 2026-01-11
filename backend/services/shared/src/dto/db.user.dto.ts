@@ -22,10 +22,10 @@
  */
 
 import { DtoBase, type DtoCtorOpts } from "./DtoBase";
-import type { IndexHint } from "./persistence/index-hints";
-import { assertValidEmail } from "../utils/emailCheck";
-import { validateUUIDString } from "../utils/uuid";
-import { field, unwrapMetaEnvelope } from "./dsl";
+import type { IndexHint } from "../../../packages/dto/core/index-hints";
+import { assertValidEmail } from "../../../packages/dto/core/utils/emailCheck";
+import { validateUUIDString } from "../../../packages/dto/core/utils/uuid";
+import { field, unwrapMetaEnvelope } from "../../../packages/core/dsl";
 
 export type UserJson = {
   _id?: string;

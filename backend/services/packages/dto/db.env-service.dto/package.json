@@ -1,0 +1,29 @@
+{
+  "name": "@nv/dto.db.env-service.dto",
+  "version": "0.1.0",
+  "private": false,
+  "_nvHeader": "SOP header: DTO core package. Public API via wildcard exports. Consumers import @nv/dto.core/<File> (never /src, never /dist).",
+  "main": "dist/IDto.js",
+  "types": "dist/IDto.d.ts",
+  "exports": {
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && rm -f tsconfig.tsbuildinfo && tsc -p tsconfig.json",
+    "clean": "rm -rf dist && rm -f tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@nv/core": "workspace:*",
+    "@nv/dto.core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@types/node": "^20.12.12"
+  }
+}

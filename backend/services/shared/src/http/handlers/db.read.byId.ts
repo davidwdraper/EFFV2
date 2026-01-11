@@ -50,7 +50,7 @@ import {
 } from "../../dto/persistence/dbReader/DbReader";
 import type { DtoBag } from "../../dto/DtoBag";
 import type { DtoBase } from "../../dto/DtoBase";
-import { isValidUuid } from "../../utils/uuid";
+import { isValidUuid } from "../../../../packages/dto/core/utils/uuid";
 
 type ReadDtoCtor = DbReadDtoCtor<DtoBase>;
 
